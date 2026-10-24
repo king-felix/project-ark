@@ -28,6 +28,12 @@ drag-a-book-in workflow, the Windows library migration, health checks and a
 troubleshooting table — lives in [`docs/USING-THE-ARK.md`](docs/USING-THE-ARK.md).
 Keep a copy on a phone or taped inside the lid.
 
+**Building another one, or handing this to someone else?** Start with
+[`docs/REBUILD-ME-ARK.txt`](docs/REBUILD-ME-ARK.txt): the complete blueprint,
+the build order, the 24 traps that cost the most time, and the verification gate.
+It is written so an assistant with no memory of this project can rebuild the box
+from an empty card.
+
 ---
 
 ## Building it (in order, on the Mac)

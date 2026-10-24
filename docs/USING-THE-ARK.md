@@ -409,6 +409,12 @@ sudo reboot
   a file landing instead of polling on a schedule.
 - Non-negotiable project rules: SD-card guard before any flash, no secrets in git,
   `set -Eeuo pipefail`, LF line endings, and no jargon on any page a household will read.
+- **Building another one?** Start from `docs/REBUILD-ME-ARK.txt` — the full blueprint,
+  including the traps that cost the most time the first time. Hand it to any capable
+  assistant along with this repo and it can rebuild the box from an empty card.
+- Settings live in one file on the box: `/etc/ark/ark.env` (hotspot name and channel,
+  content tiers, download rate limit, free-space reserve). Edit, then re-run the
+  matching phase.
 
 *If a future change makes a page above wrong, fix the page the same day — a guide that lies is
 worse than no guide.*
