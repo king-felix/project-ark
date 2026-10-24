@@ -109,3 +109,100 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 * `set -Eeuo pipefail` at the top of every bash script; `|| true` only with an explanatory comment.
 * Line endings: everything in `pi/` and `staging/` is **LF**. Never CRLF (breaks shebangs on Linux).
 * Any file executed as a script gets `chmod +x` and is re-verified with `bash -n`.
+
+---
+
+## 8. PROJECT STATE — read this before touching anything
+
+**Last updated:** 2026-10-24 · **Read `docs/IMPLEMENTATION-LOG.md` next** (status table, decisions D1–D11, defects, test evidence, next step). This section is the digest; that file is the record.
+
+| | |
+|---|---|
+| Released baseline | tag **`v1.0.5`** = `main` = `dd3336c` (the published release; the live Pi runs this) |
+| Current work | branch **`feature/admin-hardening`**, pushed to `origin` (never force-push, never move a tag) |
+| Deployment | **code/config only — stage 2 is NOT deployed, no hardware or browser test has been done** |
+| Owner decisions pending | rotate the GitHub password; rotate the Pi password; licence choice |
+
+### 8.1 What exists, and what each piece owns
+
+| Piece | Owns |
+|---|---|
+| `pi/api/main.py` | public FastAPI app: `/api`, `/search`, `/board`, `/files`; mounts the admin router; bumps `session_epoch` at start |
+| `pi/api/ark_db.py` | one connection policy (`read()` / `tx()`, always closed), numbered migrations in one transaction, audit helper, install marker, `SCHEMA_VERSION` |
+| `pi/api/ark_security.py` | scrypt hashing, length-only policy (12…1024, reject never truncate), opaque sessions (SHA-256 digest of a 256-bit token), CSRF, per-account + per-IP throttling |
+| `pi/api/ark_admin.py` | `/admin` routes: login, forced setup, password, accounts, reset/enable/disable, audit, logout, overview |
+| `pi/api/ark_recover.py` | recovery logic, reached only through the root wrapper |
+| `pi/bin/ark-tls-cert` | the box's own certificate: SANs, `--show` fingerprint, renew at 30 days, `--force` |
+| `pi/bin/ark-admin-recover` | `0700 root:root`, runs the Python as `pi` (keeps WAL owned by the service user) |
+| `pi/nginx/ark-admin.conf` | `:8443` management origin (`/admin` + stylesheet only, unknown Host rejected) and `:8444` loopback-only setup listener; blanks `X-ARK-Setup-Channel` on `:8443` |
+| `pi/nginx/ark.conf` | public `:80`; `location ^~ /admin { return 404; }` |
+| `pi/steps/65-admin.sh` | installs the above and proves each door (404 / 403 / TLS-only) |
+| `tests/` | 42 pytest tests, throwaway databases, no Pi needed |
+
+### 8.2 Ports and who may reach them
+
+| Listener | Serves | Reachable from |
+|---|---|---|
+| `:80` | the whole public portal | anyone on Wi-Fi or LAN; **404 for `/admin`** |
+| `:8443` | `/admin` + `/assets/ark-admin.css`, TLS only | the LAN — but a sign-in is required |
+| `:8444` | `/admin` setup only, loopback-bound | only through an SSH tunnel (`ssh -N -L 8444:127.0.0.1:8444 pi@ark.local`) |
+| `:8081` `:8083` `:8085` | kiwix / calibre / API, proxied by nginx | see §8.5 known defects |
+
+### 8.3 State on the Pi
+
+| Path | What it is |
+|---|---|
+| `/srv/ark/api/data/ark.db` | accounts, sessions, audit rows |
+| `/srv/ark/api/data/ark.installed` | marker **outside** the DB: a wiped DB ⇒ `recovery-required`, never a recreated default |
+| `/etc/ssl/ark/ark-admin.crt` / `.key` | certificate (0644) and key (**0600 root:root**) |
+| `/usr/local/sbin/ark-admin-recover` | the only way back in without a password; console only |
+
+### 8.4 Commands that matter
+
+```bash
+# tests (Mac, throwaway DBs, never the live library)
+python3 -m venv .venv && .venv/bin/pip install -r tests/requirements.txt
+.venv/bin/python -m pytest -q                 # expect 42 passed
+
+# deploy / verify on the Pi (only with the owner's explicit go-ahead)
+sudo bash /srv/ark/src/install-ark.sh --only 60-portal,65-admin
+sudo bash /srv/ark/src/install-ark.sh --only 90-verify
+cat /srv/ark/ark_status.json
+
+# the owner's door
+ssh -N -L 8444:127.0.0.1:8444 pi@ark.local    # first claim only
+sudo ark-tls-cert --show                      # compare with the browser
+sudo ark-admin-recover --list                 # locked out (console only)
+```
+
+Bootstrap account: `admin` / `ChangeMe-ARK!`, `must_change=1`, claimable **only** through the loopback listener while unclaimed. It is in public code on purpose and useless without the tunnel.
+
+### 8.5 Known open defects (reproduced, recorded, not yet fixed)
+
+* Upload names collide: three same-name uploads in a minute overwrite each other (minute-resolution stamp). Fixed in stage 3 with IDs + safe display names.
+* Search "12 s" deadline drains: executor `shutdown()` still joins every worker (≈20–30 s worst case).
+* nginx allows `4g` request bodies while the API caps at 2 GiB — align them.
+* `kiwix-serve` listens on `*:8081`, so it can be reached without the proxy.
+* Public board posting and File Box uploads are **still anonymous** (stage 3 moves them behind the admin switch).
+
+### 8.6 Not built yet (stages 3–7 of the brief)
+
+Upload safety + quotas + quarantine; import idempotency (`done/` exclusion, hashes, preserved File Box links); board moderation (pin/resolve/hide, pagination); bounded search; truthful readiness + health panel; network-loss failover; backup/restore kit + offline recovery sheet; emergency content review; essentials pack, QR cards, accessibility and the household page. **Do not describe any of these as done, and never invent a control that does not exist.**
+
+### 8.7 Gotchas that have already cost time
+
+* **`run_commands` batches run in parallel.** A `pkill` or restart races the probe meant to observe it; two servers binding one port in the same batch fail in a way that looks like a code bug. Sequence state-changers first, observers second.
+* **Apostrophes in commit subjects break zsh quoting** — git then reads the message as pathspecs. Write the message to a file and use `git commit -F /tmp/msg.txt`.
+* **Tests need peer trust:** a hand-rolled `TestClient` sees peer `testclient`; set `ARK_TRUSTED_PROXIES=testclient,127.0.0.1,::1` (the fixtures already do) or every admin request is a correct 403.
+* **`ark_admin` needs `ensure_initialised()`** (the real app does it at import); a bare router mount on an empty directory raises `no such table: admins`.
+* **macOS Python 3.9 links LibreSSL**, so stdlib `hashlib.scrypt` is absent — `cryptography` is the fallback. The Pi vector pinned in `tests/test_db.py` proves the two agree.
+* Reading must survive a broken admin store: the `CRYPTO_ERROR` path keeps the public portal up.
+
+### 8.8 Rules for the next stage
+
+1. Test first, then code, then `pytest` green, then a checkpoint line in `docs/IMPLEMENTATION-LOG.md`.
+2. The public reading path must keep working at every commit.
+3. No deploy, reboot, `pkill`, or service restart on the live box without explicit permission.
+4. Docs change in the same commit as the behaviour — `README.md`, `docs/USING-THE-ARK.md`, `docs/REBUILD-ME-ARK.txt` and `docs/REBUILD-FROM-BACKUP.txt` all describe the box and have drifted before.
+
+
