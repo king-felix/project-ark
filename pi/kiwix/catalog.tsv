@@ -1,0 +1,40 @@
+# Project ARK — offline library catalogue
+# -----------------------------------------------------------------------------
+# One row per offline bundle.  Nothing here is a fixed URL: the resolver asks
+# the public Kiwix catalogue for the newest build of each name and pins the
+# result, so an updated edition needs no code change.
+#
+#   name        the catalogue id (becomes <name>_<YYYY-MM>.zim on disk)
+#   flavour     maxi | nopic | mini | -   (largest to smallest)
+#   size_gib    last measured download size, used for the disk budget
+#   tier        essential | core | extra      (download order and profiles)
+#   label       the friendly name shown on the portal
+#   query       keyword sent to the catalogue to find this entry
+#
+# Tabs, not spaces.  Keep rows sorted by tier, then smallest first, so the
+# library becomes useful within minutes instead of after the big files.
+name	flavour	size_gib	tier	label	query
+medicalsciences.stackexchange.com_en_all	-	0.06	essential	Medical Q&A	medical
+ham.stackexchange.com_en_all	-	0.07	essential	Amateur radio Q&A	radio
+woodworking.stackexchange.com_en_all	-	0.10	core	Woodworking Q&A	woodworking
+outdoors.stackexchange.com_en_all	-	0.13	core	Outdoors & camping Q&A	wilderness
+cooking.stackexchange.com_en_all	-	0.22	essential	Cooking Q&A	cooking
+wikem_en_all	maxi	0.25	essential	Emergency medicine (WikEM)	medicine
+bicycles.stackexchange.com_en_all	-	0.46	core	Bicycle repair Q&A	bicycle
+gardening.stackexchange.com_en_all	-	0.87	core	Gardening Q&A	gardening
+wikiquote_en_all	maxi	0.93	core	Quotations	wikiquote
+wikivoyage_en_all	maxi	1.07	essential	Travel and places	wikivoyage
+wikipedia_en_medicine	maxi	1.74	essential	Medical encyclopedia (WikiMed)	medical
+gutenberg_en_lcc-r	-	1.88	core	Gutenberg: medicine	medicine
+ready.gov_en_all	-	1.92	essential	Emergency preparedness (Ready.gov)	disaster
+wikiversity_en_all	maxi	2.29	core	Courses and lessons	wikiversity
+ifixit_en_all	-	3.33	essential	Repair guides (iFixit)	ifixit
+lrnselfreliance_en_all	-	3.70	core	Self-reliance library	survival
+gutenberg_en_lcc-s	-	4.22	core	Gutenberg: farming	agriculture
+wikibooks_en_all	maxi	5.75	core	Textbooks	wikibooks
+wiktionary_en_all	nopic	8.53	core	Dictionary and thesaurus	wiktionary
+wikipedia_en_all	nopic	49.07	core	Wikipedia (no photos)	wikipedia
+mdwiki_en_all	maxi	2.14	extra	Medical encyclopedia (MDWiki)	medical
+electronics.stackexchange.com_en_all	-	3.97	extra	Electronics Q&A	electronics
+gutenberg_en_lcc-t	-	12.25	extra	Gutenberg: technology	gutenberg
+wikipedia_en_all	maxi	118.67	extra	Wikipedia with photos	wikipedia

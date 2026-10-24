@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#000000">
+<title>How to use the Ark</title>
+<link rel="stylesheet" href="/assets/ark.css">
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <span class="logo">Project Ark</span>
+    <h1>How to use the Ark</h1>
+    <p class="tagline">One page, plain words. If you can use a website, you can use this.</p>
+  </header>
+
+  <div class="nav">
+    <a href="/">Home</a>
+    <a href="/help.html" aria-current="page">How to use</a>
+  </div>
+
+  <h2>What this box is</h2>
+  <p>The Ark is a small computer that carries a library. It makes its own Wi-Fi network, so
+     phones, tablets and laptops can read everything on it without any internet at all.
+     Nothing has a password and nothing asks you to sign in.</p>
+
+  <h2>If a “Sign in to Wi-Fi” window opens</h2>
+  <p>That window is the phone trying to be helpful. It is not a real sign-in page and you do
+     not need an account. Two things to know:</p>
+  <ul class="clean">
+    <li>Some buttons inside that window do nothing. That is normal.
+        <span class="sub">Close the window and open a normal browser instead.</span></li>
+    <li>Type <b>ark.lan</b> into the address bar.
+        <span class="sub">The full address is <b>http://ark.lan</b> — the “http://” part matters.</span></li>
+  </ul>
+  <div class="popup">
+    <b>Two addresses always work:</b> <b>http://ark.lan</b> and <b>http://10.42.0.1</b>.
+    If one does not open, try the other.
+    <button class="copy" type="button" data-copy="http://ark.lan">Copy the address</button>
+  </div>
+
+  <h2>What is inside</h2>
+  <ul class="clean">
+    <li><a href="/kiwix/">Offline Library</a>
+        <span class="sub">Encyclopedias, medical references and question-and-answer archives. Pick a collection, then use its search box.</span></li>
+    <li><a href="/books/">Books</a>
+        <span class="sub">Full-length books. Tap a cover to read it in the browser or to download it.</span></li>
+    <li><a href="/vault/">Manuals &amp; Guides</a>
+        <span class="sub">Short pages written for a phone screen: water, first aid, power, plumbing, wiring.</span></li>
+    <li><a href="/vault/quick-card.html">Pocket Cards to Print</a>
+        <span class="sub">One page each. Print them and tape them inside a cupboard door.</span></li>
+    <li><a href="/board">Message Board</a>
+        <span class="sub">Leave a note for the next person. Anyone on the network can read and post.</span></li>
+    <li><a href="/files">File Box</a>
+        <span class="sub">Share a file with everyone. Tap “Choose a file”, then “Put it in the box”.</span></li>
+  </ul>
+
+  <h2>Reading on a phone</h2>
+  <p>Everything is built for a small screen: big buttons, dark background so it does not
+     glare at night, and text you can read without zooming. Pages you open in the Offline
+     Library have their own back button — use your phone’s back arrow to come back here.</p>
+
+  <h2>Keeping it working</h2>
+  <ul class="clean">
+    <li>Leave the box plugged in.
+        <span class="sub">It draws about as much power as a phone charger.</span></li>
+    <li>The Wi-Fi has no password on purpose.
+        <span class="sub">Anyone nearby can read the library — that is the point. Do not keep secrets in the File Box.</span></li>
+    <li>Big collections keep arriving on their own when the box finds an internet connection.
+        <span class="sub">You do not have to do anything; new material simply appears.</span></li>
+  </ul>
+
+  <footer>
+    <p>Still stuck? Try <b>http://10.42.0.1</b> instead of ark.lan, and make sure you are joined to
+       the network called <b>The-Ark-Offline</b>.</p>
+  </footer>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var btn = document.querySelector("[data-copy]");
+  if (!btn) { return; }
+  btn.addEventListener("click", function () {
+    var text = btn.getAttribute("data-copy");
+    var done = function () { btn.textContent = "Copied — paste it in your browser"; };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, done);
+    } else {
+      var t = document.createElement("textarea");
+      t.value = text; document.body.appendChild(t); t.select();
+      try { document.execCommand("copy"); } catch (e) {}
+      document.body.removeChild(t); done();
+    }
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,235 @@
+#!/usr/bin/env python3
+# =============================================================================
+#  PROJECT ARK — offline HTML -> PDF converter (stdlib only, no deps)
+#
+#  Usage: ark-html2pdf INPUT.html OUTPUT.pdf ["Document title"]
+#
+#  Produces a clean, printable, paginated A4 PDF from a plain HTML manual:
+#  headings, paragraphs, bullets and pre-formatted text are preserved; all
+#  markup is flattened to Helvetica text.  Deliberately small so it can run on
+#  a Raspberry Pi with zero Python packages installed.
+# =============================================================================
+import html
+import re
+import sys
+import textwrap
+import unicodedata
+
+PAGE_W, PAGE_H = 595, 842          # A4 in points
+MARGIN = 56
+LINE_H = 14.5
+FONT_SIZE = 10.5
+HEAD_SIZE = 17
+SUB_SIZE = 13
+MAX_CHARS = 92                     # wrap width for the 10.5pt Helvetica
+
+
+def to_ascii(text):
+    """Helvetica's WinAnsi set has no bullets/em-dashes; fold them down."""
+    repl = {
+        "\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"',
+        "\u2013": "-", "\u2014": "-", "\u2022": "*", "\u00b7": "-",
+        "\u2026": "...", "\u00a0": " ", "\u2192": "->", "\u2265": ">=",
+        "\u2190": "<-", "\u2191": "^", "\u2193": "v", "\u2248": "~",
+        "\u2264": "<=", "\u00b0": "deg", "\u00d7": "x", "\u00b1": "+/-",
+    }
+    for bad, good in repl.items():
+        text = text.replace(bad, good)
+    text = unicodedata.normalize("NFKD", text)
+    return text.encode("latin-1", "replace").decode("latin-1")
+
+
+def html_to_blocks(source):
+    """Flatten HTML into one (kind, text) entry per visual line.
+
+    kinds: "title", "h2", "h3", "pre", "p", "blank".  Block-level tags become
+    paragraph breaks, list items become "* " lines and table cells are joined
+    with " | " so a table stays readable when printed.
+    """
+    body = re.sub(r"(?is)<(script|style|head)[^>]*>.*?</\1>", " ", source)
+    body = re.sub(r"(?i)<br\s*/?>", "\n", body)
+    body = re.sub(r"(?i)<h1[^>]*>", "\n\n@@TITLE@@", body)
+    body = re.sub(r"(?i)<h2[^>]*>", "\n\n@@H2@@", body)
+    body = re.sub(r"(?i)<(h3|h4|h5)[^>]*>", "\n\n@@H3@@", body)
+    body = re.sub(r"(?i)<pre[^>]*>", "\n\n@@PRE@@", body)
+    body = re.sub(r"(?i)<li[^>]*>", "\n* ", body)
+    body = re.sub(r"(?i)</li>", "\n", body)
+    body = re.sub(r"(?i)</(td|th)>", "  |  ", body)
+    body = re.sub(r"(?i)</tr>", "\n", body)
+    body = re.sub(r"(?i)</(p|div|table|ul|ol|blockquote|h1|h2|h3|h4|h5|pre)>", "\n\n", body)
+    body = re.sub(r"(?i)<[^>]+>", "", body)
+    text = html.unescape(body)
+
+    markers = (("@@TITLE@@", "title"), ("@@H2@@", "h2"),
+               ("@@H3@@", "h3"), ("@@PRE@@", "pre"))
+    blocks, in_pre = [], False
+    for raw in text.split("\n"):
+        line = re.sub(r"[ \t\u00a0]+", " ", raw).strip()
+        if not line:
+            blocks.append(("blank", ""))
+            in_pre = False
+            continue
+        kind = "pre" if in_pre else "p"
+        for marker, name in markers:
+            if marker in line:
+                kind = name
+                in_pre = name == "pre"
+                line = line.replace(marker, " ").strip()
+                break
+        if line:
+            blocks.append((kind, line))
+
+    # never emit more than one blank line in a row
+    out = []
+    for kind, line in blocks:
+        if kind == "blank" and (not out or out[-1][0] == "blank"):
+            continue
+        out.append((kind, line))
+    return out
+
+
+def layout(blocks):
+    """Turn (kind, text) lines into (text, font, size, x-offset, gap) lines."""
+    lines = []
+    for kind, text in blocks:
+        if kind == "blank":
+            lines.append(("", "F1", FONT_SIZE, 0, 7))
+            continue
+        if kind == "pre":
+            for piece in textwrap.wrap(text, 96) or [""]:
+                lines.append((piece, "F3", 9, 8, 0))
+            continue
+        bullet = text.startswith("* ")
+        body = text[2:].strip() if bullet else text
+        if kind == "title":
+            font, size, width, gap = "F2", HEAD_SIZE, 58, 3
+        elif kind == "h2":
+            font, size, width, gap = "F2", SUB_SIZE, 72, 15
+        elif kind == "h3":
+            font, size, width, gap = "F2", FONT_SIZE + 0.5, 84, 9
+        else:
+            font, size, width, gap = "F1", FONT_SIZE, MAX_CHARS, 2
+        if bullet:
+            chunks = textwrap.wrap(body, width - 4) or [""]
+            for i, chunk in enumerate(chunks):
+                prefix = "  * " if i == 0 else "    "
+                lines.append((prefix + chunk, font, size, 0, gap if i == 0 else 0))
+        else:
+            for i, chunk in enumerate(textwrap.wrap(body, width) or [""]):
+                lines.append((chunk, font, size, 0, gap if i == 0 else 0))
+    return lines
+
+
+
+def paginate(lines):
+    """Split laid-out lines into pages of (text, font, size, x, y)."""
+    pages, page, y = [], [], PAGE_H - MARGIN
+    for text, font, size, x, gap in lines:
+        step = LINE_H * (size / FONT_SIZE) + gap
+        if y - step < MARGIN + 10:
+            pages.append(page)
+            page, y = [], PAGE_H - MARGIN
+        y -= step
+        if text:
+            page.append((text, font, size, MARGIN + x, y))
+    if page or not pages:
+        pages.append(page)
+    return pages
+
+
+def pdf_escape(text):
+    return text.replace("\\", r"\\").replace("(", r"\(").replace(")", r"\)")
+def build_pdf(path, title, pages):
+    objects = []          # each entry is one object body (no "obj"/"endobj")
+
+    def add(body):
+        objects.append(body)
+        return len(objects)          # 1-based object number
+
+    font1 = add(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica "
+                b"/Encoding /WinAnsiEncoding >>")
+    font2 = add(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold "
+                b"/Encoding /WinAnsiEncoding >>")
+    font3 = add(b"<< /Type /Font /Subtype /Type1 /BaseFont /Courier "
+                b"/Encoding /WinAnsiEncoding >>")
+
+    # Reserve the /Pages object number before the page objects are written so
+    # that every page can point at its parent (numbers are positional).
+    pages_placeholder = len(objects)
+    pages_id = add(b"")
+    page_ids, content_ids = [], []
+    total = len(pages)
+
+    for index, lines in enumerate(pages, start=1):
+        ops = []
+        ops.append("BT /F2 8 Tf 0.55 0.55 0.55 rg 56 %.0f Td (%s) Tj ET"
+                   % (PAGE_H - 34, pdf_escape(to_ascii("THE ARK - " + title))))
+        ops.append("0.75 0.75 0.75 RG 0.6 w 56 %.0f m 539 %.0f l S"
+                   % (PAGE_H - 42, PAGE_H - 42))
+        for text, font, size, x, y in lines:
+            ops.append("BT /%s %.1f Tf 0 0 0 rg %.1f %.1f Td (%s) Tj ET"
+                       % (font, size, x, y, pdf_escape(to_ascii(text))))
+        footer = to_ascii("page %d of %d  -  Project ARK  -  offline copy, print freely"
+                          % (index, total))
+        ops.append("BT /F1 8 Tf 0.45 0.45 0.45 rg 56 30 Td (%s) Tj ET"
+                   % pdf_escape(footer))
+        stream = "\n".join(ops).encode("latin-1", "replace")
+        content_id = add(b"<< /Length %d >>\nstream\n" % len(stream)
+                         + stream + b"\nendstream")
+        content_ids.append(content_id)
+        page_ids.append(add((
+            "<< /Type /Page /Parent %d 0 R /MediaBox [0 0 %d %d] "
+            "/Resources << /Font << /F1 %d 0 R /F2 %d 0 R /F3 %d 0 R >> >> "
+            "/Contents %d 0 R >>"
+            % (pages_id, PAGE_W, PAGE_H, font1, font2, font3, content_id)
+        ).encode()))
+
+    objects[pages_placeholder] = (
+        "<< /Type /Pages /Kids [%s] /Count %d >>"
+        % (" ".join("%d 0 R" % pid for pid in page_ids), len(page_ids))
+    ).encode()
+    catalog_id = add(("<< /Type /Catalog /Pages %d 0 R >>" % pages_id).encode())
+
+    out = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+    offsets = [0] * (len(objects) + 1)
+    for number, body in enumerate(objects, start=1):
+        offsets[number] = len(out)
+        out += b"%d 0 obj\n" % number + body + b"\nendobj\n"
+    xref_at = len(out)
+    out += b"xref\n0 %d\n" % (len(objects) + 1)
+    out += b"0000000000 65535 f \n"
+    for number in range(1, len(objects) + 1):
+        out += b"%010d 00000 n \n" % offsets[number]
+    out += (b"trailer\n<< /Size %d /Root %d 0 R >>\nstartxref\n%d\n%%%%EOF\n"
+            % (len(objects) + 1, catalog_id, xref_at))
+    with open(path, "wb") as fh:
+        fh.write(out)
+    return len(pages)
+
+
+def main(argv):
+    if len(argv) < 2:
+        print("usage: ark-html2pdf INPUT.html OUTPUT.pdf [title]")
+        return 2
+    source_path, target_path = argv[0], argv[1]
+    with open(source_path, "r", encoding="utf-8", errors="replace") as fh:
+        source = fh.read()
+    title = argv[2] if len(argv) > 2 else ""
+    if not title:
+        for pattern in (r"(?is)<h1[^>]*>(.*?)</h1>", r"(?is)<title[^>]*>(.*?)</title>"):
+            match = re.search(pattern, source)
+            if match:
+                title = re.sub(r"<[^>]+>", "", match.group(1)).strip()
+                if title:
+                    break
+    title = title or "Offline Manual"
+    pages = paginate(layout(html_to_blocks(source)))
+    count = build_pdf(target_path, title, pages)
+    print(f"{target_path}: {count} page(s)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
+
+

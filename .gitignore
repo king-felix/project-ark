@@ -1,0 +1,23 @@
+# ---- secrets ---------------------------------------------------------------
+staging/wifi.env
+staging/firstrun.sh
+staging/*.nmconnection
+
+# ---- large binaries --------------------------------------------------------
+staging/*.img
+staging/*.img.xz
+staging/*.dmg
+logs/*.log
+logs/.flash.done
+logs/ark_host.txt
+logs/ark_status.json
+
+# ---- generated -------------------------------------------------------------
+scripts/_flash-helper.sh
+pi/calibre-library/
+__pycache__/
+*.pyc
+.DS_Store
+.venv/
+venv/
+staging/*.zip

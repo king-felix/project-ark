@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+# =============================================================================
+#  ark-import-calibre-library — adopt a Calibre library copied from another PC
+#
+#  Usage:  sudo ark-import-calibre-library /srv/ark/imported-library
+#          sudo ark-import-calibre-library /srv/ark/imported-library --force
+#
+#  Use this when you want to keep the *whole* library exactly as it is on your
+#  own computer: titles, authors, series, tags, covers and reading order all
+#  live in metadata.db, so the folder is copied as one piece instead of
+#  importing book files one by one.
+#
+#  Safety:
+#    * the source must contain a real Calibre database (checked, not assumed)
+#    * a library written by a newer Calibre than this Pi understands is refused
+#      unless you pass --force
+#    * the current (possibly empty) library is moved aside, never deleted
+#    * if the library refuses to answer afterwards, the old one is put back
+# =============================================================================
+set -Eeuo pipefail
+
+ARK_PI_USER="${ARK_PI_USER:-pi}"
+ARK_PI_GROUP="${ARK_PI_GROUP:-pi}"
+LIB="${ARK_CALIBRE_LIB:-/srv/ark/calibre-library}"
+UNIT="ark-calibre.service"
+PORT_URL="http://127.0.0.1:8083/"
+
+say()  { printf '   %s\n' "$*"; }
+ok()   { printf ' ✓ %s\n' "$*"; }
+die()  { printf ' ✗ %s\n' "$*" >&2; exit 1; }
+
+FORCE=0
+SRC=""
+for arg in "$@"; do
+  case "$arg" in
+    --force) FORCE=1 ;;
+    -*) die "unknown option: $arg" ;;
+    *)  [[ -z "$SRC" ]] && SRC="$arg" || die "only one folder at a time" ;;
+  esac
+done
+[[ -n "$SRC" ]] || die "usage: ark-import-calibre-library <folder> [--force]"
+[[ "$(id -u)" -eq 0 ]] || die "run this with sudo"
+SRC="${SRC%/}"
+[[ -d "$SRC" ]] || die "not a folder: $SRC"
+[[ -f "$SRC/metadata.db" ]] || die "no metadata.db in $SRC — copy the whole Calibre Library folder, not just the books"
+
+src_real="$(cd "$SRC" && pwd -P)"
+lib_real="$(mkdir -p "$LIB" && cd "$LIB" && pwd -P)"
+[[ "$src_real" == "$lib_real" ]] && die "source and destination are the same folder"
+
+db_version() {   # <path-to-metadata.db> -> schema version, empty on error
+  sqlite3 -readonly "$1" 'PRAGMA user_version;' 2>/dev/null || true
+}
+
+# ---- 1. is it really a Calibre database? ------------------------------------
+if [[ "$(sqlite3 -readonly "$SRC/metadata.db" \
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='books';" 2>/dev/null)" != "1" ]]; then
+  die "$SRC/metadata.db is not a usable Calibre database"
+fi
+BOOKS="$(sqlite3 -readonly "$SRC/metadata.db" 'SELECT COUNT(*) FROM books;' 2>/dev/null || echo 0)"
+say "source library: $BOOKS book(s), $(du -sh "$src_real" | cut -f1)"
+
+# ---- 2. can this Pi read it? ------------------------------------------------
+# Version numbers alone are not proof: a newer Calibre may only have added columns,
+# which the version installed here reads perfectly well.  So when the source looks
+# newer, ask the installed reader itself — on a throwaway copy of the database, so
+# the original is never touched.
+probe_readable() {   # <metadata.db> -> 0 when calibredb can open it
+  local probe rc
+  probe="$(mktemp -d)"
+  if cp "$1" "$probe/metadata.db" 2>/dev/null &&
+     calibredb --with-library "$probe" list --limit 1 >/dev/null 2>&1; then
+    rc=0
+  else
+    rc=1
+  fi
+  rm -rf "$probe"
+  return "$rc"
+}
+
+cur_ver="$(db_version "$LIB/metadata.db")"
+src_ver="$(db_version "$SRC/metadata.db")"
+if [[ -n "$cur_ver" && -n "$src_ver" ]] && (( src_ver > cur_ver )); then
+  say "the copied library was written by a newer Calibre (schema $src_ver, this Pi reads $cur_ver)"
+  if probe_readable "$SRC/metadata.db"; then
+    say "the Calibre installed here opens it without complaint — carrying on"
+  elif (( FORCE == 0 )); then
+    die "and this Pi cannot read it. Either update Calibre here (sudo apt update && sudo apt install --only-upgrade calibre) or re-run with --force"
+  else
+    say "--force given — carrying on anyway"
+  fi
+fi
+
+
+# ---- 3. set the old one aside ----------------------------------------------
+STAMP="$(date +%Y%m%d-%H%M%S)"
+BACKUP="$LIB.bak-$STAMP"
+systemctl stop "$UNIT" || say "could not stop $UNIT (continuing)"
+say "stopping the library service"
+if [[ -d "$LIB" ]] && [[ -n "$(ls -A "$LIB" 2>/dev/null)" ]]; then
+  mv "$LIB" "$BACKUP" || die "could not move the old library aside"
+  say "old library kept at $BACKUP"
+fi
+mkdir -p "$LIB"
+
+restore() {
+  say "putting the previous library back"
+  rm -rf "$LIB"
+  [[ -d "$BACKUP" ]] && mv "$BACKUP" "$LIB"
+  systemctl start "$UNIT" >/dev/null 2>&1 || true
+}
+trap 'restore' ERR
+
+# ---- 4. copy the library in -------------------------------------------------
+say "copying (this can take a while for a big library)"
+rsync -a --no-owner --no-group "$src_real"/ "$LIB"/
+chown -R "$ARK_PI_USER:$ARK_PI_GROUP" "$LIB"
+mkdir -p "$LIB/.calnotes"
+chown "$ARK_PI_USER:$ARK_PI_GROUP" "$LIB/.calnotes"
+chmod 775 "$LIB" "$LIB/.calnotes"
+
+# ---- 5. prove it ------------------------------------------------------------
+say "starting the library"
+systemctl start "$UNIT"
+code=""
+for _ in $(seq 1 30); do
+  code="$(curl -s -o /dev/null -m 5 -w '%{http_code}' "$PORT_URL" 2>/dev/null || echo 000)"
+  [[ "$code" == "200" || "$code" == "302" ]] && break
+  sleep 2
+done
+if [[ "$code" != "200" && "$code" != "302" ]]; then
+  traplog="$(journalctl -u "$UNIT" -n 20 --no-pager 2>/dev/null || true)"
+  printf '%s\n' "$traplog" >&2
+  restore
+  die "the library did not answer after the copy (HTTP $code) — previous library restored"
+fi
+trap - ERR
+
+# ---- 6. report --------------------------------------------------------------
+# Calibre-Web searches metadata.db directly, so there is no extra index to build.
+
+now_books="$(sqlite3 -readonly "$LIB/metadata.db" 'SELECT COUNT(*) FROM books;' 2>/dev/null || echo '?')"
+ok "library adopted: ${now_books} book(s) (HTTP $code)"
+say "old library kept at: ${BACKUP:-none}"
+say "open http://ark.lan/books/ — nothing to log in to"

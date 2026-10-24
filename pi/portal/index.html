@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#000000">
+<title>Project ARK — everything you need, offline</title>
+<link rel="stylesheet" href="/assets/ark.css">
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <span class="logo">Project Ark</span>
+    <h1>Everything you need.<br>No internet required.</h1>
+    <p class="tagline">Encyclopedias, books, repair guides and first-aid manuals — all kept on this box, all readable from your phone.</p>
+  </header>
+
+  <p class="status" id="status">
+    <span class="dot" aria-hidden="true"></span>
+    <span><b>Ready.</b> Tap anything below. Nothing here needs a login or an internet connection.</span>
+  </p>
+
+  <div class="popup" id="popup" hidden>
+    <b>This opened inside a “Sign in to Wi-Fi” window.</b>
+    That window is only a preview — some buttons inside it will not work.
+    Close it, then open <b>http://ark.lan</b> in your normal browser.
+    <button class="copy" type="button" data-copy="http://ark.lan">Copy the address</button>
+  </div>
+  <noscript>
+    <p class="popup"><b>If this opened inside a “Sign in to Wi-Fi” window,</b>
+      close it and type <b>http://ark.lan</b> into your normal browser instead.
+      Everything on this page still works without JavaScript.</p>
+  </noscript>
+
+  <h2>Find something</h2>
+  <form action="/search" method="get" role="search">
+    <label for="q">What do you need to look up?</label>
+    <input id="q" name="q" type="search" placeholder="water filter, broken pipe, fever…"
+           autocomplete="off" enterkeyhint="search">
+    <button class="go-btn" type="submit">Search everything</button>
+  </form>
+  <p class="note">Searches the encyclopedias, the survival manuals and the guide pages at once.</p>
+
+  <h2>Start here</h2>
+  <div class="grid">
+    <a class="card primary" href="/kiwix/">
+      <span class="badge">Biggest</span>
+      <span class="ico" aria-hidden="true">📚</span>
+      <span class="t">Offline Library</span>
+      <span class="d">Encyclopedias, medical references, how-to guides and question-and-answer archives. Read in your browser, page by page.</span>
+      <span class="go">Tap here to read this in your browser</span>
+    </a>
+    <a class="card" href="/books/">
+      <span class="ico" aria-hidden="true">📖</span>
+      <span class="t">Books</span>
+      <span class="d">Full-length books on a shelf, cover first. Tap a cover to read or to download it for later.</span>
+      <span class="go">Tap here to browse the shelf</span>
+    </a>
+    <a class="card" href="/vault/">
+      <span class="ico" aria-hidden="true">🧰</span>
+      <span class="t">Manuals &amp; Guides</span>
+      <span class="d">Short, plain-English pages you can read on a phone or print on paper: water, first aid, power, repairs.</span>
+      <span class="go">Tap here to open the manuals</span>
+    </a>
+  </div>
+  <h2>When something breaks</h2>
+  <div class="grid two">
+    <a class="card" href="/vault/#repair">
+      <span class="ico" aria-hidden="true">🔧</span>
+      <span class="t">Repair Guides</span>
+      <span class="d">Plumbing, wiring and household fixes, written so a beginner can follow them.</span>
+      <span class="go">Open the repair guides</span>
+    </a>
+    <a class="card" href="/vault/quick-card.html">
+      <span class="ico" aria-hidden="true">🖨️</span>
+      <span class="t">Pocket Cards to Print</span>
+      <span class="d">Eight one-page cards — bleeding, burns, CPR, water, power cut, leaks. Print them and put them on the wall.</span>
+      <span class="go">Open the printable cards</span>
+    </a>
+  </div>
+
+  <h2>For everybody here</h2>
+  <div class="grid two">
+    <a class="card" href="/board">
+      <span class="ico" aria-hidden="true">📌</span>
+      <span class="t">Message Board</span>
+      <span class="d">Leave a note for the next person: what is broken, what was fixed, who needs help.</span>
+      <span class="go">Read or post a message</span>
+    </a>
+    <a class="card" href="/files">
+      <span class="ico" aria-hidden="true">📎</span>
+      <span class="t">File Box</span>
+      <span class="d">Share a file with everyone on the network — a photo of a broken part, a shopping list, a PDF.</span>
+      <span class="go">Look inside or add a file</span>
+    </a>
+  </div>
+
+  <h2>Not sure how this works?</h2>
+  <p class="hint">One page explains the whole thing in plain words — including what to do if you opened this inside a Wi-Fi sign-in window.</p>
+  <div class="nav">
+    <a href="/help.html">How to use the Ark</a>
+    <a href="http://ark.lan">Open ark.lan</a>
+  </div>
+
+  <footer>
+    <p><b>Project Ark</b> — a small computer that carries a library. No accounts, no tracking, no internet.</p>
+    <p>Addresses that work: <b>http://ark.lan</b> · <b>http://ark.local</b> · <b>http://10.42.0.1</b></p>
+  </footer>
+
+<script>
+/* Progressive enhancement only — every link and the search box work without it. */
+(function () {
+  "use strict";
+
+  // The hotspot redirect lands here with ?captive=1: explain the popup trap.
+  var popup = document.getElementById("popup");
+  if (popup && /[?&]captive=1/.test(location.search)) { popup.hidden = false; }
+
+  var btn = popup && popup.querySelector("[data-copy]");
+  if (btn) {
+    btn.addEventListener("click", function () {
+      var text = btn.getAttribute("data-copy");
+      var done = function () { btn.textContent = "Copied — paste it in your browser"; };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, done);
+      } else {
+        var t = document.createElement("textarea");
+        t.value = text; document.body.appendChild(t); t.select();
+        try { document.execCommand("copy"); } catch (e) {}
+        document.body.removeChild(t); done();
+      }
+    });
+  }
+
+  // Live status: how much is already on the box.
+  var strip = document.getElementById("status");
+  if (!strip || !window.fetch) { return; }
+  fetch("/api/status", { cache: "no-store" })
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (s) {
+      if (!s) { return; }
+      var bits = [];
+      if (s.library && s.library.titles) { bits.push("<b>" + s.library.titles + "</b> reference collections"); }
+      if (s.books && s.books.count)      { bits.push("<b>" + s.books.count + "</b> books"); }
+      if (s.guides && s.guides.count)    { bits.push("<b>" + s.guides.count + "</b> guides and manuals"); }
+      var tail = (s.downloads && s.downloads.pending)
+        ? " Still bringing more in: <b>" + s.downloads.pending + "</b> collection(s) on the way."
+        : "";
+      strip.innerHTML = '<span class="dot" aria-hidden="true"></span><span>' +
+        (bits.length ? "On board right now: " + bits.join(" · ") + "." : "<b>Ready.</b>") +
+        tail + " Nothing here needs a login.</span>";
+    })
+    .catch(function () { /* no API yet — the static text stays */ });
+})();
+</script>
+
+</div>
+</body>
+</html>

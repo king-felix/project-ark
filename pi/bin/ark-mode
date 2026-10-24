@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# =============================================================================
+#  ark-mode — choose how the Ark is reachable.
+#
+#    ark-mode auto      try the home network, fall back to broadcasting
+#    ark-mode home      use the home network (needs one saved already)
+#    ark-mode hotspot   broadcast "The-Ark-Offline" and serve the portal
+#    ark-mode status    what is happening right now
+#    ark-mode test [s]  switch to the hotspot, wait s seconds (default 180),
+#                       then go back to "auto" — SSH will drop while it runs
+# =============================================================================
+set -Eeuo pipefail
+
+ENV_FILE=/etc/ark/ark.env
+# shellcheck disable=SC1090
+[[ -r "$ENV_FILE" ]] && . "$ENV_FILE"
+
+HOTSPOT_CONNECTION="${HOTSPOT_CONNECTION:-ark-hotspot}"
+HOTSPOT_ADDRESS="${HOTSPOT_ADDRESS:-10.42.0.1}"
+HOME_WIFI_CONNECTION="${HOME_WIFI_CONNECTION:-home-wifi}"
+HOME_WIFI_TIMEOUT="${ARK_HOME_WIFI_TIMEOUT:-${HOME_WIFI_TIMEOUT:-75}}"
+MODE_FILE="${MODE_FILE:-/etc/ark/mode}"
+WIFI_DEV="${WIFI_DEV:-wlan0}"
+
+say()  { printf '%s\n' "$*"; }
+die()  { printf 'ark-mode: %s\n' "$*" >&2; exit 1; }
+
+need_root() { [[ "${EUID:-$(id -u)}" -eq 0 ]] || die "run this as root (sudo ark-mode $*)"; }
+
+set_mode() { printf '%s\n' "$1" > "$MODE_FILE" 2>/dev/null || true; }
+
+active_names() { nmcli -t -f NAME connection show --active 2>/dev/null | cut -d: -f1; }
+
+is_active() { active_names | grep -Fxq "$1"; }
+
+activate() { # <profile> -> 0 when it comes up
+  nmcli --wait 60 connection up "$1" >/dev/null 2>&1
+}
+
+deactivate() { nmcli connection down "$1" >/dev/null 2>&1 || true; }
+
+home_up() {
+  is_active "$HOME_WIFI_CONNECTION" && { set_mode home; return 0; }
+  nmcli --wait "$HOME_WIFI_TIMEOUT" connection up "$HOME_WIFI_CONNECTION" >/dev/null 2>&1 || true
+  if is_active "$HOME_WIFI_CONNECTION"; then set_mode home; return 0; fi
+  return 1
+}
+
+hotspot_up() {
+  deactivate "$HOME_WIFI_CONNECTION"
+  activate "$HOTSPOT_CONNECTION" || return 1
+  is_active "$HOTSPOT_CONNECTION" || return 1
+  set_mode hotspot
+  return 0
+}
+
+cmd_auto() {
+  say "looking for the home network \"$HOME_WIFI_CONNECTION\" (up to ${HOME_WIFI_TIMEOUT}s)"
+  if home_up; then
+    is_active "$HOTSPOT_CONNECTION" && deactivate "$HOTSPOT_CONNECTION"
+    say "joined the home network — the Ark is reachable at its usual address"
+    return 0
+  fi
+  say "no home network: broadcasting \"${HOTSPOT_SSID:-The-Ark-Offline}\""
+  hotspot_up || die "could not start the hotspot (check: journalctl -u NetworkManager)"
+  say "hotspot is up — connect to \"${HOTSPOT_SSID:-The-Ark-Offline}\" and open http://$HOTSPOT_ADDRESS"
+}
+
+cmd_home() {
+  is_active "$HOTSPOT_CONNECTION" && deactivate "$HOTSPOT_CONNECTION"
+  home_up || die "could not join \"$HOME_WIFI_CONNECTION\" — is it saved on this machine?"
+  say "back on \"$HOME_WIFI_CONNECTION\""
+}
+
+cmd_hotspot() {
+  hotspot_up || die "could not start the hotspot (check: journalctl -u NetworkManager)"
+  say "broadcasting \"${HOTSPOT_SSID:-The-Ark-Offline}\" — open http://$HOTSPOT_ADDRESS"
+}
+
+cmd_status() {
+  local mode ip4 portal
+  mode="$(cat "$MODE_FILE" 2>/dev/null || echo unknown)"
+  ip4="$(ip -4 -o addr show "$WIFI_DEV" 2>/dev/null | awk '{print $4}' | head -1)"
+  portal="$(curl -s -o /dev/null -m 5 -w '%{http_code}' "http://127.0.0.1/" 2>/dev/null || echo 000)"
+  printf '   mode          : %s\n' "$mode"
+  printf '   wifi address  : %s\n' "${ip4:-none}"
+  printf '   portal        : HTTP %s on 127.0.0.1\n' "$portal"
+  printf '   active links  : %s\n' "$(active_names | paste -sd ', ' -)"
+  printf '   internet      : %s\n' "$(ip -4 route show default | grep -q . && echo yes || echo no)"
+}
+
+cmd_test() {
+  local secs="${1:-180}"
+  say "switching to the hotspot for ${secs}s — this SSH session will drop."
+  say "join \"${HOTSPOT_SSID:-The-Ark-Offline}\" and open http://$HOTSPOT_ADDRESS to check it."
+  cmd_hotspot
+  sleep "$secs"
+  say "test finished — going back to auto"
+  cmd_auto
+}
+
+need_root "$*"
+case "${1:-status}" in
+  auto)    cmd_auto ;;
+  home)    cmd_home ;;
+  hotspot) cmd_hotspot ;;
+  test)    cmd_test "${2:-180}" ;;
+  status)  cmd_status ;;
+  *)       die "usage: ark-mode {auto|home|hotspot|status|test [seconds]}" ;;
+esac

@@ -1,0 +1,111 @@
+# PROJECT ARK — Autonomous Resilience Knowledge-base
+## Cline operating rules (read before every action)
+
+---
+
+## 1. Environment
+
+| | |
+|---|---|
+| **Workstation** | MacBook Air, macOS (darwin 25.x), `zsh`/`bash`, user `basestar` |
+| **Target** | Raspberry Pi 4B / 8 GB RAM, Raspberry Pi OS Lite 64-bit (Bookworm/Trixie), hostname **`ark`** |
+| **User on Pi** | `pi` / password `raspberryark` / passwordless sudo / SSH key auth |
+| **Project root (Mac)** | `/Users/basestar/Survival-Pi` |
+| **Portal URL** | `http://ark.lan`, `http://ark.local`, `http://10.42.0.1` |
+| **Hotspot SSID** | `The-Ark-Offline` (open, 2.4 GHz, ch 6, static `10.42.0.1/24`) |
+
+All paths written in this repo must be **absolute**. Never assume `$HOME` expansion inside scripts that run on the Pi as `pi`.
+
+---
+
+## 2. SD CARD SAFETY RULE — NON-NEGOTIABLE, MACOS
+
+**STOP AND VERIFY before every destructive disk command.**
+
+1. Run `diskutil list external physical` and show the full output to the user.
+2. The target MUST appear in that list (i.e. it is `external` **and** `physical`).
+3. Its size MUST be between **100 GB and 270 GB** (128 GB or 256 GB card).
+4. **`/dev/disk0` and `/dev/disk1` are the internal Apple SSD and/or synthesized APFS containers. NEVER write to them. NEVER write to any `synthesized` device.**
+5. Never write to a device whose `Internal` flag is `yes`, and never to a `disk image` device.
+6. Cross-check with **both**:
+   - `diskutil info -plist /dev/diskN` → `Internal = false`, `RemovableMedia = true`/`Ejectable = true`, `TotalSize` in range
+   - `diskutil list external physical` → identifier present
+7. If **zero** external physical devices are found, **abort loudly**. Do not guess, do not "try" disk2/disk3, do not retry with a broader pattern. Tell the user the card is not mounted.
+8. Echo the resolved device + size and require the guard function to pass before flash. Every flash script must call `ark_assert_sd_card` first and exit non-zero on failure.
+
+Reference implementation: `scripts/lib-disk-guard.sh` (sourced by all flash steps).
+
+---
+
+## 3. macOS PRIVILEGE ESCALATION
+
+Cline runs **non-interactively**; `sudo` prompts in the terminal will hang or fail.
+
+* Any local macOS command that needs root (writing to `/dev/rdiskN`, `hdiutil attach` into `/Applications`) MUST be wrapped:
+
+```bash
+osascript -e 'do shell script "<escaped command>" with administrator privileges'
+```
+
+* That raises a **native macOS Touch ID / password dialog** for the user to approve.
+* Rules for the wrapped string:
+  - Double-quote the whole AppleScript string; therefore escape inner `"` as `\"` and `$` as `\$`.
+  - Do **not** embed single quotes unescaped.
+  - Prefer a generated helper `.sh` file on disk and invoke `do shell script "/bin/bash /path/helper.sh"` — avoids quoting hell.
+* Never pass a plaintext Wi-Fi password on a command line that is logged to shell history; pass it via a `chmod 600` file or environment read inside the helper.
+
+---
+
+## 4. 100% TURNKEY AUTO-START
+
+**Every** service must be `systemctl enable`d **and** `--now` started. A cold boot with no human present must produce a working hotspot + portal.
+
+Required enabled units (final state):
+
+| Unit | Port | Purpose |
+|---|---|---|
+| `nginx.service` | 80 | reverse proxy + captive portal |
+| `ark-kiwix.service` | 8081 | `kiwix-serve --urlRootLocation=/kiwix` |
+| `ark-calibre.service` | 8083 | Calibre-Web behind `/books` |
+| `ark-api.service` | 8085 | FastAPI backend behind `/api` |
+| `ark-boot-guard.service` | — | failsafe hotspot failover |
+| `ark-zim-downloader.service` | — | background ZIM queue (resumable) |
+| `ssh.service`, `NetworkManager`, `avahi-daemon` | — | access |
+| `dnsmasq` | — | only via NM `ipv4.method shared` (do not enable the standalone unit) |
+
+Verification gate before declaring success: `systemctl is-enabled` **and** `systemctl is-active` must both be `enabled`/`active` for all of the above, plus `curl` on every endpoint must return 200/302.
+
+---
+
+## 5. FOOLPROOF NON-TECHNICAL UX
+
+The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre*, *reverse proxy*, or *API*.
+
+* **Banned user-facing words:** `Kiwix`, `ZIM`, `Calibre`, `Calibre-Web`, `OPDS`, `FastAPI`, `nginx`, `systemd`, `SQLite`, `APK`, `port`, `localhost`.
+* **Approved user-facing words:** *Offline Library*, *Books*, *Manuals*, *Guides*, *Q&A*, *Repair Guides*, *Message Board*, *File Box*, *Planting Calendar*, *Download*, *Read in Browser*, *Search*.
+* Every section carries a plain-English **one-line description** plus a **“How to use”** badge.
+* Every button label says what happens in human terms (“Tap here to read this in your browser”, not “Open ZIM viewer”).
+* Phone/tablet users get the explicit “if this opened inside a *Sign in to Wi-Fi* popup, close it and open `http://ark.lan`” instruction with a 1-tap **Copy Address** button.
+* No feature may require a login. Anonymous browse + anonymous download + anonymous read + anonymous upload are on by default.
+* UI must be OLED-dark (true `#000000` background), mobile-first, ≥16 px body text, ≥44 px tap targets, works with zero JavaScript for the critical paths (search + links), progressive enhancement only.
+
+---
+
+## 6. SECURITY / HYGIENE
+
+* No secrets in git. `staging/wifi.env` is `chmod 600` and listed in `.gitignore`.
+* `firstrun.sh` embeds the Wi-Fi PSK → `chmod 700`, deleted from the Pi after first boot, and removed from `cmdline.txt`.
+* `.nmconnection` files must be `chmod 600` / `chown root:root`.
+* Never weaken SSH beyond: key auth + password auth (first-boot convenience), root login disabled.
+* `dnsmasq-shared.d` wildcard DNS is only active while the AP profile is up.
+
+---
+
+## 7. CHANGE / VERIFICATION DISCIPLINE
+
+* Before claiming a phase is done: show the command output that proves it. “Implemented” ≠ “works”.
+* Long operations (image download, flash, apt, ZIM downloads) run in `nohup`/background with logs under `~/Survival-Pi/logs` and are polled, never blocked on.
+* Scripts must be idempotent — re-running a phase must not corrupt state.
+* `set -Eeuo pipefail` at the top of every bash script; `|| true` only with an explanatory comment.
+* Line endings: everything in `pi/` and `staging/` is **LF**. Never CRLF (breaks shebangs on Linux).
+* Any file executed as a script gets `chmod +x` and is re-verified with `bash -n`.

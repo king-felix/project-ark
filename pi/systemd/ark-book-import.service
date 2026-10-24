@@ -1,0 +1,15 @@
+[Unit]
+Description=Project ARK — add newly dropped books to the Book Library
+After=ark-calibre.service
+Wants=ark-calibre.service
+
+[Service]
+Type=oneshot
+# Runs as the library owner so new book folders are writable by the library
+# itself, and never competes with it for the database lock (SQLite serialises).
+User=pi
+Group=pi
+ExecStart=/usr/local/bin/ark-import-books
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=1800

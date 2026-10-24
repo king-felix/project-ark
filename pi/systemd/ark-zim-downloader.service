@@ -1,0 +1,25 @@
+[Unit]
+Description=Project ARK — background offline bundle downloader
+Documentation=http://ark.lan/help
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Operator settings (hotspot name, rate limits, free-space reserve) live here.
+EnvironmentFile=-/etc/ark/ark.env
+ExecStart=/usr/local/bin/ark-zim-download
+Restart=always
+RestartSec=30
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+# no timeout: this unit is meant to run for weeks
+TimeoutStopSec=20
+KillMode=mixed
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ark-zim
+
+[Install]
+WantedBy=multi-user.target

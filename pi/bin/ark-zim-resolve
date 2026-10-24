@@ -1,0 +1,248 @@
+#!/usr/bin/env python3
+"""Project ARK — resolve the catalogue into a pinned download queue.
+
+The public Kiwix catalogue is queried once per keyword and the newest build of
+every wanted name is pinned to a plain-TSV queue.  Pinning means the downloader
+never has to be online to know what it is fetching, and re-running this after a
+new edition is published simply updates the queue.
+
+  ark-zim-resolve [--profile mini|core|full] [--catalog F] [--queue F] [--zim-dir D]
+
+Queue columns:  status  url  bytes  filename  tier  label
+                status = have | todo | unresolved
+Exit code is 0 even when some rows are unresolved — an offline Pi must not
+block the installer; the downloader retries resolution on its next cycle.
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+import time
+import urllib.parse
+import urllib.request
+import xml.etree.ElementTree as ET
+
+NS = {"a": "http://www.w3.org/2005/Atom", "dc": "http://purl.org/dc/terms/"}
+API = "https://library.kiwix.org/catalog/v2/entries"
+TIERS = ("essential", "core", "extra")
+PROFILES = {"mini": ("essential",),
+            "core": ("essential", "core"),
+            "full": TIERS}
+RESERVE_GIB = 12.0          # never fill the card completely
+PAGE = 100
+MAX_RESULTS = 400
+
+
+def log(msg: str) -> None:
+    print(msg, flush=True)
+
+
+def gib(n: float) -> str:
+    return f"{n / 2 ** 30:.2f} GiB"
+
+
+def read_catalog(path: str):
+    rows = []
+    with open(path, encoding="utf-8") as fh:
+        for raw in fh:
+            line = raw.rstrip("\n")
+            if not line or line.startswith("#") or line.startswith("name\t"):
+                continue
+            parts = line.split("\t")
+            if len(parts) < 6:
+                log(f"  ! skipping malformed catalogue row: {line[:60]}")
+                continue
+            name, flavour, size_gib, tier, label, query = parts[:6]
+            rows.append({"name": name,
+                         "flavour": "" if flavour in ("-", "") else flavour,
+                         "size": float(size_gib),
+                         "tier": tier,
+                         "label": label,
+                         "query": query})
+    return rows
+
+
+def fetch(query: str):
+    """Return every entry the catalogue offers for a keyword (up to MAX_RESULTS)."""
+    out = []
+    start = 0
+    while start < MAX_RESULTS:
+        params = urllib.parse.urlencode({"q": query, "lang": "eng",
+                                         "count": PAGE, "start": start})
+        req = urllib.request.Request(f"{API}?{params}",
+                                     headers={"User-Agent": "project-ark/1.0"})
+        with urllib.request.urlopen(req, timeout=45) as resp:
+            root = ET.fromstring(resp.read())
+        entries = root.findall("a:entry", NS)
+        out.extend(entries)
+        if len(entries) < PAGE:
+            break
+        start += PAGE
+    return out
+
+
+def pick(entries: list, name: str, flavour: str):
+    """Newest catalogue entry matching this exact name (and flavour, if given).
+
+    Kiwix's OPDS catalogue keeps the flavour in its own <flavour> element, so a
+    catalogue row written as "wikipedia_en_all_nopic" must also be tried as
+    "wikipedia_en_all" with flavour=nopic — otherwise nothing ever matches and
+    the bundle is reported as "not in catalogue".
+    """
+    names = {name}
+    if flavour and name.endswith("_" + flavour):
+        names.add(name[: -len(flavour) - 1])
+    best = None
+    for entry in entries:
+        if entry.findtext("a:name", "", NS) not in names:
+            continue
+        flav = entry.findtext("a:flavour", "", NS)
+        if flavour and flav != flavour:
+            continue
+        issued = entry.findtext("dc:issued", "", NS)
+        if best is None or issued > best[0]:
+            best = (issued, entry)
+    if best is None:
+        return None
+    entry = best[1]
+    href, length = "", 0
+    for link in entry.findall("a:link", NS):
+        if link.get("rel") != "http://opds-spec.org/acquisition/open-access":
+            continue
+        href = link.get("href", "")
+        length = int(link.get("length") or 0)
+    if not href:
+        return None
+    if href.endswith(".meta4"):
+        href = href[: -len(".meta4")]
+    return {"url": href, "bytes": length,
+            "filename": os.path.basename(href),
+            "issued": best[0][:10]}
+
+
+def installed_size(zim_dir: str) -> float:
+    total = 0
+    try:
+        for entry in os.scandir(zim_dir):
+            if entry.name.endswith(".zim") and entry.is_file():
+                total += entry.stat().st_size
+    except FileNotFoundError:
+        pass
+    return total / 2 ** 30
+
+
+def free_gib(path: str) -> float:
+    probe = path
+    while probe and not os.path.exists(probe):
+        probe = os.path.dirname(probe)
+    st = os.statvfs(probe or "/")
+    return (st.f_bavail * st.f_frsize) / 2 ** 30
+
+def installed_names(zim_dir):
+    """{filename: size in bytes} for every *.zim currently on disk."""
+    try:
+        return {e.name: e.stat().st_size for e in os.scandir(zim_dir)
+                if e.name.endswith(".zim") and e.is_file()}
+    except FileNotFoundError:
+        return {}
+
+
+def have_complete(have: dict, prefix: str, expected_gib: float) -> bool:
+    """True when a matching .zim is present AND (nearly) the catalogue size.
+
+    A truncated download keeps the final .zim name after an interrupted rename,
+    so the mere presence of a filename is not proof of a usable bundle — such
+    files must stay 'todo' and be fetched again (aria2 overwrites them).
+    """
+    limit = expected_gib * (2 ** 30) * 0.99
+    return any(name.startswith(prefix) and size >= limit
+               for name, size in have.items())
+
+
+def main(argv) -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--catalog", default="/usr/local/share/ark/catalog.tsv")
+    ap.add_argument("--queue", default="/etc/ark/zim-queue.tsv")
+    ap.add_argument("--zim-dir", default="/srv/ark/kiwix")
+    ap.add_argument("--profile", default="")
+    ap.add_argument("--reserve", type=float, default=RESERVE_GIB)
+    args = ap.parse_args(argv)
+
+    profile = args.profile or os.environ.get("ARK_ZIM_PROFILE", "").strip()
+    if not profile:
+        try:
+            with open("/etc/ark/zim-profile", encoding="utf-8") as fh:
+                profile = fh.read().strip()
+        except OSError:
+            profile = "core"
+    if profile not in PROFILES:
+        log(f"  ! unknown profile '{profile}', using 'core'")
+        profile = "core"
+    tiers = PROFILES[profile]
+
+    rows = [r for r in read_catalog(args.catalog) if r["tier"] in tiers]
+    if not rows:
+        log(f"  x no catalogue rows for profile '{profile}'")
+        return 1
+    rows.sort(key=lambda r: (TIERS.index(r["tier"]), r["size"]))
+
+    have = installed_names(args.zim_dir)
+    budget = free_gib(args.zim_dir) - args.reserve
+    log(f"  profile {profile}: {len(rows)} bundle(s), "
+        f"{free_gib(args.zim_dir):.1f} GiB free, reserve {args.reserve:.1f} GiB")
+
+    cache = {}
+    queue, todo_gib, failed = [], 0.0, 0
+    for row in rows:
+        prefix = row["name"] + "_"
+        if have_complete(have, prefix, row["size"]):
+            queue.append(("have", "-", 0, "-", row["tier"], row["label"]))
+            continue
+        if row["size"] > budget:
+            log(f"  - skipping {row['label']}: listed {row['size']:.2f} GiB, "
+                f"budget {budget:.2f} GiB")
+            continue
+        if row["query"] not in cache:
+            try:
+                cache[row["query"]] = fetch(row["query"])
+            except Exception as exc:               # offline / DNS / timeout
+                log(f"  ! catalogue query '{row['query']}' failed: {exc}")
+                cache[row["query"]] = []
+        match = pick(cache[row["query"]], row["name"], row["flavour"])
+        if not match:
+            failed += 1
+            log(f"  ! not in catalogue: {row['name']} "
+                f"({row['flavour'] or 'any flavour'})")
+            queue.append(("unresolved", "-", 0, "-", row["tier"], row["label"]))
+            continue
+        size = match["bytes"] / 2 ** 30
+        if size > budget:
+            log(f"  - skipping {row['label']}: actual {size:.2f} GiB > "
+                f"budget {budget:.2f} GiB")
+            continue
+        budget -= size
+        todo_gib += size
+        queue.append(("todo", match["url"], match["bytes"],
+                      match["filename"], row["tier"], row["label"]))
+        log(f"  + {row['label']:<34}{gib(match['bytes']):>11}  {match['filename']}")
+
+    os.makedirs(os.path.dirname(args.queue) or ".", exist_ok=True)
+    tmp = args.queue + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write("# status\turl\tbytes\tfilename\ttier\tlabel\n")
+        for item in queue:
+            fh.write("\t".join(str(x) for x in item) + "\n")
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, args.queue)
+
+    have_n = sum(1 for q in queue if q[0] == "have")
+    todo_n = sum(1 for q in queue if q[0] == "todo")
+    log(f"  queue written: {have_n} present, {todo_n} to fetch "
+        f"({todo_gib:.1f} GiB), {failed} unresolved")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
+

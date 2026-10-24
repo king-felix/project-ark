@@ -1,0 +1,11 @@
+[Unit]
+Description=Project ARK — watch for new books (File Box and incoming folder)
+
+[Path]
+# Dropping a file into either folder is enough: the importer runs itself.
+PathChanged=/srv/ark/drop/files
+PathChanged=/srv/ark/calibre-incoming
+Unit=ark-book-import.service
+
+[Install]
+WantedBy=multi-user.target

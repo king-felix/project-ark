@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# =============================================================================
+#  ark-boot-guard — the reason a cold boot with nobody around still works.
+#
+#  Runs once at boot (and can be re-run by hand).  It never gives up quietly:
+#    1. try the home network, fall back to broadcasting the Ark hotspot
+#    2. restart any portal service that failed to start
+#    3. prove the portal answers, retrying once
+#  Every decision is appended to /srv/ark/logs/boot-guard.log.
+# =============================================================================
+set -Eeuo pipefail
+
+ENV_FILE=/etc/ark/ark.env
+# shellcheck disable=SC1090
+[[ -r "$ENV_FILE" ]] && . "$ENV_FILE"
+
+LOG_DIR="${ARK_ROOT:-/srv/ark}/logs"
+mkdir -p "$LOG_DIR"
+exec >>"$LOG_DIR/boot-guard.log" 2>&1
+
+say() { printf '%s  %s\n' "$(date -Is)" "$*"; }
+
+say "boot guard starting (delay ${GUARD_DELAY:-20}s)"
+sleep "${GUARD_DELAY:-20}"
+
+# ---- 1. network -------------------------------------------------------------
+# ark-mode auto waits briefly for the saved home network, then broadcasts.
+# GUARD_SKIP_NETWORK=1 lets phase 7 start this unit for a health check without
+# touching the radio (provisioning must not drop the SSH session it runs over).
+if [[ "${GUARD_SKIP_NETWORK:-0}" == "1" ]]; then
+  say "network step skipped (GUARD_SKIP_NETWORK=1)"
+else
+  if ARK_HOME_WIFI_TIMEOUT="${GUARD_HOME_TIMEOUT:-40}" /usr/local/bin/ark-mode auto; then
+    say "network: $(cat /etc/ark/mode 2>/dev/null || echo unknown)"
+  else
+    say "ark-mode auto failed — forcing the hotspot"
+    /usr/local/bin/ark-mode hotspot || say "hotspot could not start either (NetworkManager problem?)"
+  fi
+fi
+
+# ---- 2. services ------------------------------------------------------------
+for u in ark-api.service nginx.service; do
+  if ! systemctl is-active --quiet "$u"; then
+    say "$u was not running — starting it"
+    systemctl start "$u" || say "$u refused to start"
+  fi
+done
+
+# The library unit only exists once a bundle has arrived; starting it when the
+# condition is unmet is a harmless no-op, so we always ask.
+systemctl start ark-kiwix.service >/dev/null 2>&1 || true
+
+# ---- 3. prove it ------------------------------------------------------------
+wait_ok() {
+  local i code
+  for i in $(seq 1 15); do
+    code="$(curl -s -o /dev/null -m 5 -w '%{http_code}' http://127.0.0.1/ 2>/dev/null || echo 000)"
+    [[ "$code" == "200" || "$code" == "302" ]] && { printf '%s' "$code"; return 0; }
+    sleep 2
+  done
+  printf '%s' "${code:-000}"
+  return 1
+}
+
+if code="$(wait_ok)"; then
+  say "portal answering locally (HTTP $code)"
+else
+  say "portal did not answer ($code) — restarting the web stack once"
+  systemctl restart ark-api.service >/dev/null 2>&1 || true
+  systemctl restart nginx.service >/dev/null 2>&1 || true
+  if code="$(wait_ok)"; then
+    say "portal answering after restart (HTTP $code)"
+  else
+    say "WARNING: portal still not answering ($code) — a human needs to look at this"
+  fi
+fi
+
+say "boot guard done — mode $(cat /etc/ark/mode 2>/dev/null || echo unknown)"

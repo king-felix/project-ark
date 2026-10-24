@@ -1,0 +1,16 @@
+[Unit]
+Description=Project ARK — boot guard (hotspot failover and service watchdog)
+Documentation=http://ark.lan/help
+After=NetworkManager.service ark-api.service nginx.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=GUARD_DELAY=20
+Environment=GUARD_HOME_TIMEOUT=40
+ExecStart=/usr/local/bin/ark-boot-guard
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

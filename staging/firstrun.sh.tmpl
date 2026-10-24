@@ -1,0 +1,207 @@
+#!/bin/bash
+# =============================================================================
+#  PROJECT ARK — first-boot provisioning (runs ONCE as root, before SSH is up)
+#  Rendered by scripts/make-firstrun.sh — do not edit the rendered copy.
+#  Placeholders: __WIFI_SSID__ __WIFI_PSK__ __WIFI_SSID_2__ __WIFI_PSK_2__
+#                __WIFI_SSID_3__ __WIFI_PSK_3__ __WIFI_COUNTRY__ __SSH_PUBKEY__
+# =============================================================================
+export DEBIAN_FRONTEND=noninteractive
+exec >>/var/log/ark-firstrun.log 2>&1
+set +e   # never abort the boot: keep going even if a step fails
+
+echo "===================== ARK firstrun $(date -Is) ====================="
+HOME_WIFI_SSID='__WIFI_SSID__'
+HOME_WIFI_PSK='__WIFI_PSK__'
+WIFI_COUNTRY='__WIFI_COUNTRY__'
+SSH_PUBKEY='__SSH_PUBKEY__'
+
+# Every network the Pi may join, in preference order:  id|ssid|psk|priority
+# (psk may not contain a pipe). An empty ssid disables that slot.
+WIFI_PROFILES="home-wifi|__WIFI_SSID__|__WIFI_PSK__|20
+home-wifi-2|__WIFI_SSID_2__|__WIFI_PSK_2__|10
+home-wifi-3|__WIFI_SSID_3__|__WIFI_PSK_3__|5"
+
+if [ -d /boot/firmware ]; then BOOTDIR=/boot/firmware; else BOOTDIR=/boot; fi
+IMAGER_CUSTOM=/usr/lib/raspberrypi-sys-mods/imager_custom
+
+log() { echo "[firstrun] $*"; }
+
+# ---------------------------------------------------------------------------
+# 1. HOSTNAME  ->  ark
+# ---------------------------------------------------------------------------
+log "setting hostname to ark"
+if [ -x "$IMAGER_CUSTOM" ]; then
+  "$IMAGER_CUSTOM" set_hostname ark
+fi
+echo ark > /etc/hostname
+hostnamectl set-hostname ark 2>/dev/null
+# rewrite the loopback entry, keep everything else
+if grep -q '^127\.0\.1\.1' /etc/hosts; then
+  sed -i -E 's/^127\.0\.1\.1.*/127.0.1.1\tark/' /etc/hosts
+else
+  printf '127.0.1.1\tark\n' >> /etc/hosts
+fi
+grep -qE '(^|[[:space:]])ark([[:space:]]|$)' /etc/hosts || printf '127.0.0.1\tark\n' >> /etc/hosts
+
+# ---------------------------------------------------------------------------
+# 2. USER pi (password: raspberryark) + passwordless sudo
+# ---------------------------------------------------------------------------
+log "creating user pi"
+if ! id -u pi >/dev/null 2>&1; then
+  useradd -m -s /bin/bash -u 1000 -G sudo,adm,dialout,cdrom,audio,video,plugdev,games,users,input,netdev,gpio,i2c,spi pi \
+    || useradd -m -s /bin/bash -G sudo,adm,dialout,cdrom,audio,video,plugdev,games,users pi
+fi
+# IMPORTANT: current Pi OS images ship a pre-created `pi` account whose shell is
+# /usr/sbin/nologin (no login until a user is configured). Because it already
+# exists, the block above skips creation — so force a real shell and a real home,
+# otherwise SSH authenticates with our key and then refuses with
+# "This account is currently not available."
+usermod -s /bin/bash pi 2>/dev/null
+if [ ! -d /home/pi ]; then
+  mkdir -p /home/pi && cp -a /etc/skel/. /home/pi/ 2>/dev/null
+fi
+chown pi /home/pi 2>/dev/null
+echo 'pi:raspberryark' | chpasswd
+for g in sudo adm dialout cdrom audio video plugdev games users input netdev gpio i2c spi; do
+  getent group "$g" >/dev/null 2>&1 && usermod -aG "$g" pi 2>/dev/null
+done
+printf 'pi ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/010_pi-nopasswd
+chmod 440 /etc/sudoers.d/010_pi-nopasswd
+chown root:root /etc/sudoers.d/010_pi-nopasswd
+visudo -cf /etc/sudoers.d/010_pi-nopasswd >/dev/null 2>&1 || rm -f /etc/sudoers.d/010_pi-nopasswd
+
+# Stop the interactive "create a user" wizard from blocking first boot.
+systemctl disable userconfig.service >/dev/null 2>&1
+rm -f /etc/systemd/system/multi-user.target.wants/userconfig.service
+rm -f /etc/ssh/sshd_not_to_be_run
+
+# ---------------------------------------------------------------------------
+# 3. SSH enabled
+# ---------------------------------------------------------------------------
+log "enabling ssh"
+if [ -x "$IMAGER_CUSTOM" ]; then
+  "$IMAGER_CUSTOM" enable_ssh
+fi
+systemctl enable ssh.service >/dev/null 2>&1
+systemctl start  ssh.service >/dev/null 2>&1
+touch "$BOOTDIR/ssh" 2>/dev/null
+
+# ---------------------------------------------------------------------------
+# 4. Wi-Fi: unblock radio, set country, join home network
+# ---------------------------------------------------------------------------
+log "configuring wifi"
+rfkill unblock all  >/dev/null 2>&1
+rfkill unblock wifi >/dev/null 2>&1
+[ -f /etc/default/crda ] || printf 'REGDOMAIN=%s\n' "$WIFI_COUNTRY" > /etc/default/crda
+sed -i -E "s/^REGDOMAIN=.*/REGDOMAIN=${WIFI_COUNTRY}/" /etc/default/crda 2>/dev/null
+if command -v raspi-config >/dev/null 2>&1; then
+  raspi-config nonint do_wifi_country "$WIFI_COUNTRY" >/dev/null 2>&1
+fi
+iw reg set "$WIFI_COUNTRY" 2>/dev/null
+
+if [ -x "$IMAGER_CUSTOM" ]; then
+  "$IMAGER_CUSTOM" set_wlan "$HOME_WIFI_SSID" "$HOME_WIFI_PSK" "$WIFI_COUNTRY"
+fi
+
+# NetworkManager profiles — required on Bookworm/Trixie where NM owns wlan0.
+# One profile per network, so if the 5 GHz signal is weak the Pi joins the
+# 2.4 GHz name by itself instead of sitting offline.
+mkdir -p /etc/NetworkManager/system-connections
+printf '%s\n' "$WIFI_PROFILES" | while IFS='|' read -r nm_id nm_ssid nm_psk nm_prio; do
+  [ -n "$nm_ssid" ] || continue
+  NM="/etc/NetworkManager/system-connections/${nm_id}.nmconnection"
+  {
+  echo '[connection]'
+  echo "id=$nm_id"
+  echo "uuid=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)"
+  echo 'type=wifi'
+  echo 'autoconnect=true'
+  echo "autoconnect-priority=$nm_prio"
+  echo 'autoconnect-retries=0'
+  echo
+  echo '[wifi]'
+  echo 'mode=infrastructure'
+  echo "ssid=$nm_ssid"
+  echo 'hidden=false'
+  echo
+  echo '[wifi-security]'
+  if [ -n "$nm_psk" ]; then
+    echo 'key-mgmt=wpa-psk'
+    echo "psk=$nm_psk"
+  else
+    echo 'key-mgmt=none'
+  fi
+  echo
+  echo '[ipv4]'
+  echo 'method=auto'
+  echo
+  echo '[ipv6]'
+  echo 'method=auto'
+  echo 'addr-gen-mode=stable-privacy'
+  } > "$NM"
+  chmod 600 "$NM"; chown root:root "$NM"
+  log "NetworkManager profile $nm_id -> SSID '$nm_ssid' (priority $nm_prio)"
+done
+
+# wpa_supplicant fallback (harmless when NM is in charge)
+{
+  echo 'ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev'
+  echo 'update_config=1'
+  echo "country=$WIFI_COUNTRY"
+  printf '%s\n' "$WIFI_PROFILES" | while IFS='|' read -r ws_id ws_ssid ws_psk ws_prio; do
+    [ -n "$ws_ssid" ] || continue
+    if [ -n "$ws_psk" ] && command -v wpa_passphrase >/dev/null 2>&1; then
+      wpa_passphrase "$ws_ssid" "$ws_psk" 2>/dev/null
+    elif [ -z "$ws_psk" ]; then
+      printf 'network={\n\tssid="%s"\n\tkey_mgmt=NONE\n}\n' "$ws_ssid"
+    fi
+  done
+} > /etc/wpa_supplicant/wpa_supplicant.conf
+chmod 600 /etc/wpa_supplicant/wpa_supplicant.conf
+
+systemctl enable NetworkManager.service  >/dev/null 2>&1
+systemctl enable wpa_supplicant.service >/dev/null 2>&1
+nmcli connection reload 2>/dev/null
+# Bring one up right away so SSH answers quickly; NM keeps retrying the rest.
+nmcli --wait 30 connection up home-wifi   2>/dev/null \
+  || nmcli --wait 30 connection up home-wifi-2 2>/dev/null \
+  || nmcli --wait 30 connection up home-wifi-3 2>/dev/null \
+  || log "no home network answered yet — NetworkManager keeps retrying in background"
+
+# ---------------------------------------------------------------------------
+# 5. AUTHORIZED KEYS for the Mac
+# ---------------------------------------------------------------------------
+log "installing mac public key"
+mkdir -p /home/pi/.ssh
+printf '%s\n' "$SSH_PUBKEY" > /home/pi/.ssh/authorized_keys
+chmod 700 /home/pi/.ssh
+chmod 600 /home/pi/.ssh/authorized_keys
+chown -R pi:pi /home/pi/.ssh
+mkdir -p /root/.ssh
+printf '%s\n' "$SSH_PUBKEY" > /root/.ssh/authorized_keys
+chmod 700 /root/.ssh && chmod 600 /root/.ssh/authorized_keys
+
+# SSH: allow key + password auth, no root login
+sed -i -E 's/^#?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+sed -i -E 's/^#?PermitRootLogin.*/PermitRootLogin no/'               /etc/ssh/sshd_config
+sed -i -E 's/^#?PubkeyAuthentication.*/PubkeyAuthentication yes/'    /etc/ssh/sshd_config
+systemctl restart ssh.service >/dev/null 2>&1
+
+# ---------------------------------------------------------------------------
+# 6. Self-destruct: remove firstrun.sh + the systemd.run= tokens from cmdline.txt
+# ---------------------------------------------------------------------------
+log "cleaning up first-run hooks"
+for f in /boot/firstrun.sh /boot/firmware/firstrun.sh "$BOOTDIR/firstrun.sh"; do
+  rm -f "$f" 2>/dev/null
+done
+for cmd in /boot/cmdline.txt /boot/firmware/cmdline.txt; do
+  [ -f "$cmd" ] || continue
+  cp -f "$cmd" "${cmd}.arkbak"
+  sed -i -E 's/[[:space:]]*systemd\.run=[^[:space:]]*//g; s/[[:space:]]*systemd\.run_success_action=[^[:space:]]*//g; s/[[:space:]]*systemd\.unit=kernel-command-line\.target//g' "$cmd"
+  # collapse double spaces, restore trailing newline
+  tr -s ' ' < "$cmd" | sed 's/[[:space:]]*$//' > "${cmd}.tmp" && printf '\n' >> "${cmd}.tmp" && mv -f "${cmd}.tmp" "$cmd" 2>/dev/null
+done
+sync
+log "===================== ARK firstrun COMPLETE ====================="
+exit 0
+

@@ -1,0 +1,31 @@
+[Unit]
+Description=Project ARK — Book Library engine (Calibre-Web)
+Documentation=http://ark.lan/book-help
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/srv/ark
+Environment=CACHE_DIRECTORY=/srv/ark/calibre-config/cache
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/srv/ark/venv/bin/python -m calibreweb -p /srv/ark/calibre-config/app.db -i 127.0.0.1 -o /srv/ark/logs/calibreweb.log
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ark-calibre
+
+# hardening (the library and its database live in /srv/ark, nothing else is writable)
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/srv/ark
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,254 @@
+#!/srv/ark/venv/bin/python3
+# =============================================================================
+#  PROJECT ARK — add books dropped into the File Box to the Book Library
+#
+#  Usage:  sudo ark-import-books                # scan the drop folder
+#          sudo ark-import-books FILE [FILE...] # import specific files
+#          ark-import-books --status            # how many books are there?
+#
+#  Strategy:
+#    1. If a `calibredb` binary exists, use it (fast, exact).
+#    2. Otherwise drive Calibre-Web's own upload endpoint over loopback, which
+#       writes the Calibre database itself (no calibre install needed).
+#  Books are never deleted: imported files move to calibre-incoming/done.
+# =============================================================================
+import argparse
+import os
+import re
+import shutil
+import sqlite3
+import sys
+import time
+import urllib.error
+import urllib.request
+
+LIBRARY = "/srv/ark/calibre-library"
+METADATA = os.path.join(LIBRARY, "metadata.db")
+DROP_DIRS = ("/srv/ark/drop/files", "/srv/ark/calibre-incoming")
+DONE_DIR = "/srv/ark/calibre-incoming/done"
+CRED_FILE = "/etc/ark/calibre-admin"
+BASE_URL = "http://127.0.0.1:8083"
+BOOK_EXT = {
+    ".epub", ".pdf", ".mobi", ".azw", ".azw3", ".fb2", ".djvu",
+    ".cbz", ".cbr", ".cb7", ".txt", ".rtf", ".doc", ".docx", ".odt",
+    ".html", ".htm", ".lit", ".pdb", ".prc", ".ibooks", ".azw4", ".kepub",
+}
+
+
+def log(msg):
+    print(f"[import] {msg}", flush=True)
+
+
+def book_count():
+    if not os.path.exists(METADATA):
+        return -1
+    try:
+        con = sqlite3.connect(f"file:{METADATA}?mode=ro", uri=True, timeout=10)
+        try:
+            return con.execute("SELECT COUNT(*) FROM books").fetchone()[0]
+        finally:
+            con.close()
+    except sqlite3.Error as exc:
+        log(f"cannot read library database: {exc}")
+        return -1
+
+
+def credentials():
+    user, password = "admin", "admin123"
+    try:
+        with open(CRED_FILE, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or ":" not in line:
+                    continue
+                user, password = line.split(":", 1)
+                break
+    except OSError:
+        pass
+    return user, password
+
+
+def candidates(paths):
+    found = []
+    for path in paths:
+        if os.path.isfile(path):
+            found.append(path)
+            continue
+        for root, _dirs, files in os.walk(path):
+            for name in sorted(files):
+                if os.path.splitext(name)[1].lower() in BOOK_EXT:
+                    found.append(os.path.join(root, name))
+    return found
+
+
+def _retire(path):
+    try:
+        os.makedirs(DONE_DIR, exist_ok=True)
+        target = os.path.join(DONE_DIR, os.path.basename(path))
+        if os.path.exists(target):
+            stem, ext = os.path.splitext(target)
+            target = f"{stem}-{int(time.time())}{ext}"
+        shutil.move(path, target)
+    except OSError as exc:
+        log(f"could not move {path} aside: {exc}")
+
+
+def calibredb_add(files):
+    exe = shutil.which("calibredb")
+    if not exe:
+        return False
+    import subprocess
+    log(f"using {exe}")
+    ok = True
+    for path in files:
+        proc = subprocess.run([exe, "add", "--library-path", LIBRARY, path],
+                              capture_output=True, text=True)
+        if proc.returncode == 0:
+            log(f"added: {os.path.basename(path)}")
+            _retire(path)
+        else:
+            ok = False
+            log(f"failed: {os.path.basename(path)}: {proc.stderr.strip()[:200]}")
+    return ok
+class _Jar:
+    """Tiny cookie jar so we do not depend on requests being installed."""
+
+    def __init__(self, store):
+        self.store = store
+
+    def extract_cookies(self, response, request):
+        for header in response.headers.get_all("Set-Cookie") or []:
+            pair = header.split(";", 1)[0]
+            if "=" in pair:
+                key, value = pair.split("=", 1)
+                self.store[key.strip()] = value.strip()
+
+    def add_cookie_header(self, request):
+        if self.store:
+            request.add_header(
+                "Cookie", "; ".join(f"{k}={v}" for k, v in self.store.items())
+            )
+
+
+class Session:
+    """CSRF-aware GET/POST helper for Calibre-Web."""
+
+    def __init__(self):
+        self.opener = urllib.request.build_opener(
+            urllib.request.HTTPCookieProcessor(_Jar({}))
+        )
+
+    def get(self, path):
+        with self.opener.open(BASE_URL + path, timeout=30) as resp:
+            return resp.read().decode("utf-8", "replace")
+
+    def post(self, path, fields, files=None):
+        boundary = "----ark%d" % int(time.time() * 1000)
+        body = bytearray()
+        for key, value in fields.items():
+            body += (f"--{boundary}\r\n"
+                     f'Content-Disposition: form-data; name="{key}"\r\n\r\n'
+                     f"{value}\r\n").encode()
+        for key, (filename, payload) in (files or {}).items():
+            safe = filename.replace('"', "_")
+            body += (f"--{boundary}\r\n"
+                     f'Content-Disposition: form-data; name="{key}"; filename="{safe}"\r\n'
+                     f"Content-Type: application/octet-stream\r\n\r\n").encode()
+            body += payload
+            body += b"\r\n"
+        body += f"--{boundary}--\r\n".encode()
+        req = urllib.request.Request(
+            BASE_URL + path, data=bytes(body),
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        )
+        try:
+            with self.opener.open(req, timeout=300) as resp:
+                return resp.status, resp.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read().decode("utf-8", "replace")
+
+
+TOKEN_RE = re.compile(r'name="csrf_token"[^>]*value="([^"]+)"')
+
+
+def csrf_token(html):
+    match = TOKEN_RE.search(html)
+    return match.group(1) if match else ""
+
+
+def upload_via_web(files):
+    session = Session()
+    try:
+        page = session.get("/login")
+    except (urllib.error.URLError, OSError) as exc:
+        log(f"Book Library is not answering on {BASE_URL}: {exc}")
+        return False
+    user, password = credentials()
+    status, _ = session.post(
+        "/login",
+        {"username": user, "password": password,
+         "csrf_token": csrf_token(page), "remember_me": "on", "next": "/"},
+    )
+    if status not in (200, 302):
+        log(f"login rejected (HTTP {status}) — check {CRED_FILE}")
+        return False
+
+    token = csrf_token(session.get("/"))
+    if not token:
+        log("no upload form token found — is uploading enabled?")
+        return False
+
+    ok = True
+    for path in files:
+        with open(path, "rb") as fh:
+            payload = fh.read()
+        status, body = session.post(
+            "/upload", {"csrf_token": token},
+            {"btn-upload": (os.path.basename(path), payload)},
+        )
+        if status in (200, 302):
+            log(f"uploaded: {os.path.basename(path)}")
+            _retire(path)
+        else:
+            ok = False
+            snippet = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", body))[:160]
+            log(f"rejected: {os.path.basename(path)} (HTTP {status}) {snippet}")
+    return ok
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(description="Import books into the ARK library")
+    parser.add_argument("files", nargs="*", help="files or directories (default: drop folders)")
+    parser.add_argument("--status", action="store_true", help="print the book count and exit")
+    parser.add_argument("--list", action="store_true", help="list the files that would be imported")
+    args = parser.parse_args(argv)
+
+    if args.status:
+        print(f"books={book_count()}")
+        return 0
+
+    files = candidates(args.files or DROP_DIRS)
+    if not files:
+        log("nothing new to import")
+        return 0
+
+    log(f"{len(files)} file(s) to import")
+    if args.list:
+        for path in files:
+            print(path)
+        return 0
+
+    before = book_count()
+    if not calibredb_add(files):
+        if not upload_via_web(files):
+            log("import failed — the files stay where they are; open http://ark.lan/books/ "
+                "and use the Upload button in the browser instead")
+            return 1
+    after = book_count()
+    log(f"library: {before} -> {after} book(s)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
+

@@ -1,0 +1,32 @@
+[Unit]
+Description=Project ARK — portal backend (status, search, board, file box)
+Documentation=http://ark.lan/help
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/srv/ark/api
+Environment=ARK_ROOT=/srv/ark
+Environment=KIWIX_INTERNAL=http://127.0.0.1:8081/kiwix
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/srv/ark/venv/bin/python -m uvicorn main:app \
+          --host 127.0.0.1 --port 8085 --workers 1 \
+          --log-level warning --no-server-header
+Restart=always
+RestartSec=3
+TimeoutStopSec=15
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ark-api
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/srv/ark/api/data /srv/ark/drop/files
+
+[Install]
+WantedBy=multi-user.target

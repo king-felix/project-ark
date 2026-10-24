@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# =============================================================================
+#  Project ARK — rebuild the offline library index from the ZIM files on disk.
+#
+#  Called by ark-kiwix.service (ExecStartPre) and by the downloader after every
+#  completed file, so the catalogue can never point at a file that is gone and
+#  can never miss one that was copied on by hand.
+# =============================================================================
+set -Eeuo pipefail
+
+ZIM_DIR="${ZIM_DIR:-/srv/ark/kiwix}"
+LIB="$ZIM_DIR/library.xml"
+
+if ! command -v kiwix-manage >/dev/null 2>&1; then
+  echo "kiwix-manage is not installed" >&2
+  exit 1
+fi
+
+shopt -s nullglob
+zims=("$ZIM_DIR"/*.zim)
+if (( ${#zims[@]} == 0 )); then
+  echo "no bundles yet in $ZIM_DIR — nothing to index" >&2
+  exit 1
+fi
+
+tmp="$(mktemp)"
+rm -f "$tmp"                     # kiwix-manage wants to create the file itself
+if kiwix-manage "$tmp" add "${zims[@]}" >/dev/null 2>&1; then
+  chmod 644 "$tmp"
+  mv -f "$tmp" "$LIB"
+  printf 'library.xml rebuilt: %d bundle(s)\n' "${#zims[@]}"
+  exit 0
+fi
+
+# A single corrupt ZIM must not cost us the whole catalogue: index one by one.
+echo "bulk index failed — retrying bundle by bundle" >&2
+rm -f "$tmp"
+ok=0
+for zim in "${zims[@]}"; do
+  if kiwix-manage "$LIB" add "$zim" >/dev/null 2>&1; then
+    ok=$(( ok + 1 ))
+  else
+    echo "  ! unreadable bundle: $(basename "$zim")" >&2
+  fi
+done
+printf 'library.xml rebuilt bundle by bundle: %d of %d\n' "$ok" "${#zims[@]}"
+(( ok > 0 ))

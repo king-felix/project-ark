@@ -1,0 +1,6 @@
+# Project ARK portal backend — installed into /srv/ark/venv by 30-calibre.sh.
+# Kept here so the versions are on record and can be reinstalled on a new card.
+fastapi>=0.110
+uvicorn>=0.29
+python-multipart>=0.0.9
+aiofiles>=23.2

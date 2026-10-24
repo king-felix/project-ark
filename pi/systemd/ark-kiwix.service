@@ -1,0 +1,37 @@
+[Unit]
+Description=Project ARK — Offline Library engine (kiwix-serve)
+Documentation=http://ark.lan/help
+After=network-online.target
+Wants=network-online.target
+# Nothing to serve until at least one bundle has been fetched; the downloader
+# starts this unit as soon as the first file lands.
+ConditionPathExistsGlob=/srv/ark/kiwix/*.zim
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/srv/ark
+ExecStartPre=/usr/local/bin/ark-kiwix-library
+# NOTE: kiwix-tools >= 3.8 makes --library a BOOLEAN flag and takes the path as
+# a positional argument; `--library=/path` now aborts with
+# "--library must not have an argument". The two-token form below works on both
+# 3.5.x (apt) and 3.8.x (official aarch64 build).
+ExecStart=/usr/bin/env kiwix-serve --port=8081 --urlRootLocation=/kiwix \
+          --threads=4 --library /srv/ark/kiwix/library.xml
+Restart=always
+RestartSec=5
+TimeoutStopSec=15
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ark-kiwix
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/srv/ark/kiwix
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

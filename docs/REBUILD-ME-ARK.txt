@@ -1,0 +1,650 @@
+================================================================================
+  PROJECT ARK — BOOTSTRAP / ARCHITECT PROMPT          v1.0 · 2026-10-24
+  A complete, model-agnostic brief for rebuilding this offline survival
+  computer from nothing — or for making another one for a friend.
+================================================================================
+
+  HOW TO USE THIS FILE
+  --------------------
+  Mode A — REPLICATE FOR SOMEONE ELSE (fastest, recommended)
+    Attach the Project ARK repository (or its .tar.gz) and say:
+      "Read this brief and the attached repo. Build a second Ark for
+       <person>. Ask me the 6 questions in section 13 first, then run the
+       pipeline end to end. Report the 30-check gate."
+    Runtime: roughly 2-4 hours, most of it downloading content.
+
+  Mode B — REBUILD FROM NOTHING (no repo, no notes, just this file)
+    Paste this entire file as your first message, then say:
+      "You are the architect. Read this whole brief, then ask me the 6
+       questions in section 13 and wait for my answers."
+    The agent must re-create ~35 source files. Expect 1-2 days of agent work
+    and expect it to hit the traps in section 7 — that is why they are listed.
+
+  Mode C — FIX OR EXTEND AN EXISTING ARK
+    Paste the file and describe the fault. Section 7 is the fastest route from
+    symptom to cause.
+
+  Attach alongside this file whenever you have it:
+    · the repo archive (scripts/, pi/, docs/)              — the ground truth
+    · logs/ark_status.json                                 — last known good state
+    · docs/USING-THE-ARK.md                                — the owner's guide
+    · /etc/ark/ark.env from a working box                  — operator settings
+
+================================================================================
+1. WHAT YOU ARE BUILDING
+================================================================================
+
+A Raspberry Pi 4 that carries a library into places with no internet. It
+broadcasts its own open Wi-Fi, serves a portal at http://ark.lan, and works
+with the router unplugged, the phone on aeroplane mode, or the grid down.
+
+It is not a demo. The acceptance test is: a non-technical person, handed the
+box with no instructions, can find something useful within 60 seconds; and a
+cold boot with nobody present produces a working hotspot and portal with no
+human intervention at all.
+
+Doors on the box (once built):
+
+  /                     portal: one search box, four big cards, plain English
+  /search?q=…           one search covering encyclopedias + manuals + books
+  /kiwix/               offline library (Wikipedia, medical, repair, food…)
+  /books/               the book shelf (EPUB/PDF, read in browser or download)
+  /vault/               11 survival manuals + repair guides, each printable
+  /board                message board, anyone can post, no login
+  /files                File Box: anyone can drop a file in; books auto-shelve
+  /help.html            how it works, in plain words
+  /status.json          machine-readable health (also mirrored in the portal)
+
+================================================================================
+2. WHO IT IS FOR (this drives every design decision)
+================================================================================
+
+Someone who has never heard the words Kiwix, ZIM, Calibre, OPDS, FastAPI,
+nginx, systemd, SQLite, port, or localhost — and who may be reading it on a
+cracked phone, in the dark, on battery, with cold hands.
+
+Therefore:
+  · Dark by default (#000000 true black — OLED screens, torch discipline).
+  · Big type (>=16 px), big targets (>=44 px), no hover-only affordances.
+  · No JavaScript on any critical path. Search and every link work with JS off.
+  · No accounts, no logins, no "sign in to continue", ever.
+  · Every section has a one-line plain-English description and a "How to use".
+  · Buttons say what happens: "Tap here to read this in your browser" — never
+    "Open ZIM viewer".
+  · Never show a raw error, a stack trace, or an HTTP status code to a visitor.
+
+================================================================================
+3. NON-NEGOTIABLES (each one has already been paid for; do not relax them)
+================================================================================
+
+ 1. ZERO-TOUCH BOOT. Every unit is `systemctl enable`d AND `--now` started.
+    A cold boot with nobody present yields hotspot + portal. Guaranteed by a
+    failsafe unit, not by hope.
+ 2. BANNED WORDS in anything a visitor can see: Kiwix, ZIM, Calibre,
+    Calibre-Web, OPDS, FastAPI, nginx, systemd, SQLite, APK, port, localhost,
+    daemon, service, proxy. Approved words: Offline Library, Books, Manuals,
+    Guides, Q&A, Repair Guides, Message Board, File Box, Planting Calendar,
+    Download, Read in Browser, Search.
+ 3. ANONYMOUS EVERYTHING. Browse, read, download, upload, post — no login.
+ 4. THE CARD IS NEVER FILLED. A free-space reserve is enforced by the
+    downloader itself (default 12 GiB). Anything that would breach it is
+    skipped, logged and retried later — never silently dropped.
+ 5. IDEMPOTENT PHASES. Re-running any phase must not corrupt or duplicate.
+    Every file write is content-compared first; every HTML injection is
+    marker-guarded; every service start tolerates "already running".
+ 6. NO GUESSING ABOUT DISKS. Never write to a device unless it is external and
+    physical, 100-270 GB, Internal=false, and appears in
+    `diskutil list external physical`. Zero matches = abort loudly.
+ 7. NOTHING SECRET IN THE REPO. Wi-Fi PSKs live in chmod-600 files, are
+    embedded into a chmod-700 first-boot script, and that script is deleted
+    after first boot.
+ 8. PLAIN BASH + SYSTEMD + NGINX + PYTHON. No Docker, no Kubernetes, no
+    Node, no build step. One person must be able to debug it over SSH with
+    `journalctl` and `curl`.
+ 9. EVERY CLAIM IS PROVEN BY OUTPUT. "Implemented" is not "works". A phase is
+    done when a command's output says so — printed, not asserted.
+10. LF LINE ENDINGS everywhere under pi/ and staging/. CRLF breaks shebangs
+    on Linux and produces the classic "No such file or directory" for a file
+    that plainly exists.
+
+================================================================================
+4. THE KIT + THE VERSIONS THAT MATTER
+================================================================================
+
+  Hardware   Raspberry Pi 4B, 8 GB RAM (4 GB works for mini profile)
+             microSD 128 GB minimum, 256 GB for the full reference set
+             Pi 4B needs the official 3 A supply — brownouts corrupt cards
+  OS         Raspberry Pi OS **Lite 64-bit, Debian 13 trixie** (Bookworm works)
+             hostname `ark`, user `pi`, SSH key auth + password (first boot)
+  Mac side   macOS, zsh/bash, Raspberry Pi Imager CLI for flashing
+  Packages   nginx, python3 + venv, calibre (8.5 on trixie), calibre-web,
+             kiwix-tools, aria2, sqlite3, dnsmasq-base, network-manager,
+             avahi-daemon, weasyprint (HTML→PDF for the printable guides)
+
+  VERSION TRAP: Debian trixie ships **calibre 8.5, schema 26**. A Windows or
+  macOS Calibre newer than that writes schema 27+. Never refuse on the number
+  alone — see trap 11.
+
+================================================================================
+5. THE SHAPE OF IT
+================================================================================
+
+On the Pi, everything the Ark owns lives under /srv/ark:
+
+  /srv/ark/src              git-pushed copy of this repo (pi/, scripts/, docs/)
+  /srv/ark/portal           static portal (index.html, help.html, assets/)
+  /srv/ark/kiwix            .zim bundles + library.xml (the source of truth)
+  /srv/ark/calibre-library  the book shelf's database and cover art
+  /srv/ark/drop/{files,done}   incoming File Box (path units watch "files")
+  /srv/ark/calibre-incoming/done   where auto-imported books retire to
+  /srv/ark/imported-library one-off staging area for a whole-library adopt
+  /srv/ark/vault            manuals, guides and generated PDFs
+  /srv/ark/logs             zim-download.log, import logs, status receipts
+  /etc/ark/ark.env          operator settings (single place to change things)
+  /etc/ark/zim-queue.tsv    resolved download queue (pinned URLs + sizes)
+  /etc/ark/zim-profile      mini | core | full
+  /etc/ark/mode             auto | home | hotspot
+
+Services (all enabled AND started; this is the cold-boot contract):
+
+  nginx.service               :80    the only port a visitor touches
+  ark-kiwix.service           :8081  kiwix-serve --urlRootLocation=/kiwix
+  ark-calibre.service         :8083  calibre-web, served under /books
+  ark-api.service             :8085  FastAPI: /api, /search, /board, /files
+  ark-boot-guard.service      —      failsafe: no home net → raise hotspot
+  ark-zim-downloader.service  —      background, resumable content queue
+  ark-book-import.path/.service —    watch drop/files, shelve books in seconds
+  ssh, NetworkManager, avahi-daemon, and dnsmasq ONLY via NM ipv4.method shared
+                                     (never enable the standalone dnsmasq unit)
+
+nginx is the reverse proxy and holds the captive-portal traps: every
+connectivity-check URL (/generate_204, /hotspot-detect.html, /ncsi.txt,
+/connecttest.txt, /library/test/success.html, /canonical.html, /redirect, …)
+302s to http://ark.lan/?captive=1 so phones believe they are online and the
+popup resolves to the portal instead of a "no internet" dead end.
+
+================================================================================
+6. BUILD ORDER (each phase ends with a proof, not a claim)
+================================================================================
+
+  On the Mac:
+  00  staging/       wifi.env (chmod 600) → make-firstrun.sh → firstrun.sh (700)
+  01  flash          assert the SD card with lib-disk-guard, then flash
+  02  wait-for-pi    poll SSH until the Pi is up on the home LAN
+  03  provision      rsync the repo to /srv/ark/src, then run pi/install-ark.sh
+                     with --only <phase> to re-run one phase safely
+
+  On the Pi (pi/steps/NN-name.sh, sourced by pi/lib/common.sh):
+  10  base        apt update/upgrade, packages, timezone, hostname, `pi` user,
+                  venv for the API, /etc/ark skeleton. Proof: versions printed.
+  20  storage     /srv/ark tree, ark.env, mode file, permissions, disk headroom
+                  warning. Proof: tree + free space.
+  30  calibre     calibre-web install, empty library created pi:pi 775, drop
+                  folders, ark-book-import path unit, ark-import-books and
+                  ark-import-calibre-library helpers. Proof: HTTP 200 on :8083
+                  AND a book dropped into drop/files appears within 60 s.
+  40  vault       copy manuals + guides, render each to PDF with weasyprint,
+                  inject the "Print this page (PDF)" link into every page.
+                  Proof: 11 pages 200, 11 PDFs 200, link present exactly once.
+  50  kiwix       kiwix-tools, catalog.tsv, ark-zim-resolve (catalogue → pinned
+                  queue), ark-kiwix-library (/kiwix path + library.xml),
+                  ark-zim-download (flock, resume, size guard, rate limit),
+                  systemd unit. Proof: :8081/kiwix/ answers, queue written.
+  60  portal      static portal, API venv, systemd unit, nginx site, captive
+                  endpoints, print styles, help page. Proof: every route 200/302.
+  70  network     NM hotspot profile (ipv4.method shared, 10.42.0.1/24, ch 6),
+                  dnsmasq-shared.d wildcard for ark.lan/ark.local, boot guard,
+                  ark-mode (auto|home|hotspot|test). Proof: profile exists,
+                  guard unit active, `ark-mode test` works when a human tries it.
+  90  verify      the 30-check gate (section 9) + JSON receipt back to the Mac.
+
+  Rule: a phase that cannot print its own proof is not finished. Write the
+  proof line first, then make it true.
+
+  ARC: build the empty box first and prove the portal works with nothing in
+  it. Content arrives afterwards, in the background, for hours. Never let a
+  multi-hour download sit between you and "does the page load".
+
+================================================================================
+7. THE TRAPS (symptom → cause → fix). This section is the expensive part.
+================================================================================
+
+ 1. FLASHING THE WRONG DISK
+    Symptom: nothing; then a destroyed Mac.
+    Cause: /dev/disk2 is not "the SD card", it is "whatever is second today".
+    Fix: guard function in scripts/lib-disk-guard.sh. Requires ALL of:
+    appears in `diskutil list external physical`; identifier is not disk0/disk1;
+    diskutil info -plist shows Internal=false and Ejectable/RemovableMedia=true;
+    size 100-270 GB; not a synthesized container; not a disk image. Zero
+    candidates → exit 2 with a loud message. Print the resolution to the human
+    and require the guard to pass before any write.
+
+ 2. sudo HANGS IN AN AUTOMATED SESSION
+    Symptom: the flash step waits forever, or fails with "a terminal is
+    required".
+    Cause: an agent has no TTY for a password prompt.
+    Fix: write a helper .sh to disk, then
+      osascript -e 'do shell script "/bin/bash /path/helper.sh" with administrator privileges'
+    That raises a native Touch ID/password dialog. Never try to pipe a password.
+
+ 3. FIRST-BOOT SCRIPT LEFT BEHIND WITH THE WI-FI PASSWORD
+    Symptom: none until someone reads the card.
+    Cause: firstrun.sh still on the boot partition contains the PSK.
+    Fix: generate from a template with the PSK substituted, chmod 700, run once
+    at first boot, then delete itself AND remove its hook from cmdline.txt.
+    wifi.env stays chmod 600 and gitignored.
+
+ 4. dnsmasq AND NetworkManager FIGHTING
+    Symptom: hotspot comes up, clients get no address, or ark.lan does not
+    resolve only while the AP is up.
+    Cause: the standalone dnsmasq unit and NM's shared-mode dnsmasq both bind
+    :53.
+    Fix: `systemctl disable --now dnsmasq`; let NM's ipv4.method=shared own
+    DHCP+DNS; put the wildcard (address=/#/10.42.0.1) in
+    /etc/NetworkManager/dnsmasq-shared.d/ so it exists only while the AP does.
+
+ 5. CAPTIVE POPUP SHOWS "NO INTERNET"
+    Symptom: phone joins the Wi-Fi, nothing opens, or a dead "Sign in" sheet.
+    Cause: the OS connectivity probe gets a 200 with unexpected content.
+    Fix: 302 every known probe URL to the portal with ?captive=1 (list in
+    section 5), and give the portal a one-line "if this opened in a Sign in to
+    Wi-Fi sheet, close it and open http://ark.lan" plus a Copy Address button.
+
+ 6. KIWIX SERVES 404 FOR EVERYTHING
+    Symptom: http://ark.lan/kiwix/ loads, every link inside it 404s.
+    Cause: kiwix-serve is behind a sub-path and does not know it.
+    Fix: start it as `kiwix-serve --urlRootLocation=/kiwix --port 8081
+    --library /srv/ark/kiwix/library.xml`. Verify by fetching one known article,
+    not just the root: root 200 + article 404 means the root location is wrong.
+
+ 7. A BROKEN .ZIM THAT LOOKS FINE ON DISK
+    Symptom: a bundle is 1.4 GB, the file exists, but kiwix logs
+    "unreadable bundle" and the entry vanishes from the library index.
+    Cause: a truncated or corrupt download; size alone cannot tell you it is
+    valid — and a partial file has a plausible size.
+    Fix: the single source of truth for "present" is **library.xml**, i.e. what
+    kiwix-serve itself managed to index. `have_zim` must return true only if the
+    bundle is listed there. Rebuild the index bundle-by-bundle when the bulk
+    build fails, so one bad file does not hide the other 15.
+
+ 8. TWO DOWNLOADERS WRITING THE SAME .part
+    Symptom: disk fills with nonsense, or aria2c dies with a file error, usually
+    after a reboot or a manual restart.
+    Cause: systemd restart plus a leftover foreground run; aria2 keeps writing
+    into the old inode after the file was renamed.
+    Fix: `flock -n` on a lock file at the top of the downloader; if the lock is
+    held, log and exit 0. Also never `mv` a .part that a live aria2c owns.
+
+ 9. TRUSTING THE CATALOGUE'S SIZE
+    Symptom: "complete" files that are 3% short, or endless re-downloads.
+    Cause: published files get republished; the catalogue length is stale.
+    Fix: accept when got >= expected - 1%; keep the .part when short (so the
+    next attempt resumes rather than restarting); record a .done stamp per
+    bundle so completed work is never redone.
+
+10. FILLING THE CARD
+    Symptom: the box works until one day nginx cannot write a log and the
+    filesystem goes read-only.
+    Cause: a 119 GiB full-encyclopedia row on a 128 GB card.
+    Fix: MIN_FREE_GIB (default 12) checked before every file; skip + log +
+    retry later. Settings must be reachable by the unit
+    (`EnvironmentFile=-/etc/ark/ark.env`) — a documented knob that nothing
+    loads is worse than no knob.
+
+11. "NEWER SCHEMA" REFUSAL ON AN EXISTING CALIBRE LIBRARY
+    Symptom: adopting a Windows/Mac Calibre library aborts with a version
+    complaint even though the books are ordinary EPUBs.
+    Cause: schema number is not a compatibility proof. Calibre 8.5 (schema 26)
+    reads AND writes a schema-27 database perfectly well when the change was
+    additive.
+    Fix: probe instead of guessing — copy just metadata.db to a temp dir and run
+    `calibredb --with-library <tmp> list --limit 1`. If it opens, carry on and
+    say so; if it does not, refuse and offer `--force`. Never test on the live
+    or source database.
+
+12. COPYING A LIBRARY FROM WINDOWS
+    Symptom: 4,000 files, 5.7 GB, and either the copy takes days or the books
+    land flat with no metadata.
+    Cause: SMB per-file overhead; and people copy only the book folders.
+    Fix: copy the WHOLE "Calibre Library" folder (metadata.db + author folders +
+    .calnotes). Use tar over ssh or a USB stick — 10-100x faster than SMB for
+    many small files. In PowerShell, wrap paths in single quotes and double any
+    apostrophe inside a name (O'Brien → 'O''Brien'). Prove completion by
+    comparing file count and total bytes, not by watching a progress bar.
+
+13. LIBRARY PERMISSIONS THAT BREAK THE SHELF
+    Symptom: the shelf loads, covers are broken, or adding a book fails with
+    "permission denied" in the unit log.
+    Cause: calibre-web runs as `pi` but files are root:root, or .calnotes is
+    missing.
+    Fix: chown -R pi:pi, chmod 775 on the library root and .calnotes, 644 on
+    files. Calibre complains (harmlessly) if .calnotes is absent — create it.
+
+14. AUTO-IMPORT GRABBING A HALF-COPIED FILE
+    Symptom: a book appears on the shelf and cannot be opened; the same book
+    works when added by hand.
+    Cause: the watcher fires on create, while the copy is still in progress.
+    Fix: a systemd .path unit (PathModified on drop/files) triggers a .service
+    that waits for size to stop changing for ~3 s before calling `calibredb add`,
+    then moves the original to done/. Debounce, then act.
+
+15. CALIBRE-WEB BEHIND /books
+    Symptom: the shelf loads at /books/ but every cover, style and link points
+    at the site root and 404s; or login redirects land on /login.
+    Cause: the app is not told it lives under a sub-path.
+    Fix: set the app's URL prefix/SCRIPT_NAME to /books, proxy_pass with the
+    path intact, and send X-Forwarded-Prefix. Proof: not just /books/ 200, but a
+    cover URL and one book detail page also 200.
+
+16. FASTAPI BEHIND /api
+    Symptom: /api/status works, /api/docs loads a broken Swagger page, redirects
+    drop the prefix.
+    Cause: the app does not know its external prefix; nginx strips it.
+    Fix: uvicorn with --root-path /api, proxy_pass to the app root without
+    stripping, and never hardcode absolute links in HTML responses. Proof:
+    /api/status 200 AND one HTML form POST (board / file upload) returns 303.
+
+17. THE FILE UPLOAD THAT WORKS IN TESTS AND FAILS IN REAL LIFE
+    Symptom: a 60 MB PDF upload returns 413, or the File Box accepts a file and
+    the API sees zero bytes.
+    Cause: nginx client_max_body_size default is 1 MB; and multipart parsing
+    needs the body streamed to disk.
+    Fix: client_max_body_size 2g on the upload location only; upload to a temp
+    file and move into place; return 303 (never 200) so a browser refresh does
+    not re-upload. Also block .apk downloads with a friendly page explaining
+    that installing apps is not needed here.
+
+18. THE UNIT THAT RUNS BUT DOES NOT COME BACK AFTER A POWER CUT
+    Symptom: everything works today; after a blackout the hotspot is missing.
+    Cause: `systemctl start` with no `enable`, or a unit that depends on a
+    network that is not up yet.
+    Fix: enable AND --now for every unit; After=network-online.target +
+    Wants=network-online.target for anything that touches the network; a boot
+    guard unit that raises the hotspot if the home Wi-Fi did not appear within
+    HOME_WIFI_TIMEOUT (default 75 s). The verify gate must assert
+    `is-enabled` AND `is-active` — checking only one is how this bug ships.
+
+19. A PATH UNIT THAT IGNORES FILES ALREADY THERE
+    Symptom: dropping a book does nothing; dropping a second book works.
+    Cause: .path units trigger on change, not on existing content.
+    Fix: have the .service also run once at enable time (and make the importer
+    treat "already imported" as success). Then the drop folder can never be
+    "stuck" with an unprocessed file.
+
+20. INJECTING THE SAME HTML TWICE
+    Symptom: after re-running a phase, every manual page has two print buttons,
+    or a CSS block is duplicated.
+    Cause: append-if-missing without a marker.
+    Fix: wrap injected markup in <!-- ark:print-link --> … <!-- /ark:print-link -->
+    and skip the whole block when the marker exists; write file only when
+    content actually changed. Proof: run the phase twice, grep count == 1.
+
+21. ark.local WORKS ON THE MAC AND NOT ON THE PHONE
+    Symptom: the hostname resolves on one device and times out on another.
+    Cause: .local is mDNS (avahi); Android support is patchy and some routers
+    block multicast.
+    Fix: never rely on it. Advertise http://ark.lan (wildcard DNS from the
+    hotspot) and http://10.42.0.1 everywhere, and put all three on the portal
+    with a one-tap copy button.
+
+22. "IT IS RUNNING" ≠ "IT SURVIVES A REBOOT"
+    Symptom: three days later, one page 502s after a power blip.
+    Cause: a service started by hand while debugging was never enabled.
+    Fix: the 30-check gate reads systemctl is-enabled + is-active for every
+    unit, curls every route, and writes a JSON receipt. Run it after every
+    change, not once at the end.
+
+23. LONG OPERATIONS THAT BLOCK THE SESSION
+    Symptom: a 40-minute download, flash or apt run appears to hang and the
+    session loses its result.
+    Cause: foreground execution with no log.
+    Fix: every long step runs in the background (nohup/systemd) writing to
+    /srv/ark/logs or ~/Survival-Pi/logs, and the agent polls the log. The
+    terminal must stay free for the next question.
+
+24. macOS SHELL DIFFERENCES THAT WASTE AN HOUR
+    Symptom: `du -sh --exclude=.git` errors, `sed -i` wants a backup suffix,
+    `stat -c` fails.
+    Cause: BSD userland, not GNU.
+    Fix: use `sed -i ''`, `stat -f %z`, and avoid GNU-only flags in Mac-side
+    scripts; keep Pi-side scripts GNU and separate. Also: everything under pi/
+    and staging/ must be LF — verify with `file` before pushing.
+
+================================================================================
+8. CONTENT: A CATALOGUE, NOT A LIST OF URLS
+================================================================================
+
+Hardcoding download URLs rots within months. Instead keep one TSV that names
+what you want, and resolve real URLs from the public catalogue at build time.
+
+  pi/kiwix/catalog.tsv   tabs, one row per bundle, 7 columns:
+    flavour   maxi | nopic | mini | -
+    label     the friendly name shown on the portal ("Medical encyclopedias")
+    name      catalogue id → becomes <name>_<YYYY-MM>.zim on disk
+    query     keyword sent to the catalogue to find this entry
+    size_gib  last measured size, used for the disk budget
+    tier      essential | core | extra   (download order AND profile)
+    note      one plain-English line for the portal
+
+  Profiles (pi/bin/ark-zim-resolve):
+    mini = essential                     ~1 GiB   first hour on a small card
+    core = essential + core              ~5 GiB   the sane default
+    full = essential + core + extra      ~15 GiB  + optional 119 GiB wikipedia
+
+  Row order matters: smallest-first inside each tier, so the library becomes
+  useful within minutes instead of after the biggest file.
+
+  The pipeline: ark-zim-resolve → /etc/ark/zim-queue.tsv (pinned URL + exact
+  bytes) → ark-zim-download → aria2c (resumable) → ark-kiwix-library rebuilds
+  library.xml → kiwix-serve reloads. Each stage is idempotent and restartable.
+
+  Two rules learned the hard way:
+    · a bundle counts as present only when library.xml lists it (trap 7);
+    · never let the queue exceed the free-space reserve (trap 10).
+
+================================================================================
+9. THE VERIFICATION GATE (pi/steps/90-verify.sh)
+================================================================================
+
+Read-only. Checks, then writes /srv/ark/ark_status.json and exits non-zero on
+any failure. Categories:
+
+  services    is-enabled AND is-active (or waiting/activating for the guard),
+              for nginx, ark-api, ark-zim-downloader, ark-boot-guard,
+              ark-book-import.path, ssh, NetworkManager, avahi-daemon, and
+              ark-kiwix (soft when no bundles have arrived yet — an empty
+              library is a normal state, not a bug)
+  pages       HTTP codes for /, /help.html, /assets/ark.css, /search?q=water,
+              /board, /files, /api/status, /vault/, /vault/quick-card.html,
+              /generate_204, /kiwix/, /books/
+  network     when mode=hotspot, the AP address is really on wlan0
+  space       free space >= 5 GiB (hard floor; the reserve is 12)
+  content     collections on disk + titles indexed in library.xml, books in
+              metadata.db, guides and printable PDFs
+  receipt     JSON summary for the Mac: hostname, mode, ok, problems,
+              collections{files,gib,indexed}, books, guides{pages,pdfs},
+              free_gib, addresses
+
+  Definition of done:
+    □ 30 ✓ and zero ✗ from `bash scripts/03-provision.sh <ip> --only 90-verify`
+    □ a book dropped into the File Box is on the shelf within 60 s
+    □ one article opens inside /kiwix/ (not just the root page)
+    □ one guide opens and its PDF prints
+    □ services survive `sudo reboot` (cold-boot test done by a human who can
+      join the hotspot — an agent over SSH cannot honestly claim this one)
+    □ the receipt JSON says ok:true and the numbers match the card size
+
+================================================================================
+10. DOCUMENTS THE AGENT MUST PRODUCE
+================================================================================
+
+  README.md                 what it is, how to build it, where the guide is
+  docs/USING-THE-ARK.md     the owner's guide: addresses, every page explained,
+                            how to add books (drag-drop AND whole-library),
+                            health check, troubleshooting table, command cheat
+                            sheet, what it deliberately does not do
+  docs/REBUILD-ME-ARK.txt   this file, kept in the repo so the blueprint travels
+                            with the thing it describes
+  /help.html on the box     the same guide, shortened, readable from any phone
+                            on the hotspot with no internet
+
+  Write for a person who is tired and does not know the jargon. Every section:
+  one-line description, then "How to use", then "If it doesn't work".
+
+================================================================================
+11. OPERATING RULES FOR THE AGENT (how to work, not just what to build)
+================================================================================
+
+  · Read before writing. Every claim about the box comes from a command's
+    output in this session, not from memory or from what "should" happen.
+  · Prove each phase with its own printed line. If you cannot print the proof,
+    the phase is not done.
+  · Long jobs (flash, apt, 119 GiB download, 5.7 GB rsync) run in the
+    background with a log you poll. Never let the terminal block.
+  · Idempotent or bust: content-compare before write, marker-guard before
+    inject, tolerate already-running services.
+  · All paths absolute. Never rely on $HOME inside something that runs as `pi`
+    on the Pi.
+  · `set -Eeuo pipefail` at the top of every bash script; `|| true` only with a
+    comment explaining why.
+  · `bash -n` every script before pushing; chmod +x anything executed.
+  · LF only under pi/ and staging/.
+  · On the Mac, wrap root commands in osascript (trap 2). Never write to a disk
+    the guard has not blessed (trap 1).
+  · When a doc and the code disagree, one of them is wrong — find out which,
+    then fix the side that is actually broken. Do not paper over it by editing
+    the sentence.
+  · Prefer 20 small verified steps to 1 heroic one. If a step surprises you,
+    stop and read the log before continuing.
+  · Keep a changelog of bugs found while verifying. That list IS the value of
+    this document.
+
+================================================================================
+12. MAKING COPIES FOR OTHER PEOPLE (three ways, best first)
+================================================================================
+
+  WAY 1 — RE-RUN THE PIPELINE (recommended)
+    The repo is the blueprint. For each new Ark:
+      a. copy the repo folder (or extract the tarball) to a new working dir
+      b. edit staging/wifi.env (their home Wi-Fi) — never reuse someone else's
+      c. optionally edit /etc/ark/ark.env defaults for their hotspot name,
+         channel, content profile and rate limit BEFORE first provision
+      d. flash a fresh card, provision, verify
+    Cost: one cheap SD card + a few hours of downloading per box. You get
+    clean, explainable, upgradeable machines — and no secrets carried over
+    from the previous owner.
+
+  WAY 2 — CLONE A FINISHED CARD (fastest, fragile)
+    dd the working card to an image, write it to another card.
+      · shrink the filesystem first on a Linux box (parted/pishrink) or the
+        image is useless on a smaller card
+      · the clone carries the original's hostname, SSH host keys, Wi-Fi
+        credentials and hotspot name — you MUST personalise afterwards
+      · two clones on one network will fight over the same hostname
+    Use it only for identical boxes in the same place (e.g. three units for
+    one shelter), and change hostname + SSH keys + Wi-Fi profile on each.
+
+  WAY 3 — CARRY THE CONTENT, NOT THE BOX
+    The expensive part is 10-15 GiB of collections that take hours to fetch.
+    Snapshot the content once onto a USB SSD:
+      sudo rsync -a /srv/ark/kiwix/ /Volumes/ARK-CONTENT/kiwix/
+      sudo rsync -a /srv/ark/calibre-library/ /Volumes/ARK-CONTENT/calibre-library/
+      sudo rsync -a /srv/ark/vault/ /Volumes/ARK-CONTENT/vault/
+    On the new box, restore into the same paths, chown -R pi:pi, then run
+    phase 30 and 50 once to rebuild library.xml and re-apply permissions. This
+    turns "two days" into "one hour" for every Ark after the first.
+
+  KEEP THE BLUEPRINT ITSELF SAFE
+    · `git init` this repo, commit, and tag v1.0. It is a text-only project
+      (~330 KB of source); the only big things are staging/ (images) and
+      logs/, both of which belong in .gitignore.
+    · Keep one tarball off-machine (USB stick in the Ark's own box, or a
+      friend's laptop):
+        tar czf Project-ARK-$(date +%Y%m%d).tar.gz --exclude staging --exclude logs .
+    · Keep this file inside the repo as docs/REBUILD-ME-ARK.txt, so the
+      instructions and the code travel together and cannot drift apart.
+    · Keep a copy of docs/USING-THE-ARK.md on a phone, and one taped inside
+      the lid of the box. Paper survives what the Pi does not.
+
+================================================================================
+13. ASK THE HUMAN THESE SIX QUESTIONS FIRST (then stop and wait)
+================================================================================
+
+  1. Who is it for, and what do they actually need offline — medical, repairs,
+     growing food, water, law, school, or "all of it"? (This picks the profile,
+     which decides the card size.)
+  2. What size SD card, and is there a second card for a backup? (128 GB → mini
+     or core; 256 GB → full. Never size the card to fit Wikipedia maxi.)
+  3. Whose Wi-Fi does it live on, and in which country? (SSID, PSK, regulatory
+     country code for the radio.) Never reuse another household's credentials.
+  4. What should the open network be called, and on what channel? (Default
+     "The-Ark-Offline", ch 6 — but the name is often the only thing a person
+     recognises, so let them choose.)
+  5. Do they already have a Calibre library or a folder of books to adopt? If
+     yes: where is it, how big, and what wrote it (version matters, trap 11).
+  6. Who maintains it after handover — a person who will read
+     docs/USING-THE-ARK.md, or nobody? (If nobody: prove the cold-boot failover
+     and leave the paper quick-card in the box.)
+
+================================================================================
+14. APPENDIX — THE REFERENCE IMPLEMENTATION (what "done" looks like)
+================================================================================
+
+  Mac side                                  ~1,100 lines of bash
+    scripts/01-flash.sh                     assert card → flash → verify
+    scripts/02-wait-for-pi.sh               poll SSH, report first contact
+    scripts/03-provision.sh                 rsync repo, run phases, --only
+    scripts/lib-disk-guard.sh               the SD-card safety net
+    scripts/make-firstrun.sh                wifi.env → firstrun.sh (700)
+    scripts/fix-pi-shell.sh                 small connectivity repairs
+
+  Pi side                                   ~3,500 lines of bash + python
+    pi/install-ark.sh                       phase runner, lock, summary
+    pi/lib/common.sh                        logging, ark_write (compare-first),
+                                            apt helpers, http probes, free bytes
+    pi/steps/{10,20,30,40,50,60,70,90}-*.sh the eight phases
+    pi/bin/ark-zim-resolve                  catalogue → pinned queue
+    pi/bin/ark-zim-download                 flock, resume, size + space guards
+    pi/bin/ark-kiwix-library                /kiwix prefix + library.xml rebuild
+    pi/bin/ark-import-books                 one file → shelf (debounced)
+    pi/bin/ark-import-calibre-library       whole-library adopt, probe, rollback
+    pi/bin/ark-html2pdf                     HTML → printable PDF (weasyprint)
+    pi/bin/ark-mode                         auto | home | hotspot | test N
+    pi/bin/ark-boot-guard                   failsafe hotspot after timeout
+    pi/api/main.py                          FastAPI: /api, /search, /board, /files
+    pi/nginx/ark.conf                       proxy, captive endpoints, uploads
+    pi/systemd/*.service|*.path             the enable-and--now contract
+    pi/portal/{index.html,help.html,assets} the dark, no-JS, 44 px UI
+    pi/kiwix/catalog.tsv                    ~25 bundles in 3 tiers
+    pi/vault/                               11 guides + CSS + quick card
+
+  Console commands a maintainer actually uses:
+    bash scripts/03-provision.sh <ip>                    full build/repair
+    bash scripts/03-provision.sh <ip> --only 90-verify   the gate
+    sudo ark-mode test 180                               raise the hotspot 3 min
+    sudo ark-mode auto                                   back to normal
+    sudo cat /srv/ark/ark_status.json                    last receipt
+    sudo tail -f /srv/ark/logs/zim-download.log          content progress
+    echo full | sudo tee /etc/ark/zim-profile            change profile
+    sudo ark-import-calibre-library /srv/ark/imported-library
+    curl -s http://127.0.0.1/api/status | python3 -m json.tool
+
+  State of the reference box on 2026-10-24 (proof this is achievable):
+    30/30 checks green · 12 collections (10.1 GiB) · 1,290 books adopted from
+    a Windows Calibre library (schema 27 read by 8.5) · 11 guides with 11
+    printable PDFs · 192 GiB free · cold-boot failover installed.
+
+================================================================================
+  END. If you are an agent reading this: you now know what took several days to
+  learn. Build it in the order given, prove every step, and do not skip the
+  gate. If you are a human reading this: hand it to any competent agent along
+  with the repo, and you get another Ark.
+================================================================================
+
+
+
+
+
+
+
+
