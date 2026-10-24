@@ -30,7 +30,7 @@ Keep a copy on a phone or taped inside the lid.
 
 **Building another one, or handing this to someone else?** Start with
 [`docs/REBUILD-ME-ARK.txt`](docs/REBUILD-ME-ARK.txt): the complete blueprint,
-the build order, the 24 traps that cost the most time, and the verification gate.
+the build order, the 25 traps that cost the most time, and the verification gate.
 It is written so an assistant with no memory of this project can rebuild the box
 from an empty card.
 

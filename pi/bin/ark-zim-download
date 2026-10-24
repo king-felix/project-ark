@@ -3,8 +3,8 @@
 #  Project ARK — background offline-library downloader (resumable, polite)
 #
 #  Runs as a long-lived service.  Every cycle it takes the next "todo" row from
-#  the pinned queue, fetches it with aria2c (resumes after reboots and power
-#  cuts), files it into the library and refreshes kiwix.
+#  the pinned queue, fetches it single-stream with wget (resumes after reboots
+#  and power cuts), files it into the library and refreshes kiwix.
 #
 #  Safety rules baked in:
 #    * never more than one download at a time  (keeps the hotspot responsive)
@@ -24,31 +24,41 @@ RESOLVE="${RESOLVE:-/usr/local/bin/ark-zim-resolve}"
 REBUILD="${REBUILD:-/usr/local/bin/ark-kiwix-library}"
 LOG_DIR="${LOG_DIR:-/srv/ark/logs}"
 MIN_FREE_GIB="${MIN_FREE_GIB:-12}"
-# ZIM_POLITE=1 keeps the household link usable: cap the whole download at
-# ZIM_RATE_LIMIT (aria2 --max-overall-download-limit).  Set ZIM_POLITE=0 for
-# full speed on a link nobody else is using.
+# ---- how we fetch -----------------------------------------------------------
+# aria2 was the original fetcher: faster when a mirror is generous, but the KiWix
+# redirector hands out mirrors that collapse under parallel streams. Measured on
+# this box, aria2 froze at 66,881 bytes on 4 connections while wget and curl held
+# ~1 MiB/s on ONE connection to the same URL — and aria2's stale .aria2 control
+# files kept "resuming" into pieces that were never written (a 3.5 GB file with
+# only 1.9 GB allocated: full size, impossible to open). A single stream that
+# reaches the end beats a fast one that never does, so the fetchers here are
+# wget first, curl second — both OpenSSL, both honest about resume.
 ZIM_POLITE="${ZIM_POLITE:-1}"
 ZIM_RATE_LIMIT="${ZIM_RATE_LIMIT:-4M}"
-RATE_ARGS=()
+WGET_ARGS=(-c -nv --tries=4 --timeout=30 --waitretry=10)
+CURL_ARGS=(-sSL -C - --retry 3 --retry-delay 10 --connect-timeout 15
+           --speed-limit 51200 --speed-time 30)
 if [[ "$ZIM_POLITE" != "0" ]]; then
-  RATE_ARGS=(--max-overall-download-limit="$ZIM_RATE_LIMIT")
+  WGET_ARGS+=(--limit-rate="$ZIM_RATE_LIMIT")
+  CURL_ARGS+=(--limit-rate "$ZIM_RATE_LIMIT")
 fi
 IDLE_SLEEP="${IDLE_SLEEP:-900}"
 
 mkdir -p "$ZIM_DIR" "$STATE" "$LOG_DIR"
 LOG="$LOG_DIR/zim-download.log"
+QUAR="${QUAR:-/srv/ark/quarantine}"   # unreadable downloads go here, out of kiwix's sight
+
+log() { printf '%s  %s\n' "$(date -Is)" "$*" >>"$LOG"; }
 
 # Only ONE downloader may touch the library at a time. Two instances writing the
-# same .part file corrupt each other: aria2 keeps writing into an inode that the
-# other instance has already renamed to the final .zim.
+# same .part file corrupt each other: the survivor keeps writing into an inode
+# that the other instance has already renamed to the final .zim.
 LOCK="$STATE/downloader.lock"
 exec 9>"$LOCK"
 if ! flock -n 9; then
   log "another downloader already holds $LOCK — exiting"
   exit 0
 fi
-
-log() { printf '%s  %s\n' "$(date -Is)" "$*" >>"$LOG"; }
 
 free_gib() {   # whole gigabytes free on the library filesystem
   local b
@@ -119,32 +129,53 @@ fetch_one() {   # <url> <bytes> <filename> <label>
   log "fetching $name ($label)"
   write_status "$label" 0
   # Respect a bundle that is already complete: without this, a second pass (or a
-  # revived queue entry) re-downloads over the good file.
+  # revived queue entry) re-downloads over the good file. "Complete" means kiwix
+  # can actually read it — a truncated ZIM is the same size on disk but worthless
+  # on the shelf, so size alone is not proof (it once hid a 770-byte-short file).
   if [[ -s "$ZIM_DIR/$name" ]]; then
     got="$(stat -c %s "$ZIM_DIR/$name" 2>/dev/null || stat -f %z "$ZIM_DIR/$name" 2>/dev/null || echo 0)"
-    if (( got >= bytes - bytes / 100 )); then
+    if (( got >= bytes - bytes / 100 )) && have_zim "$name"; then
       log "already have $name ($got bytes) — skipping"
       date -Is >"$STATE/$name.done"
       return 0
     fi
+    if (( got >= bytes - bytes / 100 )); then
+      log "quarantining unreadable $name ($got bytes) — fetching it again"
+      mkdir -p "$QUAR"
+      mv -f "$ZIM_DIR/$name" "$QUAR/$name.bad-$(date +%Y%m%d%H%M%S)"
+      rm -f "$ZIM_DIR/$name.aria2"   # a stale control file is what created the mess
+    fi
   fi
   while (( attempt < 3 )); do
     attempt=$(( attempt + 1 ))
-    if aria2c "${RATE_ARGS[@]}" \
-        --continue=true --max-connection-per-server=4 --split=4 \
-        --min-split-size=20M --file-allocation=none \
-        --auto-file-renaming=false --allow-overwrite=true \
-        --summary-interval=120 --console-log-level=warn --log-level=warn \
-        --dir="$ZIM_DIR" --out="$3.part" "$url" >>"$LOG" 2>&1; then
-      break
+    if (( attempt == 1 )); then
+      if wget "${WGET_ARGS[@]}" -O "$part" "$url" >>"$LOG" 2>&1; then
+        break
+      fi
+      log "attempt $attempt for $name failed (wget); backing off 30s"
+    else
+      if curl "${CURL_ARGS[@]}" -o "$part" "$url" >>"$LOG" 2>&1; then
+        break
+      fi
+      log "attempt $attempt for $name failed (curl); backing off $(( attempt * 30 ))s"
     fi
-    log "attempt $attempt for $name failed; backing off $(( attempt * 30 ))s"
     sleep $(( attempt * 30 ))
   done
   got="$(stat -c %s "$part" 2>/dev/null || stat -f %z "$part" 2>/dev/null || echo 0)"
   # the catalogue "length" is the exact file size; allow 1% for republished files
   if (( got < bytes - bytes / 100 )); then
     log "incomplete $name: $got of $bytes bytes — keeping the partial file"
+    return 1
+  fi
+  # Size can lie. A stale .aria2 control file makes aria2 "resume" into pieces
+  # that were never written, so the file reaches full size full of holes and
+  # opens nowhere (seen live: 3.5 GB claimed, 1.9 GB actually allocated). Compare
+  # the blocks on disk with the bytes claimed before trusting the file.
+  local alloc
+  alloc="$(du -B1 "$part" 2>/dev/null | cut -f1 || true)"   # || true: du only fails on a vanished file
+  if [[ -n "$alloc" ]] && (( alloc < got - got / 50 )); then
+    log "corrupt $name: $got bytes claimed, only $alloc allocated (holes) — discarding for a clean retry"
+    rm -f "$part" "$part.aria2" "$ZIM_DIR/$name.aria2"
     return 1
   fi
   mv -f "$part" "$ZIM_DIR/$name"

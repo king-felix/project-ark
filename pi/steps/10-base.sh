@@ -69,7 +69,7 @@ DEBIAN_FRONTEND=noninteractive apt-get -y \
 ark_apt_install \
   nginx curl wget ca-certificates jq sqlite3 unzip rsync tmux \
   python3 python3-pip python3-venv python3-dev \
-  aria2 file avahi-daemon avahi-utils libnss-mdns \
+  file avahi-daemon avahi-utils libnss-mdns \
   dnsmasq-base network-manager wpasupplicant rfkill \
   exfatprogs dosfstools
 
@@ -125,7 +125,7 @@ else
   ark_ok "kiwix-serve $KIWIX_VER"
 fi
 
-for t in kiwix-serve kiwix-manage kiwix-search aria2c nginx sqlite3 jq curl; do
+for t in kiwix-serve kiwix-manage kiwix-search wget nginx sqlite3 jq curl; do
   if ark_have "$t"; then
     printf '   \033[1;32m✓\033[0m %-14s %s\n' "$t" "$(command -v "$t")"
   else

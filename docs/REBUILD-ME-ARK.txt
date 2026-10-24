@@ -118,8 +118,9 @@ Therefore:
              hostname `ark`, user `pi`, SSH key auth + password (first boot)
   Mac side   macOS, zsh/bash, Raspberry Pi Imager CLI for flashing
   Packages   nginx, python3 + venv, calibre (8.5 on trixie), calibre-web,
-             kiwix-tools, aria2, sqlite3, dnsmasq-base, network-manager,
-             avahi-daemon, weasyprint (HTML→PDF for the printable guides)
+             kiwix-tools, wget + curl (single-stream fetchers), sqlite3,
+             avahi-daemon, dnsmasq-base, network-manager,
+             weasyprint (HTML→PDF for the printable guides)
 
   VERSION TRAP: Debian trixie ships **calibre 8.5, schema 26**. A Windows or
   macOS Calibre newer than that writes schema 27+. Never refuse on the number
@@ -268,12 +269,12 @@ popup resolves to the portal instead of a "no internet" dead end.
     build fails, so one bad file does not hide the other 15.
 
  8. TWO DOWNLOADERS WRITING THE SAME .part
-    Symptom: disk fills with nonsense, or aria2c dies with a file error, usually
-    after a reboot or a manual restart.
-    Cause: systemd restart plus a leftover foreground run; aria2 keeps writing
-    into the old inode after the file was renamed.
+    Symptom: disk fills with nonsense, or the fetcher dies with a file error,
+    usually after a reboot or a manual restart.
+    Cause: systemd restart plus a leftover foreground run; the old process keeps
+    writing into the old inode after the file was renamed.
     Fix: `flock -n` on a lock file at the top of the downloader; if the lock is
-    held, log and exit 0. Also never `mv` a .part that a live aria2c owns.
+    held, log and exit 0. Also never `mv` a .part that a live downloader owns.
 
  9. TRUSTING THE CATALOGUE'S SIZE
     Symptom: "complete" files that are 3% short, or endless re-downloads.
@@ -410,6 +411,25 @@ popup resolves to the portal instead of a "no internet" dead end.
     scripts; keep Pi-side scripts GNU and separate. Also: everything under pi/
     and staging/ must be LF — verify with `file` before pushing.
 
+25. THE MIRROR THAT FROZE, AND THE FILE THAT LIED ABOUT ITS SIZE
+    Symptom: the queue looks alive — aria2 prints 3.8 MiB/s — but every .part
+    sits at exactly 66,881 bytes and nothing finishes for hours. Days later a
+    .zim of the "correct" size opens in kiwix as an unreadable bundle.
+    Cause: two faults stacked. (a) The KiWix redirector hands out mirrors that
+    collapse under parallel streams: 4 connections to mirror.download.kiwix.org
+    froze at 66 KiB, while ONE connection to the same URL held 1-2 MiB/s. (b)
+    aria2 trusts its .aria2 control file, so after being killed mid-write it
+    "resumes" into pieces that were never written and leaves a full-size file
+    full of holes (measured: 3,498,049,536 bytes nominal, 1,937,772,544 actually
+    allocated) that no reader can open. A size-only "already have it" shortcut
+    then marks that corpse as complete and never retries it.
+    Fix: fetch single-stream — `wget -c` first, `curl -C -` second (both
+    OpenSSL, both honest about resume); keep aria2 for generous mirrors only.
+    Delete .part and .aria2 control files when a download is abandoned. And
+    never trust size alone: compare `du -B1` (blocks on disk) with `stat -c %s`
+    and treat anything below 98% as corrupt, then prove the bundle appears in
+    library.xml before writing the "have" marker.
+
 ================================================================================
 8. CONTENT: A CATALOGUE, NOT A LIST OF URLS
 ================================================================================
@@ -435,8 +455,9 @@ what you want, and resolve real URLs from the public catalogue at build time.
   useful within minutes instead of after the biggest file.
 
   The pipeline: ark-zim-resolve → /etc/ark/zim-queue.tsv (pinned URL + exact
-  bytes) → ark-zim-download → aria2c (resumable) → ark-kiwix-library rebuilds
-  library.xml → kiwix-serve reloads. Each stage is idempotent and restartable.
+  bytes) → ark-zim-download → wget -c single stream (resumable) → ark-kiwix-
+  library rebuilds library.xml → kiwix-serve reloads. Each stage is idempotent
+  and restartable.
 
   Two rules learned the hard way:
     · a bundle counts as present only when library.xml lists it (trap 7);
@@ -630,10 +651,10 @@ any failure. Categories:
     curl -s http://127.0.0.1/api/status | python3 -m json.tool
 
   State of the reference box on 2026-10-24 (proof this is achievable):
-    30/30 checks green · 16 collections (18 GiB, still filling in the
-    background) · 1,290 books adopted from a Windows Calibre library (schema 27
-    read by 8.5) · 11 guides with 11 printable PDFs · 192 GiB free · cold-boot
-    failover installed.
+    30/30 checks green · 16 collections (21 GiB, still filling in the
+    background — 4 bundles / 67 GiB left, single-stream at 2-5 MiB/s) · 1,290
+    books adopted from a Windows Calibre library (schema 27 read by 8.5) · 11
+    guides with 11 printable PDFs · 186 GiB free · cold-boot failover installed.
 
 ================================================================================
   END. If you are an agent reading this: you now know what took several days to
