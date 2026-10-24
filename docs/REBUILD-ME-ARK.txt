@@ -659,13 +659,13 @@ any failure. Categories:
     curl -s http://127.0.0.1/api/status | python3 -m json.tool
 
   State of the reference box on 2026-10-24 (proof this is achievable):
-    30/30 checks green · 17 collections (27 GiB on disk, still filling in the
-    background — 3 bundles / ~55 GiB left, single-stream at 2-5 MiB/s, live
-    percentage on the portal strip) · 1,290
+    30/30 checks green · 20 collections (86.5 GiB on disk, download queue empty —
+    every bundle fetched, no .part files left) · 1,290
     books adopted from a Windows Calibre library (schema 27 read by 8.5) · 11
-    guides with 11 printable PDFs · 182 GiB free · cold-boot failover installed.
-    Backup set: tag v1.0.4 → ~/Downloads/Project-Ark (tar.gz + git bundle +
-    SHA256SUMS + REBUILD-FROM-BACKUP.txt).
+    guides with 11 printable PDFs · 121.6 GiB free · cold-boot failover installed.
+    Backup set: tag v1.0.5 → ~/Downloads/Project-Ark (tar.gz + git bundle +
+    SHA256SUMS + REBUILD-FROM-BACKUP.txt). Public mirror:
+    https://github.com/king-felix/project-ark
 
 ================================================================================
   END. If you are an agent reading this: you now know what took several days to

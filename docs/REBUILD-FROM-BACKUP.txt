@@ -1,14 +1,14 @@
 PROJECT ARK — REBUILD FROM THESE BACKUPS
 ===============================================================================
-This folder is everything needed to produce another Ark. Source tag: v1.0.4
+This folder is everything needed to produce another Ark. Source tag: v1.0.5
 (2026-10-24). Section 5 regenerates it after any change.
 
 (A copy lives in the repo as docs/REBUILD-FROM-BACKUP.txt so it travels with
 the code; this is the one to keep next to the backup files.)
 
 WHAT IS IN THE FOLDER
-  Project-ARK-v1.0.4-src.tar.gz    the repo exactly as tagged (small, plain files)
-  Project-ARK-v1.0.4.git.bundle    same repo WITH full history — clone-able
+  Project-ARK-v1.0.5-src.tar.gz    the repo exactly as tagged (small, plain files)
+  Project-ARK-v1.0.5.git.bundle    same repo WITH full history — clone-able
   REBUILD-ME-ARK.txt               the blueprint: build order, 25 traps, gate
   USING-THE-ARK.md                 the plain-English guide for whoever uses it
   README.md                        repo front page / architecture summary
@@ -29,8 +29,8 @@ DELIBERATELY NOT IN HERE
 ------------------------------------------------------------------------------
   cd ~/Downloads/Project-Ark
   shasum -a 256 -c SHA256SUMS                       # both files: OK
-  tar tzf Project-ARK-v1.0.4-src.tar.gz | head      # expect Project-ARK/pi/...
-  git bundle list-heads Project-ARK-v1.0.4.git.bundle   # branch main + tags
+  tar tzf Project-ARK-v1.0.5-src.tar.gz | head      # expect Project-ARK/pi/...
+  git bundle list-heads Project-ARK-v1.0.5.git.bundle   # branch main + tags
   # (git bundle verify needs a repository to compare against — run it from
   #  inside ~/Survival-Pi, or skip it and rely on list-heads + a test clone)
 
@@ -38,7 +38,7 @@ DELIBERATELY NOT IN HERE
 1. FROM THE TARBALL → a brand-new Ark (the normal path)
 ------------------------------------------------------------------------------
   mkdir -p ~/Survival-Pi-new
-  tar xzf ~/Downloads/Project-Ark/Project-ARK-v1.0.4-src.tar.gz \
+  tar xzf ~/Downloads/Project-Ark/Project-ARK-v1.0.5-src.tar.gz \
       -C ~/Survival-Pi-new --strip-components=1
   cd ~/Survival-Pi-new
 
@@ -78,7 +78,7 @@ DELIBERATELY NOT IN HERE
 2. FROM THE GIT BUNDLE → same thing, but with history and tags
 ------------------------------------------------------------------------------
   cd ~/Survival-Pi-new-parent
-  git clone ~/Downloads/Project-Ark/Project-ARK-v1.0.4.git.bundle ark-src
+  git clone ~/Downloads/Project-Ark/Project-ARK-v1.0.5.git.bundle ark-src
   cd ark-src && git tag && git log --oneline -5
   # then exactly section 1, from "1a. the one secret"
 
@@ -127,7 +127,7 @@ DELIBERATELY NOT IN HERE
   cd ~/Survival-Pi
   git status --short            # must be empty; commit first if it is not
   git add -A && git commit -m 'what changed'
-  git tag -f v1.0.4             # next version, matching the commit
+  git tag -f v1.0.5             # next version, matching the commit
 
   V=$(git describe --tags); D=~/Downloads/Project-Ark
   git archive --format=tar.gz --prefix=Project-ARK/ -o "$D/Project-ARK-$V-src.tar.gz" HEAD
