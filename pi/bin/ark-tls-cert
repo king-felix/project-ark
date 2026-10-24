@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# =============================================================================
+#  PROJECT ARK — the administrator's own certificate
+#
+#  The management listener has to be HTTPS, and the box has no internet on the
+#  hotspot and owns no public name, so ARK makes its own certificate on the box:
+#  self-signed, one per device, valid for the names and addresses people
+#  actually use.  Nothing leaves the machine and no account is needed anywhere.
+#
+#  Usage:  sudo ark-tls-cert            # create, or renew when < 30 days left
+#          sudo ark-tls-cert --force    # replace it now (fingerprint changes!)
+#          sudo ark-tls-cert --show     # print the SHA-256 fingerprint
+#
+#  Trusting it is a deliberate act: compare the fingerprint over SSH/console
+#  (this script) with what the browser shows, then add it to that device only.
+# =============================================================================
+set -Eeuo pipefail
+source "${ARK_SRC:-/srv/ark/src}/lib/common.sh"
+ark_require_root
+
+CERT_DIR="${ARK_CERT_DIR:-/etc/ssl/ark}"
+CRT="$CERT_DIR/ark-admin.crt"
+KEY="$CERT_DIR/ark-admin.key"
+DAYS="${ARK_CERT_DAYS:-825}"
+RENEW_BEFORE=$(( 30 * 86400 ))
+SANS="${ARK_CERT_SANS:-DNS:ark.lan,DNS:ark.local,DNS:ark,DNS:localhost,IP:10.42.0.1,IP:127.0.0.1,IP:::1}"
+
+show() {
+  if [[ -r "$CRT" ]]; then
+    openssl x509 -in "$CRT" -noout -fingerprint -sha256 | sed 's/^.*=//' | tr -d ':'
+  else
+    echo "no certificate at $CRT"
+    return 1
+  fi
+}
+
+mode="create"
+case "${1:-}" in
+  --force) mode="force" ;;
+  --show)  show; exit $? ;;
+  "")      ;;
+  *)       ark_die "unknown argument: $1 (see --force, --show)" ;;
+esac
+
+ark_ensure_dir "$CERT_DIR" 700 root:root
+
+if [[ "$mode" != "force" && -r "$CRT" && -r "$KEY" ]] \
+   && openssl x509 -checkend "$RENEW_BEFORE" -noout -in "$CRT" >/dev/null 2>&1; then
+  ark_ok "certificate is present and has more than 30 days left — nothing to do"
+  printf '   %s fingerprint: %s\n' "→" "$(show)"
+  exit 0
+fi
+
+ark_step "creating the administrator certificate"
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+
+# RSA 2048: universally understood by old phones and laptops, quick on a Pi.
+openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days "$DAYS" \
+  -keyout "$tmpdir/ark-admin.key" -out "$tmpdir/ark-admin.crt" \
+  -subj "/CN=ark.lan/O=Project ARK/OU=Administration" \
+  -addext "subjectAltName=$SANS" \
+  -addext "basicConstraints=critical,CA:FALSE" \
+  -addext "keyUsage=critical,digitalSignature,keyEncipherment" \
+  -addext "extendedKeyUsage=serverAuth" >/dev/null 2>&1 \
+  || ark_die "openssl could not create the certificate"
+
+# The master process reads the key as root; the workers never need it.
+install -m 600 -o root -g root "$tmpdir/ark-admin.key" "$KEY"
+install -m 644 -o root -g root "$tmpdir/ark-admin.crt" "$CRT"
+
+openssl x509 -in "$CRT" -noout -checkend "$RENEW_BEFORE" >/dev/null \
+  || ark_die "the new certificate is already close to expiry — check the box's clock"
+
+ark_ok "certificate written to $CRT (key: $KEY, 0600 root:root)"
+printf '   %s valid for %s days, names: %s\n' "→" "$DAYS" "$SANS"
+printf '   %s SHA-256 fingerprint: %s\n' "→" "$(show)"
+printf '   %s compare this with the browser before trusting it — never dismiss the warning blindly\n' "!"

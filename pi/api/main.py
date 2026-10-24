@@ -1,14 +1,19 @@
 """Project ARK — the small backend behind the portal.
 
-Serves three things to the LAN, all anonymously:
+Serves what a nearby reader needs, all anonymously:
 
   GET  /api/status   what is on the box, as JSON (used by the home page strip)
   GET  /search       one search box across the library, the books and the guides
   GET  /board        message board (read + post)
   GET  /files        shared file box (read + upload)
 
-There is no login anywhere on purpose: this is a box in a room, not a website.
+Reading needs no account, on purpose: this is a box in a room, not a website.
 Everything is rendered server-side so the critical paths need zero JavaScript.
+
+The owner's side lives in ``ark_admin`` under ``/admin``.  It is mounted here
+but never reachable from the portal: nginx answers 404 for it on :80 and only
+proxies it on the HTTPS management listener — so an administrator password
+cannot travel over plain HTTP even by accident.
 """
 
 from __future__ import annotations
@@ -29,6 +34,9 @@ from pathlib import Path
 from fastapi import FastAPI, Form, UploadFile, File
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
+import ark_admin
+import ark_db
+
 ARK_ROOT = Path(os.environ.get("ARK_ROOT", "/srv/ark"))
 LIBRARY_XML = ARK_ROOT / "kiwix" / "library.xml"
 ZIM_DIR = Path(os.environ.get("ZIM_DIR", str(ARK_ROOT / "kiwix")))
@@ -36,10 +44,11 @@ ZIM_STATUS = ZIM_DIR / "state" / "status.json"
 CALIBRE_DB = ARK_ROOT / "calibre-library" / "metadata.db"
 VAULT_DIR = ARK_ROOT / "vault"
 DROP_DIR = ARK_ROOT / "drop" / "files"
-DB_PATH = ARK_ROOT / "api" / "data" / "ark.db"
 KIWIX_INTERNAL = os.environ.get("KIWIX_INTERNAL", "http://127.0.0.1:8081/kiwix")
 
-MAX_UPLOAD = 2 * 1024 * 1024 * 1024        # 2 GiB, matches nginx client_max_body_size
+MAX_UPLOAD = 2 * 1024 * 1024 * 1024        # 2 GiB (nginx currently allows 4g: see
+                                           # docs/IMPLEMENTATION-LOG.md §3 — the two
+                                           # limits are aligned in the storage stage)
 MAX_NOTE = 4000
 MAX_NAME = 60
 
@@ -49,39 +58,24 @@ app = FastAPI(title="Project ARK", docs_url=None, redoc_url=None, openapi_url=No
 # ---------------------------------------------------------------------------
 #  storage
 # ---------------------------------------------------------------------------
-def db() -> sqlite3.Connection:
-    """One short-lived connection per request: no cross-thread surprises."""
-    conn = sqlite3.connect(f"file:{DB_PATH}?mode=rwc", uri=True, timeout=15)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=8000")
-    return conn
-
-
 def init_db() -> None:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    """Schema, migrations, the one-time administrator account, fresh sessions.
+
+    Called once per process, at import: a restart therefore never resurrects a
+    default login, never resets a password, and always starts from "signed out".
+    """
     DROP_DIR.mkdir(parents=True, exist_ok=True)
-    with db() as conn:
-        conn.execute(
-            """CREATE TABLE IF NOT EXISTS notes (
-                   id    INTEGER PRIMARY KEY AUTOINCREMENT,
-                   ts    TEXT NOT NULL,
-                   name  TEXT NOT NULL,
-                   body  TEXT NOT NULL
-               )"""
-        )
-        conn.execute(
-            """CREATE TABLE IF NOT EXISTS files (
-                   id    INTEGER PRIMARY KEY AUTOINCREMENT,
-                   ts    TEXT NOT NULL,
-                   name  TEXT NOT NULL,
-                   size  INTEGER NOT NULL,
-                   note  TEXT NOT NULL DEFAULT ''
-               )"""
-        )
+    ark_db.migrate()
+    ark_admin.ensure_initialised()
+    with ark_db.tx() as conn:
+        ark_db.bump_session_epoch(conn)
 
 
 init_db()
+
+# The administrator area lives under /admin on this same backend, but nginx only
+# exposes it on the HTTPS management listener — never on the public portal.
+app.include_router(ark_admin.router)
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +128,8 @@ NAV = [("/", "Home"), ("/search", "Search"), ("/kiwix/", "Library"),
        ("/files", "File box")]
 
 
-def page(title: str, body: str, here: str = "", tagline: str = "") -> HTMLResponse:
+def page(title: str, body: str, here: str = "", tagline: str = "",
+         status: int = 200) -> HTMLResponse:
     """Every page shares the same head, navigation and footer."""
     parts = []
     for href, label in NAV:
@@ -166,16 +161,21 @@ def page(title: str, body: str, here: str = "", tagline: str = "") -> HTMLRespon
 </div>
 </body>
 </html>"""
-    return HTMLResponse(doc)
+    return HTMLResponse(doc, status_code=status)
 
 
-def error_page(message: str, hint: str = "", code: int = 200) -> HTMLResponse:
+def error_page(message: str, hint: str = "", code: int = 400) -> HTMLResponse:
+    """One response, with the right status.
+
+    The previous version passed an ``HTMLResponse`` object into another one and
+    raised ``AttributeError`` — a 500 instead of a friendly 400.
+    """
     hint_html = f'<p class="note">{esc(hint)}</p>' if hint else ""
-    return HTMLResponse(page("Something went wrong", f"""
+    return page("Something went wrong", f"""
   <p class="status"><span class="dot" aria-hidden="true"></span><span>{esc(message)}</span></p>
   {hint_html}
   <div class="nav"><a href="/">Back to the home page</a></div>
-"""), status_code=code)
+""", status=code)
 
 
 # ---------------------------------------------------------------------------
@@ -499,7 +499,7 @@ def search(q: str = ""):
 # ---------------------------------------------------------------------------
 @app.get("/board", response_class=HTMLResponse)
 def board(ok: str = ""):
-    with db() as conn:
+    with ark_db.read() as conn:
         rows = conn.execute(
             "SELECT id, ts, name, body FROM notes ORDER BY id DESC LIMIT 100"
         ).fetchall()
@@ -543,7 +543,7 @@ def board_post(name: str = Form(""), body: str = Form("")):
     if len(text) > MAX_NOTE:
         return error_page("That message is too long.",
                           f"Please keep it under {MAX_NOTE} characters — split it into two notes.", 400)
-    with db() as conn:
+    with ark_db.tx() as conn:
         conn.execute("INSERT INTO notes (ts, name, body) VALUES (?, ?, ?)",
                      (now_iso(), who[:MAX_NAME], text))
     return RedirectResponse("/board?ok=1", status_code=303)
@@ -555,7 +555,7 @@ def board_post(name: str = Form(""), body: str = Form("")):
 # ---------------------------------------------------------------------------
 @app.get("/files", response_class=HTMLResponse)
 def files(ok: str = "", err: str = ""):
-    with db() as conn:
+    with ark_db.read() as conn:
         rows = conn.execute(
             "SELECT id, ts, name, size, note FROM files ORDER BY id DESC LIMIT 200"
         ).fetchall()
@@ -629,7 +629,7 @@ async def files_post(file: UploadFile = File(None), note: str = Form("")):
         target.unlink(missing_ok=True)
         return RedirectResponse("/files?err=That%20file%20was%20empty", status_code=303)
 
-    with db() as conn:
+    with ark_db.tx() as conn:
         conn.execute("INSERT INTO files (ts, name, size, note) VALUES (?, ?, ?, ?)",
                      (now_iso(), target.name, written, (note or "").strip()[:140]))
     return RedirectResponse("/files?ok=1", status_code=303)

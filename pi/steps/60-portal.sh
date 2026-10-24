@@ -24,10 +24,13 @@ done
 ark_copy "$ARK_SRC/portal/index.html"      "$PORTAL/index.html"      644 "$ARK_PI_USER:$ARK_PI_GROUP"
 ark_copy "$ARK_SRC/portal/help.html"       "$PORTAL/help.html"       644 "$ARK_PI_USER:$ARK_PI_GROUP"
 ark_copy "$ARK_SRC/portal/assets/ark.css"  "$PORTAL/assets/ark.css"  644 "$ARK_PI_USER:$ARK_PI_GROUP"
+ark_copy "$ARK_SRC/portal/assets/ark-admin.css" "$PORTAL/assets/ark-admin.css" 644 "$ARK_PI_USER:$ARK_PI_GROUP"
 ark_ok "portal pages installed in $PORTAL"
 
 # ---- backend ----------------------------------------------------------------
-ark_copy "$ARK_SRC/api/main.py" "$API_DIR/main.py" 644 "$ARK_PI_USER:$ARK_PI_GROUP"
+for f in main.py ark_db.py ark_security.py ark_admin.py ark_recover.py; do
+  ark_copy "$ARK_SRC/api/$f" "$API_DIR/$f" 644 "$ARK_PI_USER:$ARK_PI_GROUP"
+done
 ark_copy "$ARK_SRC/api/requirements.txt" "$API_DIR/requirements.txt" 644 "$ARK_PI_USER:$ARK_PI_GROUP"
 
 [[ -x "$VENV/bin/python" ]] || ark_die "no Python environment at $VENV — run phase 3 (30-calibre) first"
@@ -80,6 +83,7 @@ check "http://127.0.0.1/"                 "home page"
 check "http://127.0.0.1/help.html"        "how-to-use page"
 check "http://127.0.0.1/assets/ark.css"   "stylesheet"
 check "http://127.0.0.1/api/status"       "live status"
+check "http://127.0.0.1/admin"          "admin stays off the public portal" "404"
 check "http://127.0.0.1/search?q=water"   "one search box"
 check "http://127.0.0.1/board"            "message board"
 check "http://127.0.0.1/files"            "file box"

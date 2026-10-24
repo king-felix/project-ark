@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# =============================================================================
+#  PROJECT ARK — root-only administrator recovery
+#
+#  Usage:  sudo ark-admin-recover --list
+#          sudo ark-admin-recover --username admin
+#
+#  Resets ONE named account to a generated temporary password and requires it
+#  to be changed at the next sign-in.  There is no universal default password
+#  and no way to reach this from the web interface, the portal or the hotspot:
+#  the file is 0700 root:root and lives outside /srv/ark.
+#
+#  The database is written as the unprivileged portal user, so the service keeps
+#  working afterwards (a root-owned WAL file would break it).
+# =============================================================================
+set -Eeuo pipefail
+
+if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+  echo "ark-admin-recover must run as root:  sudo ark-admin-recover --list" >&2
+  exit 1
+fi
+
+ARK_ROOT="${ARK_ROOT:-/srv/ark}"
+ARK_PI_USER="${ARK_PI_USER:-pi}"
+PY="$ARK_ROOT/venv/bin/python"
+HELPER="$ARK_ROOT/api/ark_recover.py"
+
+[[ -x "$PY" ]]      || { echo "no Python environment at $PY" >&2; exit 1; }
+[[ -r "$HELPER" ]]  || { echo "missing $HELPER — reinstall the admin phase first" >&2; exit 1; }
+id "$ARK_PI_USER" >/dev/null 2>&1 || { echo "no user $ARK_PI_USER on this box" >&2; exit 1; }
+
+cd "$ARK_ROOT/api"
+exec runuser -u "$ARK_PI_USER" -- env ARK_ROOT="$ARK_ROOT" PYTHONPATH="$ARK_ROOT/api" \
+     "$PY" "$HELPER" "$@"

@@ -1,0 +1,12 @@
+# Test dependencies — the appliance does not need these; a developer machine does.
+#   python3 -m venv .venv && .venv/bin/pip install -r tests/requirements.txt
+#   .venv/bin/python -m pytest
+fastapi>=0.110
+uvicorn>=0.29
+python-multipart>=0.0.9
+httpx>=0.27
+pytest>=8
+# Apple's command-line Python links LibreSSL and has no hashlib.scrypt; this
+# provides the same scrypt so the suite can run on a Mac. The Pi uses the
+# standard library. A fixed vector in tests/test_db.py proves they agree.
+cryptography>=42

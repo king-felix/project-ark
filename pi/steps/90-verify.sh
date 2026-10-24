@@ -72,6 +72,42 @@ check_page "/generate_204"        "captive-portal trigger"
 check_page "/kiwix/"              "offline library" "200 302 503"
 check_page "/books/"              "book shelf"      "200 302"
 
+# ---- the owner's door --------------------------------------------------------
+check_page "/admin"               "admin stays off the public portal" "404"
+
+adm_code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 15 \
+            https://127.0.0.1:8443/admin -H 'Host: ark.lan' 2>/dev/null || true)"
+case "$adm_code" in
+  200|303|403) say_ok "management listener :8443" "HTTP $adm_code" ;;
+  *)           say_bad "management listener :8443" "HTTP ${adm_code:-none}" ;;
+esac
+
+loop_code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 15 \
+             https://127.0.0.1:8444/admin -H 'Host: localhost' 2>/dev/null || true)"
+case "$loop_code" in
+  200|303|403) say_ok "loopback setup listener :8444" "HTTP $loop_code" ;;
+  *)           say_bad "loopback setup listener :8444" "HTTP ${loop_code:-none}" ;;
+esac
+
+if [[ -x /usr/local/sbin/ark-admin-recover ]]; then
+  say_ok "recovery command" "installed, mode $(stat -c '%a' /usr/local/sbin/ark-admin-recover)"
+else
+  say_bad "recovery command" "missing /usr/local/sbin/ark-admin-recover"
+fi
+
+# Who can get in — reported honestly, without ever printing a password.
+adm_row="$(sqlite3 -readonly "$ARK_ROOT/api/data/ark.db" \
+           'SELECT COUNT(*) || "/" || COALESCE(SUM(must_change),0) FROM admins;' 2>/dev/null || true)"
+if [[ -z "$adm_row" ]]; then
+  say_soft "administrators" "not readable yet (has the admin phase run?)"
+elif [[ "${adm_row%%/*}" == "0" ]]; then
+  say_bad "administrators" "none — recovery required: sudo ark-admin-recover --username admin"
+elif [[ "${adm_row##*/}" != "0" ]]; then
+  say_soft "administrators" "${adm_row%%/*} account(s), ${adm_row##*/} still using a temporary password"
+else
+  say_ok "administrators" "${adm_row%%/*} account(s), all with their own password"
+fi
+
 # ---- the address a phone will use -------------------------------------------
 mode="$(cat "$ARK_ETC/mode" 2>/dev/null || echo unknown)"
 printf '   %s network mode: %s\n' "→" "$mode"

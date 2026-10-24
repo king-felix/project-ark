@@ -1,0 +1,93 @@
+/* PROJECT ARK — administrator area.
+   Loaded only on the HTTPS management listener, after ark.css.  Dark, quiet,
+   big tap targets, and readable at 200% zoom. */
+
+.page-admin .wrap { max-width: 900px; }
+
+h2 { font-size: 1.15rem; margin: 28px 0 8px; }
+h3 { font-size: 1rem; margin: 20px 0 6px; }
+
+/* forms ---------------------------------------------------------------- */
+label { display: block; margin: 14px 0 6px; font-size: .95rem; color: var(--dim); }
+input[type="text"],
+input[type="password"] {
+  width: 100%;
+  min-height: 48px;
+  padding: 12px 14px;
+  font-size: 17px;                       /* stops iOS zooming the page */
+  color: var(--ink);
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+input:focus-visible,
+button:focus-visible,
+summary:focus-visible,
+a:focus-visible {
+  outline: 3px solid var(--go);
+  outline-offset: 2px;
+}
+.go-btn { width: 100%; min-height: 48px; }
+.go-btn.small { min-height: 44px; font-size: .95rem; width: auto; padding: 0 16px; }
+
+/* notices -------------------------------------------------------------- */
+.status.good .dot { background: var(--go); }
+.status.bad  { border-color: #4a1f1a; background: #170a08; color: #ffd9d3; }
+.status.bad .dot { background: var(--bad); }
+
+/* tables --------------------------------------------------------------- */
+table.plain {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 8px 0 18px;
+  font-size: .95rem;
+}
+table.plain th,
+table.plain td {
+  text-align: left;
+  padding: 10px 8px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+table.plain th { color: var(--dim); font-weight: 600; font-size: .85rem; }
+table.plain .sub { display: block; color: var(--dim); font-size: .82rem; }
+
+/* the "Manage" disclosure keeps the row compact without JavaScript ------ */
+details { border: 1px solid var(--line); border-radius: 12px; padding: 6px 10px; }
+summary {
+  cursor: pointer;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  font-weight: 600;
+  color: var(--go);
+}
+details[open] { background: var(--panel); }
+
+/* code / one-time passwords ------------------------------------------- */
+pre.code {
+  margin: 10px 0;
+  padding: 12px 14px;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow-x: auto;
+  font: 500 15px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+pre.code.temp {
+  font-size: 22px;
+  letter-spacing: .04em;
+  text-align: center;
+  color: var(--go);
+  border-color: #1f3a29;
+  background: #04100a;
+}
+
+/* print: nothing private should end up on paper by accident ------------- */
+@media print {
+  details, form, .nav { display: none; }
+  body { color: #000; background: #fff; }
+}
