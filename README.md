@@ -164,3 +164,21 @@ cat logs/ark_status.json
 Every service must be `enabled` **and** `active`, every door must answer
 200/302, and 5 GiB must stay free. The receipt is machine-readable so the Mac
 never has to guess.
+
+---
+
+## How this was built
+
+Most of this repo was written by **Cline**, an AI coding agent, working on a
+real Pi 4B over several days — one page at a time, with every claim checked
+against the running box before it went in. The 25 traps in
+[`docs/REBUILD-ME-ARK.txt`](docs/REBUILD-ME-ARK.txt) are all scars from things
+that actually broke here: a mirror that froze at 66,881 bytes, a downloader that
+wrote full-size files full of holes, a Calibre database that answered 500 for
+every request.
+
+The original brief it worked from is
+[`docs/BOOTSTRAP-BRIEF-cline.txt`](docs/BOOTSTRAP-BRIEF-cline.txt) — deliberately
+model-agnostic, so a different agent or a patient human can follow it too.
+One-page backup/rebuild sheet:
+[`docs/REBUILD-FROM-BACKUP.txt`](docs/REBUILD-FROM-BACKUP.txt).
