@@ -630,9 +630,10 @@ any failure. Categories:
     curl -s http://127.0.0.1/api/status | python3 -m json.tool
 
   State of the reference box on 2026-10-24 (proof this is achievable):
-    30/30 checks green · 12 collections (10.1 GiB) · 1,290 books adopted from
-    a Windows Calibre library (schema 27 read by 8.5) · 11 guides with 11
-    printable PDFs · 192 GiB free · cold-boot failover installed.
+    30/30 checks green · 16 collections (18 GiB, still filling in the
+    background) · 1,290 books adopted from a Windows Calibre library (schema 27
+    read by 8.5) · 11 guides with 11 printable PDFs · 192 GiB free · cold-boot
+    failover installed.
 
 ================================================================================
   END. If you are an agent reading this: you now know what took several days to
