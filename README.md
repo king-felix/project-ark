@@ -91,17 +91,60 @@ Settings live in `/etc/ark/ark.env` (`HOTSPOT_SSID`, `HOTSPOT_CHANNEL`,
 
 ---
 
+## The owner's door (administrator access)
+
+The public portal has no login and needs none. Everything that *changes* the
+box lives behind one administrator account, served only on the HTTPS
+management listener:
+
+* `https://ark.lan:8443/admin` — sign in from a phone or laptop on the network.
+* On a box that has never been claimed, that address stays shut on purpose.
+  The first claim happens through a private tunnel, so the well-known
+  temporary password cannot be used by the first stranger on the hotspot:
+
+  ```bash
+  ssh -N -L 8444:127.0.0.1:8444 pi@ark.local
+  # then open https://localhost:8444/admin
+  # user: admin    temporary password: ChangeMe-ARK!
+  ```
+
+The first sign-in asks for your own password (12+ characters, passphrases
+welcome) and the temporary one stops working immediately. After that you can
+add other administrators, reset or switch off their accounts, and read the
+audit history. Losing every password is recoverable from the console only:
+
+```bash
+sudo ark-admin-recover --list
+sudo ark-admin-recover --username admin
+```
+
+The certificate is generated on the box (`sudo ark-tls-cert --show` prints its
+SHA-256 fingerprint). Compare that fingerprint with the browser before you
+trust it — see `docs/ADMIN.md` for the exact steps, the session rules and what
+is deliberately *not* in this release yet.
+
+Tests (no Pi needed, throwaway databases only):
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -r tests/requirements.txt
+.venv/bin/python -m pytest
+```
+
+---
+
 ## The offline library
 
 `50-kiwix.sh` writes a queue from `pi/kiwix/catalog.tsv` and
 `ark-zim-download` fetches one collection at a time, resuming after any
-interruption. Profiles: `min` (~1 GiB), `core` (~5 GiB), `full` (everything
-that fits, leaving 12 GiB free).
+interruption. Profiles: `mini` (the essentials, roughly 1 GiB), `core`
+(roughly 5 GiB) and `full` (everything that fits, leaving 12 GiB free) — the
+sizes come from the catalog, and `ark-zim-resolve` prints the real total for
+the profile you choose.
 
 ```bash
 sudo ark-zim-resolve --profile core   # rewrite the queue
 sudo systemctl status ark-zim-downloader
-touch /srv/ark/zim-pause              # pause politely
+sudo touch /etc/ark/zim-pause         # pause politely (the downloader checks this path)
 ```
 
 The library page picks up new collections without a restart.
