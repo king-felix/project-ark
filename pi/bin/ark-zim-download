@@ -43,6 +43,7 @@ if [[ "$ZIM_POLITE" != "0" ]]; then
   CURL_ARGS+=(--limit-rate "$ZIM_RATE_LIMIT")
 fi
 IDLE_SLEEP="${IDLE_SLEEP:-900}"
+PROGRESS_EVERY="${PROGRESS_EVERY:-15}"   # seconds between status.json updates while a bundle downloads
 
 mkdir -p "$ZIM_DIR" "$STATE" "$LOG_DIR"
 LOG="$LOG_DIR/zim-download.log"
@@ -87,14 +88,18 @@ bytes_present() {
   printf '%s' "$n"
 }
 
-write_status() {   # <current-label> <current-bytes-done>
-  local current="${1:-}" done_b="${2:-0}" total have todo
+write_status() {   # <current-label> <current-bytes-done> [<current-bytes-total>]
+  local current="${1:-}" done_b="${2:-0}" want_b="${3:-0}" total have todo
   total="$(queue_count todo)"; have="$(queue_count have)"
   cat >"$STATUS.tmp" <<JSON
-{"updated":"$(date -Is)","profile":"$(cat "$PROFILE_FILE" 2>/dev/null || echo core)","total":$(( total + have )),"present":$have,"pending":$total,"bytes_total":$(bytes_total),"bytes_on_disk":$(bytes_present),"current":"$current","current_bytes":$done_b,"free_gib":$(free_gib),"paused":$([[ -e "$PAUSE" ]] && echo true || echo false)}
+{"updated":"$(date -Is)","profile":"$(cat "$PROFILE_FILE" 2>/dev/null || echo core)","total":$(( total + have )),"present":$have,"pending":$total,"bytes_total":$(bytes_total),"bytes_on_disk":$(bytes_present),"current":"$current","current_bytes":$done_b,"current_total":$want_b,"free_gib":$(free_gib),"paused":$([[ -e "$PAUSE" ]] && echo true || echo false)}
 JSON
   mv -f "$STATUS.tmp" "$STATUS"
   chmod 644 "$STATUS"
+}
+
+part_bytes() {   # <file> — size of a download in progress, 0 if it vanished
+  stat -c %s "$1" 2>/dev/null || stat -f %z "$1" 2>/dev/null || echo 0
 }
 
 have_zim() {   # <filename> — present AND readable by kiwix, else it is not a bundle
@@ -127,7 +132,7 @@ refresh_library() {
 fetch_one() {   # <url> <bytes> <filename> <label>
   local url=$1 bytes=$2 name=$3 label=$4 part="$ZIM_DIR/$3.part" got=0 attempt=0
   log "fetching $name ($label)"
-  write_status "$label" 0
+  write_status "$label" 0 "$bytes"
   # Respect a bundle that is already complete: without this, a second pass (or a
   # revived queue entry) re-downloads over the good file. "Complete" means kiwix
   # can actually read it — a truncated ZIM is the same size on disk but worthless
@@ -149,19 +154,27 @@ fetch_one() {   # <url> <bytes> <filename> <label>
   while (( attempt < 3 )); do
     attempt=$(( attempt + 1 ))
     if (( attempt == 1 )); then
-      if wget "${WGET_ARGS[@]}" -O "$part" "$url" >>"$LOG" 2>&1; then
-        break
-      fi
-      log "attempt $attempt for $name failed (wget); backing off 30s"
+      wget "${WGET_ARGS[@]}" -O "$part" "$url" >>"$LOG" 2>&1 &
     else
-      if curl "${CURL_ARGS[@]}" -o "$part" "$url" >>"$LOG" 2>&1; then
-        break
-      fi
-      log "attempt $attempt for $name failed (curl); backing off $(( attempt * 30 ))s"
+      curl "${CURL_ARGS[@]}" -o "$part" "$url" >>"$LOG" 2>&1 &
     fi
+    local fpid=$! rc=0 waited=0
+    # Report progress while it runs, otherwise a 4 GiB bundle is a silent hour
+    # on the home page. The fetcher is a background job so this loop can look at
+    # the file it is writing.
+    while kill -0 "$fpid" 2>/dev/null; do
+      sleep 5
+      waited=$(( waited + 5 ))
+      if (( waited % PROGRESS_EVERY == 0 )); then
+        write_status "$label" "$(part_bytes "$part")" "$bytes"
+      fi
+    done
+    if wait "$fpid"; then rc=0; else rc=$?; fi
+    if (( rc == 0 )); then break; fi
+    log "attempt $attempt for $name failed (exit $rc); backing off $(( attempt * 30 ))s"
     sleep $(( attempt * 30 ))
   done
-  got="$(stat -c %s "$part" 2>/dev/null || stat -f %z "$part" 2>/dev/null || echo 0)"
+  got="$(part_bytes "$part")"
   # the catalogue "length" is the exact file size; allow 1% for republished files
   if (( got < bytes - bytes / 100 )); then
     log "incomplete $name: $got of $bytes bytes — keeping the partial file"

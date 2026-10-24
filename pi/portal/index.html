@@ -134,25 +134,47 @@
     });
   }
 
-  // Live status: how much is already on the box.
+  // Live status: what is on the box, and how far the current download is.
   var strip = document.getElementById("status");
   if (!strip || !window.fetch) { return; }
-  fetch("/api/status", { cache: "no-store" })
-    .then(function (r) { return r.ok ? r.json() : null; })
-    .then(function (s) {
-      if (!s) { return; }
-      var bits = [];
-      if (s.library && s.library.titles) { bits.push("<b>" + s.library.titles + "</b> reference collections"); }
-      if (s.books && s.books.count)      { bits.push("<b>" + s.books.count + "</b> books"); }
-      if (s.guides && s.guides.count)    { bits.push("<b>" + s.guides.count + "</b> guides and manuals"); }
-      var tail = (s.downloads && s.downloads.pending)
-        ? " Still bringing more in: <b>" + s.downloads.pending + "</b> collection(s) on the way."
-        : "";
-      strip.innerHTML = '<span class="dot" aria-hidden="true"></span><span>' +
-        (bits.length ? "On board right now: " + bits.join(" · ") + "." : "<b>Ready.</b>") +
-        tail + " Nothing here needs a login.</span>";
-    })
-    .catch(function () { /* no API yet — the static text stays */ });
+
+  function size(n) {
+    if (!n) { return "0 MB"; }
+    var gb = n / 1073741824;
+    return gb >= 1 ? gb.toFixed(1) + " GB" : Math.max(1, Math.round(n / 1048576)) + " MB";
+  }
+
+  function refresh() {
+    fetch("/api/status", { cache: "no-store" })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (s) {
+        if (!s) { return; }
+        var bits = [];
+        if (s.library && s.library.titles) { bits.push("<b>" + s.library.titles + "</b> reference collections"); }
+        if (s.books && s.books.count)      { bits.push("<b>" + s.books.count + "</b> books"); }
+        if (s.guides && s.guides.count)    { bits.push("<b>" + s.guides.count + "</b> guides and manuals"); }
+        var dl = s.downloads || {};
+        var tail = "";
+        if (dl.pending) {
+          tail = " Still bringing more in: <b>" + dl.pending + "</b> collection(s) on the way";
+          if (dl.current_total > 0 && dl.current_bytes > 0) {
+            var label = String(dl.current || "").replace(/[<>&"]/g, "");
+            tail += " — <b>" + (dl.percent || 0) + "%</b> of " + label +
+                    " (" + size(dl.current_bytes) + " of " + size(dl.current_total) + ")";
+          }
+          tail += ".";
+        }
+        strip.innerHTML = '<span class="dot" aria-hidden="true"></span><span>' +
+          (bits.length ? "On board right now: " + bits.join(" · ") + "." : "<b>Ready.</b>") +
+          tail + " Nothing here needs a login.</span>";
+      })
+      .catch(function () { /* no API yet — the static text stays */ });
+  }
+
+  refresh();
+  // Keep the figure honest while a big collection comes in — but never poll a
+  // tab nobody is looking at.
+  setInterval(function () { if (!document.hidden) { refresh(); } }, 30000);
 })();
 </script>
 

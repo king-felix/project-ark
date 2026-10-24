@@ -257,6 +257,11 @@ def status():
     dl = download_state()
     guides = guide_pages()
     n_books = book_count()
+    # Progress of the bundle being fetched right now: the home page strip shows
+    # "42% of <label>" so a 49 GiB entry is not a silent day.
+    cur = int(dl.get("current_bytes") or 0)
+    tot = int(dl.get("current_total") or 0)
+    pct = min(100, int(round(100.0 * cur / tot))) if tot > 0 else 0
     return {
         "time": now_iso(),
         "library": {
@@ -274,6 +279,9 @@ def status():
             "present": dl.get("present", 0),
             "pending": dl.get("pending", 0),
             "current": dl.get("current", ""),
+            "current_bytes": cur,
+            "current_total": tot,
+            "percent": pct,
             "free_gib": dl.get("free_gib", 0),
             "paused": bool(dl.get("paused", False)),
             "updated": dl.get("updated", ""),
