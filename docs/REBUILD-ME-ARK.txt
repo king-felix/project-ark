@@ -664,7 +664,7 @@ any failure. Categories:
     percentage on the portal strip) · 1,290
     books adopted from a Windows Calibre library (schema 27 read by 8.5) · 11
     guides with 11 printable PDFs · 182 GiB free · cold-boot failover installed.
-    Backup set: tag v1.0.3 → ~/Downloads/Project-Ark (tar.gz + git bundle +
+    Backup set: tag v1.0.4 → ~/Downloads/Project-Ark (tar.gz + git bundle +
     SHA256SUMS + REBUILD-FROM-BACKUP.txt).
 
 ================================================================================
