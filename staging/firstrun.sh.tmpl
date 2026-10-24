@@ -44,7 +44,7 @@ fi
 grep -qE '(^|[[:space:]])ark([[:space:]]|$)' /etc/hosts || printf '127.0.0.1\tark\n' >> /etc/hosts
 
 # ---------------------------------------------------------------------------
-# 2. USER pi (password: raspberryark) + passwordless sudo
+# 2. USER pi (password injected by make-firstrun.sh — never hardcoded here) + sudo
 # ---------------------------------------------------------------------------
 log "creating user pi"
 if ! id -u pi >/dev/null 2>&1; then
@@ -61,7 +61,12 @@ if [ ! -d /home/pi ]; then
   mkdir -p /home/pi && cp -a /etc/skel/. /home/pi/ 2>/dev/null
 fi
 chown pi /home/pi 2>/dev/null
-echo 'pi:raspberryark' | chpasswd
+echo 'pi:__PI_PASSWORD__' | chpasswd
+# Leave the password where the repair script (pifix.sh) can find it, so a
+# rescue boot does not have to invent a new one. 600 root:root, never in git.
+printf '%s\n' '__PI_PASSWORD__' > /etc/ark-pipass
+chmod 600 /etc/ark-pipass
+chown root:root /etc/ark-pipass
 for g in sudo adm dialout cdrom audio video plugdev games users input netdev gpio i2c spi; do
   getent group "$g" >/dev/null 2>&1 && usermod -aG "$g" pi 2>/dev/null
 done

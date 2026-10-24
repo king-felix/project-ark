@@ -1,6 +1,7 @@
 # ---- secrets ---------------------------------------------------------------
 staging/wifi.env
 staging/firstrun.sh
+staging/pi-password.txt
 staging/*.nmconnection
 
 # ---- large binaries --------------------------------------------------------

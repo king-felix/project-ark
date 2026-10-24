@@ -9,7 +9,7 @@
 |---|---|
 | **Workstation** | MacBook Air, macOS (darwin 25.x), `zsh`/`bash`, user `basestar` |
 | **Target** | Raspberry Pi 4B / 8 GB RAM, Raspberry Pi OS Lite 64-bit (Bookworm/Trixie), hostname **`ark`** |
-| **User on Pi** | `pi` / password `raspberryark` / passwordless sudo / SSH key auth |
+| **User on Pi** | `pi` / password generated at build into `staging/pi-password.txt` (never committed) / passwordless sudo / SSH key auth |
 | **Project root (Mac)** | `/Users/basestar/Survival-Pi` |
 | **Portal URL** | `http://ark.lan`, `http://ark.local`, `http://10.42.0.1` |
 | **Hotspot SSID** | `The-Ark-Offline` (open, 2.4 GHz, ch 6, static `10.42.0.1/24`) |

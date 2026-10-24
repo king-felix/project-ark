@@ -25,6 +25,19 @@ set -a; . "$ENV_FILE"; set +a
 WIFI_COUNTRY="${WIFI_COUNTRY:-US}"
 [[ ${#WIFI_COUNTRY} -eq 2 ]] || die "WIFI_COUNTRY must be a 2-letter code (got '$WIFI_COUNTRY')"
 
+# The `pi` password. Taken from wifi.env if you set PI_PASSWORD, otherwise a
+# random one is generated here — so no default password exists in this repo for
+# anyone to look up, and every Ark built from it is different. It is rendered
+# into firstrun.sh (chmod 700) and stored in staging/pi-password.txt (chmod 600),
+# both gitignored. chpasswd splits on ':', so a colon would silently truncate.
+PI_PASSWORD="${PI_PASSWORD:-}"
+if [[ -z "$PI_PASSWORD" ]]; then
+  PI_PASSWORD="$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 20 || true)"
+fi
+[[ ${#PI_PASSWORD} -ge 8 ]] || die "PI_PASSWORD must be at least 8 characters"
+[[ "$PI_PASSWORD" != *:* && "$PI_PASSWORD" != *$'\n'* ]] || die "PI_PASSWORD must not contain ':' or a newline"
+
+
 # Extra networks, tried in this order if the primary is out of range.
 # Same password unless you set a dedicated *_PASSWORD for that slot.
 WIFI_SSID_2="${WIFI_FALLBACK_SSID:-}"
@@ -45,7 +58,7 @@ for psk in "${WIFI_PASSWORD:-}" "$WIFI_PSK_2" "$WIFI_PSK_3"; do
   [[ -z "$psk" || ${#psk} -ge 8 ]] || die "a Wi-Fi password is shorter than 8 characters (WPA2 requirement), or leave it empty for an open network"
 done
 
-export WIFI_SSID WIFI_PASSWORD WIFI_COUNTRY WIFI_SSID_2 WIFI_PSK_2 WIFI_SSID_3 WIFI_PSK_3
+export WIFI_SSID WIFI_PASSWORD WIFI_COUNTRY WIFI_SSID_2 WIFI_PSK_2 WIFI_SSID_3 WIFI_PSK_3 PI_PASSWORD
 
 python3 - "$TMPL" "$OUT" "$(cat "$PUBKEY_FILE")" <<'PY'
 import os, sys, pathlib
@@ -61,6 +74,7 @@ vals = (
     ("__WIFI_SSID_3__",  q(env.get("WIFI_SSID_3", ""))),
     ("__WIFI_PSK_3__",   q(env.get("WIFI_PSK_3", ""))),
     ("__WIFI_COUNTRY__", q(env["WIFI_COUNTRY"])),
+    ("__PI_PASSWORD__",  q(env["PI_PASSWORD"])),
     ("__SSH_PUBKEY__",   q(key.strip())),
 )
 text = pathlib.Path(tmpl).read_text(encoding="utf-8")
@@ -85,10 +99,17 @@ bash -n "$OUT" || die "rendered firstrun.sh has a syntax error"
 if grep -qU $'' "$OUT"; then die "rendered firstrun.sh contains CR characters"; fi
 
 # Every placeholder must be gone
-if grep -q '__WIFI\|__SSH' "$OUT"; then die "rendered firstrun.sh still contains placeholders"; fi
+if grep -q '__WIFI\|__SSH\|__PI_PASSWORD' "$OUT"; then die "rendered firstrun.sh still contains placeholders"; fi
+
+# Keep the password where the builder can find it later (never in git)
+umask 077
+printf '%s\n' "$PI_PASSWORD" >"$ROOT/staging/pi-password.txt"
+chmod 600 "$ROOT/staging/pi-password.txt"
+umask 022
 
 printf '\033[1;32m✓\033[0m firstrun.sh rendered, +x, LF-only, syntax OK\n'
 printf '   Country   : %s\n' "$WIFI_COUNTRY"
+printf '   Pi login  : pi / (see staging/pi-password.txt — generated, not in git)\n'
 printf '   SSH key   : %s\n' "$(cut -d' ' -f1-3 "$PUBKEY_FILE")"
 printf '   Networks  :\n'
 i=1

@@ -14,7 +14,18 @@ echo "before: $(getent passwd pi)"
 usermod -s /bin/bash pi
 [ -d /home/pi ] || { mkdir -p /home/pi; cp -a /etc/skel/. /home/pi/ 2>/dev/null; }
 chown pi /home/pi 2>/dev/null
-echo 'pi:raspberryark' | chpasswd
+# The password was written to /etc/ark-pipass by firstrun.sh. If the file is
+# missing (old card, or firstrun never ran), do NOT invent one — key auth and
+# passwordless sudo already work, and a guessed password is worse than none.
+if [ -r /etc/ark-pipass ]; then
+  ark_pass="$(cat /etc/ark-pipass)"
+  if [ -n "$ark_pass" ]; then
+    echo "pi:$ark_pass" | chpasswd
+    echo "password: set from /etc/ark-pipass"
+  fi
+else
+  echo "password: /etc/ark-pipass missing — left unchanged (SSH key still works)"
+fi
 
 for g in sudo adm dialout cdrom audio video plugdev games users input netdev gpio i2c spi; do
   getent group "$g" >/dev/null 2>&1 && usermod -aG "$g" pi 2>/dev/null

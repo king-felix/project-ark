@@ -216,7 +216,7 @@ This keeps everything: series, tags, covers, reading order, custom columns. It i
 scp -r "$env:USERPROFILE\Calibre Library" pi@ark.local:/srv/ark/imported-library
 ```
 
-- It will ask for a password: **`raspberryark`**. That prompt is normal — the PC has no key yet.
+- It will ask for the `pi` password — the one this Ark was built with (whoever built it has it in `staging/pi-password.txt`). That prompt is normal — the PC has no key yet.
 - `ark.local` is the name to use on Windows (`ark.lan` will not resolve there).
 - Lots of small files means it looks slow; that is the file count, not a fault. Keep the PC awake.
 - If the transfer is painfully slow, this single-stream version is much faster and needs no zip:
@@ -361,7 +361,7 @@ Re-provisioning is idempotent: re-running any phase repairs it rather than dupli
 ## 8. Command cheat sheet
 
 ```bash
-ssh pi@ark.local                       # password: raspberryark (or your key)
+ssh pi@ark.local                       # password: in staging/pi-password.txt (or your key)
 
 sudo ark-mode status                   # which network is it on right now
 sudo ark-mode home                     # use the home Wi-Fi

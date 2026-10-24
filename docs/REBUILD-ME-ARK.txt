@@ -170,6 +170,9 @@ popup resolves to the portal instead of a "no internet" dead end.
 
   On the Mac:
   00  staging/       wifi.env (chmod 600) → make-firstrun.sh → firstrun.sh (700)
+                     the pi password is generated there too, into
+                     staging/pi-password.txt (600) — no default password exists
+                     in the repo, so every Ark gets a different one
   01  flash          assert the SD card with lib-disk-guard, then flash
   02  wait-for-pi    poll SSH until the Pi is up on the home LAN
   03  provision      rsync the repo to /srv/ark/src, then run pi/install-ark.sh
