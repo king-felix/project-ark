@@ -140,6 +140,9 @@ DELIBERATELY NOT IN HERE
   refresh it too — copy the new docs in, then `sed -i '' "s/$OLD/$V/g"` on the
   copy in $D, and delete the previous tar.gz/bundle.
 
+  Public mirror: bash scripts/publish-github.sh (needs a PAT in
+  ~/.config/ark/gh.token, chmod 600 — the token stays out of git and the URL).
+
   Notes from the first run of this: `--branches --tags` instead of `--all` keeps
   the agent's internal checkpoint refs out of the backup; and keep the folder
   flat with exactly one tar.gz + one bundle — delete the older pair once the new
