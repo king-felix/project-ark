@@ -9,7 +9,7 @@ the code; this is the one to keep next to the backup files.)
 WHAT IS IN THE FOLDER
   Project-ARK-v1.0.5-src.tar.gz    the repo exactly as tagged (small, plain files)
   Project-ARK-v1.0.5.git.bundle    same repo WITH full history — clone-able
-  REBUILD-ME-ARK.txt               the blueprint: build order, 25 traps, gate
+  REBUILD-ME-ARK.txt               the blueprint: build order, 26 traps, gate
   USING-THE-ARK.md                 the plain-English guide for whoever uses it
   README.md                        repo front page / architecture summary
   Project-Ark_bootstrap_architect_deepseek.txt   the original design brief
@@ -66,9 +66,17 @@ DELIBERATELY NOT IN HERE
   #     dropped Wi-Fi link cannot kill it; 35-60 min, log streams back)
   bash scripts/03-provision.sh
 
-  # 1f. the gate — must be 30/30 with no ✗
+  # 1f. the gate — no ✗, plus the closing line "everything a visitor touches
+  #     is working" (the number of checks grows as the box does; read the ✗
+  #     column, not the total)
   bash scripts/03-provision.sh --only 90-verify
   cat logs/ark_status.json
+
+  # 1g. claim the owner's door — through the tunnel, on the Mac, once
+  ssh -N -L 8444:127.0.0.1:8444 pi@ark.local
+  #    leave that running, open https://localhost:8444/admin
+  #    user: admin    temporary password: ChangeMe-ARK!
+  #    (the box then asks for your own password; docs/ADMIN.md section 2)
 
   Content then fills itself in: the downloader walks the queue smallest-first
   (on the Pi: sudo tail -f /srv/ark/logs/zim-download.log). The portal strip
@@ -113,7 +121,10 @@ DELIBERATELY NOT IN HERE
 ------------------------------------------------------------------------------
 4. WHAT "GOOD" LOOKS LIKE WHEN IT IS DONE
 ------------------------------------------------------------------------------
-  · 30/30 checks green, no ✗, and logs/ark_status.json pulled back to the Mac
+  · no ✗ in the gate, and logs/ark_status.json pulled back to the Mac
+  · the owner's door behaves: curl -sk https://ark.lan:8443/admin answers with a
+    sign-in page, curl -s http://ark.lan/admin answers 404, and the first claim
+    is done (docs/ADMIN.md)
   · http://ark.lan answers on a phone joined to the same network
   · /kiwix/ lists collections, /books/ shows covers, /vault/ lists the guides
   · the home strip counts collections/books/guides and, while content is still
@@ -147,6 +158,21 @@ DELIBERATELY NOT IN HERE
   the agent's internal checkpoint refs out of the backup; and keep the folder
   flat with exactly one tar.gz + one bundle — delete the older pair once the new
   one verifies, because two "latest" files is how a backup stops being trusted.
+
+  Notes from later sessions (cost hours the first time, seconds after that):
+  · Tool calls issued together run in parallel. A `pkill` or a service restart
+    will race the probe that was supposed to observe it, and two commands that
+    bind the same port in one batch fail in a way that looks like a code bug.
+    Sequence anything that changes state first, observe second.
+  · A commit message containing an apostrophe must go through a file:
+    `git commit -F /tmp/msg.txt`. Inline, the shell re-quotes it and git reads
+    the rest of the sentence as pathspecs ("did not match any file(s)").
+  · Run the tests before tagging anything: `.venv/bin/python -m pytest`. They
+    use throwaway databases, so they never touch the live library, and they do
+    not need a Pi.
+  · Work committed after the tag is NOT in the archive above. Tag the next
+    version first, then regenerate this whole set — a backup that silently
+    predates the code is worse than no backup.
 
 ------------------------------------------------------------------------------
 6. HANDING IT TO SOMEONE ELSE (or to another assistant)

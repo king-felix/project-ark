@@ -55,6 +55,11 @@ Doors on the box (once built):
   /help.html            how it works, in plain words
   /status.json          machine-readable health (also mirrored in the portal)
 
+And one door that is NOT on the portal: the owner's door, on its own TLS
+address, for whoever maintains the box.
+
+  https://ark.lan:8443/admin   sign-in + accounts + audit (404 on port 80)
+
 ================================================================================
 2. WHO IT IS FOR (this drives every design decision)
 ================================================================================
@@ -67,7 +72,9 @@ Therefore:
   · Dark by default (#000000 true black — OLED screens, torch discipline).
   · Big type (>=16 px), big targets (>=44 px), no hover-only affordances.
   · No JavaScript on any critical path. Search and every link work with JS off.
-  · No accounts, no logins, no "sign in to continue", ever.
+  · No accounts and no logins for a reader, ever — nothing on the public portal
+    asks who you are. (The machine itself has one owner's door, on a separate
+    TLS address the portal never serves; a visitor can ignore it forever.)
   · Every section has a one-line plain-English description and a "How to use".
   · Buttons say what happens: "Tap here to read this in your browser" — never
     "Open ZIM viewer".
@@ -85,7 +92,11 @@ Therefore:
     daemon, service, proxy. Approved words: Offline Library, Books, Manuals,
     Guides, Q&A, Repair Guides, Message Board, File Box, Planting Calendar,
     Download, Read in Browser, Search.
- 3. ANONYMOUS EVERYTHING. Browse, read, download, upload, post — no login.
+ 3. ANONYMOUS READING. Browse, read, download, upload, post — no login for any
+    of it. The one exception is administration: separate TLS origin (:8443),
+    its own accounts, 404 on the public portal, and no reachable default
+    password while the box is unclaimed. Reading must keep working even if the
+    admin store is broken.
  4. THE CARD IS NEVER FILLED. A free-space reserve is enforced by the
     downloader itself (default 12 GiB). Anything that would breach it is
     skipped, logged and retried later — never silently dropped.
@@ -141,6 +152,11 @@ On the Pi, everything the Ark owns lives under /srv/ark:
   /srv/ark/imported-library one-off staging area for a whole-library adopt
   /srv/ark/vault            manuals, guides and generated PDFs
   /srv/ark/logs             zim-download.log, import logs, status receipts
+  /srv/ark/api/data/ark.db  the owner's door: accounts, sessions, audit rows
+  /srv/ark/api/data/ark.installed  marker kept OUTSIDE the database, so a wiped
+                            database means "recovery required", never a new
+                            default password
+  /etc/ssl/ark/             ark-admin.crt + ark-admin.key (0600 root:root)
   /etc/ark/ark.env          operator settings (single place to change things)
   /etc/ark/zim-queue.tsv    resolved download queue (pinned URLs + sizes)
   /etc/ark/zim-profile      mini | core | full
@@ -149,6 +165,8 @@ On the Pi, everything the Ark owns lives under /srv/ark:
 Services (all enabled AND started; this is the cold-boot contract):
 
   nginx.service               :80    the only port a visitor touches
+                              :8443  the owner's door (TLS, /admin only)
+                              :8444  loopback-only setup listener, unclaimed box
   ark-kiwix.service           :8081  kiwix-serve --urlRootLocation=/kiwix
   ark-calibre.service         :8083  calibre-web, served under /books
   ark-api.service             :8085  FastAPI: /api, /search, /board, /files
@@ -196,11 +214,16 @@ popup resolves to the portal instead of a "no internet" dead end.
                   systemd unit. Proof: :8081/kiwix/ answers, queue written.
   60  portal      static portal, API venv, systemd unit, nginx site, captive
                   endpoints, print styles, help page. Proof: every route 200/302.
+  65  admin       the owner's door: scrypt accounts, forced first password,
+                  nginx :8443 management origin (+ :8444 loopback setup while
+                  unclaimed), self-signed certificate, root-only recovery command.
+                  Proof: :80/admin is 404, :8443 needs TLS and a sign-in,
+                  :8444 only answers through the tunnel, recovery is 0700 root.
   70  network     NM hotspot profile (ipv4.method shared, 10.42.0.1/24, ch 6),
                   dnsmasq-shared.d wildcard for ark.lan/ark.local, boot guard,
                   ark-mode (auto|home|hotspot|test). Proof: profile exists,
                   guard unit active, `ark-mode test` works when a human tries it.
-  90  verify      the 30-check gate (section 9) + JSON receipt back to the Mac.
+  90  verify      the gate (section 9) + JSON receipt back to the Mac.
 
   Rule: a phase that cannot print its own proof is not finished. Write the
   proof line first, then make it true.
@@ -438,6 +461,22 @@ popup resolves to the portal instead of a "no internet" dead end.
     the home strip has nothing to say for the hour a 4 GiB bundle takes — that
     is how "is it stuck?" gets asked 20 times.
 
+26. THE DEFAULT PASSWORD A STRANGER COULD REACH
+    Symptom: an administration page answers from the hotspot, and its password
+    is printed in the repository — because it has to be: the box is built
+    before anyone owns it.
+    Cause: a "bootstrap account" was treated as a login instead of as a
+    hand-over. Serve the admin routes on the same origin as the portal and the
+    well-known password becomes the box's real password.
+    Fix: three locks, all cheap. (a) The public origin answers 404 for /admin.
+    (b) The first claim requires the peer address to be loopback AND a header
+    that only the loopback listener sets — the LAN listener blanks that header,
+    so a forged one is ignored (the test suite asserts this). (c) `must_change`
+    makes that first session good for nothing but setting a password, and a
+    marker file kept OUTSIDE the database turns a wiped database into
+    "recovery required" instead of a fresh default. Test it from a LAN
+    address: a 403 on the setup step is the pass, not a bug.
+
 ================================================================================
 8. CONTENT: A CATALOGUE, NOT A LIST OF URLS
 ================================================================================
@@ -488,6 +527,10 @@ any failure. Categories:
               /generate_204, /kiwix/, /books/
   network     when mode=hotspot, the AP address is really on wlan0
   space       free space >= 5 GiB (hard floor; the reserve is 12)
+  owner's door  /admin answers 404 on :80; :8443 answers; the loopback :8444
+              listener answers; the recovery command is installed with the
+              right mode; and the account count is reported (how many still
+              hold a temporary password) without ever printing a secret
   content     collections on disk + titles indexed in library.xml, books in
               metadata.db, guides and printable PDFs
   receipt     JSON summary for the Mac: hostname, mode, ok, problems,
@@ -495,7 +538,9 @@ any failure. Categories:
               free_gib, addresses
 
   Definition of done:
-    □ 30 ✓ and zero ✗ from `bash scripts/03-provision.sh <ip> --only 90-verify`
+    □ zero ✗, and the closing line "everything a visitor touches is working",
+      from `bash scripts/03-provision.sh <ip> --only 90-verify` (read the ✗
+      column, not the total — the number of checks grows as the box does)
     □ a book dropped into the File Box is on the shelf within 60 s
     □ one article opens inside /kiwix/ (not just the root page)
     □ one guide opens and its PDF prints
@@ -631,7 +676,7 @@ any failure. Categories:
     pi/install-ark.sh                       phase runner, lock, summary
     pi/lib/common.sh                        logging, ark_write (compare-first),
                                             apt helpers, http probes, free bytes
-    pi/steps/{10,20,30,40,50,60,70,90}-*.sh the eight phases
+    pi/steps/{10,20,30,40,50,60,65,70,90}-*.sh  the nine phases
     pi/bin/ark-zim-resolve                  catalogue → pinned queue
     pi/bin/ark-zim-download                 flock, resume, size + space guards
     pi/bin/ark-kiwix-library                /kiwix prefix + library.xml rebuild
@@ -641,7 +686,21 @@ any failure. Categories:
     pi/bin/ark-mode                         auto | home | hotspot | test N
     pi/bin/ark-boot-guard                   failsafe hotspot after timeout
     pi/api/main.py                          FastAPI: /api, /search, /board, /files
+    pi/api/ark_db.py                        one connection policy, numbered
+                                            migrations, audit, install marker
+    pi/api/ark_security.py                  scrypt hashing, sessions (digests
+                                            only), CSRF, per-account throttling
+    pi/api/ark_admin.py                     /admin: claim, sign-in, accounts,
+                                            audit — mounted, never on :80
+    pi/api/ark_recover.py                   recovery logic behind the root-only
+                                            wrapper
     pi/nginx/ark.conf                       proxy, captive endpoints, uploads
+    pi/nginx/ark-admin.conf                 :8443 management + :8444 loopback
+                                            setup, unknown Host rejected
+    pi/bin/ark-tls-cert                     the box's own certificate (SANs,
+                                            --show fingerprint, 30-day renew)
+    pi/bin/ark-admin-recover                0700 root:root, runs Python as pi
+    tests/                                  42 pytest tests, throwaway DBs
     pi/systemd/*.service|*.path             the enable-and--now contract
     pi/portal/{index.html,help.html,assets} the dark, no-JS, 44 px UI
     pi/kiwix/catalog.tsv                    ~25 bundles in 3 tiers
@@ -656,11 +715,14 @@ any failure. Categories:
     sudo tail -f /srv/ark/logs/zim-download.log          content progress
     echo full | sudo tee /etc/ark/zim-profile            change profile
     sudo ark-import-calibre-library /srv/ark/imported-library
+    sudo ark-tls-cert --show                             certificate fingerprint
+    sudo ark-admin-recover --list                        locked out (console only)
     curl -s http://127.0.0.1/api/status | python3 -m json.tool
+    .venv/bin/python -m pytest                           the tests, on a Mac
 
   State of the reference box on 2026-10-24 (proof this is achievable):
-    30/30 checks green · 20 collections (86.5 GiB on disk, download queue empty —
-    every bundle fetched, no .part files left) · 1,290
+    every gate check green on that revision · 20 collections (86.5 GiB on disk,
+    download queue empty — every bundle fetched, no .part files left) · 1,290
     books adopted from a Windows Calibre library (schema 27 read by 8.5) · 11
     guides with 11 printable PDFs · 121.6 GiB free · cold-boot failover installed.
     Backup set: tag v1.0.5 → ~/Downloads/Project-Ark (tar.gz + git bundle +

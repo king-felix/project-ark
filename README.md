@@ -4,7 +4,8 @@ A Raspberry Pi 4 that carries a library. It broadcasts its own open Wi-Fi,
 serves a portal at **http://ark.lan**, and works with no internet at all.
 
 Everything a visitor touches is plain HTML — no accounts, no logins, no
-JavaScript required.
+JavaScript required. The one sign-in on the box is the owner's door further
+down, and the portal address does not serve it at all.
 
 ---
 
@@ -23,6 +24,11 @@ JavaScript required.
 
 Addresses: `http://ark.lan` · `http://ark.local` · `http://10.42.0.1`
 
+Everything in that table is public and password-free. The owner's door — the
+sign-in for whoever looks after the box — is a separate address entirely (see
+[The owner's door](#the-owners-door-administrator-access)); it is not a public
+page and it is not a feature a visitor ever has to deal with.
+
 **A plain-English guide for whoever actually uses the box** — every feature, the
 drag-a-book-in workflow, the Windows library migration, health checks and a
 troubleshooting table — lives in [`docs/USING-THE-ARK.md`](docs/USING-THE-ARK.md).
@@ -30,7 +36,7 @@ Keep a copy on a phone or taped inside the lid.
 
 **Building another one, or handing this to someone else?** Start with
 [`docs/REBUILD-ME-ARK.txt`](docs/REBUILD-ME-ARK.txt): the complete blueprint,
-the build order, the 25 traps that cost the most time, and the verification gate.
+the build order, the 26 traps that cost the most time, and the verification gate.
 It is written so an assistant with no memory of this project can rebuild the box
 from an empty card.
 
@@ -66,7 +72,7 @@ bash scripts/03-provision.sh --only 60-portal
 ```
 
 Phases: `10-base` `20-storage` `30-calibre` `40-vault` `50-kiwix` `60-portal`
-`70-network` `90-verify`.
+`65-admin` `70-network` `90-verify`.
 
 ---
 
@@ -205,8 +211,12 @@ cat logs/ark_status.json
 ```
 
 Every service must be `enabled` **and** `active`, every door must answer
-200/302, and 5 GiB must stay free. The receipt is machine-readable so the Mac
-never has to guess.
+200/302, and 5 GiB must stay free. The gate also proves the owner's door is
+where it belongs: `/admin` must be **404** on the public address, both
+management listeners (`:8443`, and `:8444` while the box is unclaimed) must
+answer, the recovery command must be installed, and it reports how many
+administrators still hold a temporary password — without ever printing one.
+The receipt is machine-readable so the Mac never has to guess.
 
 ---
 
@@ -214,7 +224,7 @@ never has to guess.
 
 Most of this repo was written by **Cline**, an AI coding agent, working on a
 real Pi 4B over several days — one page at a time, with every claim checked
-against the running box before it went in. The 25 traps in
+against the running box before it went in. The 26 traps in
 [`docs/REBUILD-ME-ARK.txt`](docs/REBUILD-ME-ARK.txt) are all scars from things
 that actually broke here: a mirror that froze at 66,881 bytes, a downloader that
 wrote full-size files full of holes, a Calibre database that answered 500 for

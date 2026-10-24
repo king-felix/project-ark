@@ -57,6 +57,21 @@ error page), `pi/nginx/ark.conf` (`/admin` → 404 on :80), `pi/steps/60-portal.
 (copies the new modules, checks the 404), `pi/install-ark.sh` (adds the step),
 `README.md`, `.gitignore`, `pytest.ini`.
 
+### Documentation brought into line with the code
+
+Stage 2 made three published statements untrue. They were corrected in the same
+change rather than left to rot:
+
+| Document | Was | Now |
+|---|---|---|
+| `README.md` | "no accounts, no logins" flatly; phase list without `65-admin` | the single sign-in is named and pointed at the owner's-door section; `65-admin` is in the phase list; "Checking it" describes the new gate checks (404 on :80, both listeners, recovery command, temporary-password count) |
+| `docs/USING-THE-ARK.md` | "**It has no logins.**" | "**Reading needs no login**" — anonymous reading/posting/uploading kept as the rule, the one owner's door named and explicitly not on the portal address; cheat sheet gains `ark-tls-cert --show` and `ark-admin-recover --list`; maintainer notes list the nine phases and say where accounts, marker and certificate live |
+| `docs/REBUILD-ME-ARK.txt` | no owner's door in the doors list; "no accounts, no logins, ever"; an eight-phase file map; "30 ✓" | owner's door added to the plan; anonymous **reading** stated as the rule with administration as the single exception; nine phases; admin modules, listeners and recovery command in the file chart; gate categories and definition-of-done corrected |
+| `docs/REBUILD-FROM-BACKUP.txt` | "the gate — must be 30/30 with no ✗" | the gate's actual contract (no ✗ plus the closing line), a one-time owner's-door claim step, an owner's-door sanity check, and four session gotchas (parallel tool calls, apostrophes in commit messages, run `pytest` before tagging, post-tag work is not in the archive) |
+
+No code changed for this; `pytest` was re-run afterwards to confirm the tree
+still does what the documents now say.
+
 ---
 
 ## 3. Defects reproduced against the checkout (evidence, not hearsay)

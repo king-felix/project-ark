@@ -331,6 +331,11 @@ Do this after any power cut, and before you rely on the box for a trip.
    present.
 5. `http://ark.lan/api/status` — space left, and nothing stuck on the same download twice running.
 
+For whoever looks after the box, one more: `https://ark.lan:8443/admin` shows a
+sign-in page. That is the owner's door — it changes the machine, it is never
+part of what a visitor sees, and on a box that has never been claimed it stays
+shut on purpose (`docs/ADMIN.md` explains the one-time claim).
+
 From the box itself, one command prints a receipt with every check:
 
 ```bash
@@ -372,6 +377,8 @@ sudo ark-import-books --status         # how many books are on the shelf
 sudo ark-import-books                  # scan the drop folders now (normally automatic)
 sudo ark-import-calibre-library PATH   # adopt a whole Calibre library
 sudo ark-zim-resolve --profile full    # queue more offline content
+sudo ark-tls-cert --show               # the owner's-door certificate fingerprint
+sudo ark-admin-recover --list          # locked out? console only, never the web
 
 tail -f /srv/ark/logs/zim-download.log # watch downloads
 systemctl list-units 'ark-*' --all     # every Ark service and its state
@@ -382,12 +389,15 @@ sudo reboot
 
 ## 9. What it deliberately does not do
 
-- **It does not touch the internet.** No telemetry, no cloud, no accounts. Content is fetched only
-  when you ask for it, by the machine running the downloader.
-- **It has no logins.** Anyone on the Wi-Fi can read, post and upload. That is the point in a
-  household emergency — and it also means the board and the File Box are not private.
+- **It does not touch the internet.** No telemetry, no cloud, no account anywhere off this box.
+  Content is fetched only when you ask for it, by the machine running the downloader.
+- **Reading needs no login.** Anyone on the Wi-Fi can read, post and upload — that is the point in a
+  household emergency, and it also means the board and the File Box are not private. There is
+  exactly one sign-in on the box: the owner's door on port 8443, which changes the machine itself
+  and is never served on the portal address. A visitor never sees it, and nothing a visitor does
+  asks them who they are.
 - **It does not need JavaScript** for anything that matters: search, reading, uploading and
-  posting are plain HTML forms.
+  posting are plain HTML forms — and so is the owner's door.
 - **It is not a backup.** Everything lives on one SD card. Keep the originals on the PC, and keep
   a copy of the library folder somewhere else.
 - **Not built yet** (candidates, not promises): a planting calendar, an offline map pack, a photo
@@ -400,9 +410,15 @@ sudo reboot
 - Everything lives under `/srv/ark` — `kiwix/` (collections), `calibre-library/` (books),
   `vault/` (manuals and PDFs), `drop/files/` (File Box), `calibre-incoming/` (staging),
   `portal/` (front page), `logs/`.
+- The owner's door keeps its accounts in `/srv/ark/api/data/ark.db`, with the marker file
+  `ark.installed` beside it (that marker is what turns a wiped database into
+  "recovery-required" instead of a fresh default password). Its certificate lives under
+  `/etc/ssl/ark/` (`ark-admin.crt`, and `ark-admin.key` at 0600 root:root), and the only offline
+  way back in is `/usr/local/sbin/ark-admin-recover` (root-only, console-only).
+  `docs/ADMIN.md` is the whole story.
 - Provisioning is phase-based and idempotent: `scripts/03-provision.sh <host> --only <phase>`.
-  Phases: `10-base` `20-storage` `30-calibre` `40-vault` `50-kiwix` `60-portal` `70-network`
-  `90-verify`.
+  Phases: `10-base` `20-storage` `30-calibre` `40-vault` `50-kiwix` `60-portal` `65-admin`
+  `70-network` `90-verify`.
 - Every service is `enable`d and started, so a cold boot with nobody present still produces a
   working hotspot and portal. The expected unit list is in the repo README.
 - The book importer is a `systemd` path unit (`ark-book-import.path`), not a timer — it reacts to
