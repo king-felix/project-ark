@@ -108,8 +108,16 @@ The library page picks up new collections without a restart.
 
 Only one downloader may run at a time (it holds
 `/srv/ark/kiwix/state/downloader.lock`: two copies corrupt each other's `.part`
-files). A `.zim` that is present but truncated is *not* counted as installed —
-the resolver compares on-disk size with the catalogue and re-fetches it.
+files). Files are pulled **single-stream** — `wget -c`, then `curl -C -` — because
+the mirrors behind the redirector freeze when asked for several connections; a
+`.part` stuck at the same byte count forever is the signature.
+
+A `.zim` that is present but truncated, or full-sized but not readable, is *not*
+counted as installed: the downloader compares on-disk size with the catalogue,
+compares allocated blocks (`du -B1`) with the claimed size to catch hole-filled
+files, and only trusts a bundle once `library.xml` lists it. Anything suspect is
+moved to `/srv/ark/quarantine` and fetched again. While a bundle is in flight the
+home strip shows a live `n% of <name> (x GB of y GB)`.
 
 ### Book library notes
 

@@ -429,6 +429,11 @@ popup resolves to the portal instead of a "no internet" dead end.
     never trust size alone: compare `du -B1` (blocks on disk) with `stat -c %s`
     and treat anything below 98% as corrupt, then prove the bundle appears in
     library.xml before writing the "have" marker.
+    Reporting, same file: the fetcher must run as a BACKGROUND job and a 5 s
+    loop rewrites status.json every 15 s with `current_bytes` + `current_total`
+    (the API turns those into a percent). Run the fetcher in the foreground and
+    the home strip has nothing to say for the hour a 4 GiB bundle takes — that
+    is how "is it stuck?" gets asked 20 times.
 
 ================================================================================
 8. CONTENT: A CATALOGUE, NOT A LIST OF URLS
