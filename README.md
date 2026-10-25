@@ -165,7 +165,7 @@ SHA-256 fingerprint). The same certificate serves the player's secure origin
 with the browser before you trust it — see `docs/ADMIN.md` for the exact steps,
 the session rules and what is deliberately *not* in this release yet.
 
-Tests (no Pi needed, throwaway databases only; the current suite is 240 tests):
+Tests (no Pi needed, throwaway databases only; the current suite is 248 tests):
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r tests/requirements.txt
@@ -252,6 +252,13 @@ own upload endpoint. The File Box copy stays where it is (so the download link
 somebody was given keeps working), `calibre-incoming/done` is never rescanned,
 and the ledger in `calibre-incoming/.imported.json` is keyed by sha256, so the
 same book dropped twice under two names is imported once.
+
+**What the File Box lists.** `http://ark.lan/files` offers only the files that are
+really in the shared folder. A record whose file has gone — a records-only restore,
+or a folder tidied by hand — is not shown and is not counted, because a link that
+answers 404 is worse than a file that is missing. The record itself stays until the
+owner deletes it on **Community → Shared files**, where the audit line reads *"the
+file was already gone"*; nothing tidies itself.
 
 ### Getting books onto it
 
@@ -344,6 +351,12 @@ stick or a computer. The page for the day the card does not boot is
 while the box still runs) — a phone, a card reader and a working card is enough.
 There is no timer on purpose: a nightly copy that quietly fills the card the box
 reads from is a defect, not a feature.
+
+Each finished copy is handed to the owner of the folder it was written into, so
+the box's own pages can read it back — **What is working → Latest copy** shows the
+date and what it holds. A copy the pages are not allowed to open is reported as
+exactly that, never as "no copy", and re-running phase `95-backup` hands an older
+one over.
 
 ---
 

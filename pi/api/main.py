@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import html
 import mimetypes
-import os
 import re
 import sqlite3
 import urllib.error
@@ -690,10 +689,8 @@ def _present(rows) -> list:
     rows are shown unfiltered rather than telling somebody nothing was ever
     shared.
     """
-    folder = ark_storage.drop_dir()
-    try:
-        names = {entry.name for entry in os.scandir(folder) if entry.is_file()}
-    except OSError:
+    names = ark_storage.present_names()
+    if names is None:
         return list(rows)
     return [row for row in rows if _stored_name(row) in names]
 

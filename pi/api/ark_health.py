@@ -405,8 +405,8 @@ def files_section() -> dict:
             content=False)
     try:
         with ark_db.read() as conn:
-            total = int(conn.execute(
-                "SELECT COUNT(*) FROM files WHERE hidden = 0").fetchone()[0])
+            rows = conn.execute(
+                "SELECT stored, name FROM files WHERE hidden = 0").fetchall()
     except Exception as exc:
         return _section(
             "files", "File Box", False,
@@ -419,15 +419,43 @@ def files_section() -> dict:
             "files", "File Box", False,
             "The shared folder cannot be opened.",
             "The card may be failing.  Copy the shared folder off before doing anything "
-            "else, then rebuild the box from the backup sheet.", files=total)
-    if uploads_open:
-        reason = (f"{total} file{'s' if total != 1 else ''} shared, and anyone can add "
-                  "another.")
-    else:
-        reason = (f"{total} file{'s' if total != 1 else ''} can still be downloaded; new "
-                  "uploads are switched off by the owner.")
-    return _section("files", "File Box", True, reason, "", files=total,
-                    uploads=uploads_open)
+            "else, then rebuild the box from the backup sheet.", files=len(rows))
+    # The number a reader is offered must be the number this page stands behind:
+    # a row can outlive its file (a restore of the records onto an empty File Box
+    # is a supported way to make exactly that), and counting rows told the owner
+    # "1 file shared" while the portal said the box was empty.
+    names = ark_storage.present_names()
+    total = len(rows)
+    gone = 0
+    if names is not None:
+        present = [1 for row in rows if (row["stored"] or row["name"]) in names]
+        total, gone = len(present), len(rows) - len(present)
+    elif rows:
+        gone = None                     # the folder could not be listed: unknown, not zero
+    facts = {"files": total, "files_missing": gone, "uploads": uploads_open}
+    if total:
+        if uploads_open:
+            reason = (f"{total} file{'s' if total != 1 else ''} shared, and anyone can add "
+                      "another.")
+        else:
+            reason = (f"{total} file{'s' if total != 1 else ''} can still be downloaded; new "
+                      "uploads are switched off by the owner.")
+        return _section("files", "File Box", True, reason, "", **facts)
+    if gone:
+        return _section(
+            "files", "File Box", False,
+            f"Nothing here can be opened: {gone} record{'s' if gone != 1 else ''} "
+            f"{'are' if gone != 1 else 'is'} left over from "
+            f"{'files' if gone != 1 else 'a file'} that "
+            f"{'have' if gone != 1 else 'has'} gone.",
+            "Open the Community page and delete the leftover record under Shared files — "
+            "the file itself is already gone, so nothing else is lost.",
+            content=False, **facts)
+    reason = ("Nobody has shared a file yet" +
+              (", and anyone can add the first one." if uploads_open
+               else "; new uploads are switched off by the owner."))
+    return _section("files", "File Box", True, reason, "", **facts)
+
 
 
 def storage_section() -> dict:
@@ -563,28 +591,44 @@ def downloads_section() -> dict:
         "nothing is in flight this second.", "", **facts)
 
 
-def copies() -> list[dict]:
-    """The finished copies on the card, oldest first.  Unreadable ones are skipped.
+def _scan_copies() -> tuple[list[dict], list[str]]:
+    """The finished copies on the card, and the ones this page may not open.
 
     Only folders that carry a manifest count as a copy: a folder left behind by a
     run that died is not one, and calling it one would be the same lie as a green
     dot that cannot be wrong.
+
+    A copy this page cannot *read* is a third thing, and it is not "no copy":
+    ``sudo ark-backup`` used to publish a ``root:root`` bundle inside a folder the
+    box's own pages open as ``pi``, so **Latest copy** said none had ever been
+    made beside a copy that existed.  That shape is reported, never swallowed.
     """
-    found = []
+    found: list[dict] = []
+    blocked: list[str] = []
+    folder = backup_dir()
     try:
-        candidates = sorted(backup_dir().iterdir())
+        candidates = sorted(folder.iterdir())
+    except FileNotFoundError:
+        return found, blocked
     except OSError:
-        return []
+        return found, [str(folder)]
     for path in candidates:
         name = path.name
         if not name.startswith("ark-backup-") or name.endswith(".partial"):
             continue
         manifest = path / "manifest.json"
         try:
-            if not manifest.is_file():
-                continue
-            data = json.loads(manifest.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+            raw = manifest.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            continue                     # not a finished copy
+        except PermissionError:
+            blocked.append(name)         # a copy is there; this page cannot open it
+            continue
+        except OSError:
+            continue
+        try:
+            data = json.loads(raw)
+        except ValueError:
             continue
         if not isinstance(data, dict):
             continue
@@ -597,7 +641,18 @@ def copies() -> list[dict]:
                       "players": counts.get("players"),
                       "player_saves": counts.get("player_saves")})
     found.sort(key=lambda c: (c["age_hours"] is None, -(c["age_hours"] or 0)))
-    return found
+    return found, blocked
+
+
+def copies() -> list[dict]:
+    """The finished copies this page can read, newest first."""
+    return _scan_copies()[0]
+
+
+def copies_unreadable() -> list[str]:
+    """Copies on the card that this page is not allowed to open."""
+    return _scan_copies()[1]
+
 
 
 def _age_hours(created: str, path: Path) -> float | None:
@@ -633,7 +688,16 @@ COPY_STALE_HOURS = 24 * 7
 
 def backup_section() -> dict:
     """Is there a copy of the records, and how much has happened since?"""
-    found = copies()
+    found, blocked = _scan_copies()
+    if not found and blocked:
+        return _section(
+            "backup", "Latest copy", False,
+            "There is a copy on the card, but the box's own pages are not allowed to open "
+            "it, so how old it is cannot be checked.",
+            "Ask whoever looks after the box to run: sudo ark-backup --list  (they will "
+            "see the copy; a copy taken from now on will show up here by itself).",
+            copies=0, unreadable=len(blocked), last_age_hours=None,
+            messages=None, shared_files=None)
     if not found:
         return _section(
             "backup", "Latest copy", False,
@@ -641,7 +705,7 @@ def backup_section() -> dict:
             "a card that stopped working today would take them with it.",
             "A copy is made on the box with: sudo ark-backup --to /srv/ark/backup  "
             "(it says what it copied and where it put it).", content=False,
-            copies=0, last_age_hours=None, messages=None, shared_files=None)
+            copies=0, unreadable=0, last_age_hours=None, messages=None, shared_files=None)
     newest = found[-1]
     messages, shared = newest["messages"], newest["shared_files"]
     players, saves = newest.get("players"), newest.get("player_saves")
@@ -655,9 +719,11 @@ def backup_section() -> dict:
     if saves is not None:
         held.append(f"{saves} game save{'' if saves == 1 else 's'}")
     holds = f" — {', '.join(held)}" if held else ""
-    facts = {"copies": len(found), "last_age_hours": newest["age_hours"],
+    facts = {"copies": len(found), "unreadable": len(blocked),
+             "last_age_hours": newest["age_hours"],
              "last_created": newest["created"], "messages": messages,
              "shared_files": shared, "players": players, "player_saves": saves}
+
     if newest["age_hours"] is not None and newest["age_hours"] > COPY_STALE_HOURS:
         return _section(
             "backup", "Latest copy", False,

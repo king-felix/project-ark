@@ -134,6 +134,41 @@ def free_name(dest: Path, stamp: str) -> str:
     return name
 
 
+def _give_to_owner(dest: Path, targets) -> None:
+    """chown those paths to whoever owns ``dest`` — root only, never fatal."""
+    if os.geteuid() != 0:
+        return
+    try:
+        owner = dest.stat()
+    except OSError:
+        return
+    for target in targets:
+        try:
+            os.chown(target, owner.st_uid, owner.st_gid)
+        except OSError:                  # noqa: BLE001 — a copy is not worth failing over
+            pass
+
+
+def _adopt(tree: Path, dest: Path) -> None:
+    """Hand a bundle to whoever owns the folder it is published in.
+
+    ``sudo ark-backup`` runs as root, so a bundle made that way would be
+    ``root:root 0700`` inside a ``pi:pi 0700`` folder: the copy is fine for a
+    restore run as root, but the box's own pages run as ``pi`` and could not open
+    it — so **Latest copy** said none had ever been made beside a copy that was
+    sitting right there.  The folder already carries the right answer (it is
+    ``0700 pi:pi``, made by phase 8), so the bundle is given the folder's owner.
+
+    Only root can chown, and only root needs to: when the tool is run as ``pi``
+    the bundle is already ``pi``'s.
+    """
+    targets = [tree]
+    for base, _dirs, names in os.walk(tree):
+        targets.append(base)
+        targets.extend(os.path.join(base, name) for name in names)
+    _give_to_owner(dest, targets)
+
+
 # ---------------------------------------------------------------------------
 #  taking one
 # ---------------------------------------------------------------------------
@@ -168,6 +203,7 @@ def take(dest: Path, keep: int, no_files: bool, quiet: bool, dry: bool) -> int:
     dest.mkdir(parents=True, exist_ok=True)
     os.chmod(dest, 0o700)
     with open(dest / ".lock", "w") as lock:
+        _give_to_owner(dest, [dest / ".lock"])     # the lock belongs to the box too
         try:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
@@ -227,6 +263,9 @@ def take(dest: Path, keep: int, no_files: bool, quiet: bool, dry: bool) -> int:
                            "administrators": _count(copied_db, "SELECT COUNT(*) FROM admins")},
             }
             bundle_tools.write_manifest(partial, data)
+            # The bundle belongs to the box, not to root: the pages that report
+            # copies run as pi, and a root-only bundle reads as "no copy yet".
+            _adopt(partial, dest)
             os.replace(partial, final)          # publish by rename: no half backups
         except BaseException:
             shutil.rmtree(partial, ignore_errors=True)

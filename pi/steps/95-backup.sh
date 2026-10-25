@@ -21,6 +21,29 @@ BACKUP_DIR="$ARK_ROOT/backup"
 # 0700 pi:pi on purpose: a bundle holds the accounts table, not just messages.
 ark_ensure_dir "$BACKUP_DIR" 700 "$ARK_PI_USER:$ARK_PI_GROUP"
 
+# A bundle written by root (every `sudo ark-backup`) used to come out root:root,
+# inside a folder the box's own pages open as pi — so "Latest copy" said none had
+# ever been made while a copy sat right there.  The tool now hands each new bundle
+# to the folder's owner; this hands over the ones that already exist, so running
+# this phase again is the whole repair.
+adopted=0
+kept=0
+while IFS= read -r -d '' bundle; do
+  if chown -R "$ARK_PI_USER:$ARK_PI_GROUP" "$bundle" 2>/dev/null; then
+    adopted=$((adopted + 1))
+  else
+    kept=$((kept + 1))
+  fi
+done < <(find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d -name 'ark-backup-*' -print0)
+# The lock file, if a run has made one: same reason, and it is not fatal either.
+chown "$ARK_PI_USER:$ARK_PI_GROUP" "$BACKUP_DIR/.lock" 2>/dev/null || true
+if (( kept )); then
+  ark_warn "$kept existing copy/copies could not be handed to $ARK_PI_USER, so the owner page will not see them"
+fi
+if (( adopted )); then
+  ark_ok "handed $adopted existing copy/copies to $ARK_PI_USER so the owner page can read them"
+fi
+
 # ---- the two tools ----------------------------------------------------------
 # ark-backup and ark-restore are thin: the layout, the manifest and the path
 # rules live in ark_bundle.py, and both tools import it from their own folder.

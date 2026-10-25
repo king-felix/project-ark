@@ -2,7 +2,7 @@
 
 **Date:** 25 October 2026  
 **Branch:** `feature/admin-hardening`  
-**Suite:** `240 passed` (`python -m pytest -o addopts='--strict-markers' -q`, Mac, throwaway databases)  
+**Suite:** `248 passed` (`python -m pytest -o addopts='--strict-markers' -q`, Mac, throwaway databases)  
 **Hardware:** **deployed 25 Oct 2026** — `90-verify` green, `/api/ready` 200, the doors, the book
 route rules, a bundle and the arcade origin all answered on the Pi (`docs/IMPLEMENTATION-LOG.md`
 §15). No claim below should still be read as "a person has used it"; the phone walk-through in
@@ -324,6 +324,8 @@ ones named in `docs/IMPLEMENTATION-LOG.md` §8.5 and §8.9.
 | Network-loss failover every minute, pins respected, never drops a reader | **done + tested against fakes**; never acted on real hardware |
 | Backup bundle, verify, restore with quiesce/resume, recovery sheet | **done + tested on the Mac**; never on the Pi |
 | Upload/import/board/search safety fixes | **done + tested** |
+| A page offers only files it can really open: `/files` and the owner page count openable files, and a leftover record is reported as *"Nothing here can be opened"*, never counted as content | **done + tested** (`test_storage.py`, `test_health.py`); the plain sentence has not been seen in a browser, and the fix is **not yet deployed** |
+| A copy taken with `sudo` is handed to the folder's owner so the box's own pages can read it; a copy they may not open is reported as exactly that, never as "no copy" | **done + tested** (`test_backup.py`, `test_health.py`); not yet deployed |
 | Thermal/undervoltage/failed-job signals in health | **absent** — readiness covers content, service, storage, copy and network, not the board's temperature |
 | True end-to-end search deadline that cancels late workers | **partial** — pool of 6, late answer discarded but the thread keeps its slot |
 | Download integrity and indexability checked before a title is marked ready | **partial** — shape and hash at install, no boot/index check |
@@ -369,6 +371,9 @@ evidence about the box.
 
 1. **Deploy and walk through stages 2–6 + arcade** (`docs/IMPLEMENTATION-LOG.md` §8.9).
    Nothing below is worth more than this, because every DONE row is unproven on hardware.
+   The deploy has happened (§8.12a); what remains is the phone walk-through and a
+   `--only 60-portal,95-backup` redeploy for the two page-truth fixes found afterwards
+   (§16.2–16.3 of `docs/IMPLEMENTATION-LOG.md`).
 2. **R5 admission policy** — default both public switches to closed on a fresh box, add a
    `pending` state and an owner approval step, keep reading/downloading open, and write the
    test that proves a closed box still serves everything already published. This is a small

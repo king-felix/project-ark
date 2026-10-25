@@ -229,9 +229,9 @@ says **why not** in a sentence you can act on.
 | Books | the shelf has a real catalogue **and** the shelf page answered |
 | Manuals & Guides | the manual pages are installed (plain files — nothing to serve) |
 | Message Board | the board can be read (whether or not posting is switched on) |
-| File Box | the shared folder exists and can be opened (whether or not uploads are on) |
+| File Box | the shared folder exists, can be opened, and holds at least one file a reader can actually open (whether or not uploads are on) |
 | Space on the card | at least 512 MiB is still free |
-| Latest copy | a finished copy of the records exists and is less than a week old |
+| Latest copy | a finished copy of the records exists, can be opened by the box's own pages, and is less than a week old |
 | Incoming collections | work in progress — reported, but never counted as a fault |
 
 Two distinctions the page is careful about, because they are the whole point:
@@ -243,6 +243,23 @@ Two distinctions the page is careful about, because they are the whole point:
 * **Downloading is not a fault.** A queue that is working, paused, or empty
   never makes the box un-ready. Only a queue that has gone silent for over two
   minutes is reported, and even then it does not block reading.
+
+Two more things the page will not pretend about, both found on the live box:
+
+* **A shared file whose file has gone.** The list of shared files and this page
+  count the files a reader can actually *open*, not the records in the database.
+  A record can outlive its file without anything being corrupt — putting the
+  records back with `ark-restore --no-files` onto an empty File Box does exactly
+  that — so when every record is left over the page says *"Nothing here can be
+  opened: 1 record is left over from a file that has gone"* and sends you to
+  **Community → Shared files** to delete the leftover record. Nothing deletes
+  itself, and the portal never offers a link that answers 404.
+* **A copy the pages may not open.** If a copy exists on the card but the box's
+  own pages are not allowed to look inside it (that is what `sudo ark-backup`
+  used to leave behind), the page says so instead of saying no copy has been
+  made. It cannot read the age, so it does not invent one. Taking a fresh copy,
+  or re-running phase `95-backup`, hands the existing one over to the box's own
+  account.
 
 Each entry ends with **What to do:** when there is something to do, and the
 page states plainly that *nothing on this page has been changed* — it only
@@ -476,7 +493,7 @@ Community controls and the readiness page are complete and tested.
 
 ## 12. Tested / not tested
 
-**Tested** — 240 automated tests, disposable databases, `pytest` (the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md`):
+**Tested** — 248 automated tests, disposable databases, `pytest` (the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md`):
 
 * bootstrap account exists once; a wiped database becomes recovery-required
   instead of re-creating the default; the marker lives outside the database;

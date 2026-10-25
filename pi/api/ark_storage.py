@@ -78,6 +78,21 @@ def ensure_dirs(root: Path | None = None) -> None:
         folder.mkdir(parents=True, exist_ok=True)
 
 
+def present_names(root: Path | None = None) -> set[str] | None:
+    """The names really in the shared folder — ``None`` if it cannot be read.
+
+    A row in the records and a file on the card are two different facts, and the
+    box creates the difference on purpose: ``ark-restore --no-files`` puts the
+    records back on a card whose File Box is empty.  So anything that offers a
+    download asks the folder as well as the records.  ``None`` is not an empty
+    box: it means the folder could not be read, which is a different sentence.
+    """
+    try:
+        return {entry.name for entry in os.scandir(drop_dir(root)) if entry.is_file()}
+    except OSError:
+        return None
+
+
 # ---------------------------------------------------------------------------
 #  names
 # ---------------------------------------------------------------------------

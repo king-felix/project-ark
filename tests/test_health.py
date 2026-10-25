@@ -11,11 +11,14 @@ from __future__ import annotations
 
 import http.server
 import json
+import os
 import shutil
 import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
 from html import escape as html_escape
+
+import pytest
 
 from helpers import BIG_PASSWORD, LAN, claim_box, get
 
@@ -323,6 +326,89 @@ def test_the_owner_page_says_where_the_room_went(client, ark):
 
 
 # ---------------------------------------------------------------------------
+#  the File Box: a record and a file are two different facts
+# ---------------------------------------------------------------------------
+def _shared(ark, *, stored: str, on_disk: bool = True) -> None:
+    """A shared file the way ``ark_storage.spool()`` records one."""
+    with ark.db.tx() as conn:
+        conn.execute(
+            "INSERT INTO files (ts, name, stored, display, size, sha256) "
+            "VALUES (?,?,?,?,?,?)",
+            ("2026-10-25T00:00:00+00:00", stored, stored, stored, 11, "0" * 64))
+    if on_disk:
+        (ark.root / "drop" / "files" / stored).write_bytes(b"payload....")
+
+
+def test_the_file_box_counts_the_files_a_reader_can_open(ark):
+    """A row whose file has gone is not a file the owner can say is shared.
+
+    ``ark-restore --no-files`` puts the records back on a card whose File Box is
+    empty, and a folder tidied by hand leaves rows behind, so the difference is
+    supported rather than corrupt.  What must not happen is the owner's page
+    counting the rows and claiming a file the portal cannot offer.
+    """
+    import ark_health
+
+    _shared(ark, stored="aaaa1111-it-is-here.txt")
+    _shared(ark, stored="bbbb2222-its-file-went.txt", on_disk=False)
+
+    section = _section(ark_health.report(), "files")
+    assert section["ready"] is True
+    assert section["facts"]["files"] == 1          # what a reader can open
+    assert section["facts"]["files_missing"] == 1  # said out loud, never hidden
+    assert "1 file shared" in section["reason"]
+
+
+def test_a_file_box_with_nothing_openable_says_so_plainly(ark):
+    """Every row is a leftover: the page names it and says what to do about it."""
+    import ark_health
+
+    _shared(ark, stored="cccc3333-gone.txt", on_disk=False)
+
+    section = _section(ark_health.report(), "files")
+    assert section["ready"] is False
+    assert section["content"] is False             # empty, not broken
+    assert section["facts"]["files"] == 0
+    assert section["facts"]["files_missing"] == 1
+    assert "Nothing here can be opened" in section["reason"]
+    assert "1 record is left over" in section["reason"]
+    assert "delete the leftover record" in section["action"]
+    for jargon in ("row", "record not found", "404", "orphan", "SQLite"):
+        assert jargon not in section["reason"], jargon
+
+
+def test_an_unreadable_folder_is_not_an_empty_one(ark, monkeypatch):
+    """If the folder cannot be listed, the count is unknown — never zero."""
+    import ark_health
+    import ark_storage
+
+    _shared(ark, stored="dddd4444-present.txt")
+    _shared(ark, stored="eeee5555-unknown.txt", on_disk=False)
+    monkeypatch.setattr(ark_storage, "present_names", lambda root=None: None)
+
+    section = _section(ark_health.report(), "files")
+    assert section["ready"] is True
+    assert section["facts"]["files"] == 2          # the rows, unfiltered
+    assert section["facts"]["files_missing"] is None
+    assert "cannot be opened" not in section["reason"]
+
+
+def test_the_file_box_refresh_agrees_with_the_listing(public):
+    """The portal's row count and the owner page's count are the same number."""
+    ark = public.ark
+    _shared(ark, stored="ffff6666-here.txt")
+
+    page = get(public.client, "/files")
+    assert page.status_code == 200
+    assert "here.txt" in page.text
+
+    import ark_health
+
+    section = _section(ark_health.report(), "files")
+    assert section["facts"]["files"] == 1
+
+
+# ---------------------------------------------------------------------------
 #  is there a copy that could put the records back?
 # ---------------------------------------------------------------------------
 def _copy_into(root, *, hours_ago: float, messages: int = 12, shared: int = 4):
@@ -382,3 +468,34 @@ def test_a_half_written_copy_is_not_counted_as_one(ark):
     (left / "database" / "ark.db").write_bytes(b"half")
     assert ark_health.copies() == []
     assert _section(ark_health.report(), "backup")["ready"] is False
+
+
+def test_a_copy_the_pages_cannot_open_is_reported_not_denied(ark):
+    """A copy that exists must never be reported as no copy at all.
+
+    ``sudo ark-backup`` publishes as root; the pages that read the folder run as
+    ``pi``.  That combination made **Latest copy** say "no copy has been made yet"
+    beside a bundle that was sitting right there.  The tool now hands each bundle
+    to the folder's owner (``tests/test_backup.py`` proves it), and this is the
+    other half: if a copy is there and still cannot be opened, the page says so.
+    """
+    import ark_health
+
+    bundle = _copy_into(ark.root, hours_ago=2)
+    bundle.chmod(0o000)
+    try:
+        if os.access(str(bundle / "manifest.json"), os.R_OK):
+            pytest.skip("this user can read anything — 000 permissions prove nothing")
+        assert ark_health.copies() == []
+        assert ark_health.copies_unreadable() == [bundle.name]
+
+        section = _section(ark_health.report(), "backup")
+        assert section["ready"] is False
+        assert "not allowed to open it" in section["reason"]
+        assert "No copy" not in section["reason"]
+        assert section["facts"]["copies"] == 0
+        assert section["facts"]["unreadable"] == 1
+        assert "ark-backup --list" in section["action"]
+        assert section["label"] not in ark_health.report()["blocking"]
+    finally:
+        bundle.chmod(0o755)                # so the fixture can tidy up

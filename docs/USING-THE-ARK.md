@@ -204,6 +204,12 @@ own place on the box, and the name you see is just a label on it. An empty uploa
 over 2 GB are refused with a sentence telling you which, and the box always keeps a little space
 in reserve so it can never fill its own card so completely that it stops working.
 
+**Every name in this list really opens.** If the file behind a name has gone (someone tidied the
+folder, or the notes were put back on a fresh card without the files), the name is not shown to
+you — a link that leads nowhere is worse than a file that is missing. The owner sees the leftover
+name on the **What is working** page, as *“Nothing here can be opened”*, and removes it from the
+**Shared files** list there.
+
 **The clever part:** if the file you drop in is a book — `.epub`, `.pdf`, `.mobi`, `.azw3`,
 `.fb2`, `.djvu`, `.cbz` and friends — it is picked up within seconds and filed onto the book
 shelf automatically. No command, no second step. The copy in the File Box stays put so the link

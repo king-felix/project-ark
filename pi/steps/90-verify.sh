@@ -265,6 +265,13 @@ else
     say_ok "latest copy" "$(basename "$backup_newest") — ${backup_age_h}h old"
   fi
   say_soft "copies kept" "$backup_copies in $ARK_ROOT/backup"
+  # This report runs as root, so it can open a copy the box's own pages cannot.
+  # That is exactly how a root:root bundle passed this gate while "What is
+  # working" said no copy had ever been made.  Ask as the account the pages use.
+  if ! runuser -u "$ARK_PI_USER" -- test -r "$backup_newest/manifest.json" 2>/dev/null; then
+    say_soft "copy readable" \
+      "the pages cannot open $(basename "$backup_newest") — re-run phase 95-backup to hand it over"
+  fi
 fi
 if [[ -f "$ARK_ROOT/RECOVERY-SHEET.txt" ]]; then
   say_ok "recovery sheet" "printed copy at $ARK_ROOT/RECOVERY-SHEET.txt"

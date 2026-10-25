@@ -969,3 +969,104 @@ phone walk-through in `.clinerules` §8.9 item 2 is the next human step, and the
 owner's admin account is still unclaimed (`1 account, 1 still using a temporary
 password`).
 
+
+## 16. File Box truth-telling, and who owns a copy — 25 Oct 2026
+
+**`pytest` 248 passed (15 files)** — eight new tests (§16.4). Three defects, all
+found by reading what the box said about itself after it was serving. None of the
+three could be seen from the code alone: each one needed a box that had been used.
+
+### 16.1 A link that could not open (fixed, deployed)
+
+`/files` offered a row whose file was not in `drop/files`; the link answered
+**404**. A row can outlive its file without anything being corrupted —
+`ark-restore --no-files` puts the records back on a card whose File Box is empty,
+and a folder tidied by hand does the same — so this was a **page** defect, not a
+database defect, and the fix belongs in the pages.
+
+* `pi/api/ark_storage.py::present_names(root=None)` is now the one place that
+  answers "what is really in the shared folder?" — a set of names, or **`None`**
+  when the folder cannot be read (the `None` rule, §8.7: an unreadable folder is
+  not an empty one).
+* `main._present()` filters the listing *and the count above it* through it, so
+  the number a reader sees is the number of links that open. `tests/test_storage.py`
+  mirrors the long-standing "file on disk without a row" test with
+  `test_a_row_whose_file_has_gone_is_not_offered_to_the_reader`.
+* The row itself is **kept**. The owner's Community page is where a file that has
+  gone is noticed and deleted, and its audit line already reads *"record removed;
+  the file was already gone"*. Nothing here deletes a record or a file on its own
+  — that would be data loss wearing a maintenance costume.
+
+### 16.2 The owner page counted records, not files (fixed)
+
+`files_section()` in `ark_health` counted rows, so **What is working** could say
+*"1 file shared"* while the portal was empty. Two pages disagreeing about the same
+folder is exactly the stage-4 defect in a smaller place.
+
+* The section now selects the rows, filters them through
+  `ark_storage.present_names()`, and reports `files` (what a reader can open),
+  `files_missing` (records whose file has gone) and `uploads` (the switch).
+* Every row left over and nothing openable is **not ready**, `content: false`
+  (empty, not broken) and says: *"Nothing here can be opened: 1 record is left
+  over from a file that has gone."* — action: open the Community page and delete
+  the leftover record. No `404`, no `row`, no `orphan`, no `SQLite` in that
+  sentence (§5).
+* An unreadable folder gives `files_missing: None` and the unfiltered count, never
+  a zero.
+
+### 16.3 The copy the pages could not open (fixed)
+
+The deploy took its first bundle with `sudo ark-backup --to /srv/ark/backup`. The
+bundle was whole and `--verify` proved every byte — and **Latest copy** on the
+owner page said *no copy has been made yet*. Both statements were about the same
+folder, and the page was wrong for a boring reason: the folder is `0700 pi:pi`,
+the bundle inside it was `root:root 0700`, and the page runs as `pi`.
+
+* `ark-backup` now hands each published bundle (and its lock file) to **the owner
+  of the destination folder** — `_give_to_owner()` / `_adopt()` in
+  `pi/bin/ark-backup`, root only, never fatal. Using the folder's owner rather
+  than a hard-coded `pi` also means a copy written onto a USB stick belongs to
+  whoever can read the stick.
+* `pi/steps/95-backup.sh` hands over the bundles that **already exist**, so
+  re-running phase 8 is the whole repair for copies taken before this fix.
+* `ark_health._scan_copies()` now returns two lists: the copies it can read, and
+  the copies it may not open. `copies_unreadable()` is the second one, and
+  `backup_section()` reports it as *"There is a copy on the card, but the box's
+  own pages are not allowed to open it, so how old it is cannot be checked."* —
+  with `unreadable: 1` in the facts. "A copy I cannot read" is a third state and
+  must never collapse into "no copy"; that is §8.7's `None` rule again.
+* `90-verify.sh` now asks the same question the page asks, **as `pi`**, with
+  `runuser -u "$ARK_PI_USER" -- test -r …/manifest.json`. It runs as root, which
+  is exactly why it passed a bundle the page could not open; the mismatch is now
+  reported softly (*"the pages cannot open … — re-run phase 95-backup"*).
+
+### 16.4 The tests that hold all three
+
+| Test | Proves |
+|---|---|
+| `test_health.py::test_the_file_box_counts_the_files_a_reader_can_open` | one row + one file → `files: 1`, `files_missing: 1`, ready, *"1 file shared"* |
+| `test_health.py::test_a_file_box_with_nothing_openable_says_so_plainly` | only leftover rows → not ready, `content: false`, the plain sentence, the delete instruction, no jargon |
+| `test_health.py::test_an_unreadable_folder_is_not_an_empty_one` | `present_names() → None` → unfiltered count, `files_missing: None` |
+| `test_health.py::test_the_file_box_refresh_agrees_with_the_listing` | `/files` and the owner page count the same file once |
+| `test_health.py::test_a_copy_the_pages_cannot_open_is_reported_not_denied` | a `000` bundle → `copies: 0`, `unreadable: 1`, "not allowed to open it", still **not** blocking |
+| `test_backup.py::test_a_bundle_made_as_root_is_handed_to_the_box` | every path in the bundle and the lock get the folder's owner |
+| `test_backup.py::test_a_bundle_made_by_the_box_is_left_alone` | run as `pi`, no `chown` is attempted at all |
+| `test_backup.py::test_the_phase_installs_both_tools_and_proves_a_dry_run` | phase 8 still parses, and adopts existing bundles |
+| `test_backup.py::test_the_verifier_asks_whether_the_pages_can_open_the_copy` | `90-verify` asks as `pi`, so the gate can no longer pass a copy the page cannot open — and reports it softly |
+
+### 16.5 Where the box stands
+
+`60-portal` was redeployed after the `/files` fix and proved live: a probe upload
+appeared, downloaded correctly (200, right bytes, right type), and was removed
+through `ark_db.tx()` + `ark_db.audit(action="file-delete")` so the audit trail
+reads like any other delete. The health and ownership fixes in §16.2/§16.3 are
+**committed but not yet on the box** — they need `--only 60-portal,95-backup`,
+which also installs the new `ark-backup`/`ark-restore` and hands over the existing
+bundle `ark-backup-20261025-093643`.
+
+**Still unproven:** nothing here has met a human. The ghost row is still on the
+live box (correctly, waiting for the owner to delete it through the door built
+for it), so the *"Nothing here can be opened"* sentence has never been rendered in
+a browser; and the `root:root` bundle case has only ever been reproduced with a
+`000` directory inside `tests/test_health.py`, never on the Pi.
+

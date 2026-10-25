@@ -30,6 +30,7 @@ REPO = Path(__file__).resolve().parents[1]
 BACKUP = REPO / "pi" / "bin" / "ark-backup"
 RESTORE = REPO / "pi" / "bin" / "ark-restore"
 PHASE = REPO / "pi" / "steps" / "95-backup.sh"
+VERIFY = REPO / "pi" / "steps" / "90-verify.sh"
 SHEET = REPO / "docs" / "RECOVERY-SHEET.txt"
 
 NOTE = "The well by the east field is working again."
@@ -494,6 +495,68 @@ def test_a_dry_run_writes_nothing(tmp_path):
     assert restore(only_bundle(dest), target, "--dry-run").returncode == 0
     assert not (target / "api/data/ark.db").exists()
 
+
+# ---------------------------------------------------------------------------
+#  who owns the copy (the page that reads it runs as pi, not root)
+# ---------------------------------------------------------------------------
+def _backup_tool():
+    """The tool as a module, so its own helpers can be driven directly."""
+    import importlib.machinery
+    import importlib.util
+
+    loader = importlib.machinery.SourceFileLoader("ark_backup_tool", str(BACKUP))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def test_a_bundle_made_as_root_is_handed_to_the_box(tmp_path, monkeypatch):
+    """``sudo ark-backup`` must not leave a copy its own pages cannot open.
+
+    The bundle folder is ``pi:pi 0700``; a root:root bundle inside it read as
+    "no copy has been made yet" on **What is working** — the page was right about
+    the bytes and wrong about the owner.  The tool now gives each bundle (and its
+    lock file) the folder's owner; only root can do that, so this drives the
+    helper as root would.
+    """
+    tool = _backup_tool()
+    dest = tmp_path / "backup"
+    dest.mkdir()
+    tree = dest / "ark-backup-20261025-120000"
+    (tree / "database").mkdir(parents=True)
+    (tree / "database" / "ark.db").write_bytes(b"records")
+    (tree / "manifest.json").write_text("{}", encoding="utf-8")
+    (dest / ".lock").write_text("", encoding="utf-8")
+
+    chowned = []
+    monkeypatch.setattr(tool.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(tool.os, "chown", lambda p, u, g: chowned.append((str(p), u, g)))
+
+    tool._give_to_owner(dest, [dest / ".lock"])
+    tool._adopt(tree, dest)
+
+    owner = dest.stat()
+    wanted = {str(tree), str(tree / "database"), str(tree / "database" / "ark.db"),
+              str(tree / "manifest.json"), str(dest / ".lock")}
+    assert {path for path, _u, _g in chowned} == wanted
+    assert all((u, g) == (owner.st_uid, owner.st_gid) for _p, u, g in chowned)
+
+
+def test_a_bundle_made_by_the_box_is_left_alone(tmp_path, monkeypatch):
+    """Run as ``pi`` there is nothing to hand over, and no chown is attempted."""
+    tool = _backup_tool()
+    dest = tmp_path / "backup"
+    tree = dest / "ark-backup-20261025-120000"
+    tree.mkdir(parents=True)
+
+    def refuse(*args):                      # pragma: no cover — must never run
+        raise AssertionError("chown attempted without root")
+
+    monkeypatch.setattr(tool.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(tool.os, "chown", refuse)
+    tool._adopt(tree, dest)
+
 # ---------------------------------------------------------------------------
 #  the page that works when the box does not
 # ---------------------------------------------------------------------------
@@ -529,3 +592,20 @@ def test_the_phase_installs_both_tools_and_proves_a_dry_run():
     assert "RECOVERY-SHEET" in text
     assert "--dry-run" in text
     assert "ark-backup --to" in text
+    # A copy made by root must be handed to the box, or the page that reports
+    # copies (which runs as pi) cannot open it and says none was ever made.
+    assert 'chown -R "$ARK_PI_USER:$ARK_PI_GROUP" "$bundle"' in text
+    assert "ark-backup-*" in text
+
+
+def test_the_verifier_asks_whether_the_pages_can_open_the_copy():
+    """The deploy's own gate runs as root, so it could read a root:root bundle
+    while "What is working" — which runs as pi — said no copy had ever been
+    made.  A verifier that cannot see the difference reports a healthy box."""
+    done = subprocess.run(["bash", "-n", str(VERIFY)], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    text = VERIFY.read_text(encoding="utf-8")
+    assert 'runuser -u "$ARK_PI_USER" -- test -r "$backup_newest/manifest.json"' in text
+    # ...and it is a soft line: a copy the pages cannot open must not turn a
+    # serving box into a failure.
+    assert 'say_soft "copy readable"' in text
