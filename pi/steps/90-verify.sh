@@ -117,29 +117,25 @@ fi
 # ---- the owner's door --------------------------------------------------------
 check_page "/admin"               "admin stays off the public portal" "404"
 
-adm_code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 15 \
-            https://127.0.0.1:8443/admin -H 'Host: ark.lan' 2>/dev/null || true)"
+adm_code="$(ark_tls_code ark.lan:8443 /admin)"
 case "$adm_code" in
   200|303|403) say_ok "management listener :8443" "HTTP $adm_code" ;;
   *)           say_bad "management listener :8443" "HTTP ${adm_code:-none}" ;;
 esac
 
-loop_code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 15 \
-             https://127.0.0.1:8444/admin -H 'Host: localhost' 2>/dev/null || true)"
+loop_code="$(ark_tls_code localhost:8444 /admin)"
 case "$loop_code" in
   200|303|403) say_ok "loopback setup listener :8444" "HTTP $loop_code" ;;
   *)           say_bad "loopback setup listener :8444" "HTTP ${loop_code:-none}" ;;
 esac
 
-community_code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 15 \
-                   https://127.0.0.1:8443/admin/community -H 'Host: ark.lan' 2>/dev/null || true)"
+community_code="$(ark_tls_code ark.lan:8443 /admin/community)"
 case "$community_code" in
   200|303|403) say_ok "Community page behind the sign-in" "HTTP $community_code" ;;
   *)           say_bad "Community page behind the sign-in" "HTTP ${community_code:-none}" ;;
 esac
 
-games_admin_code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 15 \
-                   https://127.0.0.1:8443/admin/arcade -H 'Host: ark.lan' 2>/dev/null || true)"
+games_admin_code="$(ark_tls_code ark.lan:8443 /admin/arcade)"
 case "$games_admin_code" in
   200|303|403) say_ok "Games page behind the sign-in" "HTTP $games_admin_code" ;;
   *)           say_bad "Games page behind the sign-in" "HTTP ${games_admin_code:-none}" ;;
@@ -221,8 +217,7 @@ printf '   %s books: %s · guides: %s page(s), %s printable\n' "→" "$books" "$
 printf '   %s games: %s on the shelf · %s player name(s), %s save(s)\n' "→" "$games" "$player_names" "$player_saves"
 
 # The player's name/save origin is TLS-only and separate from the management one.
-player_code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 15 \
-  https://127.0.0.1:8445/arcade/player -H 'Host: ark.lan' 2>/dev/null || true)"
+player_code="$(ark_tls_code ark.lan:8445 /arcade/player)"
 if [[ "$player_code" == "200" ]]; then
   say_ok "player sign-in origin" "https://ark.lan:8445 answers"
 else

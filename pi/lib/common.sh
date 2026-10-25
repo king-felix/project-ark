@@ -109,6 +109,26 @@ ark_http_code() { # <url> [extra curl arguments...]
   printf '%s' "${c:-000}"
 }
 
+# A TLS probe must ask by NAME, not by address.  nginx serves the *default*
+# server to a request with no SNI, and the management listener's default server
+# answers `ssl_reject_handshake on` — so `https://127.0.0.1:8443/admin` died in
+# the handshake and curl reported 000 on a perfectly healthy door.  That is how
+# phase 65-admin failed its own proof on 2026-10-25, and three checks in
+# 90-verify failed the same way five minutes later.  --resolve makes curl send
+# SNI=<host> while still connecting to loopback, so nothing has to resolve in
+# DNS and no certificate has to be trusted (-k, it is our own certificate and the
+# fingerprint is printed separately).
+#
+# This lives in common.sh rather than in each step on purpose: the first fix
+# went into 65-admin only, and the same probe in 90-verify then failed the
+# deploy twenty minutes later.  A probe rule written twice is a rule that will
+# disagree with itself.
+ark_tls_code() { # <host:port> <path> [extra curl arguments...]
+  local hp=$1 path=$2
+  shift 2 || true
+  ark_http_code "https://$hp$path" -k --resolve "${hp}:127.0.0.1" "$@"
+}
+
 # A plain-HTTP request to an SSL listener is *rejected* by nginx (400, or 497
 # for "plain HTTP sent to HTTPS port") or the connection does not complete
 # (000).  A completed HTTP response of any other kind means something served

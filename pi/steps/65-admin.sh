@@ -49,6 +49,14 @@ ark_ok "nginx reloaded with the HTTPS management and player listeners"
 # ---- prove the doors --------------------------------------------------------
 say() { printf '   %s %-46s %s\n' "$1" "$2" "$3"; }
 
+# Every TLS probe below asks by name and reaches loopback with --resolve: a
+# request to an address literal carries no SNI, nginx then serves the default
+# server (which refuses the handshake), and curl reports 000 on a healthy door.
+# The helper lives in pi/lib/common.sh so 65-admin and 90-verify cannot drift.
+tls_code() { # <host:port> <path>
+  ark_tls_code "$@"
+}
+
 public_admin="$(ark_http_code http://127.0.0.1/admin)"
 if [[ "$public_admin" == "404" ]]; then
   say "$(printf '\033[1;32m✓\033[0m')" "public :80 refuses /admin" "$public_admin"
@@ -60,33 +68,32 @@ fi
 # TLS liveness and an expected unauthenticated answer are two different facts.
 # /admin must send a stranger to the sign-in (303) or refuse (401/403); a 200
 # here would mean the management pages are readable without signing in.
-code="$(ark_http_code https://127.0.0.1:8443/admin -k -H 'Host: ark.lan')"
+code="$(tls_code ark.lan:8443 /admin)"
 case "$code" in
   303|401|403) say "$(printf '\033[1;32m✓\033[0m')" "management listener :8443 answers, sign-in required" "$code" ;;
-  200)         ark_die "https://127.0.0.1:8443/admin returned 200 without a sign-in" ;;
-  *)           ark_die "https://127.0.0.1:8443/admin returned '$code'" ;;
+  200)         ark_die "https://ark.lan:8443/admin returned 200 without a sign-in" ;;
+  *)           ark_die "https://ark.lan:8443/admin returned '$code'" ;;
 esac
 
 # The Community page sits behind the same sign-in, and must not appear elsewhere.
-code="$(ark_http_code https://127.0.0.1:8443/admin/community -k -H 'Host: ark.lan')"
+code="$(tls_code ark.lan:8443 /admin/community)"
 case "$code" in
   303|401|403) say "$(printf '\033[1;32m✓\033[0m')" "Community page behind the sign-in" "$code" ;;
-  200)         ark_die "https://127.0.0.1:8443/admin/community returned 200 without a sign-in" ;;
-  *)           ark_die "https://127.0.0.1:8443/admin/community returned '$code'" ;;
+  200)         ark_die "https://ark.lan:8443/admin/community returned 200 without a sign-in" ;;
+  *)           ark_die "https://ark.lan:8443/admin/community returned '$code'" ;;
 esac
 
 # The loopback setup listener is reached before an account exists, so its
 # sign-in page (200) is the expected unauthenticated answer.
-code="$(ark_http_code https://127.0.0.1:8444/admin -k -H 'Host: localhost')"
+code="$(tls_code localhost:8444 /admin)"
 case "$code" in
   200|303|401|403) say "$(printf '\033[1;32m✓\033[0m')" "loopback setup listener :8444 answers" "$code" ;;
-  *)               ark_die "https://127.0.0.1:8444/admin returned '$code'" ;;
+  *)               ark_die "https://localhost:8444/admin returned '$code'" ;;
 esac
 
 # The management origin must not serve the library or shared files.
 for path in /kiwix/ /books/ /drop/ /vault/ /; do
-  code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 10 \
-          "https://127.0.0.1:8443$path" -H 'Host: ark.lan' || true)"
+  code="$(tls_code ark.lan:8443 "$path")"
   if [[ "$code" == "404" ]]; then
     say "$(printf '\033[1;32m✓\033[0m')" "management origin hides $path" "$code"
   else
@@ -105,13 +112,13 @@ fi
 say "$(printf '\033[1;32m✓\033[0m')" "port 8443 refuses plain HTTP" "$plain_verdict"
 
 # ---- the player's origin ----------------------------------------------------
-code="$(ark_http_code https://127.0.0.1:8445/arcade/player -k -H 'Host: ark.lan')"
+code="$(tls_code ark.lan:8445 /arcade/player)"
 case "$code" in
   200) say "$(printf '\033[1;32m✓\033[0m')" "player origin :8445 answers" "$code" ;;
-  *)   ark_die "https://127.0.0.1:8445/arcade/player returned '$code'" ;;
+  *)   ark_die "https://ark.lan:8445/arcade/player returned '$code'" ;;
 esac
 
-code="$(ark_http_code https://127.0.0.1:8445/admin -k -H 'Host: ark.lan')"
+code="$(tls_code ark.lan:8445 /admin)"
 [[ "$code" == "404" ]] || ark_die "the player origin served /admin with HTTP $code"
 say "$(printf '\033[1;32m✓\033[0m')" "player origin hides /admin" "$code"
 

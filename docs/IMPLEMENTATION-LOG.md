@@ -10,8 +10,8 @@ and what the next executable step is.
 | Branch | `feature/admin-hardening` (nothing force-pushed; no release tag moved) |
 | Platform used for work | macOS 26.x, Python 3.9.6 (LibreSSL), venv in `.venv/` |
 | Appliance target | Raspberry Pi 4B, Raspberry Pi OS Lite, Python 3.13.5, nginx 1.22 |
-| Deployment status | **not deployed** — code, config and tests only |
-| Hardware tests | **none performed** (no browser/phone in this environment) |
+| Deployment status | **deployed on the box 25 Oct 2026** — stages 2–6, ARK Arcade, the 25 Oct hardening and R3's book door are live; `90-verify` green, `/api/ready` 200, database at layout **v4** (§15). Rollback: `/root/ark-snapshot-20261025-092106` |
+| Hardware tests | **scripted proofs only** — the installer, the verifier, the doors, a bundle, `/api/ready` and the arcade origin have all answered on the Pi. **No human has used it on a phone yet**, no game has been played, no 2 GiB upload has crossed the proxy, and the watchdog has never seen a real radio event |
 | Requirements matrix | `docs/REQUIREMENTS-MATRIX.md` — R1–R8/A–D, each status with the test that proves it and the sentences still missing |
 
 ---
@@ -32,8 +32,8 @@ and what the next executable step is.
 | 12 | Emergency content review | not started |
 | 13 | Essentials pack, QR, accessibility, household page | not started |
 | — | ARK Arcade | **delivered and tested** — public shelf, guest play, optional named-player saves on the TLS `:8445` origin, owner **Games** page, licence/allowlist/hash gate, weekly discovery, and saves carried by a backup (§12) |
-| 14 | Sequence | stages 1–6 and ARK Arcade done; deploy + hardware walk-through outstanding; stage 7 next |
-| 15 | Acceptance tests | 231 tests, all green (`pytest -q`); the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md` |
+| 14 | Sequence | stages 1–6, ARK Arcade and R3 **deployed 25 Oct 2026** (§15); the phone walk-through is the next human step; stage 7 after it |
+| 15 | Acceptance tests | **239 tests**, all green (`pytest -q`); the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md` |
 
 ---
 
@@ -386,14 +386,12 @@ verified through the Mac's fallback.
 
 ## 7. Next executable step
 
-Stages 3, 4, 5 and 6 and ARK Arcade are closed. What comes next (each with a
-test before the code):
+Stages 3, 4, 5, 6, ARK Arcade and R3 are closed, and the branch went to the Pi
+on 25 Oct 2026 (§15). What comes next:
 
-1. **Deploy stages 2–6 and ARK Arcade, then walk through them on a phone** —
-   copy the database aside first, run
-   `--only 20-storage,30-calibre,60-portal,65-admin,70-network,95-backup`, then
-   `--only 90-verify`. `.clinerules` §8.9 is the checklist and it has not been
-   done. No tag before this passes.
+1. **Walk through it on a phone** — the deploy and `90-verify` are green, but no
+   human has tapped anything. `.clinerules` §8.9 item 2 is the checklist and it has
+   not been done. No tag before it passes.
 2. **Stage 7 — the household layer.** Emergency content review, the essentials
    pack, QR cards, accessibility and the household page.
 
@@ -747,8 +745,8 @@ and walk through it on a phone (`.clinerules` §8.9).
 
 ## 12. ARK Arcade checkpoint — 24 Oct 2026
 
-**Delivered on `feature/admin-hardening`, not deployed.** `pytest` **174 passed**
-at this checkpoint (14 files; **231** now — §1). The shelf is public and
+**Delivered on `feature/admin-hardening`, deployed 25 Oct 2026 (§15).** `pytest` **174 passed**
+at this checkpoint (14 files; **239** now — §1). The shelf is public and
 password-free; a name exists only to keep
 game saves and is not an administrator account. Nothing has been played in a real
 browser or fetched from the live source on the Pi.
@@ -813,17 +811,19 @@ named players' saves are. Before release: deploy the whole branch with
 name, save, export, restore into a second browser, and watch the weekly timer's
 first run.
 
-**Next executable step** — deploy the branch on the Pi and walk the paragraph
-above (`.clinerules` §8.9); stage 7 (household layer) remains unstarted.
+**Next executable step** — the branch was deployed on 25 Oct 2026 (§15), so what
+remains is the phone walk-through in the paragraph above (`.clinerules` §8.9 item
+2); stage 7 (household layer) remains unstarted.
 
 ---
 
 ## 13. Hardening + documentation checkpoint — 25 Oct 2026
 
-**Committed on `feature/admin-hardening`, not deployed.** `pytest` **231 passed**
-(15 test files). This checkpoint records the code that was finished after §12 and
-the documentation pass that followed it. No migration or feature in this section
-has run on the Pi.
+**Committed on `feature/admin-hardening`, deployed 25 Oct 2026 (§15).** `pytest` **231 passed**
+(15 test files) at this checkpoint; **239** now. This checkpoint records the code
+that was finished after §12 and the documentation pass that followed it. The whole
+of it — including the **v4 migration**, which ran in place on the live database — went
+to the Pi on 25 Oct 2026.
 
 | Area | What changed |
 |---|---|
@@ -881,9 +881,85 @@ session, so a bare curl is not the right probe. The live listener was not
 reloaded and no live service was restarted: these answers came from the throwaway
 instance on `:18080`, which was stopped and removed afterwards.
 
-**What is still true:** the live site still runs the old wholesale `/books`
-proxy until the deploy in §8.9 happens; nobody has tapped a book through the new
-door; and the route inventory is a snapshot of 0.6.27, so a package upgrade means
+**What is still true:** the new `/books` door is **live** — the deploy ran
+`60-portal`'s `must_be` proofs against the real listener (log §15) — but nobody has
+tapped a book through it in a browser; and the route inventory is a snapshot of 0.6.27, so a package upgrade means
 re-reading it (`.clinerules` §8.9, move 5).
 
+
+## 15. The branch is deployed to the box — 25 Oct 2026
+
+**`pytest` 239 passed (15 files).** Stages 2–6, ARK Arcade, the 25 Oct hardening
+pass and R3's book door now run on the Pi. This is the first time any of it has
+been on hardware; the section records what the box said, what that proved, the
+two defects the deploy found in its own probes, and what is still unproven.
+
+**Rollback first.** `/root/ark-snapshot-20261025-092106` (pointer in
+`/root/ark-snapshot.latest`): `ark.db` taken with SQLite `.backup` (the live file
+is WAL, so `cp` can miss committed pages), `api-data.tgz`, `etc-ark.tgz`, the old
+`/etc/nginx`, and the old `/srv/ark/src`. The deploy migrates the database to
+layout **v4** in place and there is no downgrade path, so that folder is the only
+way back.
+
+**What ran:** `scripts/03-provision.sh ark.local --only
+20-storage,30-calibre,60-portal,65-admin,70-network,95-backup`, then
+`--only 90-verify`. Both finished `ARK_INSTALL_COMPLETE`.
+
+| Proof | Where it came from |
+|---|---|
+| 20 collections (86.5 GiB) + 20 titles indexed, 1290 books, 11 guides, 121.6 GiB free | `90-verify` |
+| Every public page 200 (home, how-to, board, File Box, shelf, game page, live status, manuals, cards, library, book shelf), captive trigger 302 | `90-verify` |
+| `/admin` **404** on `:80`; `:8443` **303**; `:8444` **303**; Community and Games behind the sign-in **303** | `90-verify` |
+| Management origin hides `/kiwix/`, `/books/`, `/drop/`, `/vault/`, `/` (all 404); plain HTTP to `:8443`/`:8445` rejected 400 | `65-admin` |
+| `:8445` answers 200, hides `/admin` 404, public shelf sends a name to `:8445` with **307** | `65-admin` |
+| eleven units `enabled` + `active` incl. `ark-net-watch.timer`, `ark-book-import.path`, `ark-arcade-discover.timer` | `90-verify` |
+| R3's book door live: `GET /books/` 200, `GET /books/admin` 404, `POST /books/book/1` 403 | `60-portal` `must_be` proofs |
+| `/api/ready` → **200**, `ready 7 / total 8`, `blocking: []` (the eighth row is *Latest copy*, never blocking) | `curl http://ark.local/api/ready` from the Mac |
+| First real bundle: `ark-backup-20261025-093643`, 203.2 kB, *“is whole: 3 files … every fingerprint matches. Records were at layout version 4”* | `sudo ark-backup --to /srv/ark/backup` then `--verify` |
+| `ark-restore --dry-run` on that bundle refused an occupied box — *“Nothing has been changed”* | `sudo ark-restore --dry-run --from …` |
+
+**Two defects the deploy found in its own proofs (both fixed, both now tested).**
+
+1. **A TLS probe must ask by name.** `65-admin.sh` proved `:8443` with
+   `https://127.0.0.1:8443/admin`. An IP-literal request carries **no SNI**, nginx
+   then serves the management listener's default server, and that block answers
+   `ssl_reject_handshake on` — so the handshake died and curl reported `000` on a
+   perfectly healthy door. The phase failed its own proof on a correct box.
+   `--resolve "<host>:127.0.0.1"` (helper `ark_tls_code` in `pi/lib/common.sh`)
+   makes curl send `SNI=<host>` while still connecting to loopback.
+2. **…and the fix went in one place only.** Twenty minutes later `90-verify`
+   reported the same `000` for `:8443`, `/admin/community` and `/admin/arcade`,
+   because the verifier had its own copy of the probe. The helper now lives in
+   `pi/lib/common.sh` and both steps call it; `tests/test_tls_probe.py` fails if
+   either step grows another TLS probe of its own. (`:8445` has no default
+   server, so it always answered — which is exactly why only the `:8443` probes
+   failed, and why “it worked last time” was no evidence.)
+
+A third, self-inflicted one is worth recording because no lint would have caught
+it: a patch of mine wrote `adm_code="$(ark_tls_code …)""`. `bash -n` **passed** —
+the second quote opens a string that a later line closes, so the file is
+“balanced”, the assignment swallows the following lines and the verifier dies at
+runtime with `adm_code: unbound variable`. `bash -n` cannot see that. There is
+now a test that no line in the three shell files ends with a doubled quote, and
+the lesson is in `.clinerules` §8.7.
+
+**A finding on the box, not in the code.** `/files` lists one row,
+`e2e-drop-test.epub` (created 24 Oct 01:43 by the pre-spool e2e test), whose file
+is not in `drop/files`: the download link answers **404**. Nothing in the shipped
+code can create that state any more — `ark_storage.spool()` writes the file and
+the row together — but a row whose file has gone leaves a dead link on a page a
+non-technical owner reads. Recorded here, to be fixed with a test rather than
+with a hand-edit of the live database.
+
+**Still unproven, and no honest way round it:** nobody has tapped a book through
+the new door; the amber/red dot and the *What to do:* line have never been seen in
+a browser; `ark-zim-download`'s measured rate has never come from a real
+download; the watchdog has never seen a real NetworkManager scan or a real AP
+station dump; EmulatorJS has never been played on the Pi and the live game source
+has never been asked for a file from the box (**the Pi still has no route to the
+internet** — the game library has to be built on the Mac and carried over); no
+2 GiB upload has crossed the proxy; and no restore has ever replaced records. The
+phone walk-through in `.clinerules` §8.9 item 2 is the next human step, and the
+owner's admin account is still unclaimed (`1 account, 1 still using a temporary
+password`).
 

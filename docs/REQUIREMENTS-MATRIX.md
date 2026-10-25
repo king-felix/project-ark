@@ -2,10 +2,11 @@
 
 **Date:** 25 October 2026  
 **Branch:** `feature/admin-hardening`  
-**Suite:** `231 passed` (`python -m pytest -o addopts='--strict-markers' -q`, 34 s, Mac, throwaway databases)  
-**Hardware:** none. Nothing in this file has been exercised on the Pi, and no claim below
-should be read as "works on the box" until the walk-through in
-`docs/IMPLEMENTATION-LOG.md` §8.9 has been done.
+**Suite:** `239 passed` (`python -m pytest -o addopts='--strict-markers' -q`, Mac, throwaway databases)  
+**Hardware:** **deployed 25 Oct 2026** — `90-verify` green, `/api/ready` 200, the doors, the book
+route rules, a bundle and the arcade origin all answered on the Pi (`docs/IMPLEMENTATION-LOG.md`
+§15). No claim below should still be read as "a person has used it"; the phone walk-through in
+`.clinerules` §8.9 item 2 has not been done.
 
 This is the one page that answers "did we actually build the thing the requirement asks
 for?". It is deliberately blunt: a green row means there is code **and** a test that fails
@@ -16,7 +17,7 @@ acceptance sentence is **PARTIAL**, even when most of it ships.
 
 | Status | Means |
 |---|---|
-| **DONE (code + test)** | Every acceptance sentence has code and at least one runnable test. Not deployed, not seen in a browser. |
+| **DONE (code + test)** | Every acceptance sentence has code and at least one runnable test. Deployed on the box 25 Oct 2026, but **not yet seen in a phone's browser**. |
 | **PARTIAL** | Some acceptance sentences ship and are tested; the rest are listed in *What is still missing*. |
 | **NOT STARTED** | No implementation worth the name. Nothing to test. |
 
