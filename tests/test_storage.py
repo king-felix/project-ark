@@ -219,6 +219,39 @@ def test_a_file_on_disk_without_a_visible_row_is_not_reachable(public):
     assert public.client.get("/drop/not-in-the-list.txt").status_code == 404
 
 
+def test_a_row_whose_file_has_gone_is_not_offered_to_the_reader(public):
+    """The mirror case: a row can outlive its file, and a dead link is worse than none.
+
+    `ark-restore --no-files` puts the records back while the File Box stays empty,
+    and a folder tidied by hand does the same.  Found on the box on 25 Oct 2026:
+    `/files` listed `e2e-drop-test.epub` and its download answered 404.  The row
+    stays in the records — the owner's page is where a file that has gone is
+    noticed — but the reader is not offered it, and the number above the list is
+    the number of files that can really be opened.
+    """
+    ark = public.ark
+    for name in ("gasket.jpg", "fuse.pdf"):
+        public.client.post("/files", files={"file": (name, b"bytes of " + name.encode(), "application/octet-stream")},
+                           follow_redirects=False)
+    rows = _rows(ark)
+    assert len(rows) == 2
+    gone, kept = rows[0], rows[1]                     # newest first on the page
+    (ark.root / "drop" / "files" / gone["stored"]).unlink()
+
+    page = public.client.get("/files")
+    assert page.status_code == 200
+    assert page.text.count("/drop/") == 1
+    assert urllib.parse.quote(kept["stored"]) in page.text
+    assert urllib.parse.quote(gone["stored"]) not in page.text
+    assert gone["display"] not in page.text
+    assert "Files people shared (1)" in page.text     # the count is what can be opened
+
+    # The records still hold both: nothing is deleted behind the owner's back, and
+    # the download route keeps refusing the one whose bytes are gone.
+    assert len(_rows(ark)) == 2
+    assert public.client.get("/drop/" + urllib.parse.quote(gone["stored"])).status_code == 404
+
+
 def test_a_path_that_tries_to_climb_out_is_refused(public):
     ark = public.ark
     outside = ark.root / "outside.txt"

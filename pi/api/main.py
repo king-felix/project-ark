@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import html
 import mimetypes
+import os
 import re
 import sqlite3
 import urllib.error
@@ -611,12 +612,18 @@ def board_post(name: str = Form(""), body: str = Form("")):
 @app.get("/files", response_class=HTMLResponse)
 def files(ok: str = "", err: str = ""):
     with ark_db.read() as conn:
-        rows = conn.execute(
+        visible = conn.execute(
             "SELECT id, ts, name, display, stored, size, note FROM files"
-            " WHERE hidden = 0 ORDER BY id DESC LIMIT ?", (FILES_PAGE,)
+            " WHERE hidden = 0 ORDER BY id DESC"
         ).fetchall()
-        total = int(conn.execute("SELECT COUNT(*) FROM files WHERE hidden = 0").fetchone()[0])
         uploads_open = ark_db.get_setting(conn, "public_uploads", "1") != "0"
+    # A row can outlive its file without anything being broken — `ark-restore
+    # --no-files` puts the records back on a card whose File Box is empty, and a
+    # folder cleaned by hand does the same — so the listing offers only what is
+    # really there.  The count follows the list for the same reason.
+    rows = _present(visible)
+    total = len(rows)
+    rows = rows[:FILES_PAGE]
     if rows:
         items = "".join(
             f'<li><a href="/drop/{esc(urllib.parse.quote(_stored_name(r), safe=""))}">'
@@ -668,6 +675,27 @@ def files(ok: str = "", err: str = ""):
 def _stored_name(row) -> str:
     """The name on disk. Older rows only have 'name', which was the disk name."""
     return row["stored"] or row["name"]
+
+
+def _present(rows) -> list:
+    """Only the rows whose file is on the card.
+
+    A row without a file is not a corruption: `ark-restore --no-files` puts the
+    records back while the File Box stays empty, and a folder tidied by hand
+    leaves rows behind.  The download route already answers 404 for those, but a
+    link that 404s is a dead end for a reader who has never met a 404 — so the
+    listing, and the number above it, count only what can really be opened.
+
+    An unreadable folder is not an empty one: if the listing cannot be read, the
+    rows are shown unfiltered rather than telling somebody nothing was ever
+    shared.
+    """
+    folder = ark_storage.drop_dir()
+    try:
+        names = {entry.name for entry in os.scandir(folder) if entry.is_file()}
+    except OSError:
+        return list(rows)
+    return [row for row in rows if _stored_name(row) in names]
 
 
 def _download_header(display: str) -> str:

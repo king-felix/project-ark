@@ -165,7 +165,7 @@ SHA-256 fingerprint). The same certificate serves the player's secure origin
 with the browser before you trust it — see `docs/ADMIN.md` for the exact steps,
 the session rules and what is deliberately *not* in this release yet.
 
-Tests (no Pi needed, throwaway databases only; the current suite is 239 tests):
+Tests (no Pi needed, throwaway databases only; the current suite is 240 tests):
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r tests/requirements.txt

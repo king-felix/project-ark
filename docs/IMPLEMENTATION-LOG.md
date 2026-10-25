@@ -33,7 +33,7 @@ and what the next executable step is.
 | 13 | Essentials pack, QR, accessibility, household page | not started |
 | — | ARK Arcade | **delivered and tested** — public shelf, guest play, optional named-player saves on the TLS `:8445` origin, owner **Games** page, licence/allowlist/hash gate, weekly discovery, and saves carried by a backup (§12) |
 | 14 | Sequence | stages 1–6, ARK Arcade and R3 **deployed 25 Oct 2026** (§15); the phone walk-through is the next human step; stage 7 after it |
-| 15 | Acceptance tests | **239 tests**, all green (`pytest -q`); the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md` |
+| 15 | Acceptance tests | **240 tests**, all green (`pytest -q`); the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md` |
 
 ---
 
@@ -746,7 +746,7 @@ and walk through it on a phone (`.clinerules` §8.9).
 ## 12. ARK Arcade checkpoint — 24 Oct 2026
 
 **Delivered on `feature/admin-hardening`, deployed 25 Oct 2026 (§15).** `pytest` **174 passed**
-at this checkpoint (14 files; **239** now — §1). The shelf is public and
+at this checkpoint (14 files; **240** now — §1). The shelf is public and
 password-free; a name exists only to keep
 game saves and is not an administrator account. Nothing has been played in a real
 browser or fetched from the live source on the Pi.
@@ -820,7 +820,7 @@ remains is the phone walk-through in the paragraph above (`.clinerules` §8.9 it
 ## 13. Hardening + documentation checkpoint — 25 Oct 2026
 
 **Committed on `feature/admin-hardening`, deployed 25 Oct 2026 (§15).** `pytest` **231 passed**
-(15 test files) at this checkpoint; **239** now. This checkpoint records the code
+(15 test files) at this checkpoint; **240** now. This checkpoint records the code
 that was finished after §12 and the documentation pass that followed it. The whole
 of it — including the **v4 migration**, which ran in place on the live database — went
 to the Pi on 25 Oct 2026.
@@ -889,7 +889,7 @@ re-reading it (`.clinerules` §8.9, move 5).
 
 ## 15. The branch is deployed to the box — 25 Oct 2026
 
-**`pytest` 239 passed (15 files).** Stages 2–6, ARK Arcade, the 25 Oct hardening
+**`pytest` 240 passed (15 files).** Stages 2–6, ARK Arcade, the 25 Oct hardening
 pass and R3's book door now run on the Pi. This is the first time any of it has
 been on hardware; the section records what the box said, what that proved, the
 two defects the deploy found in its own probes, and what is still unproven.
@@ -943,13 +943,19 @@ runtime with `adm_code: unbound variable`. `bash -n` cannot see that. There is
 now a test that no line in the three shell files ends with a doubled quote, and
 the lesson is in `.clinerules` §8.7.
 
-**A finding on the box, not in the code.** `/files` lists one row,
+**A finding on the box, and the fix it earned.** `/files` listed one row,
 `e2e-drop-test.epub` (created 24 Oct 01:43 by the pre-spool e2e test), whose file
-is not in `drop/files`: the download link answers **404**. Nothing in the shipped
-code can create that state any more — `ark_storage.spool()` writes the file and
-the row together — but a row whose file has gone leaves a dead link on a page a
-non-technical owner reads. Recorded here, to be fixed with a test rather than
-with a hand-edit of the live database.
+is not in `drop/files`: the download link answered **404**. A row can outlive its
+file without anything being corrupted — `ark-restore --no-files` puts the records
+back on a card whose File Box is empty, and a folder tidied by hand does the same
+— so this was a page defect, not a database defect. `main._present()` now filters
+the listing against the folder (and the count above it) so a reader is never
+offered a link that cannot open; the row itself is kept, because the owner's
+**Shared files** list is where a file that has gone is noticed and deleted, and
+its audit line already reads *“record removed; the file was already gone”*.
+`tests/test_storage.py::test_a_row_whose_file_has_gone_is_not_offered_to_the_reader`
+is the mirror of the long-standing “file on disk without a row” test. The box's
+own row was left in place for the owner to delete through the door built for it.
 
 **Still unproven, and no honest way round it:** nobody has tapped a book through
 the new door; the amber/red dot and the *What to do:* line have never been seen in
