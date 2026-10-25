@@ -1,0 +1,302 @@
+#!/usr/bin/env python3
+"""ark-restore — put a backup back, and say exactly what was put back.
+
+The order of the checks is the whole design:
+
+1. **Prove the bundle first.**  Every file is re-read and compared with the
+   fingerprint in the manifest.  A damaged bundle is refused before anything on
+   the box is touched.
+2. **Ask before replacing records.**  A box that already holds messages, shared
+   files or accounts is not overwritten unless the owner says ``--force``; the
+   message names the flag so nobody has to guess.
+3. **Never replace a shared file.**  Restoring only ever *adds* a file that is
+   missing from the File Box.  A name that is already there with different bytes
+   is kept, and the run says so — `ark_storage.spool()` stays the only writer of
+   a new file, and this tool never edits an existing one.
+4. **Do not let the import list hide books.**  The list that stops a book being
+   imported twice only makes sense next to the shelf it describes.  If the shelf
+   is empty, it is left beside the real list with ``.from-backup`` on the end, so
+   re-adding the books imports them once instead of never.
+
+This is the one deliberate exception to "a backup only reads": putting records
+back means writing them.  It writes only what the manifest lists, only inside the
+box, and only where nothing of the same name already lives.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import pwd
+import shutil
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import ark_bundle as bundle_tools          # noqa: E402 — sibling module, by design
+
+
+def say(text: str = "") -> None:
+    print(text, flush=True)
+
+
+def stop(text: str, code: int = 1) -> int:
+    print(f"Not done: {text}", file=sys.stderr, flush=True)
+    return code
+
+
+# ---------------------------------------------------------------------------
+#  what is already here
+# ---------------------------------------------------------------------------
+def occupancy(paths: dict) -> str | None:
+    """Why this box must not be overwritten without --force, or None if it may."""
+    if paths["marker"].exists():
+        return "this box is already set up"
+    db = paths["db"]
+    if not db.is_file():
+        return None
+    import sqlite3
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+        try:
+            for table, word in (("notes", "messages"), ("files", "shared files"),
+                                ("players", "player names"),
+                                ("player_saves", "game saves"),
+                                ("admins", "administrators")):
+                try:
+                    n = int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+                except sqlite3.Error:
+                    continue
+                if n:
+                    return f"it already holds {n} {word}"
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return "there is already a database here"
+    return None
+
+
+# ---------------------------------------------------------------------------
+#  putting things back
+# ---------------------------------------------------------------------------
+def put_database(source: Path, target: Path, dry: bool) -> dict:
+    """Replace the records in one atomic step; a stale WAL must not survive."""
+    if dry:
+        return {"what": "records", "action": "would replace", "path": str(target)}
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staging = target.with_name(target.name + ".restoring")
+    shutil.copyfile(source, staging)
+    with open(staging, "rb+") as handle:
+        os.fsync(handle.fileno())
+    os.chmod(staging, 0o640)
+    os.replace(staging, target)
+    for sidecar in (target.with_name(target.name + "-wal"),
+                    target.with_name(target.name + "-shm")):
+        if sidecar.exists():
+            sidecar.unlink()        # written by the *old* database; now meaningless
+    return {"what": "records", "action": "put back", "path": str(target)}
+
+
+def put_file(source: Path, target: Path, dry: bool) -> dict:
+    """Add a missing shared file.  Never replace one that is already there."""
+    if target.exists():
+        if bundle_tools.sha256_file(target) == bundle_tools.sha256_file(source):
+            return {"what": "file", "action": "already here", "path": str(target)}
+        return {"what": "file", "action": "kept the one already here", "path": str(target)}
+    if dry:
+        return {"what": "file", "action": "would add", "path": str(target)}
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, target)
+    os.chmod(target, 0o644)
+    return {"what": "file", "action": "put back", "path": str(target)}
+
+
+def put_private_file(source: Path, target: Path, dry: bool) -> dict:
+    """Add a missing game save.  It belongs to one name, so it stays 0600."""
+    if target.exists():
+        if bundle_tools.sha256_file(target) == bundle_tools.sha256_file(source):
+            return {"what": "game save", "action": "already here", "path": str(target)}
+        return {"what": "game save", "action": "kept the one already here", "path": str(target)}
+    if dry:
+        return {"what": "game save", "action": "would add", "path": str(target)}
+    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    for folder in (target.parent, target.parent.parent):
+        try:
+            os.chmod(folder, 0o700)
+        except OSError:
+            pass
+    shutil.copyfile(source, target)
+    os.chmod(target, 0o600)
+    return {"what": "game save", "action": "put back", "path": str(target)}
+
+
+def put_ledger(source: Path, paths: dict, dry: bool, mode: str) -> dict:
+    """The import list only means something next to the shelf it describes."""
+    real = paths["ledger"]
+    beside = real.with_name(real.name + ".from-backup")
+    if mode == "no":
+        return {"what": "import list", "action": "left in the backup", "path": str(real)}
+    shelf_ready = paths["shelf"].is_file() and paths["shelf"].stat().st_size > 0
+    wanted = real if (mode == "yes" or shelf_ready) else beside
+    if dry:
+        return {"what": "import list",
+                "action": "would put back" if wanted == real else "would set beside the empty shelf",
+                "path": str(wanted)}
+    wanted.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, wanted)
+    os.chmod(wanted, 0o644)
+    return {"what": "import list",
+            "action": "put back" if wanted == real else "set beside the empty shelf",
+            "path": str(wanted)}
+
+
+# ---------------------------------------------------------------------------
+#  the run
+# ---------------------------------------------------------------------------
+def restore(bundle_path: Path, *, force: bool, dry: bool, no_files: bool,
+            ledger_mode: str, keep_owner: bool) -> int:
+    paths = bundle_tools.box_paths()
+    data, problems = bundle_tools.verify_bundle(bundle_path)
+    if problems or data is None:
+        say(f"Refused: {bundle_path.name} is not a bundle this tool can trust — it is"
+            " damaged or incomplete.")
+        for problem in problems:
+            say(f"  - {problem}")
+        say("Nothing on the box was changed.  Make a fresh backup of the box as it is now,"
+            " or find a copy whose fingerprints all match (`ark-backup --verify <folder>`).")
+        return 1
+    say(f"Checked {len(data['entries'])} files in {bundle_path.name}: every fingerprint matches.")
+
+    why = occupancy(paths)
+    if why and not force:
+        return stop(f"{why}.  Putting a backup over it would replace those records.\n"
+                    "  If that is really what you want, run the same command again with "
+                    "--force on the end.\n  Nothing has been changed.")
+    if why and force:
+        say(f"This box {why}; replacing it because you said --force.")
+
+    results = []
+    for entry in data["entries"]:
+        to = entry.get("to")
+        if not to:
+            continue                                    # RESTORE-ME.txt and friends
+        target = inside_or_none(paths["root"], to)
+        if target is None:
+            return stop(f"the manifest wants to write outside the box: {to!r} — refused")
+        source = bundle_path / entry["path"]
+        if entry["path"] == "database/ark.db":
+            results.append(put_database(source, target, dry))
+        elif entry["path"].startswith("calibre-incoming/"):
+            results.append(put_ledger(source, paths, dry,
+                                      "no" if no_files else ledger_mode))
+        elif entry["path"].startswith("arcade-saves/"):
+            if not no_files:
+                results.append(put_private_file(source, target, dry))
+        elif not no_files:
+            results.append(put_file(source, target, dry))
+
+    if not dry and not keep_owner:
+        owner = None
+        try:
+            account = pwd.getpwnam(os.environ.get("ARK_PI_USER", "pi"))
+            owner = (account.pw_uid, account.pw_gid)
+        except KeyError:
+            say("(There is no 'pi' account on this machine, so file ownership was"
+                " left as it is.)")
+        if owner is not None:
+            for result in results:
+                path = Path(result["path"])
+                if path.exists():
+                    try:
+                        os.chown(path, owner[0], owner[1])
+                    except OSError:
+                        pass            # a read-only card is not a restore failure
+
+    say("")
+    for result in results:
+        say(f"  {result['action']:<28} {result['path']}")
+    if dry:
+        say("\nNothing was written (--dry-run).")
+        return 0
+    say("")
+    say("Done.  The records are in place; restart the box (or just its web service)"
+        " so it reads them.")
+    if ledger_mode == "auto" and not no_files:
+        beside = paths["ledger"].with_name(paths["ledger"].name + ".from-backup")
+        if beside.exists():
+            say("The book shelf is empty, so the import list was set beside it"
+                " (…imported.json.from-backup) instead of hiding books that are"
+                " not there any more.  Add the books again and they import once.")
+    return 0
+
+
+def inside_or_none(root: Path, rel: str) -> Path | None:
+    safe = bundle_tools.safe_rel(rel)
+    if safe is None:
+        return None
+    root = Path(root)
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+    return bundle_tools.inside(root, safe)
+
+
+def show_list(folder: Path) -> int:
+    finished = bundle_tools.existing_bundles(folder)
+    if not finished:
+        say(f"No backups in {folder} yet.")
+        return 0
+    say(f"Backups in {folder} (newest last):")
+    for item in finished:
+        files, size = bundle_tools.bundle_size(item)
+        try:
+            when = bundle_tools.read_manifest(item).get("created", "?").replace("T", " ")[:16]
+        except (OSError, ValueError):
+            when = "?"
+        say(f"  {item.name}   {when}   {bundle_tools.human_size(size):>9}   {files} files")
+    say(f"\nPut one back with: sudo ark-restore --from {finished[-1]}")
+    return 0
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="ark-restore",
+        description="Put a backup back on a box, after proving the backup is whole.")
+    parser.add_argument("--from", dest="source", default=None,
+                        help="the backup folder to put back")
+    parser.add_argument("--list", action="store_true",
+                        help="show the backups this box can see")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="prove the backup and say what would happen, write nothing")
+    parser.add_argument("--force", action="store_true",
+                        help="replace the records of a box that already has some")
+    parser.add_argument("--no-files", action="store_true",
+                        help="records only; leave the File Box and the import list alone")
+    parser.add_argument("--ledger", choices=("auto", "yes", "no"), default="auto",
+                        help="put the import list back (auto: only beside a real shelf)")
+    parser.add_argument("--keep-owner", action="store_true",
+                        help="do not change file ownership to the box's user")
+    args = parser.parse_args(argv)
+
+    paths = bundle_tools.box_paths()
+    if args.list:
+        return show_list(paths["backups"])
+    if not args.source:
+        return stop("say which backup to put back, for example:\n"
+                    "  sudo ark-restore --from /srv/ark/backup/ark-backup-20261024-101500\n"
+                    "(`ark-restore --list` shows what is there)")
+    return restore(Path(args.source), force=args.force, dry=args.dry_run,
+                   no_files=args.no_files, ledger_mode=args.ledger,
+                   keep_owner=args.keep_owner)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        print("Stopped.", file=sys.stderr)
+        sys.exit(130)
+    except Exception as exc:                    # noqa: BLE001 — say it plainly, exit 1
+        print(f"Not done: {exc.__class__.__name__}: {exc}", file=sys.stderr)
+        sys.exit(1)

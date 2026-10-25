@@ -11,6 +11,8 @@ Group=pi
 WorkingDirectory=/srv/ark/api
 Environment=ARK_ROOT=/srv/ark
 Environment=KIWIX_INTERNAL=http://127.0.0.1:8081/kiwix
+Environment=ARK_ARCADE_SRC=/srv/ark/src/arcade
+Environment=ARK_ARCADE_DATA=/srv/ark/arcade
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/srv/ark/venv/bin/python -m uvicorn main:app \
           --host 127.0.0.1 --port 8085 --workers 1 \
@@ -26,7 +28,7 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=full
 ProtectHome=read-only
-ReadWritePaths=/srv/ark/api/data /srv/ark/drop/files
+ReadWritePaths=/srv/ark/api/data /srv/ark/drop /srv/ark/arcade
 
 [Install]
 WantedBy=multi-user.target

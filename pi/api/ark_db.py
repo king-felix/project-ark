@@ -30,7 +30,7 @@ ARK_ROOT = Path(os.environ.get("ARK_ROOT", "/srv/ark"))
 DB_PATH = Path(os.environ.get("ARK_DB", str(ARK_ROOT / "api" / "data" / "ark.db")))
 MARKER_PATH = Path(os.environ.get("ARK_MARKER", str(DB_PATH.parent / "ark.installed")))
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # ---------------------------------------------------------------------------
 #  migrations — append, never edit an entry that has already shipped
@@ -139,6 +139,137 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             "INSERT OR IGNORE INTO settings (key, value) VALUES ('public_uploads', '1')",
         ],
     ),
+    (
+        3,
+        [
+            # -- the game shelf -------------------------------------------------
+            # A game is one file with a fingerprint.  A new version is a new
+            # game_revisions row, never an edit to the old one, so an old save
+            # can still say which version of the game it belongs to.
+            """CREATE TABLE IF NOT EXISTS games (
+                   id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                   slug          TEXT NOT NULL UNIQUE,
+                   title         TEXT NOT NULL,
+                   system        TEXT NOT NULL,
+                   core          TEXT NOT NULL,
+                   filename      TEXT NOT NULL,
+                   size          INTEGER NOT NULL DEFAULT 0,
+                   sha256        TEXT NOT NULL,
+                   revision      INTEGER NOT NULL DEFAULT 1,
+                   license       TEXT NOT NULL DEFAULT '',
+                   license_evidence TEXT NOT NULL DEFAULT '',
+                   author        TEXT NOT NULL DEFAULT '',
+                   homepage      TEXT NOT NULL DEFAULT '',
+                   description   TEXT NOT NULL DEFAULT '',
+                   cover         TEXT NOT NULL DEFAULT '',
+                   provider      TEXT NOT NULL DEFAULT '',
+                   entry_id      TEXT NOT NULL DEFAULT '',
+                   installed_at  TEXT NOT NULL,
+                   updated_at    TEXT NOT NULL,
+                   published     INTEGER NOT NULL DEFAULT 1,
+                   hidden        INTEGER NOT NULL DEFAULT 0
+               )""",
+            """CREATE TABLE IF NOT EXISTS game_revisions (
+                   id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                   game_id     INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+                   revision    INTEGER NOT NULL,
+                   filename    TEXT NOT NULL,
+                   size        INTEGER NOT NULL DEFAULT 0,
+                   sha256      TEXT NOT NULL,
+                   installed_at TEXT NOT NULL,
+                   note        TEXT NOT NULL DEFAULT '',
+                   UNIQUE (game_id, revision)
+               )""",
+            # -- where a game came from, and what may still be offered ----------
+            """CREATE TABLE IF NOT EXISTS providers (
+                   id           TEXT PRIMARY KEY,
+                   label        TEXT NOT NULL,
+                   kind         TEXT NOT NULL DEFAULT 'gbdev-database',
+                   home         TEXT NOT NULL DEFAULT '',
+                   enabled      INTEGER NOT NULL DEFAULT 1,
+                   last_run_at  TEXT NOT NULL DEFAULT '',
+                   last_result  TEXT NOT NULL DEFAULT ''
+               )""",
+            """CREATE TABLE IF NOT EXISTS acquisition_candidates (
+                   id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                   provider     TEXT NOT NULL,
+                   entry_id     TEXT NOT NULL,
+                   title        TEXT NOT NULL,
+                   system       TEXT NOT NULL,
+                   filename     TEXT NOT NULL,
+                   download_url TEXT NOT NULL,
+                   license      TEXT NOT NULL DEFAULT '',
+                   license_evidence TEXT NOT NULL DEFAULT '',
+                   author       TEXT NOT NULL DEFAULT '',
+                   homepage     TEXT NOT NULL DEFAULT '',
+                   sha256       TEXT NOT NULL DEFAULT '',
+                   size         INTEGER NOT NULL DEFAULT 0,
+                   status       TEXT NOT NULL DEFAULT 'pending',
+                   reason       TEXT NOT NULL DEFAULT '',
+                   game_id      INTEGER REFERENCES games(id) ON DELETE SET NULL,
+                   created_at   TEXT NOT NULL,
+                   updated_at   TEXT NOT NULL,
+                   UNIQUE (provider, entry_id)
+               )""",
+            """CREATE TABLE IF NOT EXISTS acquisition_jobs (
+                   id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                   kind        TEXT NOT NULL,
+                   status      TEXT NOT NULL DEFAULT 'running',
+                   started_at  TEXT NOT NULL,
+                   finished_at TEXT NOT NULL DEFAULT '',
+                   detail      TEXT NOT NULL DEFAULT ''
+               )""",
+            # -- player names: real accounts, never administrators --------------
+            # The two session tables are separate on purpose.  Signing out of
+            # the owner's area must not end a child's game, and a player name
+            # can never reach /admin.
+            """CREATE TABLE IF NOT EXISTS players (
+                   id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                   username      TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                   display_name  TEXT NOT NULL DEFAULT '',
+                   pass_hash     TEXT NOT NULL,
+                   enabled       INTEGER NOT NULL DEFAULT 1,
+                   created_at    TEXT NOT NULL,
+                   last_login_at TEXT NOT NULL DEFAULT ''
+               )""",
+            """CREATE TABLE IF NOT EXISTS player_sessions (
+                   id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                   player_id  INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+                   token_hash TEXT NOT NULL UNIQUE,
+                   csrf       TEXT NOT NULL,
+                   created_at TEXT NOT NULL,
+                   last_seen  TEXT NOT NULL,
+                   ip         TEXT NOT NULL DEFAULT ''
+               )""",
+            """CREATE TABLE IF NOT EXISTS player_saves (
+                   id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                   player_id   INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+                   game_id     INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+                   kind        TEXT NOT NULL,
+                   slot        INTEGER NOT NULL DEFAULT 0,
+                   filename    TEXT NOT NULL,
+                   size        INTEGER NOT NULL DEFAULT 0,
+                   sha256      TEXT NOT NULL,
+                   revision    INTEGER NOT NULL DEFAULT 1,
+                   updated_at  TEXT NOT NULL,
+                   UNIQUE (player_id, game_id, kind, slot)
+               )""",
+            """CREATE TABLE IF NOT EXISTS arcade_login_attempts (
+                   id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                   ts      TEXT NOT NULL,
+                   source  TEXT NOT NULL DEFAULT '',
+                   target  TEXT NOT NULL DEFAULT '',
+                   ok      INTEGER NOT NULL
+               )""",
+            "CREATE INDEX IF NOT EXISTS arcade_login_ts ON arcade_login_attempts(ts)",
+            "CREATE INDEX IF NOT EXISTS games_order ON games(hidden, title)",
+            "CREATE INDEX IF NOT EXISTS saves_owner ON player_saves(player_id, game_id)",
+            # Player names are open on a fresh box, like the board and the File
+            # Box.  Closing them is a deliberate act by the owner.
+            "INSERT OR IGNORE INTO settings (key, value) VALUES ('arcade_players', '1')",
+            "INSERT OR IGNORE INTO settings (key, value) VALUES ('arcade_auto_install', '0')",
+        ],
+    ),
 ]
 
 
@@ -159,26 +290,42 @@ def connect() -> sqlite3.Connection:
 
 
 @contextmanager
-def tx(immediate: bool = True):
-    """A write transaction that always closes the connection.
+def tx(immediate: bool = True, conn: sqlite3.Connection | None = None):
+    """A write transaction that always closes the connections it opened.
 
     ``immediate=True`` takes the write lock up front: two concurrent requests
     can then not both decide that they are allowed to disable the last
     remaining administrator.
+
+    ``conn`` may be a connection the caller already holds.  When that connection
+    is already inside a transaction this is a nested call and does nothing but
+    yield it — one writer, one commit, which is what the game shelf needs when a
+    save row and a file must be published together.  A caller that passes a
+    plain read connection gets a real transaction on it, still closed by this
+    function only if this function opened it.
     """
-    conn = connect()
+    if isinstance(immediate, sqlite3.Connection):   # tx(conn) — the older call shape
+        conn, immediate = immediate, True
+    own = conn is None
+    if own:
+        conn = connect()
+    started = not conn.in_transaction
     try:
-        conn.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
+        if started:
+            conn.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
         yield conn
-        conn.execute("COMMIT")
+        if started:
+            conn.execute("COMMIT")
     except BaseException:
-        try:
-            conn.execute("ROLLBACK")
-        except sqlite3.Error:
-            pass  # nothing was open any more; the connection is closed below
+        if started:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass  # nothing was open any more; the connection is closed below
         raise
     finally:
-        conn.close()
+        if own:
+            conn.close()
 
 
 @contextmanager
@@ -221,6 +368,10 @@ def bump_session_epoch(conn: sqlite3.Connection) -> int:
     nxt = session_epoch(conn) + 1
     set_setting(conn, "session_epoch", str(nxt))
     conn.execute("DELETE FROM admin_sessions")
+    # A player's name and save files are not administrator credentials, but the
+    # session itself is still a bearer token.  It does not survive a restart
+    # either; the save files do, which is the whole point of having a name.
+    conn.execute("DELETE FROM player_sessions")
     return nxt
 
 

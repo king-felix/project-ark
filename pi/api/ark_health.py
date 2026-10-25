@@ -81,6 +81,11 @@ def data_dir() -> Path:
     return ark_root() / "api" / "data"
 
 
+def backup_dir() -> Path:
+    """Where copies of the records are kept (``ark-backup``'s default too)."""
+    return Path(os.environ.get("ARK_BACKUP_DIR") or ark_root() / "backup")
+
+
 def kiwix_base() -> str:
     """The library reader on the loopback address (no trailing slash)."""
     return os.environ.get("KIWIX_INTERNAL", "http://127.0.0.1:8081/kiwix").rstrip("/")
@@ -558,8 +563,115 @@ def downloads_section() -> dict:
         "nothing is in flight this second.", "", **facts)
 
 
+def copies() -> list[dict]:
+    """The finished copies on the card, oldest first.  Unreadable ones are skipped.
+
+    Only folders that carry a manifest count as a copy: a folder left behind by a
+    run that died is not one, and calling it one would be the same lie as a green
+    dot that cannot be wrong.
+    """
+    found = []
+    try:
+        candidates = sorted(backup_dir().iterdir())
+    except OSError:
+        return []
+    for path in candidates:
+        name = path.name
+        if not name.startswith("ark-backup-") or name.endswith(".partial"):
+            continue
+        manifest = path / "manifest.json"
+        try:
+            if not manifest.is_file():
+                continue
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        counts = data.get("counts") or {}
+        created = data.get("created") or ""
+        hours = _age_hours(created, path)
+        found.append({"name": name, "created": created, "age_hours": hours,
+                      "messages": counts.get("messages"),
+                      "shared_files": counts.get("shared_files"),
+                      "players": counts.get("players"),
+                      "player_saves": counts.get("player_saves")})
+    found.sort(key=lambda c: (c["age_hours"] is None, -(c["age_hours"] or 0)))
+    return found
+
+
+def _age_hours(created: str, path: Path) -> float | None:
+    """How long ago a copy was made, or ``None`` when it cannot be measured."""
+    try:
+        stamp = datetime.fromisoformat(str(created).replace("Z", "+00:00"))
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - stamp).total_seconds() / 3600.0)
+    except (TypeError, ValueError):
+        pass
+    try:
+        return max(0.0, (time.time() - path.stat().st_mtime) / 3600.0)
+    except OSError:
+        return None
+
+
+def _ago(hours: float | None) -> str:
+    if hours is None:
+        return "at a time the box could not read"
+    if hours < 1:
+        return "in the last hour"
+    if hours < 48:
+        count = max(1, round(hours))
+        return f"{count} hour{'' if count == 1 else 's'} ago"
+    return f"{int(hours // 24)} days ago"
+
+
+# A copy this old is worth mentioning on the owner's page: everything written
+# since lives on one card and nowhere else.
+COPY_STALE_HOURS = 24 * 7
+
+
+def backup_section() -> dict:
+    """Is there a copy of the records, and how much has happened since?"""
+    found = copies()
+    if not found:
+        return _section(
+            "backup", "Latest copy", False,
+            "No copy of the messages, shared files or game saves has been made yet, so "
+            "a card that stopped working today would take them with it.",
+            "A copy is made on the box with: sudo ark-backup --to /srv/ark/backup  "
+            "(it says what it copied and where it put it).", content=False,
+            copies=0, last_age_hours=None, messages=None, shared_files=None)
+    newest = found[-1]
+    messages, shared = newest["messages"], newest["shared_files"]
+    players, saves = newest.get("players"), newest.get("player_saves")
+    held = []
+    if messages is not None:
+        held.append(f"{messages} message{'' if messages == 1 else 's'}")
+    if shared is not None:
+        held.append(f"{shared} shared file{'' if shared == 1 else 's'}")
+    if players is not None:
+        held.append(f"{players} player name{'' if players == 1 else 's'}")
+    if saves is not None:
+        held.append(f"{saves} game save{'' if saves == 1 else 's'}")
+    holds = f" — {', '.join(held)}" if held else ""
+    facts = {"copies": len(found), "last_age_hours": newest["age_hours"],
+             "last_created": newest["created"], "messages": messages,
+             "shared_files": shared, "players": players, "player_saves": saves}
+    if newest["age_hours"] is not None and newest["age_hours"] > COPY_STALE_HOURS:
+        return _section(
+            "backup", "Latest copy", False,
+            f"The newest copy was made {_ago(newest['age_hours'])}{holds}.  Everything "
+            "written since then is on this card and nowhere else.",
+            "Make a fresh copy when the box is handy: sudo ark-backup --to "
+            "/srv/ark/backup", **facts)
+    return _section(
+        "backup", "Latest copy", True,
+        f"The newest copy was made {_ago(newest['age_hours'])}{holds}.", "", **facts)
+
+
 SECTIONS = (library_section, books_section, manuals_section, messages_section,
-            files_section, storage_section, downloads_section)
+            files_section, storage_section, backup_section, downloads_section)
 
 
 # ---------------------------------------------------------------------------

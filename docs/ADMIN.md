@@ -18,7 +18,11 @@ application code; see the "Tested / not tested" section at the end.
 | Delete a shared file for good | no | yes, with the owner's own password (§7) |
 | Add/edit/remove administrators, read the audit history | no | yes |
 | See what actually works, and why it does not | no — the front page shows one plain sentence | yes (§8) |
-| Change the box's settings | no | only the two Community switches so far (§7) |
+| Play the games; keep saves in this browser | yes | yes |
+| Use a name for game saves; export/import them | yes, on the separate player origin (`:8445`) | yes |
+| Hide/show a game, allow player names, allow automatic additions | no | yes (§10) |
+| Change the box's settings | no | only the Community and Games switches so far (§7, §10) |
+| Keep a copy of the records, or put one back | no | yes, from the box's own console (§9) |
 
 The public portal never serves `/admin` at all: on port 80 it answers `404`.
 Administration is a separate HTTPS origin on port 8443, and while the box is
@@ -220,6 +224,7 @@ says **why not** in a sentence you can act on.
 | Message Board | the board can be read (whether or not posting is switched on) |
 | File Box | the shared folder exists and can be opened (whether or not uploads are on) |
 | Space on the card | at least 512 MiB is still free |
+| Latest copy | a finished copy of the records exists and is less than a week old |
 | Incoming collections | work in progress — reported, but never counted as a fault |
 
 Two distinctions the page is careful about, because they are the whole point:
@@ -261,7 +266,139 @@ the reader's path.
 
 ---
 
-## 9. Not in this release yet
+## 9. Copies of the records — and putting them back
+
+Everything the box cannot rebuild lives on one SD card: the messages, the shared
+files, the accounts, the Community and Games switches, the list that stops a
+re-dropped book being imported twice, and every named player's game saves.
+`ark-backup` writes one dated folder holding all of it; `ark-restore` puts it
+back. Both run on the box's console; neither is a screen, and nothing on this
+page takes a copy for you.
+
+```bash
+sudo ark-backup --to /srv/ark/backup        # take one (about a second per 100 MB of shared files)
+sudo ark-backup --list                      # what is already there, with sizes and ages
+sudo ark-backup --verify /srv/ark/backup/ark-backup-<date>-<time>   # re-read every byte
+sudo ark-restore --list                            # what could be put back
+sudo ark-restore --from /srv/ark/backup/ark-backup-<date>-<time>    # put it back
+```
+
+**What a copy holds:** `database/ark.db` (taken with SQLite's own backup, never a
+file copy — the live database is in WAL mode), `files/` (the shared files
+themselves), `arcade-saves/` (named players' game saves, `0600` in `0700`
+folders), `calibre-incoming/.imported.json` (the "already imported" list),
+`manifest.json` (a sha256 and a size for every file) and `RESTORE-ME.txt` (the
+same instructions, inside the folder, in case this page is not to hand).
+
+**What it deliberately leaves out:** the offline library, the book shelf and the
+game files themselves — they are content and are fetched or imported again — the
+programming environment, and the Wi-Fi secrets in `/etc/ark`. A copy is small
+because of it.
+
+**Two rules make it safe to trust.** The folder is built as
+`<name>.partial` and only becomes `<name>` by a rename, so a run that dies never
+looks like a finished backup; and `--verify` reads every byte back against the
+manifest, because a backup nobody has verified is a hope.
+
+**What a restore will not do.** It refuses a damaged folder before touching
+anything. It refuses an occupied box (messages, shared files, accounts, player
+names or game saves already there) unless you add `--force`, and says so. It
+never replaces a shared file that is already on the box — a restore only adds
+what is missing, so `ark_storage.spool()` stays the only writer of a new file.
+A game save already on the box is likewise kept rather than replaced, and a
+missing one is added `0600` in `0700` folders. If the book shelf is empty it
+leaves the import list beside it as `.imported.json.from-backup`, because a list
+of "already imported" books with no books would hide every book from the
+importer for ever. `--dry-run` says what it would do and writes nothing.
+
+**A copy on the box is not survival insurance.** If the card dies, a folder on
+that card dies with it. Copy `/srv/ark/backup/ark-backup-*` to a USB stick or a
+computer — the printable sheet at `/srv/ark/RECOVERY-SHEET.txt` (also readable at
+`http://ark.lan/recovery.txt` while the box still runs) is written for exactly
+that day: a phone, a card reader and a working card.
+
+There is **no timer**, on purpose: a nightly backup that quietly fills the card
+the box reads from is a defect, not a feature. Take one when something happened —
+after a busy week on the board, before a big upload, before changing anything.
+`--keep 2` keeps the newest two and deletes older ones.
+
+---
+
+## 10. ARK Arcade — the game shelf
+
+The shelf is public at `http://ark.lan/arcade/`. A guest taps a game and plays;
+the player is EmulatorJS, vendored on the box, and the page has no external
+script, font or tracking pixel. Unplug the internet and it still plays.
+
+**Player names are not administrators.** A name is optional and only keeps game
+saves. It has its own database tables, its own `ark_player` cookie and its own
+HTTPS origin:
+
+```
+https://ark.lan:8445/arcade/player
+```
+
+The public portal answers a player page with a redirect to that origin; the
+administrator origin (`:8443`) does not serve `/arcade` at all, and the player
+origin answers `404` for `/admin`. A visitor cannot claim the secure origin by
+inventing `X-ARK-Player-Origin` on port 80 — nginx blanks that header there and
+sets it only on `:8445`.
+
+**On the owner's Games page** (`https://ark.lan:8443/admin/arcade`):
+
+* every game, its console, its licence and whether it is on or off the shelf;
+* **Hide from shelf** / **Show on shelf** — hiding is reversible and deletes
+  nothing; a hidden game's file is no longer handed out;
+* every suggestion the weekly check recorded, with the source's stated licence
+  and the reason it was refused;
+* **Check and add** — downloads and proves one suggestion, then publishes it;
+* **Put away** / **Allow again** — records the owner's answer without deleting
+  anything;
+* **Anyone can use a name to keep saves** — off means no new names and no new
+  sign-ins, and an already-signed-in browser can no longer read or write a save;
+  guests can still play, and every save stays on the box for when the switch is
+  turned back on;
+* **Add newly found games without asking me** — off by default. Even when on,
+  the same licence, allowlist, size, SHA-256 and file-shape checks apply.
+
+**Where the games come from.** Only the curated Homebrew Hub source
+(`hh3.gbdev.io` API and its `gbdev/database` raw files). The download URL is
+rebuilt from validated slug + filename, redirects are refused, the address must
+stay under the one allowlisted prefix, the body is capped at 64 MB, and nothing
+is published until its SHA-256 and its console header agree. The first shelf is
+`pi/arcade/catalog/seed.json`, three pinned files with hashes recorded when they
+were fetched; a changed upstream file is refused rather than silently updated.
+Collections and the game files themselves are content and are fetched again;
+named players' saves are state and are included in a backup.
+
+**Saves and copies.** A guest's save lives in that browser (EmulatorJS local
+storage). A named player gets three server slots per game, stored under
+`/srv/ark/arcade/saves/<player>/<game>/` with `0700` folders and `0600` files.
+The player page exports every save as one zip and puts one back; an imported zip
+may only contain `saves/<game>/<state-NN.state|battery.srm>`, the game must be on
+the shelf, and every path that climbs is skipped. A stale browser tab cannot
+overwrite a newer save — the API refuses it with a plain sentence and asks for a
+reload. Restoring a backup adds a missing save and never replaces one already on
+the box.
+
+**Commands** (console only):
+
+```bash
+sudo ark-arcade --status
+sudo ark-arcade --seed
+sudo ark-arcade --discover --auto
+sudo ark-arcade --list
+sudo ark-arcade --install <id>
+sudo ark-arcade --refuse <id>
+```
+
+`ark-arcade-discover.timer` runs 15 minutes after boot and then weekly; the
+service tries the pinned seed first (a failure is non-fatal) and records what the
+source offers. Installation does not happen unless the owner switches it on.
+
+---
+
+## 11. Not in this release yet
 
 Stated plainly, because a missing control is better than a fake one:
 
@@ -271,7 +408,8 @@ Stated plainly, because a missing control is better than a fake one:
   same name no longer overwrite each other).
 * Deleting a shared file is for ever; there is no trash and no undo.
 * No download pause/resume buttons in the page (the existing `ark-zim-pause`
-  file still pauses the queue), no backup or restore screens, and nothing on
+  file still pauses the queue), no backup or restore *screens* (both are console
+  commands, §9), and nothing on
   **What is working** can be changed from the page — it reports the state of the
   box, it does not alter it. The space breakdown says *where* the room went, not
   how to get it back.
@@ -296,6 +434,11 @@ Stated plainly, because a missing control is better than a fake one:
   pin you set with `ark-mode home`/`hotspot` is never overruled.
 * No household page, no "download the essentials" pack, no QR cards, no
   theme/text-size controls yet.
+* Arcade: no per-player save quota or trash (a deleted save is for ever), no way
+  for an owner to reset or delete a player name, and no "check for new games"
+  button on the owner's page — the weekly timer does the check. A forgotten
+  player password cannot be recovered; the person makes a new name, and the old
+  saves remain on the box under the old one.
 * Emergency content review (first aid, water, electrical) is still pending.
 
 The audit history, the account rules above, the transport boundary, the
@@ -303,9 +446,9 @@ Community controls and the readiness page are complete and tested.
 
 ---
 
-## 10. Tested / not tested
+## 12. Tested / not tested
 
-**Tested** — 128 automated tests, disposable databases, `pytest`:
+**Tested** — 174 automated tests, disposable databases, `pytest`:
 
 * bootstrap account exists once; a wiped database becomes recovery-required
   instead of re-creating the default; the marker lives outside the database;
@@ -360,7 +503,25 @@ Community controls and the readiness page are complete and tested.
   client list is treated as occupied, the owner's pin is respected but never
   leaves the box dark, and a failed return is not retried immediately; the
   observer, against a fake `nmcli`/`iw`; a dry run that writes nothing at all;
-  and the real call to `ark-mode hotspot --auto` (recorded, logged, state filed).
+  and the real call to `ark-mode hotspot --auto` (recorded, logged, state filed);
+* arcade: a guest reaches no named save (401) and the game page carries no
+  external address; a named player's save round-trips, a stale tab is refused
+  with 409, another name sees 404, a missing page token is 403, export/import
+  works and a climbing zip path is skipped; a hidden game has no page and no
+  ROM; the emulator route cannot walk out of its folder; the licence, allowlist,
+  redirect, archive and renamed-web-page gates each refuse; the pinned seed dry
+  run touches nothing; the owner can hide/show a game and close player names;
+  the owner's Games page and both switches;
+* copies: one folder holds the records, the shared files, the named players'
+  saves and the import list; a damaged copy is refused instead of restored;
+  a half-written one is swept and never listed; only the newest two are kept; a
+  restore puts everything back in the same places, refuses an occupied box
+  without `--force`, never replaces a shared file, and keeps the import list
+  from hiding books on an empty shelf; a
+  manifest that points outside the box is refused; a dry run writes nothing; the
+  recovery sheet needs no words looked up, and **Latest copy** on the readiness
+  page says *not ready* only when there is no copy or it is over a week old —
+  without ever blocking a reader.
 
 **Not tested** — no hardware or browser access in this environment:
 
@@ -382,19 +543,37 @@ Community controls and the readiness page are complete and tested.
   real access point has been asked for its station list, no home network has been
   switched off to watch the hotspot come up, no pin has been set by a human, and
   the 3-minute first check and 30-minute back-off have never elapsed in real
-  time. Everything above is a table, a fake `nmcli`/`iw`, and `bash -n`.
+  time. Everything above is a table, a fake `nmcli`/`iw`, and `bash -n`;
+* the backup tools on the box itself: no copy has ever been written there, no
+  restore has ever been performed, `/recovery.txt` has never been opened in a
+  browser, and the phase that installs them has only been syntax-checked. Both
+  tools *have* been driven by hand on a Mac against throwaway folders — a copy,
+  its verification, a restore into an empty box and a refusal on an occupied one
+  all behaved — but macOS is not the box (there is no `pi` account there, so
+  ownership was left alone);
+* anything in the arcade on the Pi: EmulatorJS has never been played in a real
+  browser on this hardware, no game has been fetched through the installer
+  against the live source, the `:8445` player origin and its certificate have
+  only been `nginx -t`'d, and no phone has signed in or kept a save. The success
+  of the weekly discovery timer on a real network has also not been observed.
 
-To install and verify this stage on the Pi:
+To install and verify this branch on the Pi, **copy the database aside first** —
+`60-portal` restarts the backend and runs every migration through schema v3 in
+place, and there is no downgrade path:
 
 ```bash
-sudo bash /srv/ark/src/install-ark.sh --only 60-portal,65-admin,70-network
+sudo sqlite3 /srv/ark/api/data/ark.db ".backup '/root/ark-db-before-v3.db'"
+sudo bash /srv/ark/src/install-ark.sh --only 20-storage,30-calibre,60-portal,65-admin,70-network,95-backup
 sudo bash /srv/ark/src/install-ark.sh --only 90-verify
 ```
 
 (`70-network` installs the watchdog and starts its timer; nothing in it switches
-the radio, so it is safe over the same Wi-Fi you are connected to.)
+the radio, so it is safe over the same Wi-Fi you are connected to. `95-backup`
+installs the two copy tools and the printed sheet; it takes no copy and starts no
+timer.)
 
-then work through §2 with a phone, and open
-`https://ark.lan:8443/admin/health` on a box that is still filling up: every
-part that is empty says so without calling the box broken.
+Then work through §2 with a phone, open
+`https://ark.lan:8443/admin/health` on a box that is still filling up — every
+part that is empty says so without calling the box broken — and play one game
+with the internet unplugged before trusting the shelf.
 

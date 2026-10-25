@@ -6,8 +6,9 @@ Written 24 October 2026 · device answers to **`ark.lan`**, **`ark.local`**, **`
 
 The Ark is a small computer with no internet connection of its own. It holds a library —
 encyclopedias, repair guides, medical references, your own books — and it hands that library
-to any phone, tablet or laptop that joins its Wi-Fi. No accounts, no sign-in, no internet
-required. If the internet is gone, everything below still works.
+to any phone, tablet or laptop that joins its Wi-Fi. No accounts are needed, no sign-in, no internet
+required. (A name is optional, only for keeping game saves.) If the internet is gone, everything
+below still works.
 
 ---
 
@@ -20,12 +21,15 @@ required. If the internet is gone, everything below still works.
 | read a book | `http://ark.lan/books/` | browse or search, then **Read in browser** |
 | fix something today | `http://ark.lan/vault/` | open a manual; print the PDF if you want paper |
 | hand someone a file | `http://ark.lan/files` | choose file → **Put it in the box** |
+| play a game for a few minutes | `http://ark.lan/arcade/` | tap a game; nothing to install, no name needed |
+| keep a game save on the box | `http://ark.lan/arcade/player` | it opens the secure page; make a name, then **Save here** |
 | put a book on the shelf | `http://ark.lan/files` | drag the `.epub` in and walk away |
 | leave a note for the household | `http://ark.lan/board` | name is optional → **Put it on the board** |
 | see what is on the box | `http://ark.lan/api/status` | plain text, safe to read on any phone |
 | know whether it actually works | `http://ark.lan/api/ready` | `200` = everything works; `503` = the body says which part and why |
+| keep the household's notes and files safe | `ssh pi@ark.local` | `sudo ark-backup --to /srv/ark/backup`, then copy that folder to a stick |
 
-Same box, four addresses. Use whichever your device can resolve.
+Same box, three addresses. Use whichever your device can resolve.
 
 ---
 
@@ -66,14 +70,14 @@ icon that opens the Ark in one tap, and it still works with no internet.
 
 ## 2. The front page, tile by tile
 
-The home screen is deliberately boring: four headings, plain words, big buttons.
+The home screen is deliberately boring: five headings, plain words, big buttons.
 
 | Section | Tiles | What it really is |
 |---|---|---|
 | **Find something** | one search box | searches every collection, every manual and the bookshelf at once |
 | **Start here** | Offline Library · Books · Manuals & Guides | the three libraries |
 | **When something breaks** | Repair guides · Quick card | iFixit-style repair pages, and a one-page card to print |
-| **For everybody here** | Message Board · File Box | notes and file swapping for anyone on the Wi-Fi |
+| **For everybody here** | Message Board · File Box · Games | notes, file swapping and a small game shelf for anyone on the Wi-Fi |
 | **Not sure how this works?** | Help | the same instructions, in even simpler words |
 
 Every tile has a one-line description under it and a **How to use** badge, because the person
@@ -205,7 +209,27 @@ file already in the box still downloads normally. The owner can also hide a file
 resort, remove it for good. The list shows the newest 50 files; when there are more, it says so
 and the count in the heading is the real total.
 
-### 3.7 Is it happy? — `http://ark.lan/api/status`
+### 3.7 Games — `http://ark.lan/arcade/`
+
+Tap **Games** on the front page, then tap a game. It starts in the browser; there is
+nothing to install and no account. The arrow keys work, and on a phone an on-screen pad
+appears. Everything runs on the box, so a dead internet changes nothing.
+
+A few small games come with the box; the owner can add more from the Games page behind
+the owner's sign-in. Each game's card says what it is and who made it, and the licence is
+shown on the card and in the notes beside the shelf.
+
+**Saves.** Playing as a guest, your save stays in that one browser on that one device —
+clearing the browser's data removes it. If you want a save to follow you to another
+device, tap **My saves**, make a name and a password of at least 12 characters, then open
+a game and use **Save here**. That page is `https://ark.lan:8445/arcade/player` (the box sends
+you there by itself); the name is only for games and cannot change anything on the box.
+Three saves per game are kept, and **Download all my saves** gives you one zip to keep
+somewhere else. **Put these saves back** takes that zip on another Ark. If a save was
+changed on another device while a game was open, the box refuses the older one and asks
+you to reload — it never lets an old tab overwrite a newer game.
+
+### 3.8 Is it happy? — `http://ark.lan/api/status`
 
 A plain-text page for the curious (or for you, at 2am): how many collections are installed and
 how big they are, how many books are on the shelf, how many guide pages exist, what is
@@ -458,8 +482,18 @@ sudo ark-import-books --status         # how many books are on the shelf
 sudo ark-import-books                  # scan the drop folders now (normally automatic)
 sudo ark-import-calibre-library PATH   # adopt a whole Calibre library
 sudo ark-zim-resolve --profile full    # queue more offline content
+sudo ark-arcade --status               # games on the shelf, player names, saves
+sudo ark-arcade --seed                 # put the pinned first games back
+sudo ark-arcade --discover --auto      # what the weekly check runs
+sudo ark-arcade --list                 # suggestions waiting, and why refused
 sudo ark-tls-cert --show               # the owner's-door certificate fingerprint
 sudo ark-admin-recover --list          # locked out? console only, never the web
+
+sudo ark-backup --to /srv/ark/backup   # notes, files, accounts, player saves
+sudo ark-backup --list                 # the copies already there, with ages
+sudo ark-backup --verify PATH          # re-read every byte of one copy
+sudo ark-restore --list                # what could be put back
+sudo ark-restore --from PATH           # put one back (asks before replacing)
 
 tail -f /srv/ark/logs/zim-download.log # watch downloads
 tail -f /srv/ark/logs/net-watch.log    # watch the box's own network decisions
@@ -474,15 +508,23 @@ sudo reboot
 - **It does not touch the internet.** No telemetry, no cloud, no account anywhere off this box.
   Content is fetched only when you ask for it, by the machine running the downloader.
 - **Reading needs no login.** Anyone on the Wi-Fi can read, post and upload — that is the point in a
-  household emergency, and it also means the board and the File Box are not private. There is
-  exactly one sign-in on the box: the owner's door on port 8443, which changes the machine itself
-  and is never served on the portal address. A visitor never sees it, and nothing a visitor does
-  asks them who they are. The owner can pause new notes and new uploads with one switch, and can
-  hide or remove something that should not be there — but never learns who wrote it.
+  household emergency, and it also means the board and the File Box are not private. There are
+  two kinds of sign-in, and neither is needed to read: the owner's door on port 8443, which changes
+  the machine itself and is never served on the portal address; and an optional **player name** for
+  keeping game saves, on its own secure origin on port 8445. A visitor never sees either unless they
+  go looking, and nothing a reader does asks them who they are. The owner can pause new notes and
+  new uploads with one switch, and can hide or remove something that should not be there — but never
+  learns who wrote it.
 - **It does not need JavaScript** for anything that matters: search, reading, uploading and
-  posting are plain HTML forms — and so is the owner's door.
-- **It is not a backup.** Everything lives on one SD card. Keep the originals on the PC, and keep
-  a copy of the library folder somewhere else.
+  posting are plain HTML forms — and so is the owner's door. The game player is the one
+  exception; the shelf list around it still reads without JavaScript.
+- **Its copy is on the same card.** `sudo ark-backup` copies the notes, the shared files, the
+  accounts, the book-import list and every named player's game saves — but it writes them where
+  you tell it, so a copy left on the
+  card dies with the card. Copy that folder to a stick or a computer, and keep the originals of
+  your books on the PC as well. The day the card does not boot, the page to follow is
+  `/srv/ark/RECOVERY-SHEET.txt` (print it now: `http://ark.lan/recovery.txt`). There is no
+  automatic backup timer, on purpose.
 - **Not built yet** (candidates, not promises): a planting calendar, an offline map pack, a photo
   archive of the house and its shut-off valves.
 

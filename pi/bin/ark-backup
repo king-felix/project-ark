@@ -1,0 +1,351 @@
+#!/usr/bin/env python3
+"""ark-backup — one dated, proved copy of everything that cannot be rebuilt.
+
+What it copies: the records (messages, shared files, accounts, the owner's two
+switches), the shared files themselves, and the book-import list that stops the
+box importing the same book twice.  What it leaves out on purpose: the offline
+library and the book shelf (content — fetched or imported again), the
+programming environment (the installer recreates it) and the Wi-Fi secrets in
+``/etc/ark`` (the rebuild guide sets those up).
+
+It is deliberately boring:
+
+* the bundle is built as ``<name>.partial`` and published by rename, so a run
+  that dies leaves something obviously unfinished;
+* the database is copied with SQLite's own ``backup()``, never ``cp``, because
+  the live file is in WAL mode;
+* every file gets a sha256 in the manifest, and ``--verify`` reads every byte
+  again — a backup nobody verified is a hope, not a backup;
+* it only ever reads the box.  Nothing here writes to ``drop/files``.
+
+Run it when you want one (``sudo ark-backup --to /srv/ark/backup``), or put it on
+a timer of your own.  Keeping a copy is cheap; discovering the only copy was a
+half-written folder is not.
+"""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import os
+import shutil
+import sys
+from datetime import datetime
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import ark_bundle as bundle_tools          # noqa: E402 — sibling module, by design
+
+DEFAULT_KEEP = 2
+RESTORE_ME = """\
+This folder is a copy of the Ark, made {when}.
+
+It holds everything that cannot be rebuilt:
+  database/ark.db                  the records — messages, shared files, accounts
+  files/                           the shared files themselves
+  arcade-saves/                    game saves kept by a named player
+  calibre-incoming/.imported.json  the list that stops a book being imported twice
+  manifest.json                    the fingerprint of every file above
+
+It does not hold the offline library, the book shelf or the Wi-Fi password.
+
+TO PUT IT BACK
+  1. Copy this whole folder onto the box (a USB stick is easiest) and put it in
+     /srv/ark/backup/ so the box can see it.
+  2. On the box, as root, run:
+
+         ark-restore --from /srv/ark/backup/{name}
+
+     If the box already has messages or shared files of its own, the tool will
+     stop and say so.  Read what it says.  If those records really are the ones
+     you want replaced, run the same command again with --force on the end.
+  3. Start the box again (or restart just the web service) and open
+     http://ark.lan on any phone.
+
+The full sheet, with what to do when the box will not start at all, is printed
+and kept beside the box.  It is called RECOVERY-SHEET.txt.
+"""
+
+
+def say(text: str = "") -> None:
+    print(text, flush=True)
+
+
+def fail(text: str) -> int:
+    print(f"Not done: {text}", file=sys.stderr, flush=True)
+    return 1
+
+
+# ---------------------------------------------------------------------------
+#  what to copy
+# ---------------------------------------------------------------------------
+def plan(no_files: bool) -> tuple:
+    """(paths, [(source, rel, to)]) — the files that belong in a bundle."""
+    paths = bundle_tools.box_paths()
+    shared = []
+    if not no_files and paths["files"].is_dir():
+        for source in sorted(paths["files"].iterdir()):
+            if source.is_file() and not source.is_symlink():
+                shared.append((source, f"files/{source.name}", f"drop/files/{source.name}"))
+    saves = paths["arcade_saves"]
+    if not no_files and saves.is_dir():
+        for source in sorted(saves.rglob("*")):
+            if source.is_file() and not source.is_symlink():
+                rel = source.relative_to(saves).as_posix()
+                if any(part.startswith(".") for part in rel.split("/")):
+                    continue
+                shared.append((source, f"arcade-saves/{rel}", f"arcade/saves/{rel}"))
+    return paths, shared
+
+
+def git_describe(root: Path) -> str:
+    """Best effort only — a backup must never fail because git is not there."""
+    import subprocess
+    try:
+        done = subprocess.run(["git", "-C", str(root / "src"), "describe",
+                               "--tags", "--always", "--dirty"],
+                              capture_output=True, text=True, timeout=5)
+        if done.returncode == 0:
+            return done.stdout.strip() or "unknown"
+    except Exception:                   # noqa: BLE001 — any failure means "unknown"
+        pass
+    return "unknown"
+
+
+def _count(db: Path, sql: str):
+    import sqlite3
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+        try:
+            row = conn.execute(sql).fetchone()
+            return int(row[0]) if row and row[0] is not None else None
+        finally:
+            conn.close()
+    except Exception:                   # noqa: BLE001 — unreadable means unknown, never 0
+        return None
+
+
+def free_name(dest: Path, stamp: str) -> str:
+    name = f"ark-backup-{stamp}"
+    n = 2
+    while (dest / name).exists() or (dest / f"{name}.partial").exists():
+        name = f"ark-backup-{stamp}-{n}"
+        n += 1
+    return name
+
+
+# ---------------------------------------------------------------------------
+#  taking one
+# ---------------------------------------------------------------------------
+def take(dest: Path, keep: int, no_files: bool, quiet: bool, dry: bool) -> int:
+    paths, shared = plan(no_files)
+    if not paths["db"].is_file():
+        return fail(f"there is no database at {paths['db']} — there is nothing to back up yet")
+
+    name = free_name(dest, datetime.now().strftime("%Y%m%d-%H%M%S"))
+    final = dest / name
+
+    if dry:
+        # The folder itself is not a backup, and `--list` should find something
+        # rather than an error, so the plan is made against a folder that exists.
+        dest.mkdir(parents=True, exist_ok=True)
+        shared_bytes = sum(s.stat().st_size for s, rel, _ in shared if rel.startswith("files/"))
+        saves_bytes = sum(s.stat().st_size for s, rel, _ in shared if rel.startswith("arcade-saves/"))
+        n_shared = sum(1 for _, rel, _ in shared if rel.startswith("files/"))
+        n_saves = sum(1 for _, rel, _ in shared if rel.startswith("arcade-saves/"))
+        say(f"Would write {final}")
+        say(f"  records:      {paths['db']} "
+            f"({bundle_tools.human_size(paths['db'].stat().st_size)})")
+        say(f"  shared files: {n_shared}"
+            + (f", {bundle_tools.human_size(shared_bytes)}" if n_shared else ""))
+        say(f"  game saves:   {n_saves}"
+            + (f", {bundle_tools.human_size(saves_bytes)}" if n_saves else ""))
+        if paths["ledger"].is_file():
+            say("  import list:  yes")
+        say("Nothing was written (--dry-run).")
+        return 0
+
+    dest.mkdir(parents=True, exist_ok=True)
+    os.chmod(dest, 0o700)
+    with open(dest / ".lock", "w") as lock:
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return fail("another backup is running right now — wait for it to finish")
+
+        # A crashed run leaves a .partial folder behind.  It was never a backup,
+        # so it is swept rather than offered to the owner as one.
+        swept = 0
+        for leftover in dest.glob("ark-backup-*.partial"):
+            if leftover.is_dir():
+                shutil.rmtree(leftover, ignore_errors=True)
+                swept += 1
+        if swept and not quiet:
+            say(f"Cleaned up {swept} unfinished backup{'s' if swept != 1 else ''} "
+                "from an earlier run.")
+
+        partial = dest / f"{name}.partial"
+        partial.mkdir()
+        os.chmod(partial, 0o700)
+        try:
+            entries = [bundle_tools.database_entry(partial, "database/ark.db",
+                                                   "api/data/ark.db", paths["db"])]
+            for source, rel, to in shared:
+                entries.append(bundle_tools.file_entry(partial, source, rel, to))
+            if paths["ledger"].is_file():
+                entries.append(bundle_tools.file_entry(
+                    partial, paths["ledger"], "calibre-incoming/.imported.json",
+                    "calibre-incoming/.imported.json"))
+
+            sheet = RESTORE_ME.format(when=datetime.now().strftime("%d %B %Y at %H:%M"),
+                                      name=name)
+            sheet_path = partial / "RESTORE-ME.txt"
+            bundle_tools.write_text(sheet_path, sheet, 0o644)
+            entries.append({"path": "RESTORE-ME.txt", "to": None,
+                            "size": sheet_path.stat().st_size,
+                            "sha256": bundle_tools.sha256_file(sheet_path),
+                            "mode": "0644"})
+
+            copied_db = partial / "database" / "ark.db"
+            data = {
+                "format": bundle_tools.FORMAT,
+                "tool": "ark-backup",
+                "created": bundle_tools.iso_now(),
+                "name": name,
+                "hostname": os.uname().nodename if hasattr(os, "uname") else "unknown",
+                "release": git_describe(paths["root"]),
+                "schema_version": _count(copied_db, "SELECT MAX(version) FROM schema_version"),
+                "ark_root": str(paths["root"]),
+                "entries": entries,
+                "totals": {"files": len(entries),
+                           "bytes": sum(e["size"] for e in entries)},
+                "excluded": bundle_tools.EXCLUDED,
+                "counts": {"messages": _count(copied_db, "SELECT COUNT(*) FROM notes"),
+                           "shared_files": _count(copied_db, "SELECT COUNT(*) FROM files"),
+                           "players": _count(copied_db, "SELECT COUNT(*) FROM players"),
+                           "player_saves": _count(copied_db, "SELECT COUNT(*) FROM player_saves"),
+                           "administrators": _count(copied_db, "SELECT COUNT(*) FROM admins")},
+            }
+            bundle_tools.write_manifest(partial, data)
+            os.replace(partial, final)          # publish by rename: no half backups
+        except BaseException:
+            shutil.rmtree(partial, ignore_errors=True)
+            raise
+
+    kept, removed = prune(dest, keep)
+    if not quiet:
+        counts = data["counts"]
+        bits = []
+        if counts.get("messages") is not None:
+            bits.append(f"{counts['messages']} message"
+                        f"{'s' if counts['messages'] != 1 else ''}")
+        if counts.get("shared_files") is not None:
+            bits.append(f"{counts['shared_files']} shared file"
+                        f"{'s' if counts['shared_files'] != 1 else ''}")
+        if counts.get("players") is not None:
+            bits.append(f"{counts['players']} player name"
+                        f"{'s' if counts['players'] != 1 else ''}")
+        if counts.get("player_saves") is not None:
+            bits.append(f"{counts['player_saves']} game save"
+                        f"{'s' if counts['player_saves'] != 1 else ''}")
+        bits.append("the import list" if paths["ledger"].is_file() else "no import list yet")
+        say(f"Backed up {', '.join(bits)}.")
+        say(f"  {final}  ({bundle_tools.human_size(bundle_tools.bundle_size(final)[1])})")
+        if removed:
+            say(f"Kept the newest {kept}; removed {removed} older backup"
+                f"{'s' if removed != 1 else ''}.")
+        say(f"To put it back: sudo ark-restore --from {final}")
+    return 0
+
+
+def prune(dest: Path, keep: int) -> tuple:
+    """Keep the newest ``keep`` finished bundles; remove the rest."""
+    if keep <= 0:
+        return 0, 0
+    finished = bundle_tools.existing_bundles(dest)
+    doomed = finished[:-keep] if len(finished) > keep else []
+    removed = 0
+    for old in doomed:
+        if (old / "manifest.json").is_file():       # never remove anything else
+            shutil.rmtree(old, ignore_errors=True)
+            removed += 1
+    return min(keep, len(finished)), removed
+
+
+# ---------------------------------------------------------------------------
+#  looking at what is there
+# ---------------------------------------------------------------------------
+def show_list(dest: Path) -> int:
+    finished = bundle_tools.existing_bundles(dest)
+    if not finished:
+        say(f"No backups in {dest} yet.  Make one with: sudo ark-backup")
+        return 0
+    say(f"Backups in {dest} (newest last):")
+    for item in finished:
+        try:
+            data = bundle_tools.read_manifest(item)
+            when = data.get("created", "?").replace("T", " ")[:16]
+            counts = data.get("counts") or {}
+            detail = (f"{counts.get('messages', '?')} messages, "
+                      f"{counts.get('shared_files', '?')} shared files")
+        except (OSError, ValueError):
+            when, detail = "?(unreadable manifest)", ""
+        files, size = bundle_tools.bundle_size(item)
+        say(f"  {item.name}   {when}   {bundle_tools.human_size(size):>9}   {detail}")
+    return 0
+
+
+def verify(path: Path) -> int:
+    data, problems = bundle_tools.verify_bundle(path)
+    if problems:
+        say(f"{path.name} is NOT a usable backup:")
+        for problem in problems:
+            say(f"  - {problem}")
+        say("Do not restore from it.  Make a new backup of the box as it is now.")
+        return 1
+    files, size = bundle_tools.bundle_size(path)
+    say(f"{path.name} is whole: {files} files, {bundle_tools.human_size(size)}, "
+        f"every fingerprint matches.")
+    if data.get("schema_version") is not None:
+        say(f"Records were at layout version {data['schema_version']}, "
+            f"made {data.get('created', '?')}.")
+    return 0
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="ark-backup",
+        description="Copy the box's records, shared files and import list into one "
+                    "dated folder, then prove the copy is whole.")
+    parser.add_argument("--to", default=None,
+                        help="where to write the backup (default /srv/ark/backup)")
+    parser.add_argument("--keep", type=int, default=DEFAULT_KEEP,
+                        help=f"how many backups to keep (default {DEFAULT_KEEP})")
+    parser.add_argument("--no-files", action="store_true",
+                        help="records and the import list only (skip the shared files)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="say what would be copied, write nothing")
+    parser.add_argument("--list", action="store_true", help="show the backups already here")
+    parser.add_argument("--verify", metavar="FOLDER", default=None,
+                        help="re-read a backup and check every fingerprint")
+    parser.add_argument("--quiet", action="store_true", help="only print problems")
+    args = parser.parse_args(argv)
+
+    paths = bundle_tools.box_paths()
+    dest = Path(args.to) if args.to else paths["backups"]
+    if args.list:
+        return show_list(dest)
+    if args.verify:
+        return verify(Path(args.verify))
+    return take(dest, args.keep, args.no_files, args.quiet, args.dry_run)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        print("Stopped.", file=sys.stderr)
+        sys.exit(130)
+    except Exception as exc:                    # noqa: BLE001 — say it plainly, exit 1
+        print(f"Not done: {exc.__class__.__name__}: {exc}", file=sys.stderr)
+        sys.exit(1)

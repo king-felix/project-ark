@@ -5,6 +5,11 @@
 
   Written with Cline, an AI coding agent, alongside the working box. It stays
   model-agnostic on purpose: any capable agent (or patient human) can follow it.
+
+  HISTORICAL NOTE — this is the original brief, kept for provenance. The living
+  blueprint is docs/REBUILD-ME-ARK.txt (current build order, 30 traps, gate and
+  the ARK Arcade / backup material). Where the two disagree, the living
+  blueprint and the code win; do not copy a stale count from this file.
 ================================================================================
 
   HOW TO USE THIS FILE

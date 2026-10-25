@@ -20,6 +20,8 @@ from __future__ import annotations
 import html
 import sqlite3
 import time
+import urllib.error
+import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -30,6 +32,8 @@ import ark_db
 import ark_health
 import ark_security as sec
 import ark_storage
+import ark_arcade
+import ark_arcade_install
 
 router = APIRouter(prefix="/admin", include_in_schema=False)
 
@@ -212,6 +216,7 @@ def shell(title: str, body: str, *, ctx: Ctx | None = None, status: int = 200,
     nav = ""
     if ctx is not None and ctx.admin is not None and not ctx.admin["must_change"]:
         links = [("/admin", "Overview"), ("/admin/health", "What is working"),
+                 ("/admin/arcade", "Games"),
                  ("/admin/community", "Community"),
                  ("/admin/accounts", "Administrators"),
                  ("/admin/password", "My password"), ("/admin/audit", "History")]
@@ -1332,4 +1337,207 @@ def _remove_from_card(name: str) -> bool:
         return True
     except OSError:
         return False          # already gone, or the card went read-only
+
+
+# ---------------------------------------------------------------------------
+#  games — the shelf, player names, and what the box may fetch
+# ---------------------------------------------------------------------------
+def _arcade_candidate_row(c: dict, csrf: str) -> str:
+    install = (f'''<form method="post" action="/admin/arcade/suggestions/{int(c['id'])}/install">
+              {_csrf_field(csrf)}
+              <button class="go-btn small" type="submit">Check and add</button>
+            </form>''' if c["status"] == "pending" else "")
+    return f"""<tr>
+          <td>{esc(c['title'])}<br><span class="hint">{esc(c['license'] or 'no licence stated')}</span></td>
+          <td>{esc(ark_arcade.SYSTEMS.get(c['system'], {}).get('label', c['system']))}</td>
+          <td>{esc(c['status'])}<br><span class="hint">{esc(c['reason'] or 'ready to check')}</span></td>
+          <td>
+            {install}
+            <form method="post" action="/admin/arcade/suggestions/{int(c['id'])}/state">
+              {_csrf_field(csrf)}
+              <input type="hidden" name="action" value="{'pending' if c['status'] == 'refused' else 'refused'}">
+              <button class="go-btn small" type="submit">{'Allow again' if c['status'] == 'refused' else 'Put away'}</button>
+            </form>
+          </td>
+        </tr>"""
+@router.get("/arcade", response_class=HTMLResponse)
+def arcade_page(request: Request):
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.tx() as conn:
+        ctx = _load_ctx(conn, request, ark_db.session_epoch(conn))
+        if (blocked := _need_session(ctx, request)) is not None:
+            return blocked
+        games = ark_arcade.all_games(conn)
+        candidates = ark_arcade_install.candidate_rows(conn)
+        names_open = ark_arcade.players_open(conn)
+        auto = (ark_db.get_setting(conn, "arcade_auto_install", "0") or "0") == "1"
+        last = ark_arcade.last_job(conn)
+
+    game_rows = "".join(
+        f"""<tr>
+          <td>{esc(g['title'])}<br><span class="hint">{esc(g['author'] or 'maker not stated')}</span></td>
+          <td>{esc(ark_arcade.SYSTEMS.get(g['system'], {}).get('label', g['system']))}</td>
+          <td>{esc(g['license'] or 'not stated')}</td>
+          <td>{'Hidden' if g['hidden'] else ('On the shelf' if g['published'] else 'Not shown')}</td>
+          <td><form method="post" action="/admin/arcade/{int(g['id'])}/state">
+            {_csrf_field(ctx.csrf)}
+            <input type="hidden" name="action" value="{'show' if g['hidden'] else 'hide'}">
+            <button class="go-btn small" type="submit">{'Show on shelf' if g['hidden'] else 'Hide from shelf'}</button>
+          </form></td>
+        </tr>""" for g in games) or '<tr><td colspan="5">No games on the shelf yet.</td></tr>'
+
+    wanted = [c for c in candidates if c["status"] in ("pending", "refused")]
+    candidate_rows = "".join(_arcade_candidate_row(c, ctx.csrf) for c in wanted) or (
+        '<tr><td colspan="4">No suggestions waiting.</td></tr>')
+
+    last_line = (f'<p class="hint">Last check: {esc(last["finished_at"] or last["started_at"])} — '
+                 f'{esc(last["detail"])}</p>' if last else
+                 '<p class="hint">The box has not checked for new games yet.</p>')
+    names_switch = _switch(
+        names_open, "players", "Anyone can use a name to keep saves",
+        "A name is only for games: it cannot sign in to this area or change the box. "
+        "Leave it on unless names are being misused; guests can always play without one.")
+    auto_switch = _switch(
+        auto, "auto", "Add newly found games without asking me",
+        "Leave this off to see each suggestion first. Even when it is on, a game is only "
+        "kept if its own entry states a licence that allows copying and every check passes.")
+    flash = ""
+    if request.query_params.get("ok"):
+        flash = _notice("good", esc(request.query_params["ok"][:300]))
+    elif request.query_params.get("err"):
+        flash = _notice("bad", esc(request.query_params["err"][:300]))
+    body = f"""
+  {flash}
+  <h2>Games on the shelf</h2>
+  <table class="plain"><thead><tr><th>Game</th><th>Kind</th><th>Licence</th>
+    <th>State</th><th>What to do</th></tr></thead><tbody>{game_rows}</tbody></table>
+  <p class="note">Hiding a game takes it off the games page and stops its file being
+  handed out. Nothing is deleted, so showing it again is always possible.</p>
+
+  <h2>Player names and new games</h2>
+  <form method="post" action="/admin/arcade/switches">
+    {_csrf_field(ctx.csrf)}
+    {names_switch}
+    {auto_switch}
+    <button class="go-btn" type="submit">Save these switches</button>
+  </form>
+  <p class="note">The box asks the curated homebrew source for new games once a week.
+  Every suggestion records what licence the source stated; nothing is fetched from
+  anywhere else.</p>
+  {last_line}
+
+  <h2>Suggested games</h2>
+  <table class="plain"><thead><tr><th>Game</th><th>Kind</th><th>What the box says</th>
+    <th>What to do</th></tr></thead><tbody>{candidate_rows}</tbody></table>
+  <p class="note">“Check and add” downloads the game, proves its fingerprint and shape,
+  and only then puts it on the shelf. A failure changes nothing.</p>"""
+    return shell("Games", body, ctx=ctx,
+                 tagline="The game shelf, who may keep saves, and every suggestion the box has recorded.")
+
+
+@router.post("/arcade/switches", response_class=HTMLResponse)
+def arcade_switches(request: Request, players: str = Form(""), auto: str = Form(""),
+                    csrf: str = Form("")):
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.tx() as conn:
+        ctx, blocked = _committed(request, conn, csrf)
+        if blocked is not None:
+            return blocked
+        me = ctx.admin
+        ark_db.set_setting(conn, "arcade_players", "1" if players else "0")
+        ark_db.set_setting(conn, "arcade_auto_install", "1" if auto else "0")
+        ark_db.audit(conn, action="arcade-switches", actor_id=me["id"],
+                     actor_name=me["username"], result="ok",
+                     detail=f"player names={'on' if players else 'off'}, "
+                            f"auto install={'on' if auto else 'off'}")
+    return _redirect("/admin/arcade")
+
+
+@router.post("/arcade/{game_id}/state", response_class=HTMLResponse)
+def arcade_game_state(request: Request, game_id: int, action: str = Form(""),
+                      csrf: str = Form("")):
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    if action not in ("hide", "show"):
+        return shell("Games", _notice("bad", "<b>Nothing was changed.</b> That is not an action."),
+                     status=400)
+    with ark_db.tx() as conn:
+        ctx, blocked = _committed(request, conn, csrf)
+        if blocked is not None:
+            return blocked
+        me = ctx.admin
+        game = ark_arcade.game_by_id(conn, int(game_id))
+        if game is None:
+            return shell("Games", _notice("bad", "<b>Nothing was changed.</b> That game is not here."),
+                         ctx=ctx, status=404)
+        conn.execute("UPDATE games SET hidden = ?, updated_at = ? WHERE id = ?",
+                     (1 if action == "hide" else 0, ark_arcade.now_iso(), int(game_id)))
+        ark_db.audit(conn, action=f"game-{action}", actor_id=me["id"], actor_name=me["username"],
+                     target=game["slug"], result="ok",
+                     detail="taken off the games page" if action == "hide" else "shown again")
+    return _redirect("/admin/arcade")
+
+
+@router.post("/arcade/suggestions/{candidate_id}/install", response_class=HTMLResponse)
+def arcade_suggestion_install(request: Request, candidate_id: int, csrf: str = Form("")):
+    """Download and prove one suggestion, then publish it — never while holding a lock."""
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.tx() as conn:
+        ctx, blocked = _committed(request, conn, csrf)
+        if blocked is not None:
+            return blocked
+        me = ctx.admin
+        row = ark_arcade_install.candidate_row(conn, int(candidate_id))
+        if row is None:
+            return shell("Games", _notice("bad", "<b>Nothing was added.</b> That suggestion is gone."),
+                         ctx=ctx, status=404)
+        title = row["title"]
+    try:
+        with ark_db.read() as conn:
+            result = ark_arcade_install.install_approved(conn, int(candidate_id))
+    except (ark_arcade_install.InstallRefused, urllib.error.URLError,
+            TimeoutError, OSError, sqlite3.DatabaseError) as exc:
+        with ark_db.tx() as conn:
+            ark_db.audit(conn, action="arcade-suggestion-install", actor_id=me["id"],
+                         actor_name=me["username"], target=title, result="failed",
+                         detail=str(exc)[:300])
+        return _redirect("/admin/arcade?" + urllib.parse.urlencode(
+            {"err": f"{title} was not added: {exc}"}))
+    with ark_db.tx() as conn:
+        detail = (f"installed {result['slug']} revision {result['revision']}"
+                  if result.get("installed") else result.get("reason", "already here"))
+        ark_db.audit(conn, action="arcade-suggestion-install", actor_id=me["id"],
+                     actor_name=me["username"], target=title, result="ok",
+                     detail=detail)
+    return _redirect("/admin/arcade?" + urllib.parse.urlencode(
+        {"ok": f"{title} was checked and added." if result.get("installed")
+               else f"{title} is already on the shelf."}))
+
+
+@router.post("/arcade/suggestions/{candidate_id}/state", response_class=HTMLResponse)
+def arcade_suggestion_state(request: Request, candidate_id: int, action: str = Form(""),
+                            csrf: str = Form("")):
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    if action not in ("pending", "refused"):
+        return shell("Games", _notice("bad", "<b>Nothing was changed.</b> That is not an action."),
+                     status=400)
+    with ark_db.tx() as conn:
+        ctx, blocked = _committed(request, conn, csrf)
+        if blocked is not None:
+            return blocked
+        me = ctx.admin
+        row = ark_arcade_install.candidate_row(conn, int(candidate_id))
+        if row is None:
+            return shell("Games", _notice("bad", "<b>Nothing was changed.</b> That suggestion is gone."),
+                         ctx=ctx, status=404)
+        ok = ark_arcade_install.set_candidate_status(conn, int(candidate_id), action,
+                                                      "put away by the owner" if action == "refused" else "")
+        ark_db.audit(conn, action="arcade-suggestion-state", actor_id=me["id"],
+                     actor_name=me["username"], target=row["title"], result="ok" if ok else "denied",
+                     detail=f"now {action}" if ok else "already installed; nothing changed")
+    return _redirect("/admin/arcade")
 

@@ -8,9 +8,12 @@ Serves what a nearby reader needs, all anonymously:
   GET  /search       one search box across the library, the books and the guides
   GET  /board        message board (read + post)
   GET  /files        shared file box (read + upload)
+  GET  /arcade/      game shelf (guest play; an optional name keeps saves)
 
 Reading needs no account, on purpose: this is a box in a room, not a website.
-Everything is rendered server-side so the critical paths need zero JavaScript.
+Everything is rendered server-side so the critical paths need zero JavaScript,
+except the game player itself. Named-player saves are served only through the
+separate TLS origin (:8445); the public shelf is guest-only.
 
 The owner's side lives in ``ark_admin`` under ``/admin``.  It is mounted here
 but never reachable from the portal: nginx answers 404 for it on :80 and only
@@ -34,6 +37,9 @@ from fastapi import FastAPI, Form, UploadFile, File
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 import ark_admin
+import ark_arcade
+import ark_arcade_install
+import ark_arcade_web
 import ark_db
 import ark_health
 import ark_storage
@@ -72,6 +78,7 @@ def init_db() -> None:
     default login, never resets a password, and always starts from "signed out".
     """
     ark_storage.ensure_dirs()
+    ark_arcade.ensure_dirs()
     ark_db.migrate()
     ark_admin.ensure_initialised()
     with ark_db.tx() as conn:
@@ -80,6 +87,7 @@ def init_db() -> None:
     # everyone; delete the stale ones so the card does not slowly fill with them.
     try:
         ark_storage.reconcile_temp()
+        ark_arcade_install.sweep_temp()
     except OSError:
         pass          # housekeeping must never stop the portal from starting
 
@@ -89,6 +97,9 @@ init_db()
 # The administrator area lives under /admin on this same backend, but nginx only
 # exposes it on the HTTPS management listener — never on the public portal.
 app.include_router(ark_admin.router)
+# The games shelf is public on purpose.  Its player pages carry their own cookie
+# and their own tables; nothing here can reach /admin.
+app.include_router(ark_arcade_web.router)
 
 
 # ---------------------------------------------------------------------------

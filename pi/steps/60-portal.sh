@@ -15,10 +15,12 @@ ark_step "PHASE 6/7 — portal and web server"
 VENV="$ARK_ROOT/venv"
 PORTAL="$ARK_ROOT/portal"
 API_DIR="$ARK_ROOT/api"
+ARCADE_DATA="$ARK_ROOT/arcade"
 
 # ---- static pages -----------------------------------------------------------
 for d in "$PORTAL" "$PORTAL/assets" "$API_DIR" "$API_DIR/data" \
-         "$ARK_ROOT/drop/files" "$ARK_ROOT/drop/tmp"; do
+         "$ARK_ROOT/drop/files" "$ARK_ROOT/drop/tmp" \
+         "$ARCADE_DATA" "$ARCADE_DATA/games" "$ARCADE_DATA/saves" "$ARCADE_DATA/tmp"; do
   ark_ensure_dir "$d" 775 "$ARK_PI_USER:$ARK_PI_GROUP"
 done
 
@@ -29,10 +31,25 @@ ark_copy "$ARK_SRC/portal/assets/ark-admin.css" "$PORTAL/assets/ark-admin.css" 6
 ark_ok "portal pages installed in $PORTAL"
 
 # ---- backend ----------------------------------------------------------------
-for f in main.py ark_db.py ark_storage.py ark_security.py ark_admin.py ark_recover.py ark_health.py; do
+for f in main.py ark_db.py ark_storage.py ark_security.py ark_admin.py ark_recover.py ark_health.py \
+         ark_arcade.py ark_arcade_install.py ark_arcade_web.py; do
   ark_copy "$ARK_SRC/api/$f" "$API_DIR/$f" 644 "$ARK_PI_USER:$ARK_PI_GROUP"
 done
 ark_copy "$ARK_SRC/api/requirements.txt" "$API_DIR/requirements.txt" 644 "$ARK_PI_USER:$ARK_PI_GROUP"
+
+# ARK Arcade: the pages, the player and the seed list live in the source tree
+# (read-only to the service); the games and saves live in $ARCADE_DATA above.
+for needed in "$ARK_SRC/arcade/templates/page.html" \
+              "$ARK_SRC/arcade/static/ark-arcade.css" \
+              "$ARK_SRC/arcade/static/notices.txt" \
+              "$ARK_SRC/arcade/catalog/seed.json" \
+              "$ARK_SRC/arcade/emulatorjs/loader.js" \
+              "$ARK_SRC/arcade/emulatorjs/emulator.min.js"; do
+  [[ -f "$needed" ]] || ark_die "ARK Arcade is missing $needed — the source tree was not copied in full"
+done
+ark_copy "$ARK_SRC/bin/ark-arcade" /usr/local/sbin/ark-arcade 755 root:root
+chmod +x /usr/local/sbin/ark-arcade
+ark_ok "ARK Arcade files present; shelf keeper installed in /usr/local/sbin"
 
 [[ -x "$VENV/bin/python" ]] || ark_die "no Python environment at $VENV — run phase 3 (30-calibre) first"
 
@@ -68,6 +85,27 @@ case "$ready_code" in
 esac
 ark_ok "backend answering on 127.0.0.1:8085 (health + status + readiness)"
 
+# ---- first shelf ------------------------------------------------------------
+# The pinned three are downloaded, checked against their SHA-256 and the shape
+# of a Game Boy file, then published.  A box with no internet yet is not broken:
+# the shelf stays empty and the next discovery run fills it.
+seed_log="$ARK_ROOT/logs/arcade-seed.log"
+if sudo -u "$ARK_PI_USER" /usr/local/sbin/ark-arcade --seed >>"$seed_log" 2>&1; then
+  ark_ok "first games checked and put on the shelf ($(tail -n 1 "$seed_log" | cut -c1-90))"
+else
+  ark_warn "first games could not be fetched yet — see $seed_log (the shelf stays empty, the rest works)"
+fi
+
+# Weekly discovery.  It only ever records what the source offers; a suggestion
+# is installed by a person unless the owner has switched automatic installing on.
+ark_install_unit ark-arcade-discover.service
+ark_install_unit ark-arcade-discover.timer
+if systemctl enable --now ark-arcade-discover.timer >/dev/null 2>&1; then
+  ark_ok "weekly game check enabled (ark-arcade-discover.timer)"
+else
+  ark_warn "could not enable ark-arcade-discover.timer — the shelf will not check for new games"
+fi
+
 # ---- nginx ------------------------------------------------------------------
 NGINX_SITE=/etc/nginx/sites-available/ark
 ark_copy "$ARK_SRC/nginx/ark.conf" "$NGINX_SITE" 644 root:root
@@ -100,6 +138,9 @@ check "http://127.0.0.1/admin"          "admin stays off the public portal" "404
 check "http://127.0.0.1/search?q=water"   "one search box"
 check "http://127.0.0.1/board"            "message board"
 check "http://127.0.0.1/files"            "file box"
+check "http://127.0.0.1/arcade/"          "games shelf"
+check "http://127.0.0.1/arcade/static/ark-arcade.css" "game shelf stylesheet"
+check "http://127.0.0.1/arcade/emulator/loader.js"     "game player"
 check "http://127.0.0.1/vault/"           "manuals index"
 check "http://127.0.0.1/generate_204"     "captive-portal trigger"
 # 503 is the honest answer while the very first collection is still arriving

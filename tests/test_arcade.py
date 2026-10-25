@@ -1,0 +1,353 @@
+"""ARK Arcade: the shelf is public, a name is not an administrator.
+
+These tests pin the boundary the feature was built around:
+
+* a guest plays and is asked for nothing — and cannot reach a named player's
+  saves;
+* a named player's saves belong to that name alone, survive a stale page, and
+  can be taken away and put back;
+* every page and both files the player needs come from this box, so the shelf
+  still works with the internet unplugged;
+* a catalogue entry cannot turn a download into an arbitrary URL, an archive
+  into a path, or a renamed web page into a game.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import io
+import re
+import zipfile
+
+from helpers import BIG_PASSWORD, LAN, claim_box, csrf_of, get, post
+
+PASSWORD = "correct horse battery staple 42"
+SECOND_PASSWORD = "a much better passphrase 7"
+
+
+def _game(ark, slug: str = "stars", *, hidden: int = 0, published: int = 1) -> int:
+    data = ("game bytes for " + slug).encode()
+    games = ark.root / "arcade" / "games"
+    games.mkdir(parents=True, exist_ok=True)
+    (games / f"{slug}.gb").write_bytes(data)
+    with ark.db.tx() as conn:
+        cur = conn.execute(
+            "INSERT INTO games (slug, title, system, core, filename, size, sha256, revision, "
+            "license, license_evidence, author, description, provider, entry_id, installed_at, "
+            "updated_at, published, hidden) VALUES (?, ?, 'gb', 'gambatte', ?, ?, ?, 1, "
+            "'MIT', 'test entry: license MIT', 'Test Maker', 'A test game.', 'test', ?, ?, ?, ?, ?)",
+            (slug, slug.title(), f"{slug}.gb", len(data), hashlib.sha256(data).hexdigest(), slug,
+             "2026-10-24T00:00:00Z", "2026-10-24T00:00:00Z", published, hidden),
+        )
+        return int(cur.lastrowid)
+
+
+def _register(client, name: str, password: str = PASSWORD):
+    response = client.post("/arcade/player/new", data={
+        "username": name, "password": password, "confirm": password,
+        "next": "/arcade/player"}, follow_redirects=False)
+    assert response.status_code == 303, response.text
+    token = ""
+    for part in response.headers.get("set-cookie", "").split(","):
+        bits = part.strip().split(";")[0]
+        if bits.startswith("ark_player="):
+            token = bits.split("=", 1)[1]
+    assert token
+    page = client.get("/arcade/player", cookies={"ark_player": token})
+    match = re.search(r'name="csrf" value="([^"]+)"', page.text)
+    assert match
+    return token, match.group(1)
+
+
+# ---------------------------------------------------------------------------
+#  the guest
+# ---------------------------------------------------------------------------
+def test_the_shelf_answers_without_a_name(public):
+    page = public.client.get("/arcade/")
+    assert page.status_code == 200
+    assert "Games" in page.text
+    assert "guest" in page.text.lower()
+
+
+def test_an_empty_shelf_says_so_without_breaking_the_portal(public):
+    page = public.client.get("/arcade/")
+    assert page.status_code == 200
+    assert "No games on the shelf yet" in page.text
+
+
+def test_a_guest_cannot_reach_a_players_saves(public):
+    for method, path in (("get", "/arcade/api/saves/1"),
+                         ("get", "/arcade/api/saves/1/state/1"),
+                         ("put", "/arcade/api/saves/1/state/1"),
+                         ("delete", "/arcade/api/saves/1")):
+        response = getattr(public.client, method)(path)
+        assert response.status_code == 401, (method, path)
+
+
+def test_the_game_page_is_entirely_local_and_has_no_guest_save_panel(public):
+    _game(public.ark)
+    page = public.client.get("/arcade/g/stars")
+    assert page.status_code == 200
+    assert 'window.EJS_pathtodata = "/arcade/emulator/";' in page.text
+    assert 'src="/arcade/emulator/loader.js"' in page.text
+    assert "http://" not in page.text and "https://" not in page.text
+    assert "Playing as a guest" in page.text
+    assert "/admin" not in page.text
+
+
+def test_the_player_and_its_files_come_from_this_box(public):
+    loader = public.client.get("/arcade/emulator/loader.js")
+    assert loader.status_code == 200
+    assert "EJS" in loader.text
+    assert public.client.get("/arcade/emulator/version.json").status_code == 200
+    assert public.client.get("/arcade/static/ark-arcade.css").status_code == 200
+    assert public.client.get("/arcade/static/notices.txt").status_code == 200
+
+
+def test_the_emulator_route_cannot_walk_out_of_its_folder(public):
+    assert public.client.get("/arcade/emulator/../api/main.py").status_code == 404
+    assert public.client.get("/arcade/emulator/%2e%2e/%2e%2e/api/main.py").status_code == 404
+
+
+def test_a_hidden_game_has_no_page_and_no_file(public):
+    _game(public.ark, hidden=1)
+    page = public.client.get("/arcade/g/stars")
+    assert page.status_code == 200
+    assert "That game is not here" in page.text
+    assert public.client.get("/arcade/g/stars/rom").status_code == 404
+
+
+# ---------------------------------------------------------------------------
+#  the named player
+# ---------------------------------------------------------------------------
+def test_a_name_signs_in_and_the_game_page_offers_saves(public):
+    _game(public.ark)
+    token, csrf = _register(public.client, "Ada")
+    page = public.client.get("/arcade/g/stars", cookies={"ark_player": token})
+    assert page.status_code == 200
+    assert "Saves for Ada" in page.text
+    assert token and csrf
+
+
+def test_a_save_round_trip_and_a_stale_page_is_refused(public):
+    game_id = _game(public.ark)
+    token, csrf = _register(public.client, "Ada")
+    cookies = {"ark_player": token}
+    url = f"/arcade/api/saves/{game_id}/state/1"
+    headers = {"x-ark-csrf": csrf, "x-ark-revision": "0"}
+
+    kept = public.client.put(url, content=b"first save", headers=headers, cookies=cookies)
+    assert kept.status_code == 200, kept.text
+    assert kept.json()["revision"] == 1
+    stored = next((public.ark.root / "arcade" / "saves").rglob("state-01.state"))
+    assert (stored.stat().st_mode & 0o777) == 0o600
+    assert (stored.parent.stat().st_mode & 0o777) == 0o700
+
+    listing = public.client.get(f"/arcade/api/saves/{game_id}", cookies=cookies)
+    assert listing.status_code == 200
+    assert listing.json()["saves"][0]["size"] == len(b"first save")
+
+    got = public.client.get(url, cookies=cookies)
+    assert got.status_code == 200
+    assert got.content == b"first save"
+
+    stale = public.client.put(url, content=b"from an old page", headers=headers, cookies=cookies)
+    assert stale.status_code == 409
+    assert "changed somewhere else" in stale.json()["error"]
+
+    newer = public.client.put(url, content=b"second save",
+                              headers={"x-ark-csrf": csrf, "x-ark-revision": "1"}, cookies=cookies)
+    assert newer.status_code == 200
+    assert newer.json()["revision"] == 2
+    assert public.client.get(url, cookies=cookies).content == b"second save"
+
+    save_id = listing.json()["saves"][0]["id"]
+    deleted = public.client.delete(f"/arcade/api/saves/{save_id}",
+                                   headers={"x-ark-csrf": csrf}, cookies=cookies)
+    assert deleted.status_code == 200
+    assert public.client.get(url, cookies=cookies).status_code == 404
+
+
+def test_a_save_without_the_page_token_is_refused(public):
+    game_id = _game(public.ark)
+    token, _ = _register(public.client, "Ada")
+    response = public.client.put(f"/arcade/api/saves/{game_id}/state/1",
+                                 content=b"not from the page",
+                                 headers={"x-ark-csrf": "wrong"}, cookies={"ark_player": token})
+    assert response.status_code == 403
+
+
+def test_one_players_save_is_invisible_to_another(public):
+    game_id = _game(public.ark)
+    ada, ada_csrf = _register(public.client, "Ada")
+    url = f"/arcade/api/saves/{game_id}/state/1"
+    assert public.client.put(url, content=b"Ada's game", cookies={"ark_player": ada},
+                             headers={"x-ark-csrf": ada_csrf, "x-ark-revision": "0"}).status_code == 200
+    grace, grace_csrf = _register(public.client, "Grace", SECOND_PASSWORD)
+    assert public.client.get(url, cookies={"ark_player": grace}).status_code == 404
+    assert public.client.delete("/arcade/api/saves/1", cookies={"ark_player": grace},
+                                headers={"x-ark-csrf": grace_csrf}).status_code == 404
+
+
+def test_a_players_zip_can_be_put_back(public):
+    game_id = _game(public.ark)
+    token, csrf = _register(public.client, "Ada")
+    cookies = {"ark_player": token}
+    public.client.put(f"/arcade/api/saves/{game_id}/state/2", content=b"a state to keep",
+                      cookies=cookies, headers={"x-ark-csrf": csrf, "x-ark-revision": "0"})
+
+    exported = public.client.get("/arcade/player/export.zip", cookies=cookies)
+    assert exported.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(exported.content)) as zf:
+        assert "saves/stars/state-02.state" in zf.namelist()
+
+    grace, grace_csrf = _register(public.client, "Grace", SECOND_PASSWORD)
+    put_back = public.client.post(
+        "/arcade/player/import.zip",
+        data={"csrf": grace_csrf},
+        files={"archive": ("saves.zip", exported.content, "application/zip")},
+        cookies={"ark_player": grace}, follow_redirects=False)
+    assert put_back.status_code == 303
+    assert "ok=" in put_back.headers["location"]
+    got = public.client.get(f"/arcade/api/saves/{game_id}/state/2", cookies={"ark_player": grace})
+    assert got.status_code == 200
+    assert got.content == b"a state to keep"
+
+
+def test_an_import_cannot_walk_out_of_the_save_folder(public):
+    import ark_arcade as arc
+    game_id = _game(public.ark)
+    _register(public.client, "Ada")
+    with public.ark.db.read() as conn:
+        player = conn.execute("SELECT id FROM players WHERE username = 'ada'").fetchone()
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zf:
+        zf.writestr("saves/stars/../../escape.state", b"nope")
+        zf.writestr("saves/stars/state-01.state", b"a real save")
+        zf.writestr("not-a-save.txt", b"nope")
+    with public.ark.db.read() as conn:
+        result = arc.player_import_bytes(conn, int(player["id"]), buffer.getvalue())
+    assert result["imported"] == 1
+    assert result["skipped"]
+    assert not (public.ark.root / "arcade" / "escape.state").exists()
+    assert (public.ark.root / "arcade" / "saves" / str(player["id"]) / str(game_id)
+            / "state-01.state").is_file()
+
+
+def test_a_player_name_is_not_an_administrator(public):
+    token, _ = _register(public.client, "Ada")
+    admin = public.client.get("/admin/login",
+                              headers={"x-forwarded-proto": "https", "x-real-ip": "192.168.1.50",
+                                       "x-ark-setup-channel": "loopback"},
+                              cookies={"ark_player": token})
+    # Either the management door refuses a plain portal peer outright, or it
+    # shows the administrator sign-in.  What it must never do is treat the
+    # player's cookie as a signed-in administrator.
+    assert admin.status_code in (200, 403)
+    assert "ark_admin=" not in admin.headers.get("set-cookie", "")
+    assert "Good to see you" not in admin.text
+
+
+# ---------------------------------------------------------------------------
+#  the owner's side
+# ---------------------------------------------------------------------------
+def test_the_owner_can_see_the_shelf_and_close_player_names(ark, client, public):
+    game_id = _game(ark)
+    token, save_csrf = _register(public.client, "Ada")
+    cookie = claim_box(client)
+    page = get(client, "/admin/arcade", headers=LAN, cookie=f"ark_admin={cookie}")
+    assert page.status_code == 200
+    assert "Games on the shelf" in page.text
+    assert "Stars" in page.text
+    assert "Anyone can use a name to keep saves" in page.text
+
+    saved = post(client, "/admin/arcade/switches",
+                 {"csrf": csrf_of(page.text)}, headers=LAN, cookie=f"ark_admin={cookie}")
+    assert saved.status_code == 303
+    with ark.db.read() as conn:
+        assert ark.db.get_setting(conn, "arcade_players") == "0"
+        assert ark.db.get_setting(conn, "arcade_auto_install") == "0"
+    # With names closed, an existing session cannot save, and a new name is refused.
+    closed_save = public.client.put(f"/arcade/api/saves/{game_id}/state/1",
+                                    content=b"while closed",
+                                    headers={"x-ark-csrf": save_csrf, "x-ark-revision": "0"},
+                                    cookies={"ark_player": token})
+    assert closed_save.status_code == 401
+    assert public.client.get("/arcade/").status_code == 200
+    refused = public.client.post("/arcade/player/new", data={
+        "username": "Ada", "password": PASSWORD, "confirm": PASSWORD},
+        follow_redirects=False)
+    assert refused.status_code == 303
+    assert "switched+off" in refused.headers["location"].lower()
+
+
+def test_the_owner_can_put_a_suggestion_away_without_a_download(ark, client):
+    with ark.db.tx() as conn:
+        conn.execute(
+            "INSERT INTO acquisition_candidates (provider, entry_id, title, system, filename, "
+            "download_url, license, license_evidence, status, reason, created_at, updated_at) "
+            "VALUES ('homebrew-hub', 'waternet', 'Waternet', 'gbc', 'waternet.gbc', ?, 'MIT', "
+            "'test entry: MIT', 'pending', '', '2026-10-24T00:00:00Z', '2026-10-24T00:00:00Z')",
+            ("https://raw.githubusercontent.com/gbdev/database/master/entries/waternet/waternet.gbc",))
+        candidate_id = int(conn.execute("SELECT id FROM acquisition_candidates").fetchone()[0])
+    cookie = claim_box(client)
+    page = get(client, "/admin/arcade", headers=LAN, cookie=f"ark_admin={cookie}")
+    assert page.status_code == 200
+    assert "Waternet" in page.text
+    put_away = post(client, f"/admin/arcade/suggestions/{candidate_id}/state",
+                    {"action": "refused", "csrf": csrf_of(page.text)},
+                    headers=LAN, cookie=f"ark_admin={cookie}")
+    assert put_away.status_code == 303
+    with ark.db.read() as conn:
+        row = conn.execute("SELECT status, reason FROM acquisition_candidates WHERE id = ?",
+                           (candidate_id,)).fetchone()
+    assert row["status"] == "refused"
+    assert "owner" in row["reason"]
+
+
+def test_the_owner_can_add_one_suggestion_without_a_download(ark, client, monkeypatch):
+    """The route that runs the real gate, with only the network call stubbed."""
+    import ark_arcade_install as install
+    with ark.db.tx() as conn:
+        conn.execute(
+            "INSERT INTO acquisition_candidates (provider, entry_id, title, system, filename, "
+            "download_url, license, license_evidence, status, reason, created_at, updated_at) "
+            "VALUES ('homebrew-hub', 'waternet', 'Waternet', 'gbc', 'waternet.gbc', ?, 'MIT', "
+            "'test entry: MIT', 'pending', '', '2026-10-24T00:00:00Z', '2026-10-24T00:00:00Z')",
+            ("https://raw.githubusercontent.com/gbdev/database/master/entries/waternet/waternet.gbc",))
+        candidate_id = int(conn.execute("SELECT id FROM acquisition_candidates").fetchone()[0])
+    monkeypatch.setattr(install, "install_approved",
+                        lambda conn, cid: {"slug": "waternet", "installed": True,
+                                           "revision": 1, "sha256": "0" * 64, "size": 1})
+    cookie = claim_box(client)
+    page = get(client, "/admin/arcade", headers=LAN, cookie=f"ark_admin={cookie}")
+    added = post(client, f"/admin/arcade/suggestions/{candidate_id}/install",
+                 {"csrf": csrf_of(page.text)}, headers=LAN, cookie=f"ark_admin={cookie}")
+    assert added.status_code == 303
+    assert "ok=" in added.headers["location"]
+    with ark.db.read() as conn:
+        audit = conn.execute("SELECT action, result, detail FROM audit_log "
+                             "WHERE action = 'arcade-suggestion-install'").fetchone()
+    assert audit["result"] == "ok"
+    assert "revision 1" in audit["detail"]
+
+
+def test_the_owner_can_take_a_game_off_the_shelf_and_put_it_back(ark, client, public):
+    game_id = _game(ark)
+    cookie = claim_box(client)
+    page = get(client, "/admin/arcade", headers=LAN, cookie=f"ark_admin={cookie}")
+    hidden = post(client, f"/admin/arcade/{game_id}/state",
+                  {"action": "hide", "csrf": csrf_of(page.text)},
+                  headers=LAN, cookie=f"ark_admin={cookie}")
+    assert hidden.status_code == 303
+    with ark.db.read() as conn:
+        assert conn.execute("SELECT hidden FROM games WHERE id = ?",
+                            (game_id,)).fetchone()[0] == 1
+    assert "Stars" not in public.client.get("/arcade/").text
+
+    page = get(client, "/admin/arcade", headers=LAN, cookie=f"ark_admin={cookie}")
+    shown = post(client, f"/admin/arcade/{game_id}/state",
+                 {"action": "show", "csrf": csrf_of(page.text)},
+                 headers=LAN, cookie=f"ark_admin={cookie}")
+    assert shown.status_code == 303
+    assert "Stars" in public.client.get("/arcade/").text

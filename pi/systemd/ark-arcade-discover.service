@@ -1,0 +1,29 @@
+[Unit]
+Description=Project ARK — check the curated game source and keep the first shelf
+Documentation=http://ark.lan/help
+Wants=network-online.target
+After=network-online.target ark-api.service
+ConditionPathExists=/usr/local/sbin/ark-arcade
+
+[Service]
+Type=oneshot
+User=pi
+Group=pi
+Environment=ARK_ROOT=/srv/ark
+Environment=ARK_ARCADE_SRC=/srv/ark/src/arcade
+Environment=ARK_ARCADE_DATA=/srv/ark/arcade
+# The pinned first shelf is idempotent.  A failed fetch (no internet yet) must
+# not stop the discovery that follows; the dash is deliberately non-fatal.
+ExecStart=-/usr/local/sbin/ark-arcade --seed
+ExecStart=/usr/local/sbin/ark-arcade --discover --auto
+TimeoutStartSec=1800
+Nice=10
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/srv/ark/arcade /srv/ark/api/data
+
+[Install]
+WantedBy=multi-user.target

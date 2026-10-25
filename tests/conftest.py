@@ -16,7 +16,8 @@ API_DIR = Path(__file__).resolve().parents[1] / "pi" / "api"
 if str(API_DIR) not in sys.path:
     sys.path.insert(0, str(API_DIR))
 
-MODULES = ("main", "ark_admin", "ark_security", "ark_db", "ark_storage", "ark_health")
+MODULES = ("main", "ark_admin", "ark_security", "ark_db", "ark_storage", "ark_health",
+           "ark_arcade", "ark_arcade_web", "ark_arcade_install")
 
 
 @pytest.fixture()

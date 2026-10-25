@@ -1,0 +1,88 @@
+THE ARK — WHAT TO DO WHEN IT STOPS WORKING
+==========================================
+
+Print this page.  Keep it with the box, never on it.
+If the box is dead, nothing stored on the box can be read.
+
+
+FIRST, THE FOUR THINGS TO CHECK
+-------------------------------
+  1. Is it plugged in, and is the little light solid rather than blinking?
+  2. Is the memory card pushed fully into its slot?
+  3. Switch it off at the plug, wait ten seconds, switch it on again.
+  4. Give it three minutes.  It is slow to start, and that is normal.
+
+If phones still cannot find it, the same four checks apply again after
+another five minutes.  Most "dead box" reports are one of those four.
+
+
+DO NOT, EVER
+------------
+  * Do not pull the memory card out while the box is switched on.
+  * Do not format, wipe or "prepare" the memory card on a computer.
+  * Do not copy new files onto the card.  Nothing good comes of it.
+  * Do not throw the card away because the box will not start — it almost
+    always still holds everything.
+
+
+IF IT STILL WILL NOT START: USE THE SPARE CARD
+----------------------------------------------
+You need the spare memory card that came with the box, a card reader, and
+a computer.  Nothing else.
+
+  1. Switch the box off at the plug and take its card out.
+  2. Put the spare card in the reader.
+  3. On the computer, follow REBUILD-ME-ARK.txt in the Project-Ark folder.
+     It takes about half an hour.
+  4. Put the new card in the box and switch it on.
+
+The box comes up empty.  That is expected — the next part brings the
+messages, shared files and game saves back.
+
+
+PUTTING THE MESSAGES, FILES AND GAME SAVES BACK
+-----------------------------------------------
+Your backups are folders named ark-backup-<date>-<time>.  Each holds the
+messages, the shared files, the accounts, the game saves kept by a name,
+and the list of books already added.  Each also carries a short
+RESTORE-ME.txt that repeats the steps.
+
+  1. Copy the newest backup folder onto a USB stick.
+  2. With a keyboard on the box, copy that folder to /srv/ark/backup.
+     Ask whoever set the box up to do this the first time — afterwards you
+     will know how, and it is only two lines.
+  3. On the box, type:
+
+         sudo ark-restore --list
+         sudo ark-restore --from /srv/ark/backup/ark-backup-<date>-<time>
+
+  4. Read what it says.  If it says the box already holds records, it has
+     stopped rather than replace them.  Only if those records really are
+     the ones you are willing to lose, add --force to the same line.
+  5. Switch the box off and on.  Open http://ark.lan on a phone.
+
+
+MAKING A NEW BACKUP
+-------------------
+After a busy week on the message board, a pile of new books, or a new
+person added to the household:
+
+      sudo ark-backup --to /srv/ark/backup
+
+It says how many messages, shared files and game saves it copied, and
+where.  It keeps the newest two and clears older ones away by itself.  To
+prove a backup really is whole, read every byte back:
+
+      sudo ark-backup --verify /srv/ark/backup/ark-backup-<date>-<time>
+
+
+GOOD HABITS
+-----------
+  * Keep one backup off the box — a USB stick in a drawer, or another
+    computer.  A backup that only lives on the box is not a backup.
+  * Make a backup before you change anything.
+  * Write the date on the stick with a pencil.
+
+If the memory card itself is broken, nothing on it can be read.  That is
+why you keep one finished backup somewhere else and a spare card in the
+bag.  With both, a dead card costs one afternoon — not the library.

@@ -27,11 +27,12 @@ and what the next executable step is.
 | 8 | Bounded search | **fixed** — process pool + bounded wait, deadline respected |
 | 9 | Truthful downloads/readiness/health | **stage 4 done** — one module decides per-section readiness with a reason and a next step, `/api/ready` answers 200/503, `/admin/health` is the owner's page, `/api/health` is liveness only, and progress comes from measured bytes (§8) |
 | 10 | Network loss after boot | **stage 5 done** — `ark-net-watch` asks the boot guard's question again every minute, rescues the hotspot after two lost checks, returns home when the network is back and nobody is using the hotspot, never takes the access point from a connected device, and never overrules a choice the owner made with `ark-mode home` / `ark-mode hotspot` (§10) |
-| 11 | Backup / offline recovery kit | not started |
+| 11 | Backup / offline recovery kit | **stage 6 done** — `ark-backup` writes one dated, verified bundle (records, shared files, import list, a manifest with a sha256 per file) built as `.partial` and published by rename; `ark-restore` proves a bundle before touching anything, refuses an occupied box without `--force`, and never replaces a shared file; the printed recovery sheet needs only a phone, a card reader and a working card (§11) |
 | 12 | Emergency content review | not started |
 | 13 | Essentials pack, QR, accessibility, household page | not started |
-| 14 | Sequence | stages 1–5 done, stage 6 next |
-| 15 | Acceptance tests | 128 tests, all green (`pytest -q`) |
+| — | ARK Arcade | **delivered and tested** — public shelf, guest play, optional named-player saves on the TLS `:8445` origin, owner **Games** page, licence/allowlist/hash gate, weekly discovery, and saves carried by a backup (§12) |
+| 14 | Sequence | stages 1–6 and ARK Arcade done; deploy + hardware walk-through outstanding; stage 7 next |
+| 15 | Acceptance tests | 174 tests, all green (`pytest -q`) |
 
 ---
 
@@ -309,22 +310,50 @@ returns `None` when it cannot ask. `storage_section()` carries `breakdown`,
 renders the table and the measured total, and renders nothing at all when the
 card is empty. No figure on that page is an estimate.
 
+**D23 — a backup is a bundle, not a folder copy.** `ark-backup` takes the
+database with SQLite's own `.backup` (the live file is WAL, so `cp` can miss
+committed data), writes a sha256 and size for every file into `manifest.json`,
+and builds the whole folder as `<name>.partial` before publishing it by rename.
+`ark-restore` proves every byte before touching the box, refuses an occupied box
+without `--force`, and never replaces a shared file. The tool writes only where
+it is told; a copy left on the same card is still not insurance, and the
+recovery sheet says that in plain words.
+
+**D24 — the game shelf is content with a trust boundary.** The player is
+vendored, so a game page has no `http://` or `https://` asset reference and
+works with the internet unplugged. Player pages live on their own TLS origin
+(`:8445`); nginx sets `X-ARK-Player-Origin: 1` only there and **blanks** it on
+the public `:80` location. The player's tables and cookie are separate from
+administrators, `/admin` is `404` on the player origin, and a player cookie
+cannot sign in to the owner's door. A candidate's address is rebuilt from a
+validated slug and filename, never accepted as a URL.
+
+**D25 — a player name is not an administrator, and a save is bounded.** A guest
+can play without a name; a name only keeps saves. Saves are capped, written
+`0600` inside `0700` folders by `player_save_put()`, and a stale tab gets `409`
+rather than overwriting a newer save. Export is one zip; import accepts only
+`saves/<game>/<state-NN.state|battery.srm>`, requires the game on the shelf, and
+skips anything that climbs. A backup carries named players' saves as state; the
+games themselves are content and are fetched again.
+
 ---
 
 ## 6. Test evidence
 
 ```
 $ .venv/bin/python -m pytest -o addopts='--strict-markers' -q
-........................................................................ [ 56%]
-................................................................         [100%]
-128 passed in 19.93s
+........................................................................ [ 41%]
+........................................................................ [ 82%]
+..............................                                           [100%]
+174 passed in 27.00s
 ```
 
 (`pytest.ini` already passes `-q`, so a second `-q` hides the summary line; the
 command above is the one that prints the count.)
 
-Breakdown: `test_network` 28 · `test_health` 16 · `test_board` 15 · `test_auth`
-15 · `test_accounts` 13 · `test_storage` 11 · `test_import` 7 · `test_public` 7 ·
+Breakdown: `test_network` 28 · `test_health` 19 · `test_arcade` 18 ·
+`test_board` 15 · `test_auth` 15 · `test_backup` 14 · `test_accounts` 13 ·
+`test_arcade_install` 11 · `test_storage` 11 · `test_import` 7 · `test_public` 7 ·
 `test_db` 7 · `test_search` 6 · `test_config` 3.
 
 Environment: macOS, Python 3.9.6, fastapi/uvicorn/httpx/pytest from
@@ -356,13 +385,18 @@ verified through the Mac's fallback.
 
 ## 7. Next executable step
 
-Stages 3, 4 and 5 are closed. What comes next (each with a test before the code):
+Stages 3, 4, 5 and 6 and ARK Arcade are closed. What comes next (each with a
+test before the code):
 
-1. **Stage 6 — backup and the offline recovery sheet.**
+1. **Deploy stages 2–6 and ARK Arcade, then walk through them on a phone** —
+   copy the database aside first, run
+   `--only 20-storage,30-calibre,60-portal,65-admin,70-network,95-backup`, then
+   `--only 90-verify`. `.clinerules` §8.9 is the checklist and it has not been
+   done. No tag before this passes.
 2. **Stage 7 — the household layer.** Emergency content review, the essentials
    pack, QR cards, accessibility and the household page.
 
-### 7.1 Stage 6 in detail — not started, nothing of it exists
+### 7.1 Stage 6 in detail — delivered, see §11 for what was built
 
 | Piece | What it must do |
 |---|---|
@@ -614,8 +648,169 @@ the 30-minute back-off have never elapsed in real time.
 client list ("who is on the hotspot"), signal strength, a warning before the return
 home, and a choice of hotspot channel from the page.
 
-**Next executable step** — stage 6 (§7.1): the backup and the offline recovery
-sheet. Before any release: deploy stages 2–5 and walk through them on a phone
-(`.clinerules` §8.9).
+**Next executable step at that checkpoint** — stage 6: the backup and recovery
+sheet, delivered in §11. ARK Arcade followed in §12; stage 7 is still the next
+new work after the deploy walk-through (`.clinerules` §8.9).
+
+
+---
+
+## 11. Stage 6 checkpoint — 24 Oct 2026
+
+At this checkpoint: `pytest` **144 passed** (12 files: `tests/test_backup.py` was
+the new 13, `tests/test_health.py` grew from 16 to 19). Branch
+`feature/admin-hardening`, nothing deployed, no hardware test: the same
+code-and-tests checkpoint as stages 3, 4 and 5. The current tip is **174 passed**
+after ARK Arcade; §6 is the current test evidence.
+
+**The gap.** Everything the box cannot rebuild — messages, shared files, accounts,
+the two switches, the list that stops a re-dropped book being imported twice —
+lived in exactly one place: the SD card it was running from. The rebuild
+documents assumed a card that still mounts; if it did not, there was no bundle to
+put back and no page that worked without the box. And a folder called "backup"
+that nobody had verified is a hope, not a backup.
+
+**New files**
+
+| File | Behaviour |
+|---|---|
+| `pi/bin/ark_bundle.py` | the one definition both tools share: bundle layout, manifest (format 1 JSON), `safe_rel()` / `inside()` path rules, sha256 per file, `verify_bundle()`, `copy_database()` via SQLite's own `backup()` then `PRAGMA journal_mode=DELETE` (never `cp` — the live database is WAL) |
+| `pi/bin/ark-backup` | `--to <folder>` (default `/srv/ark/backup`), `--keep 2`, `--no-files`, `--dry-run`, `--list`, `--verify <folder>`, `--quiet`. Builds `ark-backup-<date>-<time>.partial`, writes the manifest last, publishes by rename; sweeps stale `.partial` folders; `flock`s the destination so two runs cannot interleave; records message/file counts, `SCHEMA_VERSION` and `git describe` in the manifest |
+| `pi/bin/ark-restore` | `--from <folder>`, `--list`, `--dry-run`, `--force`, `--no-files`, `--ledger auto\|yes\|no`, `--keep-owner`. Verifies every byte *before* touching the box; refuses an occupied box without `--force` and names the flag; never replaces a shared file that is already there; leaves the import list beside an empty shelf as `.imported.json.from-backup`; refuses any manifest entry that climbs out of the bundle or the box; fixes ownership with a missing-user fallback |
+| `pi/RECOVERY-SHEET.txt` (symlinked at `docs/RECOVERY-SHEET.txt`) | one printable page, under 90 lines, no words that need looking up — dead box → working box with a phone, a card reader and a working card. Every bundle carries its own copy as `RESTORE-ME.txt` |
+| `pi/steps/95-backup.sh` | phase 8: installs both tools in `/usr/local/sbin` (`ark_bundle.py` beside them, so the two can never disagree about what a bundle is), creates `/srv/ark/backup` `0700 pi:pi`, installs the sheet at `/srv/ark/RECOVERY-SHEET.txt` and `/srv/ark/portal/recovery.txt`, proves `--dry-run` plans a run, and prints the four commands the owner needs. **No timer** — a nightly backup that quietly fills the card the box reads from is a defect, not a feature |
+| `tests/test_backup.py` | 13 tests at this checkpoint (14 at the tip, after the named-player save case), throwaway paths only |
+
+**Order of checks in `ark-restore` is the design.** Prove the bundle → ask before
+replacing records → never overwrite a shared file → never let the import list
+hide books. A restore is the one deliberate exception to "a backup only reads",
+and the tool says so in its own header.
+
+**Readiness grew a row.** `ark_health.backup_section()` adds **Latest copy** to
+**What is working** and to `/api/status`: it counts the finished bundles on the
+card (a `.partial` folder is not one), reports the newest one's age and what it
+holds, and turns *Not ready* only when there is no copy at all or the newest is
+older than `COPY_STALE_HOURS = 168`. It is not in `BLOCKING_SECTIONS`: a missing
+copy must never make a box that is serving pages look broken. An unreadable
+manifest is skipped rather than guessed at, and an age it cannot read renders as
+"at a time the box could not read", never as `0`.
+
+**Verifier.** `90-verify.sh` reports the two tools, the newest copy (name and age,
+soft when there is none or it is over a week old), how many are kept, and whether
+the printed sheet is on the card; `ark_status.json` gains
+`"backup": {"copies": …, "newest": …, "made": …}`. `install-ark.sh`'s `ALL_STEPS`
+now runs `95-backup` before `90-verify`.
+
+**Tests** (`tests/test_backup.py`, 13 at this checkpoint; 14 at the tip). The records, the shared files and the
+import list arrive in one bundle; a damaged copy is refused rather than restored;
+a half-written `.partial` is swept and never listed; only the newest `--keep`
+bundles survive; a restore puts everything back in the same absolute paths; an
+occupied box is not overwritten without `--force`; a shared file already on the
+box is never replaced; the import list stays beside an empty shelf; a manifest
+pointing outside the box is refused; a dry run writes nothing; the recovery sheet
+is printable and free of words that need looking up; every bundle carries it; and
+the phase installs both tools and proves a dry run. `tests/test_health.py` adds
+the never-copied case, the age and counts wording (including a nine-day-old copy
+turning amber), and the `.partial` that is not counted.
+
+**Seen working on a Mac, never on the Pi.** Both tools have been driven by hand
+against a throwaway box in `/tmp` (a box built with the real schema, WAL and all):
+`--dry-run` wrote nothing and named the bundle it would build; a real run wrote
+`ark-backup-20261024-200527` (4 files, 23.3 kB) and no `.partial` was left behind;
+`--verify` re-read every fingerprint and agreed; `--list` was honest about an
+empty default folder; `--restore --from …` into a second empty box put the record
+and the shared file back, and left `.imported.json.from-backup` beside the missing
+shelf exactly as designed; a restore over the still-populated box refused without
+`--force` and said so in plain words. What has **not** happened: `95-backup.sh` has
+only been `bash -n`'d, no bundle has ever been written on the Pi, no restore has
+ever been performed there, `/recovery.txt` has never been opened in a browser,
+`90-verify.sh`'s backup block has only been syntax-checked, and the **Latest copy**
+row has only ever met fixture folders in tests.
+
+**Still absent, deliberately:** a timer; any button in the owner's page that takes
+or restores a copy (both are console commands); encryption of a bundle (it holds
+the accounts table, so the folder is `0700`); incremental or off-site copies.
+`ark-backup` writes where it is told, and **a copy left on the same card does not
+survive that card dying** — copying the folder to a stick or a computer is still
+the owner's job, and the sheet says so. The offline library and the book shelf stay
+out of a bundle on purpose: they are content that `ark-zim-resolve` and the
+importer fetch or rebuild, not state.
+
+**Next work after this checkpoint** — ARK Arcade (§12), then stage 7: the
+household layer (emergency content review, essentials pack, QR cards,
+accessibility, the household page). Before any release: deploy the whole branch
+and walk through it on a phone (`.clinerules` §8.9).
+
+---
+
+## 12. ARK Arcade checkpoint — 24 Oct 2026
+
+**Delivered on `feature/admin-hardening`, not deployed.** `pytest` **174 passed**
+(14 files). The shelf is public and password-free; a name exists only to keep
+game saves and is not an administrator account. Nothing has been played in a real
+browser or fetched from the live source on the Pi.
+
+**What was built.**
+
+| Piece | What it owns |
+|---|---|
+| `pi/arcade/emulatorjs/` | EmulatorJS 4.2.3, vendored locally: loader, minified player, five cores (`gambatte`, `fceumm`, `snes9x`, `mgba`, `genesis_plus_gx`) and `SHA256SUMS`. No CDN, no external font, no telemetry |
+| `pi/api/ark_db.py` | `SCHEMA_VERSION = 3`: `games`, `game_revisions`, `providers`, `acquisition_candidates`, `acquisition_jobs`, `players`, `player_sessions`, `player_saves`, `arcade_login_attempts`; migration appends, never edits v1/v2 |
+| `pi/api/ark_arcade.py` | the shelf's rules: `SYSTEMS`, slug/ROM-name guards, `rom_facts`, `license_problem`, game queries, player register/auth/backoff/session lifecycle, and the whole save layer (`SaveConflict`, `SaveRefused`, atomic writes, SHA-256, export zip, bounded import) |
+| `pi/api/ark_arcade_install.py` | the only download path: source allowlist, no redirects, 64 MB cap, licence/console checks, temp write + fsync, SHA-256/size/`rom_facts`, `os.replace`, one DB transaction; discovery, seed, owner decisions, auto-install (off unless the owner says yes), temp sweep |
+| `pi/api/ark_arcade_web.py` | public shelf, game page, ROM and emulator files, player sign-in/registration/saves, save API, export/import. Player pages redirect to the TLS origin; the API refuses a request that did not come through it |
+| `pi/bin/ark-arcade` | `--seed`, `--discover`, `--auto`, `--install`, `--refuse`, `--allow`, `--list`, `--status`, `--dry-run` |
+| `pi/nginx/ark-players.conf` | `:8445` TLS-only player origin; sets `X-ARK-Player-Origin: 1`, serves only `/arcade/` and the stylesheet, answers `404` for `/admin` |
+| `pi/nginx/ark.conf` | public `/arcade/` proxy; **blanks** `X-ARK-Player-Origin`, so a visitor cannot claim the secure origin; 20 MiB body limit on that path |
+| `pi/systemd/ark-arcade-discover.*` | weekly discovery 15 minutes after boot; tries the pinned seed first (failure non-fatal), then records what the source offers; installation still requires the owner's switch |
+| `ark_admin.py` **Games** | shelf list with licence/state, hide/show (reversible, deletes nothing), suggestions with **Check and add** / **Put away** / **Allow again**, name switch, auto-install switch, every action audited |
+| `ark-backup` / `ark-restore` | now carry `arcade/saves/…` (state, not content): missing saves are added `0600` in `0700` folders and an existing save is never replaced |
+| `pi/steps/60-portal.sh` / `65-admin.sh` / `90-verify.sh` | install the modules, binary, data folders and first shelf; install/prove the `:8445` origin; report games, names, saves and the player origin |
+
+**The gate chain, in order.** Licence stated by the entry must allow copying →
+address rebuilt from a validated slug and filename (an entry cannot supply a URL)
+→ prefix allowlist with redirects refused and a 64 MB cap → streamed into
+`/srv/ark/arcade/tmp` with fsync → SHA-256, size and console-header checks →
+`os.replace` into `/srv/ark/arcade/games` → rows in one transaction, with the new
+file unlinked if the database refuses it. A failure leaves the shelf exactly as
+it was.
+
+**The boundaries tested.**
+
+* a guest gets 401 from every save endpoint and a game page with no external
+  address;
+* a named player's save round-trips, a stale tab gets 409, another name gets 404,
+  a missing page token gets 403;
+* export → import returns the bytes; a zip entry that climbs is skipped and no
+  file appears outside `saves/<player>/<game>/`;
+* a hidden game has no page and no ROM; `/arcade/emulator/` refuses `../`;
+* licence, allowlist, redirect, archive, traversal and renamed-web-page each
+  refuse, and a refused install leaves no row and no file;
+* the pinned seed dry run touches nothing; auto-install is off unless the owner's
+  setting is `1`; the owner can hide/show a game and close player names;
+* a player cookie does not sign in to `/admin`.
+
+**Seen on the Mac, never on the Pi.** The three pinned seed files were fetched
+again on 24 Oct and every SHA-256 matched the one in `seed.json`; a real
+`--seed` into a throwaway box installed all three and `--status` listed them. The
+live discovery source was asked once: eight entries recorded, two offered
+(Waternet, MIT; Max Pirate Extra Boom, MIT), six refused for no licence or
+CC-BY-NC-ND, and Waternet was then installed into that throwaway box (32,768
+bytes, SHA-256 recorded in the row and the revision). The rendered shelf and game
+page carried no `http://` or `https://` reference, and the ROM came back at 200.
+
+**Said out loud.** No game has been played on the Pi; `:8445` and its certificate
+have only been configured; the live source has never been asked for a game from
+the box; the weekly timer has never fired there. A named player has no password
+recovery, no save quota, no trash, and the owner cannot reset or delete a player
+name. The games are not part of a backup bundle (content, fetched again); the
+named players' saves are. Before release: deploy the whole branch with
+`--only 20-storage,30-calibre,60-portal,65-admin,70-network,95-backup`, then
+`--only 90-verify`; play one game on a phone with the internet unplugged, make a
+name, save, export, restore into a second browser, and watch the weekly timer's
+first run.
+
+**Next executable step** — deploy the branch on the Pi and walk the paragraph
+above (`.clinerules` §8.9); stage 7 (household layer) remains unstarted.
 
 

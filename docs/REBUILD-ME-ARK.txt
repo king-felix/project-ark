@@ -1,5 +1,5 @@
 ================================================================================
-  PROJECT ARK — BOOTSTRAP / ARCHITECT PROMPT          v1.0 · 2026-10-24
+  PROJECT ARK — BOOTSTRAP / ARCHITECT PROMPT          v1.1 · 2026-10-24
   A complete, model-agnostic brief for rebuilding this offline survival
   computer from nothing — or for making another one for a friend.
 ================================================================================
@@ -10,14 +10,14 @@
     Attach the Project ARK repository (or its .tar.gz) and say:
       "Read this brief and the attached repo. Build a second Ark for
        <person>. Ask me the 6 questions in section 13 first, then run the
-       pipeline end to end. Report the 30-check gate."
+       pipeline end to end. Report the verification gate's output."
     Runtime: roughly 2-4 hours, most of it downloading content.
 
   Mode B — REBUILD FROM NOTHING (no repo, no notes, just this file)
     Paste this entire file as your first message, then say:
       "You are the architect. Read this whole brief, then ask me the 6
        questions in section 13 and wait for my answers."
-    The agent must re-create ~35 source files. Expect 1-2 days of agent work
+    The agent must re-create dozens of source files. Expect 1-2 days of agent work
     and expect it to hit the traps in section 7 — that is why they are listed.
 
   Mode C — FIX OR EXTEND AN EXISTING ARK
@@ -45,22 +45,31 @@ human intervention at all.
 
 Doors on the box (once built):
 
-  /                     portal: one search box, four big cards, plain English
+  /                     portal: one search box, big plain-English cards
   /search?q=…           one search covering encyclopedias + manuals + books
   /kiwix/               offline library (Wikipedia, medical, repair, food…)
   /books/               the book shelf (EPUB/PDF, read in browser or download)
   /vault/               11 survival manuals + repair guides, each printable
   /board                message board, anyone can post, no login
   /files                File Box: anyone can drop a file in (2 GB each); books auto-shelve
+  /arcade/              games shelf: small openly licensed homebrew, played in the browser
   /help.html            how it works, in plain words
   /status.json          machine-readable health (also mirrored in the portal)
+
+A game shelf sits beside the library. A visitor needs no name to play; an
+optional player's name (different tables, different cookie, different origin)
+keeps game saves on the box and is never an administrator account. Playing a
+game is the one place JavaScript is required; the shelf list, every reading
+page and every admin page still work without it.
 
 And one door that is NOT on the portal: the owner's door, on its own TLS
 address, for whoever maintains the box.
 
-  https://ark.lan:8443/admin   sign-in + accounts + audit + Community (404 on port 80)
-                               plus "What is working" — every part, ready or not,
-                               with the plain reason and the next thing to try
+  https://ark.lan:8443/admin   sign-in + accounts + audit + Community + Games
+                               (404 on port 80); "What is working" — every part,
+                               ready or not, with the plain reason and next step
+  https://ark.lan:8445/arcade/ the player's own TLS origin: sign in for saves,
+                               export/import; 404 for /admin; never on port 80
 
 Asking a script "is it usable?" has one honest answer: /api/ready, 200 only when
 every part a reader needs actually answered, 503 with the reasons when one did
@@ -78,10 +87,13 @@ cracked phone, in the dark, on battery, with cold hands.
 Therefore:
   · Dark by default (#000000 true black — OLED screens, torch discipline).
   · Big type (>=16 px), big targets (>=44 px), no hover-only affordances.
-  · No JavaScript on any critical path. Search and every link work with JS off.
+  · No JavaScript on any critical path. Search and every link work with JS off;
+    playing a game is the one deliberate exception.
   · No accounts and no logins for a reader, ever — nothing on the public portal
     asks who you are. (The machine itself has one owner's door, on a separate
-    TLS address the portal never serves; a visitor can ignore it forever.)
+    TLS address the portal never serves; a visitor can ignore it forever. A
+    player name for game saves is optional, on its own TLS origin, and is not
+    an account on the box either.)
   · Every section has a one-line plain-English description and a "How to use".
   · Buttons say what happens: "Tap here to read this in your browser" — never
     "Open ZIM viewer".
@@ -99,11 +111,12 @@ Therefore:
     daemon, service, proxy. Approved words: Offline Library, Books, Manuals,
     Guides, Q&A, Repair Guides, Message Board, File Box, Planting Calendar,
     Download, Read in Browser, Search.
- 3. ANONYMOUS READING. Browse, read, download, upload, post — no login for any
-    of it. The one exception is administration: separate TLS origin (:8443),
-    its own accounts, 404 on the public portal, and no reachable default
-    password while the box is unclaimed. Reading must keep working even if the
-    admin store is broken.
+ 3. ANONYMOUS READING. Browse, read, download, upload, post, play — no login
+    for any of it. Two exceptions, both on their own TLS origins and never on
+    the public portal: administration (:8443, its own accounts, 404 on :80, no
+    reachable default password while unclaimed) and an optional player name for
+    game saves (:8445, separate tables and cookie, 404 for /admin). Reading must
+    keep working even if either store is broken.
  4. THE CARD IS NEVER FILLED. A free-space reserve is enforced by the
     downloader itself (default 12 GiB). Anything that would breach it is
     skipped, logged and retried later — never silently dropped.
@@ -177,12 +190,14 @@ Services (all enabled AND started; this is the cold-boot contract):
   nginx.service               :80    the only port a visitor touches
                               :8443  the owner's door (TLS, /admin only)
                               :8444  loopback-only setup listener, unclaimed box
+                              :8445  the player's TLS origin (/arcade only)
   ark-kiwix.service           :8081  kiwix-serve --urlRootLocation=/kiwix
   ark-calibre.service         :8083  calibre-web, served under /books
-  ark-api.service             :8085  FastAPI: /api, /search, /board, /files
+  ark-api.service             :8085  FastAPI: /api, /search, /board, /files, /arcade
   ark-boot-guard.service      —      failsafe: no home net → raise hotspot
   ark-net-watch.service/.timer —     every minute: link lost → hotspot, back
                                      → home; never drops a connected reader
+  ark-arcade-discover.service/.timer — 15 min after boot, then weekly: seed + discover
   ark-zim-downloader.service  —      background, resumable content queue
   ark-book-import.path/.service —    watch drop/files, shelve books in seconds
   ssh, NetworkManager, avahi-daemon, and dnsmasq ONLY via NM ipv4.method shared
@@ -225,12 +240,16 @@ popup resolves to the portal instead of a "no internet" dead end.
                   ark-zim-download (flock, resume, size guard, rate limit),
                   systemd unit. Proof: :8081/kiwix/ answers, queue written.
   60  portal      static portal, API venv, systemd unit, nginx site, captive
-                  endpoints, print styles, help page. Proof: every route 200/302.
+                  endpoints, print styles, help page, the arcade modules/player,
+                  the first game shelf and its weekly discovery timer.
+                  Proof: every route 200/302, including /arcade/ and its player.
   65  admin       the owner's door: scrypt accounts, forced first password,
                   nginx :8443 management origin (+ :8444 loopback setup while
-                  unclaimed), self-signed certificate, root-only recovery command.
+                  unclaimed) and the :8445 player origin, self-signed certificate,
+                  root-only recovery command.
                   Proof: :80/admin is 404, :8443 needs TLS and a sign-in,
-                  :8444 only answers through the tunnel, recovery is 0700 root.
+                  :8444 only answers through the tunnel, recovery is 0700 root,
+                  :8445 answers /arcade/player and 404 for /admin.
   70  network     NM hotspot profile (ipv4.method shared, 10.42.0.1/24, ch 6),
                   dnsmasq-shared.d wildcard for ark.lan/ark.local, boot guard,
                   ark-mode (auto|home|hotspot|test), and the watchdog
@@ -238,6 +257,11 @@ popup resolves to the portal instead of a "no internet" dead end.
                   Proof: profile exists, guard active, timer enabled AND active,
                   `ark-net-watch --dry-run` prints what it sees, and
                   `ark-mode test` works when a human tries it.
+  95  backup      ark-backup + ark-restore on the shared ark_bundle.py,
+                  /srv/ark/backup (0700), the recovery sheet at
+                  /srv/ark/RECOVERY-SHEET.txt and /srv/ark/portal/recovery.txt,
+                  then `ark-backup --dry-run` as the proof. No timer, on
+                  purpose: a nightly copy can fill the card the box reads.
   90  verify      the gate (section 9) + JSON receipt back to the Mac.
 
   Rule: a phase that cannot print its own proof is not finished. Write the
@@ -442,7 +466,7 @@ popup resolves to the portal instead of a "no internet" dead end.
 22. "IT IS RUNNING" ≠ "IT SURVIVES A REBOOT"
     Symptom: three days later, one page 502s after a power blip.
     Cause: a service started by hand while debugging was never enabled.
-    Fix: the 30-check gate reads systemctl is-enabled + is-active for every
+    Fix: the verification gate reads systemctl is-enabled + is-active for every
     unit, curls every route, and writes a JSON receipt. Run it after every
     change, not once at the end.
 
@@ -539,6 +563,44 @@ popup resolves to the portal instead of a "no internet" dead end.
     `--decide M L H R C P LOST BACK BLOCKED` prints only the decision, so the
     whole table is testable with no NetworkManager at all.
 
+29. THE GAME SHELF THAT TRUSTED THE BROWSER
+    Symptom: a game plays on the Mac and shows a blank screen on the box with
+    the router unplugged; or a player's cookie reaches an owner page; or a
+    stored game filename turns a download route into a file-read of something
+    outside the games folder.
+    Cause: the player loaded a script or font from a CDN; a password and a save
+    were served from the same origin as the public portal; a header that marks
+    the player origin was trusted when a visitor supplied it; a filename read
+    from the database was joined to a path without proving it was a bare name.
+    Fix: vendor the player (EmulatorJS 4.2.3 and its cores) under `/arcade/`
+    so the page has no `http://` or `https://` asset reference at all. Put the
+    player behind its own TLS origin on `:8445`; set `X-ARK-Player-Origin: 1`
+    only there, and blank that header on the public `:80` location. Keep player
+    tables and the `ark_player` cookie separate from administrators; `404`
+    `/admin` on the player origin and make a player cookie useless there.
+    Rebuild every game address from a validated slug and filename, and reject
+    any stored name where `name != Path(name).name`. Prove it with the internet
+    unplugged, a guest getting 401 from a save endpoint, and a player cookie
+    failing to open `/admin`.
+
+30. THE BACKUP THAT WAS NEVER READ BACK
+    Symptom: a folder called `ark-backup-…` exists, so everyone relaxes; months
+    later it refuses to restore, or the only copy dies with the card it was
+    written to.
+    Cause: the live database was copied with `cp` while it was in WAL mode; no
+    manifest said what a complete folder looked like; a run that died left a
+    half-written folder that looked finished; nobody ever ran the verify step;
+    and the "backup" never left the card.
+    Fix: take the database with SQLite's own `.backup`, never `cp`. Write the
+    bundle as `<name>.partial`, put a sha256 and size for every file in a
+    manifest, and publish it only by rename. Make `--verify` read every byte
+    back, and make a restore prove the whole bundle before it touches anything,
+    refuse an occupied box without `--force`, and never replace a shared file
+    already there. Keep the newest two, take copies when something happened
+    (no timer — a nightly copy can fill the card the box reads from), and copy
+    the finished folder off the box. Give the owner a printed sheet that needs
+    only a phone, a card reader and a working card.
+
 ================================================================================
 8. CONTENT: A CATALOGUE, NOT A LIST OF URLS
 ================================================================================
@@ -581,13 +643,14 @@ any failure. Categories:
 
   services    is-enabled AND is-active (or waiting/activating for the guard),
               for nginx, ark-api, ark-zim-downloader, ark-boot-guard,
-              ark-net-watch.timer, ark-book-import.path, ssh, NetworkManager,
-              avahi-daemon, and
+              ark-net-watch.timer, ark-book-import.path, ark-arcade-discover.timer,
+              ssh, NetworkManager, avahi-daemon, and
               ark-kiwix (soft when no bundles have arrived yet — an empty
               library is a normal state, not a bug)
   pages       HTTP codes for /, /help.html, /assets/ark.css, /search?q=water,
-              /board, /files, /api/status, /vault/, /vault/quick-card.html,
-              /generate_204, /kiwix/, /books/
+              /board, /files, /arcade/, /arcade/static/ark-arcade.css,
+              /arcade/emulator/loader.js, /api/status, /vault/,
+              /vault/quick-card.html, /generate_204, /kiwix/, /books/
   readiness   one line per part of the box, read from /api/ready: ready / empty /
               broken, with the reason the box itself gave.  Empty (nothing on
               the card yet) is soft — a box still filling up is not a fault.
@@ -595,17 +658,20 @@ any failure. Categories:
   network     when mode=hotspot, the AP address is really on wlan0
   space       free space >= 5 GiB (hard floor; the reserve is 12)
   owner's door  /admin answers 404 on :80; :8443 answers; the loopback :8444
-              listener answers; the Community page answers behind the sign-in;
-              the recovery command is installed with the right mode; and the
-              account count is reported (how many still hold a temporary
-              password) without ever printing a secret
+              listener answers; the Community and Games pages answer behind
+              the sign-in; the recovery command is installed with the right
+              mode; and the account count is reported (how many still hold a
+              temporary password) without ever printing a secret
+  game shelf  /arcade/ answers on :80; the player origin :8445 answers
+              /arcade/player and 404 for /admin; games, player names and saves
+              are counted; the last discovery line is reported
   file box    drop/files and drop/tmp exist, and the count of shared files is
               reported (a missing folder means phase 20 was skipped)
   content     collections on disk + titles indexed in library.xml, books in
               metadata.db, guides and printable PDFs
   receipt     JSON summary for the Mac: hostname, mode, ok, problems, ready,
               collections{files,gib,indexed}, books, guides{pages,pdfs},
-              free_gib, addresses
+              arcade{games,players,saves,player_origin}, free_gib, addresses
 
   Definition of done:
     □ zero ✗, and the closing line "everything a visitor touches is working",
@@ -616,6 +682,10 @@ any failure. Categories:
       three files on disk and an empty drop/tmp (proof the write path is fixed)
     □ one article opens inside /kiwix/ (not just the root page)
     □ one guide opens and its PDF prints
+    □ /arcade/ plays with the internet unplugged; `:8445/arcade/player` answers
+      with the box's certificate, a name keeps a save, and export/import works
+    □ `sudo ark-backup --to /srv/ark/backup` writes a folder, `--verify` re-reads
+      every byte, and `http://ark.lan/recovery.txt` prints
     □ services survive `sudo reboot` (cold-boot test done by a human who can
       join the hotspot — an agent over SSH cannot honestly claim this one)
     □ the receipt JSON says ok:true and the numbers match the card size
@@ -748,7 +818,8 @@ any failure. Categories:
     pi/install-ark.sh                       phase runner, lock, summary
     pi/lib/common.sh                        logging, ark_write (compare-first),
                                             apt helpers, http probes, free bytes
-    pi/steps/{10,20,30,40,50,60,65,70,90}-*.sh  the nine phases
+    pi/steps/{10,20,30,40,50,60,65,70,95,90}-*.sh  the ten phases (95 before 90,
+                                            so the gate can see the backup tools)
     pi/bin/ark-zim-resolve                  catalogue → pinned queue
     pi/bin/ark-zim-download                 flock, resume, size + space guards
     pi/bin/ark-kiwix-library                /kiwix prefix + library.xml rebuild
@@ -782,13 +853,31 @@ any failure. Categories:
                                             cap + reserve, temp reconcile
     pi/api/ark_recover.py                   recovery logic behind the root-only
                                             wrapper
+    pi/api/ark_arcade.py                    shelf rules, players/sessions and
+                                            the bounded, atomic save layer
+    pi/api/ark_arcade_install.py            the only game download path: the
+                                            licence → allowlist → hash → shape gate
+    pi/api/ark_arcade_web.py                public shelf, game page, player pages
+                                            and save API (TLS origin only)
+    pi/arcade/emulatorjs/                  EmulatorJS 4.2.3 vendored (no CDN)
+    pi/arcade/catalog/seed.json             three pinned first games + hashes
+    pi/bin/ark-arcade                       seed / discover / install / refuse
     pi/nginx/ark.conf                       proxy, captive endpoints, uploads
     pi/nginx/ark-admin.conf                 :8443 management + :8444 loopback
                                             setup, unknown Host rejected
+    pi/nginx/ark-players.conf               :8445 player origin, /arcade only
     pi/bin/ark-tls-cert                     the box's own certificate (SANs,
                                             --show fingerprint, 30-day renew)
     pi/bin/ark-admin-recover                0700 root:root, runs Python as pi
-    tests/                                  128 pytest tests, throwaway DBs
+    pi/bin/ark_bundle.py                    what a copy IS: layout, manifest,
+                                            sha256, safe paths, verify, .backup()
+    pi/bin/ark-backup                       one dated, verified copy (.partial
+                                            → rename); reads only (stage 6)
+    pi/bin/ark-restore                      proves first, refuses an occupied
+                                            box without --force (stage 6)
+    pi/RECOVERY-SHEET.txt                   the printed page for a dead card,
+                                            plain words, also /recovery.txt
+    tests/                                  174 pytest tests, throwaway DBs
     pi/systemd/*.service|*.path             the enable-and--now contract
     pi/portal/{index.html,help.html,assets} the dark, no-JS, 44 px UI
     pi/kiwix/catalog.tsv                    ~25 bundles in 3 tiers
@@ -806,8 +895,14 @@ any failure. Categories:
     sudo tail -f /srv/ark/logs/zim-download.log          content progress
     echo full | sudo tee /etc/ark/zim-profile            change profile
     sudo ark-import-calibre-library /srv/ark/imported-library
+    sudo ark-arcade --status                             shelf, names, saves
+    sudo ark-arcade --seed                               restore the pinned three
+    sudo ark-arcade --discover --auto                    what the weekly check runs
     sudo ark-tls-cert --show                             certificate fingerprint
     sudo ark-admin-recover --list                        locked out (console only)
+    sudo ark-backup --to /srv/ark/backup                 copy notes+files+records+saves
+    sudo ark-backup --list && sudo ark-backup --verify P what is there, proven
+    sudo ark-restore --list                              what could be put back
     curl -s http://127.0.0.1/api/status | python3 -m json.tool
     curl -s http://127.0.0.1/api/ready  | python3 -m json.tool   # the honest one
     .venv/bin/python -m pytest                           the tests, on a Mac
@@ -820,6 +915,12 @@ any failure. Categories:
     Backup set: tag v1.0.5 → ~/Downloads/Project-Ark (tar.gz + git bundle +
     SHA256SUMS + REBUILD-FROM-BACKUP.txt). Public mirror:
     https://github.com/king-felix/project-ark
+
+  That reference box still runs tag v1.0.5. The account/bootstrap work, the
+  shared-file and import work, readiness, the network watchdog, backups and the
+  game shelf are on branch `feature/admin-hardening` and, at the time of this
+  writing, have not been deployed or walked through on hardware. Do not read
+  the numbers above as proof that those newer pages work on the Pi.
 
 ================================================================================
   END. If you are an agent reading this: you now know what took several days to

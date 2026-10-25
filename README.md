@@ -3,8 +3,9 @@
 A Raspberry Pi 4 that carries a library. It broadcasts its own open Wi-Fi,
 serves a portal at **http://ark.lan**, and works with no internet at all.
 
-Everything a visitor touches is plain HTML — no accounts, no logins, no
-JavaScript required. The one sign-in on the box is the owner's door further
+Everything a visitor touches except the game player is plain HTML — no accounts,
+no logins, no JavaScript required to read. A name is optional and exists only to
+keep game saves; the one sign-in that changes the box is the owner's door further
 down, and the portal address does not serve it at all.
 
 ---
@@ -13,13 +14,14 @@ down, and the portal address does not serve it at all.
 
 | Door | What it is |
 |---|---|
-| `/` | the portal: one search box, four big cards |
+| `/` | the portal: one search box, big plain-English cards |
 | `/search?q=…` | one search that covers the encyclopedias, the manuals and the books |
 | `/kiwix/` | the offline library (encyclopedias, medical, repair, food, water) |
 | `/books/` | the book shelf (EPUB/PDF, read in the browser or download) |
 | `/vault/` | survival manuals + repair guides, each with a printable PDF |
 | `/board` | a message board anyone can post to (the owner can pin, sort out, hide) |
 | `/files` | a file box anyone can drop things into (2 GB per file, links never overwrite) |
+| `/arcade/` | small openly licensed games, played in the browser; guests need nothing |
 | `/help.html` | how it works, in plain words |
 
 Addresses: `http://ark.lan` · `http://ark.local` · `http://10.42.0.1`
@@ -36,7 +38,7 @@ Keep a copy on a phone or taped inside the lid.
 
 **Building another one, or handing this to someone else?** Start with
 [`docs/REBUILD-ME-ARK.txt`](docs/REBUILD-ME-ARK.txt): the complete blueprint,
-the build order, the 28 traps that cost the most time, and the verification gate.
+the build order, the 30 traps that cost the most time, and the verification gate.
 It is written so an assistant with no memory of this project can rebuild the box
 from an empty card.
 
@@ -72,7 +74,7 @@ bash scripts/03-provision.sh --only 60-portal
 ```
 
 Phases: `10-base` `20-storage` `30-calibre` `40-vault` `50-kiwix` `60-portal`
-`65-admin` `70-network` `90-verify`.
+`65-admin` `70-network` `95-backup` `90-verify`.
 
 ---
 
@@ -141,7 +143,11 @@ welcome) and the temporary one stops working immediately. After that you can
 add other administrators, reset or switch off their accounts, read the audit
 history, and use the **Community** page — two switches that pause new notes and
 new uploads, plus pin / sorted-out / hide for messages, hide for files, and a
-delete that asks for your own password again. **What is working** is the page
+delete that asks for your own password again. **Games** is where the shelf is
+managed: hide or show a game, see every licence and suggestion, allow player
+names, and choose whether newly found games are added without asking. The
+player's sign-in is a separate HTTPS origin (`https://ark.lan:8445/arcade/`) and
+is not an administrator account. **What is working** is the page
 to open when something feels off: every part of the box, whether it answered
 just now, the plain reason it did not, and the one next thing to try. It only
 looks — it never starts, stops or deletes anything. Losing every password is
@@ -153,16 +159,49 @@ sudo ark-admin-recover --username admin
 ```
 
 The certificate is generated on the box (`sudo ark-tls-cert --show` prints its
-SHA-256 fingerprint). Compare that fingerprint with the browser before you
-trust it — see `docs/ADMIN.md` for the exact steps, the session rules and what
-is deliberately *not* in this release yet.
+SHA-256 fingerprint). The same certificate serves the player's secure origin
+(`:8445`), so the same fingerprint comparison applies. Compare that fingerprint
+with the browser before you trust it — see `docs/ADMIN.md` for the exact steps,
+the session rules and what is deliberately *not* in this release yet.
 
-Tests (no Pi needed, throwaway databases only):
+Tests (no Pi needed, throwaway databases only; the current suite is 174 tests):
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r tests/requirements.txt
 .venv/bin/python -m pytest
 ```
+
+---
+
+## ARK Arcade
+
+`http://ark.lan/arcade/` is a shelf of small homebrew games that run on the box
+with the internet unplugged. A guest taps a game and plays; nothing is asked.
+A name is optional and only keeps game saves: it lives in its own tables, with
+its own cookie, on its own HTTPS origin (`https://ark.lan:8445/arcade/`). It is
+never an administrator account and no page in the arcade can reach `/admin`.
+
+```bash
+sudo ark-arcade --status                 # what is on the shelf, and who has a name
+sudo ark-arcade --seed                   # install the pinned first three (idempotent)
+sudo ark-arcade --discover --auto        # what the weekly timer runs
+sudo ark-arcade --list                   # suggestions and why each was refused
+sudo ark-arcade --install <id>           # add one, after looking at it
+```
+
+The weekly `ark-arcade-discover.timer` records what the curated Homebrew Hub
+source offers. Installation is off unless the owner switches it on in
+**Games**; even then, the licence must allow copying, the download must come
+from the one allowlisted source, be under 64 MB, match its SHA-256 and look like
+the console it claims. A failure changes nothing. The player is EmulatorJS
+4.2.3, vendored under `pi/arcade/emulatorjs/`; the games page has no CDN, no
+external font and no telemetry.
+
+Guest saves stay in that browser. A named player can keep three server saves per
+game, export all of them as one zip, and put them back on another ARK. The save
+API is reachable only through the TLS player origin, never the public portal or
+the administrator origin. The games themselves are content and are not in a
+backup bundle; a named player's saves are.
 
 ---
 
@@ -254,7 +293,7 @@ The receipt is machine-readable so the Mac never has to guess.
 * `http://ark.lan/api/ready` — **200** only when every part a reader came for
   works, **503** otherwise. The body is the whole picture either way: one entry
   per part (`library`, `books`, `manuals`, `messages`, `files`, `storage`,
-  `downloads`) with `ready`, `content` (is there anything on the card yet?),
+  `backup`, `downloads`) with `ready`, `content` (is there anything on the card yet?),
   `reason` in plain words and `action` (empty when nothing is wrong).
   `downloads` never blocks: work in progress is not a fault.
 * `https://ark.lan:8443/admin/health` — the same answer as a page for the owner,
@@ -270,11 +309,45 @@ The receipt is machine-readable so the Mac never has to guess.
 
 ---
 
+## Keeping a copy
+
+Everything the box cannot rebuild — the messages, the shared files, the accounts,
+the Community and Games switches, the book-import list and every named player's
+game saves — lives on one SD card. Two commands copy it and put it back:
+
+```bash
+sudo ark-backup --to /srv/ark/backup     # one dated folder: records + shared files + fingerprints
+sudo ark-backup --list                   # what is there: date, size, what each holds
+sudo ark-backup --verify /srv/ark/backup/ark-backup-<date>-<time>   # re-read every byte
+sudo ark-restore --list                                       # what could be put back
+sudo ark-restore --from /srv/ark/backup/ark-backup-<date>-<time>
+```
+
+A copy is built as `<name>.partial` and only becomes `<name>` by a rename, so an
+interrupted run can never pass for a finished backup; the database is taken with
+SQLite's own backup call, never a file copy (the live file is WAL). A restore
+proves every byte first, refuses to overwrite an occupied box without `--force`,
+never replaces a shared file that is already there (and keeps a game save already
+on the box rather than replacing it), and refuses a manifest that
+points outside the box. The offline library, the book shelf and the game files
+themselves stay out of a copy on purpose — they are content, fetched or imported
+again; named players' saves are state and do travel.
+
+**A copy on the box is not insurance:** copy `/srv/ark/backup/ark-backup-*` to a
+stick or a computer. The page for the day the card does not boot is
+[`docs/RECOVERY-SHEET.txt`](docs/RECOVERY-SHEET.txt) (installed on the box as
+`/srv/ark/RECOVERY-SHEET.txt`, and readable at `http://ark.lan/recovery.txt`
+while the box still runs) — a phone, a card reader and a working card is enough.
+There is no timer on purpose: a nightly copy that quietly fills the card the box
+reads from is a defect, not a feature.
+
+---
+
 ## How this was built
 
 Most of this repo was written by **Cline**, an AI coding agent, working on a
 real Pi 4B over several days — one page at a time, with every claim checked
-against the running box before it went in. The 28 traps in
+against the running box before it went in. The 30 traps in
 [`docs/REBUILD-ME-ARK.txt`](docs/REBUILD-ME-ARK.txt) are all scars from things
 that actually broke here: a mirror that froze at 66,881 bytes, a downloader that
 wrote full-size files full of holes, a Calibre database that answered 500 for

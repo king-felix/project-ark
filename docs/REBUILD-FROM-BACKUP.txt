@@ -5,8 +5,10 @@ This folder is everything needed to produce another Ark. Source tag: v1.0.5
 
 Read this before trusting an old copy: the tag above is exactly what is inside
 these files. Anything committed after v1.0.5 — the account and bootstrap work,
-the new shared-file path and the import ledger, and the readiness pages
-("What is working" and /api/ready) — is NOT in a folder built from that tag.
+the new shared-file path and the import ledger, the readiness pages
+("What is working" and /api/ready), the network watchdog, the backup and
+restore tools with their printed recovery sheet, and ARK Arcade (the game
+shelf, player names and game saves) — is NOT in a folder built from that tag.
 Regenerate with section 5 before handing a folder to anyone, and check the
 date line at the top of REBUILD-ME-ARK.txt against the code you expect: it is
 revised whenever the box changes shape.
@@ -17,7 +19,7 @@ the code; this is the one to keep next to the backup files.)
 WHAT IS IN THE FOLDER
   Project-ARK-v1.0.5-src.tar.gz    the repo exactly as tagged (small, plain files)
   Project-ARK-v1.0.5.git.bundle    same repo WITH full history — clone-able
-  REBUILD-ME-ARK.txt               the blueprint: build order, 28 traps, gate
+  REBUILD-ME-ARK.txt               the blueprint: build order, 30 traps, gate
   USING-THE-ARK.md                 the plain-English guide for whoever uses it
   README.md                        repo front page / architecture summary
   Project-Ark_bootstrap_architect_deepseek.txt   the original design brief
@@ -31,6 +33,11 @@ DELIBERATELY NOT IN HERE
   · the Raspberry Pi OS image (~1.2 GB, re-downloaded by the flash script)
   · the library content (~21 GiB of .zim + books) — cheapest to re-fetch, or
     copy it from a running box, section 3
+  · a copy of the household's own records — that is a different artefact: run
+    `sudo ark-backup --to /srv/ark/backup` on the running box and keep the
+    dated folder (notes, shared files, accounts, book-import list, named
+    players' game saves) next to these files. It is what
+    `sudo ark-restore --from <folder>` reads.
 
 ------------------------------------------------------------------------------
 0. PROVE THE BACKUP IS INTACT (any Mac, no card needed)
@@ -161,6 +168,13 @@ DELIBERATELY NOT IN HERE
     three files in /srv/ark/drop/files with nothing left in /srv/ark/drop/tmp
   · a book dropped in the File Box is on the shelf within a minute and its File
     Box link still downloads afterwards
+  · /arcade/ lists the games and a guest can play one; the page carries no
+    http:// or https:// asset address, so it still works with the internet
+    unplugged
+  · https://ark.lan:8445/arcade/player answers with the box's certificate; a
+    named player can keep a save, export the saves as one zip, and put them back
+  · sudo ark-backup --to /srv/ark/backup writes one dated folder; --verify
+    re-reads every byte; http://ark.lan/recovery.txt opens and can be printed
   · hotspot test: sudo ark-mode test 180 → join "The-Ark-Offline" → the phone
     opens the portal by itself → after 3 minutes it returns to the home Wi-Fi
 
@@ -170,9 +184,11 @@ DELIBERATELY NOT IN HERE
   cd ~/Survival-Pi
   git status --short            # must be empty; commit first if it is not
   git add -A && git commit -m 'what changed'
-  git tag -f v1.0.5             # next version, matching the commit
+  V=v1.1.0                      # the NEXT version; never move v1.0.5
+  git tag "$V"                  # no -f: a moved release tag breaks every copy
+  git push origin feature/admin-hardening "$V"
 
-  V=$(git describe --tags); D=~/Downloads/Project-Ark
+  D=~/Downloads/Project-Ark
   git archive --format=tar.gz --prefix=Project-ARK/ -o "$D/Project-ARK-$V-src.tar.gz" HEAD
   git bundle create "$D/Project-ARK-$V.git.bundle" --branches --tags HEAD
   cp docs/REBUILD-ME-ARK.txt docs/USING-THE-ARK.md README.md "$D/"

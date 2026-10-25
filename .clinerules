@@ -72,10 +72,11 @@ Required enabled units (final state):
 | `ark-net-watch.timer` (+ `ark-net-watch.service`) | — | every minute after boot: link lost → hotspot, home back + nobody on the hotspot → home; never overrules a pin, never drops a connected reader |
 | `ark-zim-downloader.service` | — | background ZIM queue (resumable) |
 | `ark-book-import.path` (+ `ark-book-import.service`) | — | fires the book importer whenever something lands in `drop/files` or `calibre-incoming`; `TimeoutStartSec=1800` |
+| `ark-arcade-discover.timer` (+ `ark-arcade-discover.service`) | — | 15 min after boot then weekly: pinned first shelf + discovery; installs only when the owner's auto-install switch is on |
 | `ssh.service`, `NetworkManager`, `avahi-daemon` | — | access |
 | `dnsmasq` | — | only via NM `ipv4.method shared` (do not enable the standalone unit) |
 
-Verification gate before declaring success: `systemctl is-enabled` **and** `systemctl is-active` must both be `enabled`/`active` for all of the above, plus `curl` on every endpoint must return 200/302. `pi/steps/90-verify.sh` is the executable form of this gate — run it and keep its output; it also reports the Community page, the File Box folders and free space.
+Verification gate before declaring success: `systemctl is-enabled` **and** `systemctl is-active` must both be `enabled`/`active` for all of the above, plus `curl` on every endpoint must return 200/302. `pi/steps/90-verify.sh` is the executable form of this gate — run it and keep its output; it also reports the Community and Games pages, the game shelf and `:8445` player origin, the File Box folders, free space, the newest copy of the records and the printed recovery sheet.
 
 ---
 
@@ -84,7 +85,7 @@ Verification gate before declaring success: `systemctl is-enabled` **and** `syst
 The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre*, *reverse proxy*, or *API*.
 
 * **Banned user-facing words:** `Kiwix`, `ZIM`, `Calibre`, `Calibre-Web`, `OPDS`, `FastAPI`, `nginx`, `systemd`, `SQLite`, `APK`, `port`, `localhost`.
-* **Approved user-facing words:** *Offline Library*, *Books*, *Manuals*, *Guides*, *Q&A*, *Repair Guides*, *Message Board*, *File Box*, *Planting Calendar*, *Download*, *Read in Browser*, *Search*.
+* **Approved user-facing words:** *Offline Library*, *Books*, *Manuals*, *Guides*, *Q&A*, *Repair Guides*, *Message Board*, *File Box*, *Games*, *Play*, *Planting Calendar*, *Download*, *Read in Browser*, *Search*.
 * Every section carries a plain-English **one-line description** plus a **“How to use”** badge.
 * Every button label says what happens in human terms (“Tap here to read this in your browser”, not “Open ZIM viewer”).
 * Phone/tablet users get the explicit “if this opened inside a *Sign in to Wi-Fi* popup, close it and open `http://ark.lan`” instruction with a 1-tap **Copy Address** button.
@@ -92,6 +93,7 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 * UI must be OLED-dark (true `#000000` background), mobile-first, ≥16 px body text, ≥44 px tap targets, works with zero JavaScript for the critical paths (search + links), progressive enhancement only.
 * **The owner's pages stay just as plain.** The Community page says *Who can write*, *Messages*, *Shared files*, *Show again*, *Delete for ever* — never “toggle”, “moderate”, “soft delete”, “quarantine”.
 * **Any text echoed back from a query string is escaped** (`esc()`), including the File Box's “Not uploaded: …” banner, which carries the refusal sentence from `?err=`.
+* `pi/RECOVERY-SHEET.txt` is user-facing and obeys this section: **no** service names, no port numbers, no words that need looking up, nothing that only makes sense on a screen. It is read off paper with a dead box in front of you, so it may name `/srv/ark/backup` and `ark-backup`/`ark-restore` — the commands the owner types — and nothing else technical.
 
 ---
 
@@ -103,13 +105,14 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 * Never weaken SSH beyond: key auth + password auth (first-boot convenience), root login disabled.
 * **Shared files have exactly one writer:** `ark_storage.spool()` in `pi/api/ark_storage.py`. Nothing else may create a file in `/srv/ark/drop/files`. Bytes go to `drop/tmp` as a `0600` temp file (`mkstemp`), are `fsync`ed, `chmod 0644`ed and only then published; `os.link` is what makes a collision impossible rather than unlikely.
 * **Never add an nginx location for `/drop/tmp`.** `/drop/` aliases `/srv/ark/drop/files/` and nothing else; a half-written upload must never be reachable over the wire.
+* **Game files and saves have exactly one writer each:** `ark_arcade_install.publish_candidate()` creates a file in `/srv/ark/arcade/games`; `player_save_put()` creates one in `/srv/ark/arcade/saves`. `:8445` is the only origin that sets `X-ARK-Player-Origin: 1`; the public `:80` location blanks it, so a visitor cannot claim the player origin by inventing a header.
 * `dnsmasq-shared.d` wildcard DNS is only active while the AP profile is up.
 
 ---
 
 ## 7. CHANGE / VERIFICATION DISCIPLINE
 
-* Before claiming a phase is done: show the command output that proves it. “Implemented” ≠ “works”. `/api/health` is **not** evidence — it says `ok` unconditionally (§8.6).
+* Before claiming a phase is done: show the command output that proves it. “Implemented” ≠ “works”. `/api/health` is **not** evidence — it only says the backend answered (§8.6); `/api/ready` is the verdict.
 * Long operations (image download, flash, apt, ZIM downloads) run in `nohup`/background with logs under `~/Survival-Pi/logs` and are polled, never blocked on.
 * Scripts must be idempotent — re-running a phase must not corrupt state.
 * `set -Eeuo pipefail` at the top of every bash script; `|| true` only with an explanatory comment.
@@ -120,42 +123,49 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 
 ## 8. PROJECT STATE — read this before touching anything
 
-**Last updated:** 2026-10-24 · **Read `docs/IMPLEMENTATION-LOG.md` next** (status table, decisions D1–D22, defects, test evidence, next step). This section is the digest; that file is the record.
+**Last updated:** 2026-10-24 · **Read `docs/IMPLEMENTATION-LOG.md` next** (status table, decisions D1–D25, defects, test evidence, next step). This section is the digest; that file is the record.
 
 | | |
 |---|---|
 | Released baseline | tag **`v1.0.5`** = `main` = `dd3336c` (the published release; the live Pi runs this) |
-| Current work | branch **`feature/admin-hardening`**, pushed to `origin` (never force-push, never move a tag). Find the live tip with `git log -1` — this digest pins stage 5, not every later docs commit |
+| Current work | branch **`feature/admin-hardening`**, pushed to `origin` (never force-push, never move a tag). The stage 3–6 + ARK Arcade code and the 24 Oct documentation pass are committed; **run `git status --short` and `git log -1` first**, never assume the tip from this digest |
 | Stage 3 | shipped in **`a1e5efa`**: `ark_storage.py`, schema v2, board moderation + Community page, sha256 import ledger, bounded search, docs, 84 tests |
 | Stage 4 | shipped in **`58d504b`**: `ark_health.py` (one place decides readiness, with reasons), `/api/ready` (200/503), `/admin/health` ("What is working"), `/api/health` demoted to liveness, measured download progress; tests in `tests/test_health.py` (13) — **97 tests total** |
 | Stage 5 | `ark-net-watch` + `ark-net-watch.timer` (network-loss failover after boot), `ark-mode` pins (`home`/`hotspot` pin, `auto` unpins), phase `70-network` installs/enables/proves it, `90-verify` checks the timer + pin + last decision; measured storage breakdown on **What is working** and in `/api/status`; `tests/test_network.py` (28) + 3 in `tests/test_health.py` — **128 tests total** |
-| Deployment | **code/config only — stages 2, 3, 4 and 5 are NOT deployed**, no hardware or browser test has been done |
-| Release | stages 2–5 are **unreleased**; the next tag comes only after a deploy plus a hardware walk-through |
+| Stage 6 | `ark-backup` + `ark-restore` + `ark_bundle.py` (one dated bundle: records via SQLite `.backup`, shared files, import list, sha256 manifest; `.partial` → rename; verify-before-restore; never overwrites a shared file), `pi/RECOVERY-SHEET.txt` (also `docs/RECOVERY-SHEET.txt`, `/srv/ark/RECOVERY-SHEET.txt`, `http://ark.lan/recovery.txt`), phase `95-backup`, **Latest copy** row in `ark_health`/`/api/status` + `90-verify` report; `tests/test_backup.py` (13 at that checkpoint; 14 at the tip, after the arcade save case) + 3 in `tests/test_health.py` — **144 tests at that checkpoint, 174 at the tip** |
+| ARK Arcade | `pi/arcade/` (EmulatorJS 4.2.3 vendored, seed list, styles/templates), `ark_arcade.py`, `ark_arcade_install.py`, `ark_arcade_web.py`, schema v3 tables, `pi/bin/ark-arcade`, `ark-arcade-discover.timer`, `:8445` player origin, owner **Games** page; named players' saves now travel in a backup; `tests/test_arcade.py` (18) + `tests/test_arcade_install.py` (11) + 1 in `tests/test_backup.py` — **174 tests total** |
+| Deployment | **code/config only — stages 2, 3, 4, 5, 6 and ARK Arcade are NOT deployed**, no hardware or browser test has been done |
+| Release | stages 2–6 and ARK Arcade are **unreleased**; the next tag comes only after a deploy plus a hardware walk-through |
 | Owner decisions pending | rotate the GitHub password; rotate the Pi password; licence choice |
 
 ### 8.1 What exists, and what each piece owns
 
 | Piece | Owns |
 |---|---|
-| `pi/api/main.py` | public FastAPI app: `/api/status`, `/api/ready`, `/api/health` (liveness only), `/search`, `/board`, `/files`; mounts the admin router; bumps `session_epoch` at start |
-| `pi/api/ark_health.py` | **the only place that decides readiness**: path helpers read at call time, content facts, cached loopback probe, seven per-section builders each with `ready`/`reason`/`action`/`content`, measured `progress()`, measured `storage_breakdown()` + `card_facts()`, `report()` |
+| `pi/api/main.py` | public FastAPI app: `/api/status`, `/api/ready`, `/api/health` (liveness only), `/search`, `/board`, `/files`; mounts the admin and public arcade routers; bumps `session_epoch` at start |
+| `pi/api/ark_health.py` | **the only place that decides readiness**: path helpers read at call time, content facts, cached loopback probe, **eight** per-section builders each with `ready`/`reason`/`action`/`content` (**six** of them blocking), measured `progress()`, measured `storage_breakdown()` + `card_facts()`, `copies()`/`_age_hours()`/`_ago()` + `backup_section()` (the **Latest copy** row: never blocking, a `.partial` is not a copy, an unreadable age is prose and never `0`), `report()` |
 | `pi/bin/ark-net-watch` | **the only place that decides the network after boot**: pure `decide()`, `--dry-run` observer, counters in `net-watch.state`, decisions in `net-watch.log`, acts by calling `ark-mode` |
 | `pi/systemd/ark-net-watch.service` / `.timer` | the clock for the above: `oneshot` every 60 s after a 3-minute boot delay; it acts through `ark-mode`, never by itself |
 | `pi/bin/ark-mode` | the one writer of `/etc/ark/mode.pinned` (`home`/`hotspot` pin, `auto` unpins, `hotspot --auto` leaves no pin) and the only thing the watchdog calls |
 | `pi/api/ark_db.py` | one connection policy (`read()` / `tx()`, always closed), numbered migrations in one transaction, audit helper, install marker, `SCHEMA_VERSION` |
 | `pi/api/ark_security.py` | scrypt hashing, length-only policy (12…1024, reject never truncate), opaque sessions (SHA-256 digest of a 256-bit token), CSRF, per-account + per-IP throttling |
-| `pi/api/ark_admin.py` | `/admin` routes: login, forced setup, password, accounts, reset/enable/disable, audit, logout, overview, **Community** (switches + board/file moderation), **`/admin/health`** ("What is working") |
+| `pi/api/ark_admin.py` | `/admin` routes: login, forced setup, password, accounts, reset/enable/disable, audit, logout, overview, **Community** (switches + board/file moderation), **Games** (shelf, licences, suggestions, hide/show, both arcade switches), **`/admin/health`** ("What is working") |
 | `pi/api/ark_storage.py` | the only write path for shared files: display name vs stored name, spool in `drop/tmp`, `os.link` finalise, size cap + free-space reserve, orphan-temp reconcile |
+| `pi/api/ark_arcade.py` / `ark_arcade_install.py` / `ark_arcade_web.py` | the game shelf: shelf rules and bounded saves, the only game download path, and the public/player pages + save API. Player names are separate tables and a separate cookie; `:8445` is the only origin that can set a save or issue that cookie. Full detail in §8.11 |
 | `pi/api/ark_recover.py` | recovery logic, reached only through the root wrapper |
+| `pi/bin/ark_bundle.py` | what a bundle **is**: layout, manifest format 1, path rules (`safe_rel`/`inside`), sha256, `verify_bundle()`, `copy_database()` (SQLite `backup()`, never `cp`); both tools import it so they cannot disagree |
+| `pi/bin/ark-backup` | the only writer of a bundle: `--to`, `--keep 2`, `--no-files`, `--dry-run`, `--list`, `--verify`, `--quiet`; `.partial` → rename; never writes to `drop/files` |
+| `pi/bin/ark-restore` | the one deliberate writer of records: proves every byte first, refuses an occupied box without `--force`, never replaces a shared file, keeps the import list off an empty shelf (`.from-backup`), refuses a path that leaves the box |
+| `pi/steps/95-backup.sh` | installs both tools + the sheet, creates `/srv/ark/backup` `0700`, proves `--dry-run`, prints the restore command; **no timer, on purpose** |
 | `pi/bin/ark-import-books` | the book watcher: scans `drop/files` + `calibre-incoming`, imports once per sha256 into `.imported.json`, moves incoming files to `done/`, copies nothing out of the File Box |
 | `pi/systemd/ark-book-import.path` / `.service` | the trigger for the above: `PathChanged` on both folders, `oneshot`, runs as `pi`, 30-minute ceiling |
 | `pi/bin/ark-tls-cert` | the box's own certificate: SANs, `--show` fingerprint, renew at 30 days, `--force` |
 | `pi/bin/ark-admin-recover` | `0700 root:root`, runs the Python as `pi` (keeps WAL owned by the service user) |
 | `pi/nginx/ark-admin.conf` | `:8443` management origin (`/admin` + stylesheet only, unknown Host rejected) and `:8444` loopback-only setup listener; blanks `X-ARK-Setup-Channel` on `:8443` |
 | `pi/nginx/ark.conf` | public `:80`; `location ^~ /admin { return 404; }` |
-| `pi/steps/65-admin.sh` | installs the above and proves each door (404 / 403 / TLS-only, Community behind the sign-in) |
-| `pi/steps/90-verify.sh` | read-only health report: every page, every listener, the admin door, the File Box folders, free space, the network timer + pin + last watchdog decision |
-| `tests/` | 128 pytest tests, throwaway databases, no Pi needed |
+| `pi/steps/65-admin.sh` | installs the above and proves each door (404 / 403 / TLS-only, Community and Games behind the sign-in, `:8445` player origin) |
+| `pi/steps/90-verify.sh` | read-only health report: every page, every listener, the admin door, the game shelf and player origin, the File Box folders, free space, the network timer + pin + last watchdog decision, the backup tools + newest copy and its age (soft) + the recovery sheet |
+| `tests/` | 174 pytest tests, throwaway paths and databases, no Pi needed |
 
 ### 8.2 Ports and who may reach them
 
@@ -164,16 +174,22 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 | `:80` | the whole public portal | anyone on Wi-Fi or LAN; **404 for `/admin`** |
 | `:8443` | `/admin` + `/assets/ark-admin.css`, TLS only | the LAN — but a sign-in is required |
 | `:8444` | `/admin` setup only, loopback-bound | only through an SSH tunnel (`ssh -N -L 8444:127.0.0.1:8444 pi@ark.local`) |
+| `:8445` | `/arcade/` + `/assets/`, TLS only | the LAN — for player names and saves; `404` for `/admin` |
 | `:8081` `:8083` `:8085` | kiwix / calibre / API, proxied by nginx | `127.0.0.1` only — the unit binds loopback, so the proxy is the only way in |
+
+`http://ark.lan/recovery.txt` is not a service: it is `/srv/ark/portal/recovery.txt` served by `location /`, so it comes off `:80` beside the front page — plain text, no sign-in, installed by phase `95-backup`.
 
 ### 8.3 State on the Pi
 
 | Path | What it is |
 |---|---|
-| `/srv/ark/api/data/ark.db` | accounts, sessions, audit rows, notes, files, `settings` (`public_board_post`, `public_uploads`) |
+| `/srv/ark/api/data/ark.db` | accounts, sessions, audit rows, notes, files, games/revisions, player names and saves, `settings` (`public_board_post`, `public_uploads`, `arcade_players`, `arcade_auto_install`) |
 | `/srv/ark/api/data/ark.installed` | marker **outside** the DB: a wiped DB ⇒ `recovery-required`, never a recreated default |
 | `/srv/ark/drop/files/` | published shared files, `0644`, served as `/drop/<stored name>`; the stored name is `<16 hex>-<label>` |
 | `/srv/ark/drop/tmp/` | partial uploads (`upload-*.part`), **never served**; swept at startup if older than 6 h |
+| `/srv/ark/arcade/games/` | published game files, `0644`, served only through `/arcade/g/<slug>/rom`; written only by `ark_arcade_install.publish_candidate()` |
+| `/srv/ark/arcade/saves/<player>/<game>/` | a named player's saves, `0700` folders and `0600` files; written only by `player_save_put()`; **never** a static folder |
+| `/srv/ark/arcade/tmp/` | a download waiting to be proved (`rom-*.part`); swept at startup; never served |
 | `/srv/ark/calibre-incoming/.imported.json` | import ledger keyed by sha256 — the only reason a re-drop is not a duplicate |
 | `/srv/ark/calibre-incoming/done/` | incoming books already in the library; **never rescanned** |
 | `/etc/ark/calibre-admin` | Calibre-Web credentials the importer uses over loopback (**not** in git) |
@@ -182,13 +198,15 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 | `/etc/ark/mode.pinned` | the owner's network answer (`home` / `hotspot`); **absent = auto**. Written only by `ark-mode` |
 | `/srv/ark/logs/net-watch.state` | the watchdog's counters: `lost_streak`, `home_streak`, `home_block_until` |
 | `/srv/ark/logs/net-watch.log` | one line per decision that acted; a quiet check writes nothing |
+| `/srv/ark/backup/` | the copies: `ark-backup-<date>-<time>/`, `0700 pi:pi`. A bundle holds the accounts table, so the folder is closed — and a copy that never leaves the card is not insurance |
+| `/srv/ark/RECOVERY-SHEET.txt` | the printed page for a card that does not boot; the same file as `/srv/ark/portal/recovery.txt` → `http://ark.lan/recovery.txt` |
 
 ### 8.4 Commands that matter
 
 ```bash
 # tests (Mac, throwaway DBs, never the live library)
 python3 -m venv .venv && .venv/bin/pip install -r tests/requirements.txt
-.venv/bin/python -m pytest -o addopts='--strict-markers' -q    # prints "128 passed"
+.venv/bin/python -m pytest -o addopts='--strict-markers' -q    # prints "174 passed"
 # `pytest.ini` already passes -q, so a second -q hides the summary line
 
 # the honest answer, on the box or from the Mac
@@ -202,6 +220,12 @@ sudo ark-net-watch --decide auto 0 0 1 0 0 2 0 0    # pure table: no link → to
 sudo ark-net-watch --dry-run                 # what it sees, what it would do
 tail -n 20 /srv/ark/logs/net-watch.log       # what it actually did
 
+# the game shelf (console only)
+sudo ark-arcade --status                     # games, player names, last check
+sudo ark-arcade --seed                       # re-check the pinned first shelf
+sudo ark-arcade --discover --auto            # what the weekly timer runs
+sudo ark-arcade --list                       # suggestions and why each was refused
+
 # push (never force, never move a tag)
 GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o BatchMode=yes -o ConnectTimeout=20' \
   git push origin feature/admin-hardening
@@ -209,9 +233,14 @@ GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o BatchMode=yes -o ConnectTimeout=20
 # deploy / verify on the Pi (only with the owner's explicit go-ahead)
 # 30-calibre ships the new importer binary and enables ark-book-import.path
 # 70-network installs/enables ark-net-watch.service + .timer
-sudo bash /srv/ark/src/install-ark.sh --only 20-storage,30-calibre,60-portal,65-admin,70-network
+sudo bash /srv/ark/src/install-ark.sh --only 20-storage,30-calibre,60-portal,65-admin,70-network,95-backup
 sudo bash /srv/ark/src/install-ark.sh --only 90-verify
 cat /srv/ark/ark_status.json
+
+# copies of the records (a copy on the same card is not insurance)
+sudo ark-backup --to /srv/ark/backup && sudo ark-backup --list
+sudo ark-backup --verify /srv/ark/backup/ark-backup-<date>-<time>
+sudo ark-restore --list                      # what could be put back
 
 # the owner's door
 ssh -N -L 8444:127.0.0.1:8444 pi@ark.local    # first claim only
@@ -221,7 +250,7 @@ sudo ark-admin-recover --list                 # locked out (console only)
 
 Bootstrap account: `admin` / `ChangeMe-ARK!`, `must_change=1`, claimable **only** through the loopback listener while unclaimed. It is in public code on purpose and useless without the tunnel.
 
-### 8.5 Defects: what stages 3, 4 and 5 fixed, and what is still open
+### 8.5 Defects: what stages 3–6 and ARK Arcade fixed, and what is still open
 
 Fixed on `feature/admin-hardening` (each one now has a test that fails without the fix):
 
@@ -258,6 +287,14 @@ Fixed on `feature/admin-hardening` (each one now has a test that fails without t
   five folders (`Offline Library`, `Books`, `Manuals & Guides`, `File Box`, `Settings and records`)
   plus `card_facts()` for the card total and used; **What is working** renders it with a
   plain-English summary and lists only non-empty folders. Unmeasurable ⇒ `None`, never 0.
+* A backup nobody had read back — one dated bundle now has a sha256 manifest, is built as
+  `.partial` and published by rename, is proved by `--verify`, and is put back only by
+  `ark-restore` after it proves every byte and refuses an occupied box. The printed recovery
+  sheet is the page that still works when the box does not.
+* A game shelf that could trust a browser or a stored path — the player is vendored (no external
+  asset), player pages live on the separate `:8445` origin, the public `:80` location blanks
+  `X-ARK-Player-Origin`, player tables/cookie cannot reach `/admin`, and a stored game filename
+  that is not a bare name is refused by `rom_path`, `_check_game` and the ROM route.
 
 **Still open, and they are deliberate limits, not oversights:**
 
@@ -281,10 +318,13 @@ Which test proves which fix (useful when a future change breaks one):
 | the deadline holds when one collection is slow | `tests/test_search.py` (6) |
 | nginx `2064m` still equals the app's 2 GiB | `tests/test_config.py` (3) |
 | schema version, migration/upgrade path, the Pi password vector | `tests/test_db.py` (7) |
-| empty vs broken vs ready per section, a full card, measured progress, `/api/ready` 503, liveness-only `/api/health`, the owner page, the storage breakdown | `tests/test_health.py` (16) |
+| empty vs broken vs ready per section, a full card, measured progress, `/api/ready` 503, liveness-only `/api/health`, the owner page, the storage breakdown, a missing or stale copy | `tests/test_health.py` (19) |
 | the 14-case decision table, a fake `nmcli`/`iw` observer, pins, back-off, the timer/unit files, wiring to `ark-mode` | `tests/test_network.py` (28) |
+| a bundle round trip, a damaged copy refused, `.partial` swept, rotation, `--force` on an occupied box, a shared file never replaced, a path escape refused, a named player's save carried, the sheet's plain words | `tests/test_backup.py` (14) |
+| guest vs named saves, origin header, hidden game, export/import, owner Games page, hide/show, suggestions | `tests/test_arcade.py` (18) |
+| licence, source allowlist, redirect, archive, file shape, seed, discovery, auto-install switch | `tests/test_arcade_install.py` (11) |
 
-### 8.6 Not built yet (leftovers, then stages 6–7)
+### 8.6 Delivered and not built yet
 
 Stage 3 delivered: upload safety (unique stored names, one write path, cap + reserve, empty-file
 refusal, temp reconcile), import idempotency (sha256 ledger, `done/` exclusion, preserved File Box
@@ -300,10 +340,24 @@ unpins, `hotspot --auto` leaves none), phase `70-network` installing and proving
 `90-verify` reporting the timer, the pin and the last decision, and a measured storage breakdown
 with card facts on **What is working** and in `/api/status`.
 
-Still absent, **do not describe any of it as done**: backup/restore kit + offline recovery sheet
-(the next piece of work — scope in §8.10); emergency content review; essentials pack, QR cards,
-accessibility and the household page; per-person quotas; quarantine/approval queue; trash;
-pause/resume buttons on the owner page. **Never invent a control that does not exist.**
+Stage 6 delivered: `pi/bin/ark-backup` / `pi/bin/ark-restore` on one shared definition
+(`pi/bin/ark_bundle.py`), `pi/RECOVERY-SHEET.txt` served as `http://ark.lan/recovery.txt`, phase
+`95-backup`, a **Latest copy** readiness row (`ark_health.backup_section()`, never blocking), the
+verifier reporting copies and their age, and `tests/test_backup.py` (13 at that checkpoint; 14 at
+the tip). Not deployed and never run on the box: §8.10.
+
+ARK Arcade delivered after stage 6: the public shelf `http://ark.lan/arcade/`, a vendored
+EmulatorJS player, optional named-player saves on the separate `:8445` TLS origin, the owner
+**Games** page, schema v3 tables, `ark-arcade-discover.timer`, and named players' saves carried by
+`ark-backup`/`ark-restore`. Tests: `tests/test_arcade.py` (18), `tests/test_arcade_install.py`
+(11), and one backup save case. Not deployed: §8.11.
+
+Still absent, **do not describe any of it as done**: emergency content review; essentials pack, QR
+cards, accessibility and the household page (stage 7); per-person quotas; quarantine/approval
+queue; trash; pause/resume buttons on the owner page; a backup timer, or any backup button on the
+owner page; player password recovery, per-player save quota, save trash, or an owner reset/delete
+for a player name; a **Check now** button for games (the weekly timer is the only check).
+**Never invent a control that does not exist.**
 
 Two page-size facts, so nobody documents them wrongly again:
 
@@ -322,7 +376,7 @@ Two page-size facts, so nobody documents them wrongly again:
 * **`ark_admin` needs `ensure_initialised()`** (the real app does it at import); a bare router mount on an empty directory raises `no such table: admins`.
 * **macOS Python 3.9 links LibreSSL**, so stdlib `hashlib.scrypt` is absent — `cryptography` is the fallback. The Pi vector pinned in `tests/test_db.py` proves the two agree.
 * Reading must survive a broken admin store: the `CRYPTO_ERROR` path keeps the public portal up.
-* **`pytest -q` twice prints no summary.** `pytest.ini` already passes `-q`, so `-q -q` shows dots and no "128 passed" line; use `-o addopts='--strict-markers' -q` when the count is the evidence.
+* **`pytest -q` twice prints no summary.** `pytest.ini` already passes `-q`, so `-q -q` shows dots and no "174 passed" line; use `-o addopts='--strict-markers' -q` when the count is the evidence.
 * **macOS has no `timeout` command** (`zsh: command not found: timeout`, coreutils not installed). Bound a command with `gtimeout` if present, or start it in the background with a log file and poll — do not build a chain that depends on `timeout`.
 * **`git push` from a non-interactive session can hang on an SSH prompt.** Use `GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o BatchMode=yes -o ConnectTimeout=20'`; a failed push then reports instead of waiting for a passphrase.
 * **SQLite `ADD COLUMN` cannot add `NOT NULL` without a `DEFAULT`.** Schema v2 relies on `DEFAULT ''` / `DEFAULT 0`; that is why an upgraded box has `files.stored = ''` for old rows and every read goes through `_stored_name()`. A new query that reads `stored` directly will produce empty download links on an upgraded card.
@@ -343,13 +397,25 @@ Two page-size facts, so nobody documents them wrongly again:
 * **A pin suppresses only the return home, never the rescue.** `ark-mode home` / `ark-mode hotspot` write `/etc/ark/mode.pinned`; `ark-mode auto` removes it; the watchdog's own rescue calls `ark-mode hotspot --auto`, which deliberately leaves none — that is how "the box did this" stays distinguishable from "the owner said so". A pin must never be able to leave the box dark.
 * **The watchdog acts only through `ark-mode`.** It reads NetworkManager and `iw` and writes a log line and its state file, nothing else; `ARK_MODE_BIN` is the seam the tests stub. Bringing NetworkManager up directly from the watcher would create a second writer to the network, and the two would disagree within a week.
 * **`net-watch.log` is quiet by design.** Only decisions that *did* something are logged; a short log is a healthy day, and "the log is nearly empty" is not evidence the timer is dead — `systemctl status ark-net-watch.timer` and `ark-net-watch --dry-run` are.
+* **A copy's `counts` come from the database, not from the folder.** `manifest.json` records `counts` read from the **copied database** (`SELECT COUNT(*) FROM notes` / `files` / `admins`), so a file dropped into `drop/files` by hand (no `files` row) is copied but not counted — "0 shared files" beside a bundle that holds one is honest bookkeeping, not a bug. A real upload always has a row: `ark_storage.spool()` writes the file and its row together.
+* **`--list` answers for the default folder, not the last `--to`.** It lists `ARK_BACKUP_DIR` (`<ARK_ROOT>/backup` on the box); asking about somewhere else is `--to <that folder> --list`.
+* **`ark-backup` writes its report to stdout only.** `say()` is stdout, refusals are `Not done: …` on stderr, so `95-backup.sh`'s `head -n 1` parse of the dry run is safe — keep any new progress noise off stdout.
+* **A restore is the one deliberate writer of the records.** It verifies every byte first, refuses an occupied box without `--force`, never replaces a shared file already there, parks the import list as `.imported.json.from-backup` when the shelf is missing, and sweeps `.partial` folders rather than listing them. Never teach anything else to "just copy the newest folder" — §6 still names `ark_storage.spool()` as the only writer of `drop/files`.
+* **An age the box cannot read is prose, never `0`.** `_age_hours()` uses the manifest's `created`, falls back to the folder's mtime, then to `None` → "at a time the box could not read". `COPY_STALE_HOURS = 168` only makes the row *not ready*; `backup` is not in `BLOCKING_SECTIONS`, so a missing copy can never make a serving box look broken (§8.8 rule 11).
+
+* **`ark_db.tx(conn)` is nested-aware now; do not open a second writer around it.** The shelf publishes a save row and a file together, so `tx()` accepts a connection the caller already holds and turns into a no-op when that connection is in a transaction. Before this, `with ark_db.tx() as conn: ... arcade_save(...)` opened a second `BEGIN IMMEDIATE` and deadlocked with `database is locked`. The `tx(conn)` call shape still works; `tx(immediate=False)` still works.
+* **The arcade's app files and the card's data are two different folders.** `src_root()` (`ARK_ARCADE_SRC`, `/srv/ark/src/arcade`) holds templates, CSS, seed list and the vendored player; `data_root()` (`ARK_ARCADE_DATA`, `<ARK_ROOT>/arcade`) holds `games/`, `saves/` and `tmp/`. Binding one to the other puts the player in the writable data folder or the saves in a read-only source tree.
+* **`X-ARK-Player-Origin` is a trust boundary, not a hint.** `:8445` sets it to `1`; the public `:80` location sets it to empty, because nginx would otherwise pass a visitor's invented header through. `ark_arcade_web._player_origin()` is the only reader; a new route that returns a save or sets a player cookie must call it, or it will do so through the public portal.
+* **Python 3.9 is still the floor for `pi/`.** An f-string cannot contain a backslash in its expression part; `f"{json.dumps(v).replace('</', '<\\/')}"` is a `SyntaxError` on the Mac's Python and on the box. Precompute it (`_js()` in `ark_arcade_web.py`) and test with `python3 -m py_compile`.
+* **A player cookie is `Secure`.** It is issued only on `:8445` and deliberately does not travel over plain HTTP; the public shelf therefore shows a signed-in reader as a guest and sends **My saves** to `https://<host>:8445/arcade/player`. A public page must never render the save panel merely because a cookie was present.
+
 
 ### 8.8 Rules for the next stage
 
 1. Test first, then code, then `pytest` green, then a checkpoint line in `docs/IMPLEMENTATION-LOG.md`.
 2. The public reading path must keep working at every commit.
 3. No deploy, reboot, `pkill`, or service restart on the live box without explicit permission.
-4. Docs change in the same commit as the behaviour — `README.md`, `docs/ADMIN.md`, `docs/USING-THE-ARK.md`, `docs/REBUILD-ME-ARK.txt` and `docs/REBUILD-FROM-BACKUP.txt` all describe the box and have drifted before.
+4. Docs change in the same commit as the behaviour — `README.md`, `docs/ADMIN.md`, `docs/USING-THE-ARK.md`, `docs/REBUILD-ME-ARK.txt`, `docs/REBUILD-FROM-BACKUP.txt` and `pi/RECOVERY-SHEET.txt` all describe the box and have drifted before.
 5. Shared files get written by `ark_storage.spool()` and by nothing else (see §6).
 6. New schema steps are a numbered migration in `ark_db.py`, bump `SCHEMA_VERSION`, never rewrite v1, and keep old rows readable (see the `stored = ''` rule in §8.7).
 7. The two switches are settings, not code paths: `public_board_post` and `public_uploads`, absent or `1` means **open**. A fresh database must therefore start with the box usable, and a test must prove the closed state still serves everything already written.
@@ -357,22 +423,24 @@ Two page-size facts, so nobody documents them wrongly again:
 9. When a rendered value disappears, say so in the same commit: `/api/health` no longer carries `ok`, so anything outside this repo that polls it must be told to read `/api/ready` (200/503) instead.
 10. The network is decided in exactly one place after boot: `pi/bin/ark-net-watch`. It may only act through `ark-mode`, it may not overrule a pin, and it may never take the hotspot away while a device is connected (an uncountable station list counts as connected). Prove any change to it with `--decide`, which needs no radio — never by experiment on the live box.
 11. New measurements follow the `None` rule: a folder size, a rate or an ETA the box could not measure renders as "not measured yet", never as `0` (§8.7).
+12. A copy only reads. `ark-backup` writes into its own bundle and nowhere else; `ark-restore` is the one deliberate writer of the records and of `drop/files`, and only after proving every byte (§6). No timer takes a copy without an explicit yes, no page pretends to have a backup button, and any wording about copies says out loud that a copy left on the same card does not survive that card dying.
+13. The arcade's three write paths are closed sets: `ark_storage.spool()` for `drop/files`, `ark_arcade_install.publish_candidate()` for `games/`, and `player_save_put()` for `saves/`. `:8445` sets `X-ARK-Player-Origin: 1`; the public `:80` location blanks it. A game page must never contain an `http://` or `https://` asset reference, and a stored game filename must be a bare name before it is joined to a path.
 
 ### 8.9 OUTSTANDING — what is not done yet, in the order it matters
 
 **Blocking a release (nothing is wrong with the code; it is unproven on hardware):**
 
-1. **Deploy stages 2 + 3 + 4 + 5** — `--only 20-storage,30-calibre,60-portal,65-admin,70-network` (30-calibre is where the new importer binary and `ark-book-import.path` live; 60-portal carries `ark_health.py`, `/api/ready`, the storage breakdown and the new front-page strip; 70-network installs and enables `ark-net-watch.service` + `.timer`), then `--only 90-verify`, then read `/srv/ark/ark_status.json` and `curl -s http://ark.lan/api/ready`. **Copy the database aside first:** `60-portal.sh` restarts `ark-api`, which runs migration v2 in place (`ALTER TABLE notes/files`), and there is no downgrade path, only that copy:
+1. **Deploy stages 2 + 3 + 4 + 5 + 6 + ARK Arcade** — `--only 20-storage,30-calibre,60-portal,65-admin,70-network,95-backup` (30-calibre is where the new importer binary and `ark-book-import.path` live; 60-portal carries `ark_health.py`, `/api/ready`, the storage breakdown, the arcade modules/player/first shelf and `ark-arcade-discover.timer`; 65-admin installs the `:8445` player origin as well as `:8443`; 70-network installs and enables `ark-net-watch.service` + `.timer`; 95-backup installs `ark-backup`/`ark-restore` and the recovery sheet), then `--only 90-verify`, then read `/srv/ark/ark_status.json` and `curl -s http://ark.lan/api/ready`. **Copy the database aside first:** `60-portal.sh` restarts `ark-api`, which runs every migration through v3 in place (`ALTER TABLE notes/files`, then the arcade tables), and there is no downgrade path, only that copy:
 
    ```bash
-   sudo sqlite3 /srv/ark/api/data/ark.db ".backup '/root/ark-db-before-v2.db'"
+   sudo sqlite3 /srv/ark/api/data/ark.db ".backup '/root/ark-db-before-v3.db'"
    ```
 
    Use `.backup`, not `cp` — the live database is WAL (`PRAGMA journal_mode=WAL`), so a plain copy can miss committed data.
-2. **Walk through it on a phone** — claim through the tunnel, open **What is working** and read one reason aloud (it must be plain English, not a service name), stop `ark-kiwix` on purpose and watch that row turn to *Not ready* with a fix, post a note, upload two files with the same name, drop an `.epub` in the File Box and watch it reach the shelf without a command, try a file over 2 GiB, hide/restore, password-confirmed delete, switch both Community switches off and confirm reading and downloads still work, then switch them back on, read the storage breakdown aloud and check it matches `du -sh`, then **pull the home Wi-Fi out from under it** and watch the hotspot come up by itself within two minutes (and go back once the router returns and nobody is connected). None of this has been done by a human yet.
+2. **Walk through it on a phone** — claim through the tunnel, open **What is working** and read one reason aloud (it must be plain English, not a service name), stop `ark-kiwix` on purpose and watch that row turn to *Not ready* with a fix, post a note, upload two files with the same name, drop an `.epub` in the File Box and watch it reach the shelf without a command, try a file over 2 GiB, hide/restore, password-confirmed delete, switch both Community switches off and confirm reading and downloads still work, then switch them back on, read the storage breakdown aloud and check it matches `du -sh`, then **play a game with the internet unplugged**, make a player name, save/export/import on a second browser, and confirm `:8445` serves the same certificate as `:8443`; then **pull the home Wi-Fi out from under it** and watch the hotspot come up by itself within two minutes (and go back once the router returns and nobody is connected), then take a copy (`sudo ark-backup --to /srv/ark/backup`), verify it, and open `http://ark.lan/recovery.txt` on the phone and print it. None of this has been done by a human yet.
 3. **A real 2 GiB upload over the wire** — nginx and the app now agree on the number, but no test or human has pushed a file that size through the proxy.
 
-**Never executed, not even once — stage 4's and stage 5's own blind spots:**
+**Never executed, not even once — stages 4–6 and ARK Arcade's own blind spots:**
 
 * `60-portal.sh`'s `/api/ready` branch (the accepted 200/503 pair and the inline Python that pulls the blocking names out of the body) has only been `bash -n`'d, never run on a Pi.
 * `90-verify.sh`'s readiness block — its `python3 -c` parser and the tab-separated `while read` loop — has never run on a Pi either.
@@ -384,42 +452,108 @@ Two page-size facts, so nobody documents them wrongly again:
 * The watchdog's real transitions — link lost → hotspot; home back with nobody on the hotspot → home; a return that failed → 30-minute back-off — have never happened on hardware once. `--dry-run` has been run on the live box; acting has not.
 * `70-network.sh`'s timer branch (install, `enable --now`, `is-active` proof) and `90-verify.sh`'s timer/pin/last-decision block have only been `bash -n`'d — same as the stage-4 script branches.
 * The storage breakdown has only been seen with the fixture folders in `tests/test_health.py` and once through `/api/status` on the box; nobody has compared a row against `du -sh` on a full card.
+* `ark-backup`/`ark-restore` have been driven by hand **on the Mac** against throwaway `/tmp` boxes (a copy, `--verify`, a restore into an empty box, a refusal on an occupied one, the ledger set beside an empty shelf) — never on the Pi: no bundle has been written there, no restore run, `/recovery.txt` never opened, `95-backup.sh` and the verifier's backup block only `bash -n`'d.
+* The arcade's hardware path is entirely untested: EmulatorJS has never been played on the Pi, no game has been fetched by the box from the live source, `ark-arcade-discover.timer` has never fired there, `:8445` and its certificate have only been `nginx -t`'d, and no phone has signed in or kept a save. The new bare-filename guards have only been exercised by the test suite, not by a malicious row on a real database.
+* `60-portal.sh`'s first-shelf seed branch, `65-admin.sh`'s `:8445` proof, and `90-verify.sh`'s game/player/backup blocks have only been `bash -n`'d.
 
-**Before handing the box, or its backups, to anyone:** the set in `~/Downloads/Project-Ark` was built from **tag `v1.0.5`**, so it contains none of stages 2–5. Tag first, then regenerate it by the section 5 procedure in `docs/REBUILD-FROM-BACKUP.txt` — and keep the folder's "28 traps" line in step with `docs/REBUILD-ME-ARK.txt`.
+**Before handing the box, or its backups, to anyone:** the set in `~/Downloads/Project-Ark` was built from **tag `v1.0.5`**, so it contains none of stages 2–6 or ARK Arcade. Tag first, then regenerate it by the section 5 procedure in `docs/REBUILD-FROM-BACKUP.txt` — and keep the folder's "30 traps" line in step with `docs/REBUILD-ME-ARK.txt`.
 
 **Owner decisions, still open:** rotate the GitHub password, rotate the Pi password, choose a licence.
 
-**Known gaps left on purpose (say so, never fake them):** per-person quotas; a quarantine/approval step; a trash instead of for-ever delete; pagination on the Community page; pause/resume buttons on the owner page; nothing measures `/api/ready` under load, and the watchdog has no manual "switch now" button beyond `ark-mode`. The storage row judges free space, and the breakdown measures the folders it knows — neither probes a service, and neither can delete anything.
+**Known gaps left on purpose (say so, never fake them):** per-person quotas; a quarantine/approval step; a trash instead of for-ever delete; pagination on the Community page; pause/resume buttons on the owner page; nothing measures `/api/ready` under load, and the watchdog has no manual "switch now" button beyond `ark-mode`; no player password recovery, save quota, save trash, or owner reset/delete for a player name; no "check now" button for games. The storage row judges free space, and the breakdown measures the folders it knows — neither probes a service, and neither can delete anything.
 
-**Then stages 6 and 7** — scope for stage 6 is written out in §8.10 and `docs/IMPLEMENTATION-LOG.md` §7.1; stage 7 is the household layer (emergency content review, essentials pack, QR cards, accessibility, household page). Neither exists. Tag a release only after 1–2 above pass; never move `v1.0.5`.
+**After the deploy walk-through, stage 7** — the household layer (emergency content review, essentials pack, QR cards, accessibility, the household page). Stage 6 is delivered in §8.10 and ARK Arcade in §8.11; both are **unproven on hardware**. Tag a release only after 1–2 above pass; never move `v1.0.5`.
 
-### 8.10 NEXT WORK — stage 6, the backup and the offline recovery sheet (NOT STARTED)
+### 8.10 STAGE 6 — delivered 24 Oct 2026, unproven on hardware
 
-**Nothing in this section exists.** It is here so a fresh session starts at the
-right place instead of rediscovering the plan. Stages 2–5 are code-complete,
-tested and pushed (`5bbc123`, docs follow-up `6797876`) and the **box still runs
-tag `v1.0.5`** — no deploy has happened, so nothing here changes what the live
-Pi does today.
+Code and tests only: **no deploy, no bundle has ever been written on the box, no
+restore has ever been run, `/recovery.txt` has never been opened in a browser.**
+At that checkpoint `pytest` was **144 passed** (12 files); the current tip is
+**174 passed** after ARK Arcade. Detail and the honest gaps:
+`docs/IMPLEMENTATION-LOG.md` §11.
 
-| Piece | What it must do |
+The code, the tests and every doc in §8.8 rule 4 are **committed and pushed** on
+`feature/admin-hardening`; run `git status --short` first, but do not expect
+stage 6 to be missing from `origin` any more.
+
+| Piece | What it does |
 |---|---|
-| `pi/bin/ark-backup` | write one dated bundle to a path it is given: the database taken with `sqlite3 .backup` (**never `cp`** — it is WAL), `drop/files/`, `calibre-incoming/.imported.json`, and a manifest with per-file sha256, sizes, `SCHEMA_VERSION`, `git describe` and the time. Output is written as `<name>.partial` and becomes `<name>` only by rename, so a half-finished backup can never pass for a whole one |
-| `pi/bin/ark-restore` | verify the manifest first and refuse a bundle that fails it; refuse to touch an installed box without an explicit `--force`; restore into the same absolute paths, `chown -R pi:pi`, then say exactly what it put back |
-| `docs/RECOVERY-SHEET.txt` | one printable page: dead box → working box with a phone, a card reader and nothing else. Plain words only (§5 bans *Kiwix*, *ZIM*, *Calibre*, …); it must not depend on anything that lives on the card |
-| a phase (`95-backup.sh`, or folded into an existing one) | install both binaries, create the folder, prove `--dry-run`, print the restore command |
-| `tests/test_backup.py` | round-trip against throwaway paths: manifest verifies; a corrupted file is refused; `.imported.json` returns so a re-drop is still not a duplicate; an installed database is not overwritten without `--force`; no `.partial` is left behind |
+| `pi/bin/ark_bundle.py` | what a bundle **is**, defined once: layout, manifest format 1 JSON, `safe_rel()` / `inside()` path rules, sha256 per file, `verify_bundle()`, `copy_database()` with SQLite's own `backup()` then `PRAGMA journal_mode=DELETE` (never `cp` — WAL). Both tools import it |
+| `pi/bin/ark-backup` | `--to` (default `/srv/ark/backup`), `--keep 2`, `--no-files`, `--dry-run`, `--list`, `--verify`, `--quiet`. Builds `<name>.partial`, manifest last, publishes by rename, sweeps stale `.partial`, `flock`s the destination, records counts + `SCHEMA_VERSION` + `git describe`, writes `RESTORE-ME.txt` inside every bundle. It only reads |
+| `pi/bin/ark-restore` | `--from`, `--list`, `--dry-run`, `--force`, `--no-files`, `--ledger auto\|yes\|no`, `--keep-owner`. Verifies every byte **before** touching the box; refuses an occupied box without `--force`; never replaces a shared file already there; leaves the import list beside an empty shelf as `.imported.json.from-backup`; refuses any path that climbs out of the bundle or the box |
+| `pi/RECOVERY-SHEET.txt` | the printed page for the day the card does not boot — phone + card reader + working card, plain words only. Symlinked at `docs/RECOVERY-SHEET.txt`; installed to `/srv/ark/RECOVERY-SHEET.txt` and `/srv/ark/portal/recovery.txt` (`http://ark.lan/recovery.txt`) |
+| `pi/steps/95-backup.sh` | phase 8: install both tools (`ark_bundle.py` beside them), create `/srv/ark/backup` `0700 pi:pi`, install the sheet, prove `--dry-run`, print the four commands. **No timer, on purpose** |
+| `ark_health.backup_section()` | **Latest copy** row on **What is working** and in `/api/status`: finished bundles only (a `.partial` is not one), newest age + what it holds, *Not ready* only when there is none or it is older than `COPY_STALE_HOURS = 168`; **not** in `BLOCKING_SECTIONS` — a missing copy never makes a serving box look broken |
+| `pi/steps/90-verify.sh` | reports both tools, the newest copy and its age (soft, never a failure), how many are kept, the sheet's presence; `ark_status.json` gains `"backup": {copies, newest, made}` |
+| `tests/test_backup.py` | 13 tests at this checkpoint (14 now, with the named-player save case): round trip, damaged copy refused, `.partial` swept and never listed, `--keep` rotation, occupied box needs `--force`, a shared file is never replaced, ledger kept off an empty shelf, path escape refused, dry run writes nothing, the sheet's plain words, the phase |
 
-**Invariants it must respect.** A backup only reads — §6 still names
-`ark_storage.spool()` as the single writer of `/srv/ark/drop/files`, and a restore
-is the one deliberate exception, which has to say so out loud. Collections (the
-10–15 GiB of ZIMs) are content, not state — `ark-zim-resolve --profile` fetches
-them again — so they stay out of the default bundle. A figure it cannot measure
-is "not measured yet", never `0` (§8.7).
+**Invariants it keeps.** A backup only reads — `ark_storage.spool()` is still the
+only writer of `/srv/ark/drop/files`, and a restore is the one deliberate
+exception, said out loud in its own header. Collections and the book shelf stay
+out of a bundle: content, fetched or imported again, not state. An unmeasurable
+age renders as "at a time the box could not read", never `0` (§8.7).
 
-**Defaults unless the owner says otherwise:** write to `/srv/ark/backup`, keep the
-newest two, run only when asked (`sudo ark-backup --to /path`). The one thing that
-needs an explicit yes is a **nightly timer**: a timer that quietly fills the card
-the box reads from is a defect, not a feature.
+**Said out loud, so nobody assumes otherwise:** a copy left on the same card does
+not survive that card dying — copying the folder to a stick or a computer is the
+owner's job and the sheet says so. No timer (a nightly copy that fills the card
+the box reads from is a defect). No button on the owner's page takes or restores a
+copy. Bundles are not encrypted; the folder is `0700` because it holds accounts.
+
+**Next work after this checkpoint:** ARK Arcade (§8.11), then stage 7 — the
+household layer (emergency content review, the essentials pack, QR cards,
+accessibility, the household page). Before any tag: deploy the whole branch and
+walk through §8.9 on a phone.
+
+### 8.11 ARK ARCADE — delivered 24 Oct 2026, unproven on hardware
+
+A game shelf on the same box: `http://ark.lan/arcade/`. A guest taps a game and
+plays; a **name** is optional and only keeps saves. A name is *not* an
+administrator: different tables, different cookie, different origin, and no
+path in the arcade can reach `/admin`. Code and docs are on
+`feature/admin-hardening`; **nothing is deployed, no game has been played on
+the Pi, and the live source has never been asked for a file from the box.**
+`pytest` **174 passed** (14 files). Detail: `docs/IMPLEMENTATION-LOG.md` §12.
+
+| Piece | What it owns |
+|---|---|
+| `pi/arcade/emulatorjs/` | EmulatorJS 4.2.3 vendored: loader, minified player, five cores, `SHA256SUMS`. No CDN, no external font, no telemetry |
+| `pi/arcade/static/`, `templates/`, `catalog/seed.json` | shelf styling/notices, the one page template, and the three pinned first games with recorded SHA-256 and licence |
+| `pi/api/ark_arcade.py` | `SYSTEMS`, slug/ROM guards, `rom_facts`, `license_problem`, shelf queries, players/sessions/backoff, and the complete save layer (`SaveConflict`, `SaveRefused`, `_atomic_write`, `player_save_put/get/delete`, export zip, bounded import) |
+| `pi/api/ark_arcade_install.py` | the only download path, discovery, seed, owner decisions, auto-install, temp sweep. **A candidate is not a URL**: its address is rebuilt from a validated slug + filename |
+| `pi/api/ark_arcade_web.py` | public shelf and game page, ROM/emulator files, player pages and save API, export/import. Player pages redirect to the TLS origin; the API refuses anything not marked as that origin |
+| `pi/bin/ark-arcade` | `--seed`, `--discover --auto`, `--install`, `--refuse`, `--allow`, `--list`, `--status`; installed to `/usr/local/sbin` |
+| `pi/nginx/ark-players.conf` | `:8445`, TLS only, `/arcade/` + `/assets/` only, `X-ARK-Player-Origin: 1`, `404` for `/admin` |
+| `pi/systemd/ark-arcade-discover.*` | 15 min after boot, then weekly; seed is non-fatal, discovery records only; installs only if the owner's switch is on |
+| `ark_admin.py` **Games** | shelf + licence + hide/show, suggestions + **Check and add**, both switches, audited |
+| `ark-backup` / `ark-restore` | named players' saves (`arcade/saves/…`) travel as state; missing saves are added `0600` in `0700` folders, an existing save is never replaced. The games themselves stay out — content, fetched again |
+
+**The gate chain.** Licence allows copying → address rebuilt from validated
+slug/filename → source prefix allowlist, redirects refused, 64 MB cap → temp
+write + fsync in `/srv/ark/arcade/tmp` → SHA-256 + size + `rom_facts` →
+`os.replace` into `games/` → rows in one transaction (new file unlinked if the DB
+refuses). A failure leaves the shelf exactly as it was.
+
+**Saves.** Guest saves live in the browser (EmulatorJS local storage). A named
+player gets three server slots per game; folders `0700`, files `0600`. A stale
+browser gets **409**, another player gets **404**, a missing page token **403**.
+Export is one zip; import accepts only `saves/<game>/<state-NN.state|battery.srm>`,
+requires the game on the shelf, and skips anything that climbs.
+
+**The boundary that must not be broken.** `ark_storage.spool()` is still the only
+writer of `drop/files`; `ark_arcade_install.publish_candidate()` is the only
+writer of `games/`; `player_save_put()` is the only writer of `saves/`. The
+public nginx location **blanks** `X-ARK-Player-Origin`; only `:8445` sets it. A
+game page must never contain an `http://` or `https://` asset reference — that is
+what makes it work with the internet unplugged. Hiding a game is reversible and
+deletes nothing; there is no game-delete button on purpose.
+
+**Deliberate gaps, say them out loud:** no player password recovery, no
+per-player quota, no save trash, no owner reset/delete for a player name, no
+"check now" button (the weekly timer is the only check), no real hardware test of
+EmulatorJS, `:8445`, the live source, or the timer. Before release: deploy the
+branch with `--only 20-storage,30-calibre,60-portal,65-admin,70-network,95-backup`,
+then `--only 90-verify`; play a game on a phone with the internet unplugged, make
+a name, save/export/import, and watch the first weekly run.
 
 
 

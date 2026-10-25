@@ -1,0 +1,15 @@
+[Unit]
+Description=Project ARK — look for new openly licensed games once a week
+Documentation=http://ark.lan/help
+
+[Timer]
+# A quarter of an hour after boot, then every seven days.  Persistent means a
+# box that was off for a month catches up once, rather than hammering the source.
+OnBootSec=15min
+OnUnitActiveSec=7d
+RandomizedDelaySec=1h
+Persistent=true
+Unit=ark-arcade-discover.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,41 @@
+PROJECT ARK — ARK Arcade notices
+=================================
+
+This file is user-facing and lives beside the public games page at
+http://ark.lan/arcade/notices.txt
+
+What this page plays
+--------------------
+The games are free, openly licensed homebrew games that have been copied onto
+this box. They are not commercial titles, and nothing here is downloaded while
+you play. A game only appears in the list after its file has been checked and
+its licence recorded.
+
+The player
+----------
+The game player is EmulatorJS 4.2.3, a free program that runs old console games
+in a web browser. It is installed on this box; it does not contact the internet.
+The version, the file fingerprints and the full licence are in the player's own
+folder on the box, and this page is beside it.
+
+Games
+-----
+Each game keeps its own licence, written on the game's card. The three games
+that come with the box are:
+
+  Tobu Tobu Girl — MIT — https://github.com/SimonLarsen/tobutobugirl
+  2048 — Zlib — https://github.com/Sanqui/2048-gb
+  Carazu — GPL-3.0-or-later — https://github.com/mholtkamp/carazu
+
+Saves
+-----
+A guest's saves belong to this browser on this device. They are kept by the
+browser, and clearing the browser's site data removes them.
+A named player's saves are kept on this box under that name; signing in on a
+second device finds the same saves. Named player saves can be exported from
+the player's own page.
+
+Nothing leaves the box
+----------------------
+There are no accounts on the internet, no advertising, no tracking and no
+telemetry. The games page works with the internet unplugged.

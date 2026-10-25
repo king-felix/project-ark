@@ -1,0 +1,157 @@
+#!/usr/bin/env python3
+"""ark-arcade — put games on the shelf, and only games this box may keep.
+
+Run by the installer's first fill and by ``ark-arcade-discover.timer``.  This
+tool is deliberately the only thing besides the web app that writes into
+``/srv/ark/arcade/games``:
+
+* ``--seed`` installs the pinned first shelf (``catalog/seed.json``) once;
+* ``--discover`` asks the curated source what it has and records every answer;
+* ``--auto`` lets a discovery run install a few only when the owner switched
+  automatic installing on (``arcade_auto_install = 1``);
+* ``--install N`` installs one suggestion the owner allowed;
+* ``--refuse N`` puts one away without deleting anything.
+
+Every download is checked against the licence, the source allowlist, the size
+cap, its SHA-256 and the shape of the console it claims to be.  A failure leaves
+the shelf exactly as it was.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+API_DIR = Path(os.environ.get("ARK_API_DIR", "/srv/ark/api"))
+if not (API_DIR / "ark_arcade.py").is_file():
+    # Running from a checkout, before an install: the modules sit beside this file.
+    API_DIR = Path(__file__).resolve().parent.parent / "api"
+sys.path.insert(0, str(API_DIR))
+
+import ark_arcade as arc                    # noqa: E402
+import ark_arcade_install as install       # noqa: E402
+import ark_db                              # noqa: E402
+
+
+def _say(message: str) -> None:
+    print(message, flush=True)
+
+
+def _show(rows) -> None:
+    if not rows:
+        _say("No suggestions on this box yet. Run --discover when it has a connection.")
+        return
+    for row in rows:
+        _say(f'{row["id"]:>4}  {row["status"]:<9} {row["title"][:40]:<40} '
+             f'{row["system"]:<7} {row["license"][:24]}')
+        if row["reason"]:
+            _say(f'      {row["reason"]}')
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description="ARK Arcade's shelf keeper")
+    parser.add_argument("--seed", action="store_true", help="install the pinned first shelf")
+    parser.add_argument("--discover", action="store_true", help="ask the source what it has")
+    parser.add_argument("--auto", action="store_true", help="with --discover: install when switched on")
+    parser.add_argument("--install", type=int, metavar="ID", help="install one suggestion")
+    parser.add_argument("--refuse", type=int, metavar="ID", help="put one suggestion away")
+    parser.add_argument("--allow", type=int, metavar="ID", help="bring a refused suggestion back")
+    parser.add_argument("--list", action="store_true", help="list suggestions")
+    parser.add_argument("--status", action="store_true", help="what is on the shelf")
+    parser.add_argument("--dry-run", action="store_true", help="say what would happen, change nothing")
+    parser.add_argument("--json", action="store_true", help="machine-readable answer")
+    args = parser.parse_args(argv)
+
+    if not any((args.seed, args.discover, args.install, args.refuse, args.allow,
+                args.list, args.status)):
+        parser.print_help()
+        return 2
+
+    ark_db.migrate()
+    code = 0
+    with ark_db.read() as conn:
+        if args.status:
+            games = arc.all_games(conn)
+            if args.json:
+                _say(json.dumps({"games": games, "players": arc.player_count(conn),
+                                 "pending": arc.pending_candidates(conn),
+                                 "last_job": arc.last_job(conn)}, default=str))
+            else:
+                _say(f"{len(games)} game(s) on the shelf, {arc.player_count(conn)} player name(s), "
+                     f"{arc.pending_candidates(conn)} suggestion(s) waiting")
+                for game in games:
+                    _say(f'  {game["slug"]:<24} {game["system"]:<7} {game["title"][:48]}')
+                job = arc.last_job(conn)
+                if job:
+                    _say(f'  last check: {job["finished_at"] or job["started_at"]} — {job["detail"]}')
+
+        if args.seed:
+            result = install.install_seed(conn, dry_run=args.dry_run)
+            if args.json:
+                _say(json.dumps(result))
+            else:
+                _say(("Would install: " if args.dry_run else "Installed: ")
+                     + (", ".join(result["installed"]) or "nothing new"))
+                if result["skipped"]:
+                    _say("Already here: " + ", ".join(result["skipped"]))
+                for problem in result["errors"]:
+                    _say("Not done: " + problem)
+            code = 1 if result["errors"] else code
+
+        if args.discover:
+            result = install.sync_catalog(conn)
+            if args.json:
+                _say(json.dumps(result))
+            else:
+                _say(f'Looked for games: {result["detail"]}')
+                for problem in result["errors"]:
+                    _say("Lookup failed: " + problem)
+            if args.auto:
+                result = install.auto_install(conn)
+                if args.json:
+                    _say(json.dumps(result))
+                elif result.get("skipped"):
+                    _say("Automatic installing is off, so nothing was added.")
+                else:
+                    _say("Added: " + (", ".join(result["installed"]) or "nothing"))
+                    for problem in result["errors"]:
+                        _say("Not done: " + problem)
+
+        if args.install:
+            try:
+                if args.dry_run:
+                    row = install.candidate_row(conn, args.install)
+                    if not row:
+                        raise install.InstallRefused("That suggestion is not on this box.")
+                    ok, reason = install.eligibility(dict(row))
+                    _say(f'Would install {row["title"]}' if ok else f'Would refuse {row["title"]}: {reason}')
+                else:
+                    result = install.install_approved(conn, args.install)
+                    _say(json.dumps(result) if args.json
+                         else (f'Installed {result["slug"]} (revision {result["revision"]})'
+                               if result.get("installed")
+                               else f'{result["slug"]} was already on the shelf'))
+            except (install.InstallRefused, OSError) as exc:
+                _say("Not done: " + str(exc))
+                code = 1
+
+        if args.refuse or args.allow:
+            target = args.refuse or args.allow
+            status = "refused" if args.refuse else "pending"
+            if install.set_candidate_status(conn, int(target), status):
+                _say(f"Suggestion {target} is now {status}.")
+            else:
+                _say(f"Suggestion {target} was not there, or is already installed.")
+                code = 1
+
+        if args.list:
+            _show(install.candidate_rows(conn))
+
+    return code
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

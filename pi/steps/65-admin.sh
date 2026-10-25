@@ -15,6 +15,7 @@ ark_step "PHASE 6b — administrator access"
 
 API_DIR="$ARK_ROOT/api"
 ADMIN_SITE=/etc/nginx/sites-available/ark-admin
+PLAYER_SITE=/etc/nginx/sites-available/ark-players
 
 # ---- code -------------------------------------------------------------------
 for f in ark_db.py ark_security.py ark_admin.py ark_recover.py; do
@@ -35,13 +36,15 @@ ARK_SRC="$ARK_SRC" /usr/local/sbin/ark-tls-cert | sed 's/^/   /'
 # ---- nginx ------------------------------------------------------------------
 ark_copy "$ARK_SRC/nginx/ark-admin.conf" "$ADMIN_SITE" 644 root:root
 ln -sfn "$ADMIN_SITE" /etc/nginx/sites-enabled/ark-admin
+ark_copy "$ARK_SRC/nginx/ark-players.conf" "$PLAYER_SITE" 644 root:root
+ln -sfn "$PLAYER_SITE" /etc/nginx/sites-enabled/ark-players
 
 if ! nginx -t >/dev/null 2>&1; then
   nginx -t || true
-  ark_die "nginx rejected the administrator configuration above — nothing was restarted"
+  ark_die "nginx rejected the administrator/player configuration above — nothing was restarted"
 fi
 ark_service_up nginx.service 20
-ark_ok "nginx reloaded with the HTTPS management listener"
+ark_ok "nginx reloaded with the HTTPS management and player listeners"
 
 # ---- prove the doors --------------------------------------------------------
 say() { printf '   %s %-46s %s\n' "$1" "$2" "$3"; }
@@ -92,6 +95,36 @@ if curl -s -o /dev/null --max-time 5 http://127.0.0.1:8443/admin 2>/dev/null; th
   ark_die "port 8443 answered plain HTTP — it must be TLS only"
 fi
 say "$(printf '\033[1;32m✓\033[0m')" "port 8443 refuses plain HTTP" "closed"
+
+# ---- the player's origin ----------------------------------------------------
+code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 20 \
+        https://127.0.0.1:8445/arcade/player -H 'Host: ark.lan' || true)"
+case "$code" in
+  200) say "$(printf '\033[1;32m✓\033[0m')" "player origin :8445 answers" "$code" ;;
+  *)   ark_die "https://127.0.0.1:8445/arcade/player returned '$code'" ;;
+esac
+
+code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 10 \
+        https://127.0.0.1:8445/admin -H 'Host: ark.lan' || true)"
+[[ "$code" == "404" ]] || ark_die "the player origin served /admin with HTTP $code"
+say "$(printf '\033[1;32m✓\033[0m')" "player origin hides /admin" "$code"
+
+if curl -s -o /dev/null --max-time 5 http://127.0.0.1:8445/arcade/ 2>/dev/null; then
+  ark_die "port 8445 answered plain HTTP — it must be TLS only"
+fi
+say "$(printf '\033[1;32m✓\033[0m')" "port 8445 refuses plain HTTP" "closed"
+
+# The public portal must send a named player to the secure origin, and a header
+# invented by a visitor must not make the public proxy pretend to be it.
+public_player="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+  -H 'X-ARK-Player-Origin: 1' http://127.0.0.1/arcade/player || true)"
+[[ "$public_player" == "307" ]] \
+  || ark_die "public /arcade/player returned '$public_player' (expected a 307 to :8445)"
+say "$(printf '\033[1;32m✓\033[0m')" "public shelf sends names to :8445" "$public_player"
+
+public_shelf="$(ark_http_code http://127.0.0.1/arcade/)"
+[[ "$public_shelf" == "200" ]] || ark_die "public /arcade/ returned HTTP $public_shelf"
+say "$(printf '\033[1;32m✓\033[0m')" "public shelf answers for guests" "$public_shelf"
 
 printf '   %s fingerprint: %s\n' "→" "$(/usr/local/sbin/ark-tls-cert --show)"
 ark_ok "phase 6b complete — sign in at https://ark.lan:8443/admin"

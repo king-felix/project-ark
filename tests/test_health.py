@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import http.server
 import json
+import shutil
 import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
@@ -317,6 +318,67 @@ def test_the_owner_page_says_where_the_room_went(client, ark):
     assert "Measured:" in page.text
     for jargon in ("Kiwix", "ZIM", "systemd", "Calibre"):
         assert jargon not in page.text, jargon
-
     assert "/admin/health" in page.text
     assert "What is working" in page.text
+
+
+# ---------------------------------------------------------------------------
+#  is there a copy that could put the records back?
+# ---------------------------------------------------------------------------
+def _copy_into(root, *, hours_ago: float, messages: int = 12, shared: int = 4):
+    """A finished copy, written the way ark-backup writes one."""
+    stamp = (datetime.now(timezone.utc) - timedelta(hours=hours_ago))
+    bundle = root / "backup" / f"ark-backup-{stamp.strftime('%Y%m%d-%H%M%S')}"
+    bundle.mkdir(parents=True)
+    (bundle / "manifest.json").write_text(json.dumps({
+        "format": 1, "created": stamp.isoformat(timespec="seconds"),
+        "counts": {"messages": messages, "shared_files": shared},
+    }), encoding="utf-8")
+    return bundle
+
+
+def test_a_box_that_has_never_been_copied_says_so(ark):
+    import ark_health
+
+    report = ark_health.report()
+    section = _section(report, "backup")
+    assert section["ready"] is False
+    assert section["content"] is False          # nothing to copy yet, not broken
+    assert "No copy" in section["reason"]
+    assert "ark-backup" in section["action"]
+    # A missing copy must never make the box look unreadable.
+    assert _section(report, "backup")["label"] not in report["blocking"]
+
+
+def test_a_copy_is_reported_with_its_age_and_what_it_holds(ark):
+    import ark_health
+
+    _copy_into(ark.root, hours_ago=3)
+    section = _section(ark_health.report(), "backup")
+    assert section["ready"] is True
+    assert section["facts"]["copies"] == 1
+    assert "3 hours ago" in section["reason"]
+    assert "12 messages" in section["reason"]
+    assert "4 shared files" in section["reason"]
+
+    # An old copy is not a failure of the box, but the owner must be told that
+    # everything since then lives on one card.
+    for stale in (ark.root / "backup").glob("ark-backup-*"):
+        shutil.rmtree(stale)
+    _copy_into(ark.root, hours_ago=24 * 9)
+    late = _section(ark_health.report(), "backup")
+    assert late["ready"] is False
+    assert "9 days ago" in late["reason"]
+    assert "nowhere else" in late["reason"]
+    assert late["action"]
+
+
+def test_a_half_written_copy_is_not_counted_as_one(ark):
+    import ark_health
+
+    left = ark.root / "backup" / "ark-backup-20200101-000000.partial"
+    left.mkdir(parents=True)
+    (left / "database").mkdir()
+    (left / "database" / "ark.db").write_bytes(b"half")
+    assert ark_health.copies() == []
+    assert _section(ark_health.report(), "backup")["ready"] is False

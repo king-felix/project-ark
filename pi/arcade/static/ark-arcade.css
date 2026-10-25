@@ -1,0 +1,68 @@
+/* PROJECT ARK — the game shelf.
+   OLED dark, phone first, zero JavaScript required to read the list.
+   The player takes the whole screen; the page around it stays out of the way. */
+
+.arcade-wrap { max-width: 54rem; margin: 0 auto; padding: 0 0.9rem 3rem; }
+.arcade-wrap h1 { font-size: 1.7rem; margin: 0.7rem 0 0.2rem; }
+.arcade-lede { color: #c9c9c9; font-size: 1.05rem; line-height: 1.5; margin: 0 0 1rem; }
+.arcade-note { color: #a9a9a9; font-size: 0.95rem; line-height: 1.45; margin: 0.7rem 0; }
+.arcade-note a { color: #8fd3ff; }
+.arcade-badge { display: inline-block; background: #1c1c1c; border: 1px solid #3a3a3a;
+  border-radius: 999px; padding: 0.15rem 0.6rem; font-size: 0.82rem; color: #d8d8d8;
+  margin: 0 0.35rem 0.35rem 0; }
+.arcade-flash { background: #241b00; border: 1px solid #6b5300; color: #ffe9a8;
+  border-radius: 0.5rem; padding: 0.7rem 0.9rem; margin: 0.8rem 0; }
+.arcade-flash.bad { background: #2a0c0c; border-color: #7a2222; color: #ffd6d6; }
+.arcade-grid { list-style: none; padding: 0; margin: 1rem 0; display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); gap: 0.9rem; }
+.arcade-card { background: #0e0e0e; border: 1px solid #2d2d2d; border-radius: 0.8rem;
+  padding: 0.9rem; display: flex; flex-direction: column; gap: 0.5rem; }
+.arcade-card h2 { font-size: 1.12rem; margin: 0; line-height: 1.3; }
+.arcade-card p { margin: 0; color: #bdbdbd; font-size: 0.94rem; line-height: 1.4; }
+.arcade-card .arcade-facts { color: #8f8f8f; font-size: 0.84rem; }
+.arcade-facts { color: #8f8f8f; font-size: 0.9rem; }
+.arcade-card .arcade-play { margin-top: auto; }
+.arcade-empty { border: 1px dashed #3a3a3a; border-radius: 0.8rem; padding: 1.2rem;
+  color: #cfcfcf; }
+.arcade-empty h2 { margin-top: 0; font-size: 1.15rem; }
+.arcade-cmd { background: #111; border: 1px solid #333; border-radius: 0.4rem;
+  padding: 0.45rem 0.6rem; overflow-x: auto; font-size: 0.9rem; }
+
+.ark-btn, .arcade-play a, .arcade-wrap button {
+  display: inline-block; min-height: 44px; line-height: 1.2; padding: 0.7rem 1rem;
+  border-radius: 0.55rem; border: 1px solid #4a6b8a; background: #12212e;
+  color: #e8f4ff; font-size: 1rem; text-decoration: none; cursor: pointer;
+}
+.ark-btn:hover, .arcade-play a:hover, .arcade-wrap button:hover { background: #1a3245; }
+.ark-btn.small, .arcade-wrap button.small { min-height: 38px; padding: 0.45rem 0.7rem;
+  font-size: 0.92rem; }
+.arcade-danger { border-color: #7a2b2b; background: #2a1010; color: #ffe0e0; }
+
+.arcade-form { display: grid; gap: 0.7rem; max-width: 26rem; margin: 1rem 0; }
+.arcade-form label { display: grid; gap: 0.3rem; font-size: 0.95rem; color: #d7d7d7; }
+.arcade-form input { min-height: 44px; font-size: 16px; padding: 0.55rem 0.65rem;
+  border-radius: 0.45rem; border: 1px solid #3d3d3d; background: #0b0b0b; color: #f2f2f2; }
+.arcade-table { width: 100%; border-collapse: collapse; font-size: 0.94rem; }
+.arcade-table th, .arcade-table td { text-align: left; padding: 0.5rem 0.35rem;
+  border-bottom: 1px solid #2b2b2b; vertical-align: top; }
+.arcade-table th { color: #a9a9a9; font-weight: 600; }
+
+/* The player.  16:9-ish on a phone, never taller than the screen. */
+#arcade-stage { background: #000; border: 1px solid #2c2c2c; border-radius: 0.6rem;
+  overflow: hidden; margin: 0.8rem 0; }
+#arcade-stage .ejs-root, #arcade-stage canvas { width: 100% !important; }
+.arcade-controls { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center;
+  margin: 0.6rem 0; }
+.arcade-status { color: #bdbdbd; font-size: 0.92rem; min-height: 1.4em; }
+.arcade-status.bad { color: #ffb4b4; }
+.arcade-saves { margin-top: 1.2rem; }
+.arcade-saves h2 { font-size: 1.2rem; }
+
+@media (max-width: 30rem) {
+  .arcade-wrap { padding: 0 0.7rem 2.5rem; }
+  .arcade-wrap h1 { font-size: 1.45rem; }
+  .arcade-grid { grid-template-columns: 1fr; }
+}
+@media (prefers-reduced-motion: reduce) {
+  * { scroll-behavior: auto !important; transition: none !important; }
+}

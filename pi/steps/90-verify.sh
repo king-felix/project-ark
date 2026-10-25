@@ -25,8 +25,8 @@ say_soft() { printf '   \033[1;33m·\033[0m %-40s %s\n' "$1" "$2"; }
 # ark-kiwix only runs once at least one collection has arrived, so it is checked
 # softly: an empty library is a normal state on a metered connection, not a bug.
 for u in nginx.service ark-api.service ark-zim-downloader.service ark-boot-guard.service \
-         ark-net-watch.timer ark-book-import.path ssh.service NetworkManager.service \
-         avahi-daemon.service; do
+         ark-net-watch.timer ark-book-import.path ark-arcade-discover.timer ssh.service \
+         NetworkManager.service avahi-daemon.service; do
   en="$(systemctl is-enabled "$u" 2>/dev/null || true)"
   ac="$(systemctl is-active  "$u" 2>/dev/null || true)"
   if [[ "$en" == "enabled" && ( "$ac" == "active" || "$ac" == "waiting" ) ]]; then
@@ -66,6 +66,9 @@ check_page "/assets/ark.css"      "stylesheet"
 check_page "/search?q=water"      "one search box"
 check_page "/board"               "message board"
 check_page "/files"               "file box"
+check_page "/arcade/"             "games shelf"
+check_page "/arcade/static/ark-arcade.css" "game shelf stylesheet"
+check_page "/arcade/emulator/loader.js"    "game player"
 check_page "/api/status"          "live status"
 check_page "/vault/"              "manuals index"
 check_page "/vault/quick-card.html" "printable cards"
@@ -135,6 +138,13 @@ case "$community_code" in
   *)           say_bad "Community page behind the sign-in" "HTTP ${community_code:-none}" ;;
 esac
 
+games_admin_code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 15 \
+                   https://127.0.0.1:8443/admin/arcade -H 'Host: ark.lan' 2>/dev/null || true)"
+case "$games_admin_code" in
+  200|303|403) say_ok "Games page behind the sign-in" "HTTP $games_admin_code" ;;
+  *)           say_bad "Games page behind the sign-in" "HTTP ${games_admin_code:-none}" ;;
+esac
+
 if [[ -d "$ARK_ROOT/drop/files" && -d "$ARK_ROOT/drop/tmp" ]]; then
   say_ok "File Box folders" "drop/files + drop/tmp, $(find "$ARK_ROOT/drop/files" -maxdepth 1 -type f | wc -l) shared file(s)"
 else
@@ -200,8 +210,72 @@ lib_titles="${lib_titles:-0}"
 books="$( [[ -s "$ARK_ROOT/calibre-library/metadata.db" ]] && sqlite3 -readonly "$ARK_ROOT/calibre-library/metadata.db" 'SELECT COUNT(*) FROM books;' 2>/dev/null || echo 0)"
 guides="$(find "$ARK_ROOT/vault" -name '*.html' ! -name 'index.html' | wc -l | tr -d ' ')"
 pdfs="$(find "$ARK_ROOT/vault/pdf" -name '*.pdf' 2>/dev/null | wc -l | tr -d ' ')"
+games="$(sqlite3 -readonly "$ARK_ROOT/api/data/ark.db" \
+  'SELECT COUNT(*) FROM games WHERE published = 1 AND hidden = 0;' 2>/dev/null || echo 0)"
+player_names="$(sqlite3 -readonly "$ARK_ROOT/api/data/ark.db" \
+  'SELECT COUNT(*) FROM players;' 2>/dev/null || echo 0)"
+player_saves="$(sqlite3 -readonly "$ARK_ROOT/api/data/ark.db" \
+  'SELECT COUNT(*) FROM player_saves;' 2>/dev/null || echo 0)"
 printf '   %s collections: %s file(s), %s GiB · %s title(s) indexed\n' "→" "$zim_count" "$zim_gib" "$lib_titles"
 printf '   %s books: %s · guides: %s page(s), %s printable\n' "→" "$books" "$guides" "$pdfs"
+printf '   %s games: %s on the shelf · %s player name(s), %s save(s)\n' "→" "$games" "$player_names" "$player_saves"
+
+# The player's name/save origin is TLS-only and separate from the management one.
+player_code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 15 \
+  https://127.0.0.1:8445/arcade/player -H 'Host: ark.lan' 2>/dev/null || true)"
+if [[ "$player_code" == "200" ]]; then
+  say_ok "player sign-in origin" "https://ark.lan:8445 answers"
+else
+  say_bad "player sign-in origin" "HTTP ${player_code:-none} (expected 200; run phase 65-admin)"
+fi
+
+arcade_last="$(sqlite3 -readonly "$ARK_ROOT/api/data/ark.db" \
+  "SELECT started_at || ' · ' || detail FROM acquisition_jobs ORDER BY id DESC LIMIT 1;" \
+  2>/dev/null || true)"
+if [[ -n "$arcade_last" ]]; then
+  say_soft "last game check" "${arcade_last:0:100}"
+else
+  say_soft "last game check" "none yet — the first is 15 minutes after boot"
+fi
+
+# ---- the copy that makes a dead card survivable ------------------------------
+# Nothing here is visitor-facing, so a missing or stale copy is reported softly:
+# it is not a reason to call the box broken while somebody is reading it.
+if [[ -x /usr/local/sbin/ark-backup && -x /usr/local/sbin/ark-restore ]]; then
+  say_ok "backup tools" "ark-backup + ark-restore installed"
+else
+  say_soft "backup tools" "not installed — run phase 95-backup"
+fi
+backup_copies="$(find "$ARK_ROOT/backup" -mindepth 1 -maxdepth 1 -type d \
+                   -name 'ark-backup-*' ! -name '*.partial' 2>/dev/null | wc -l | tr -d ' ')"
+backup_newest="" ; backup_made="" ; backup_age_h=""
+if [[ "${backup_copies:-0}" == "0" ]]; then
+  say_soft "latest copy" "none yet — sudo ark-backup --to $ARK_ROOT/backup"
+else
+  backup_newest="$(ls -dt "$ARK_ROOT"/backup/ark-backup-*/ 2>/dev/null | head -n 1)"
+  backup_newest="${backup_newest%/}"
+  backup_made="$(sed -n 's/.*"created": "\([^"]*\)".*/\1/p' \
+                   "$backup_newest/manifest.json" 2>/dev/null | head -n 1)"
+  if [[ -n "$backup_made" ]]; then
+    made_s="$(date -d "$backup_made" +%s 2>/dev/null || true)"
+    if [[ -n "$made_s" ]]; then
+      backup_age_h="$(( ( $(date +%s) - made_s ) / 3600 ))"
+    fi
+  fi
+  if [[ -z "${backup_age_h:-}" ]]; then
+    say_soft "latest copy" "$(basename "$backup_newest") (age not readable)"
+  elif (( backup_age_h > 168 )); then
+    say_soft "latest copy" "$(basename "$backup_newest") — $(( backup_age_h / 24 )) days old"
+  else
+    say_ok "latest copy" "$(basename "$backup_newest") — ${backup_age_h}h old"
+  fi
+  say_soft "copies kept" "$backup_copies in $ARK_ROOT/backup"
+fi
+if [[ -f "$ARK_ROOT/RECOVERY-SHEET.txt" ]]; then
+  say_ok "recovery sheet" "printed copy at $ARK_ROOT/RECOVERY-SHEET.txt"
+else
+  say_soft "recovery sheet" "missing — run phase 95-backup, then print it"
+fi
 
 # ---- receipt for the Mac ------------------------------------------------------
 ready_line="$(printf '%s' "${ready_json:-}" | python3 -c 'import json,sys; r=json.load(sys.stdin); print(json.dumps({"ok": r.get("ok"), "blocking": r.get("blocking") or [], "checked": r.get("checked")}))' 2>/dev/null || true)"
@@ -218,8 +292,11 @@ cat > "$tmp" <<JSON
   "collections": {"files": ${zim_count:-0}, "gib": ${zim_gib:-0}, "indexed": ${lib_titles:-0}},
   "books": ${books:-0},
   "guides": {"pages": ${guides:-0}, "pdfs": ${pdfs:-0}},
+  "arcade": {"games": ${games:-0}, "players": ${player_names:-0}, "saves": ${player_saves:-0},
+             "player_origin": "${player_code:-none}"},
   "free_gib": ${free_gib:-0},
   "free_pct_used": "$root_use",
+  "backup": {"copies": ${backup_copies:-0}, "newest": "$backup_newest", "made": "$backup_made"},
   "addresses": ["http://ark.lan", "http://ark.local", "http://${HOTSPOT_ADDRESS:-10.42.0.1}"]
 }
 JSON

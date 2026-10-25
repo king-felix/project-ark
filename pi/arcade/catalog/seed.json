@@ -1,0 +1,51 @@
+{
+  "format": 1,
+  "note": "The first shelf a new ARK gets. Every file here is a homebrew game whose own entry states a licence that allows copying it. Hash and licence were read from the source on 2026-10-24; the box proves the hash before publishing.",
+  "entries": [
+    {
+      "id": "tobutobugirl",
+      "title": "Tobu Tobu Girl",
+      "system": "gb",
+      "core": "gambatte",
+      "filename": "tobu.gb",
+      "size": 262144,
+      "sha256": "5d3871cae77db2287807e8914fd21f76203e73aa3fec20955489d45cb4571d8f",
+      "license": "MIT",
+      "license_evidence": "Homebrew Hub entry tobutobugirl: license MIT; repository https://github.com/SimonLarsen/tobutobugirl",
+      "author": "Tangram Games",
+      "homepage": "https://github.com/SimonLarsen/tobutobugirl",
+      "description": "A small girl bounces through the sky. One button, short runs, easy to pick up.",
+      "download_url": "https://raw.githubusercontent.com/gbdev/database/master/entries/tobutobugirl/tobu.gb"
+    },
+    {
+      "id": "2048gb",
+      "title": "2048",
+      "system": "gb",
+      "core": "gambatte",
+      "filename": "2048.gb",
+      "size": 32768,
+      "sha256": "3ea2376b15b34bd26b10e6b31d2753bf8b086098dbdb5ee84d9c0f03d66d3d7f",
+      "license": "Zlib",
+      "license_evidence": "Homebrew Hub entry 2048gb: license Zlib; repository https://github.com/Sanqui/2048-gb",
+      "author": "Sanqui",
+      "homepage": "https://github.com/Sanqui/2048-gb",
+      "description": "Slide the numbered tiles and make a 2048. A quiet puzzle for a coffee break.",
+      "download_url": "https://raw.githubusercontent.com/gbdev/database/master/entries/2048gb/2048.gb"
+    },
+    {
+      "id": "carazu",
+      "title": "Carazu",
+      "system": "gb",
+      "core": "gambatte",
+      "filename": "carazu.gb",
+      "size": 262144,
+      "sha256": "eef9dea9ecba15be7b21f3495e8c8bad937a0b2245cac09eec8baf61dfc91fb5",
+      "license": "GPL-3.0-or-later",
+      "license_evidence": "Homebrew Hub entry carazu: license GPL-3.0-or-later; repository https://github.com/mholtkamp/carazu",
+      "author": "Martin Holtkamp",
+      "homepage": "https://github.com/mholtkamp/carazu",
+      "description": "A little platform game. Jump, climb and find the way through.",
+      "download_url": "https://raw.githubusercontent.com/gbdev/database/master/entries/carazu/carazu.gb"
+    }
+  ]
+}
