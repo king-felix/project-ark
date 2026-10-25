@@ -41,7 +41,15 @@ import ark_db                              # noqa: E402
 
 
 def _say(message: str) -> None:
-    print(message, flush=True)
+    """Print, and treat a closed pipe as a finished job.
+
+    ``ark-arcade --status | head`` is a normal thing to type; without this the
+    command ends with a BrokenPipeError traceback that looks like a fault.
+    """
+    try:
+        print(message, flush=True)
+    except BrokenPipeError:
+        raise SystemExit(0) from None
 
 
 def _show(rows) -> None:

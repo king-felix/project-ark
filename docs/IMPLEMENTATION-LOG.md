@@ -1378,6 +1378,7 @@ costume.
 | `ark-mode status` | mode `home`, *at boot: hotspot (BOOT_MODE)* |
 | `ark-mode boot --dry-run` | *"boot would broadcast \"The-Ark-Offline\" and stay there (BOOT_MODE=hotspot)"*, nothing changed |
 | free space | **121.5 GiB** (root filesystem 45% used; card is 229 GB) |
+| `ark-arcade --discover` re-run | **45 offered, 0 refused, 0 need a look** (was 0 offered, 40 refused, 4 need a look) — the stored refusals were re-evaluated under today's rules, so the owner page no longer quotes a rule that was deleted |
 
 **Not proven.** No game has been **played** on the Pi — EmulatorJS has not run on that
 hardware, no phone has signed in, no save has been kept. The carried-file path is proved

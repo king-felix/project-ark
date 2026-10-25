@@ -490,6 +490,9 @@ Two page-size facts, so nobody documents them wrongly again:
   (*"record removed; the file was already gone"*); that is what returned the box from 503 to 200.
 * `ark-mode boot --dry-run` on the box: *"boot would broadcast \\"The-Ark-Offline\\" and stay
   there (BOOT_MODE=hotspot)"*, with nothing changed. **No reboot was performed.**
+* The weekly check was re-run under the new rules: **45 suggestions offered, 0 refused,
+  0 need a look** (was *0 offered, 40 refused, 4 need a look*), so the owner's Games page no
+  longer shows refusal reasons written by the retired licence rule.
 
 **Still unproven after that work:** a game has never been **played** on the Pi (EmulatorJS
 on that hardware, a phone sign-in, a save kept), the 23 files were fetched from the box's own
