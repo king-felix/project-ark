@@ -33,7 +33,7 @@ and what the next executable step is.
 | 13 | Essentials pack, QR, accessibility, household page | not started |
 | — | ARK Arcade | **delivered and tested** — public shelf, guest play, optional named-player saves on the TLS `:8445` origin, owner **Games** page, licence/allowlist/hash gate, weekly discovery, and saves carried by a backup (§12); since 25 Oct a game can also be named from the file itself against an offline catalogue, and added from the owner's page (§19) |
 | 14 | Sequence | stages 1–6, ARK Arcade, R3 and the name-from-contents work (§19) **deployed 25 Oct 2026** (§15, and §19 for the v4 → v5 deploy); the phone walk-through is the next human step; stage 7 after it |
-| 15 | Acceptance tests | **298 tests**, all green (`pytest -q`); the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md` |
+| 15 | Acceptance tests | **299 tests**, all green (`pytest -q`); the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md` |
 
 ---
 
@@ -1806,9 +1806,24 @@ console `nes` already filled in → **Add this game** → redirected to the game
 *“cybercoaster” is on the shelf now* → exactly one file on the shelf, `arcade/tmp` empty → and the
 game then **played** (screenshot above).
 
-**Tests: 286 → 298.** New `tests/test_arcade_add.py` (9), one new player test in
+**Tests: 286 → 299.** New `tests/test_arcade_add.py` (10), one new player test in
 `tests/test_arcade.py`, and two in `tests/test_config.py` tying the 68 MB door to `MAX_DOWNLOAD`
 and keeping `/arcade/` at 20 MB.
+
+**What the live box found the moment the door was tried.** The first real upload through the
+proxy was `apotris.gba`, which is already on the shelf. It spooled correctly, the box said *“This
+looks like "Apotris" (Game Boy Advance).”*, and nothing was published — but confirming it under a
+**different** typed name answered *“… is already on the shelf”* about a game the visitor had never
+named. The confirm step checked the slug built from the **typed** name while the publisher derived
+the slug from the **recognised** one (`owner_candidate()` falls back to the prefill title), so the
+two disagreed: a second homebrew game with the same recognised title could never be added, and a
+rename was answered with the wrong sentence. Nothing on the shelf changed at any point. The
+confirm step now hands the typed slug to the publisher (`slug: wanted`), so the name a person
+types is the name on the shelf, the duplicate check and the pre-check agree, and the same bytes
+under another name are still refused **by their fingerprint** with the name they already have.
+New test: `test_arcade_add.py::test_the_name_the_person_types_is_the_name_on_the_shelf`. Proved
+again in Chromium: `apotris.gba` renamed to *Apotris Deluxe* → `/arcade/g/apotris-deluxe`, one
+file `apotris-deluxe.gba`, nothing waiting.
 
 **Still not proved, and said out loud:** no *person* has yet added a game from their own phone to
 the **live** shelf (the proofs above are a browser on the Mac against a local instance of this

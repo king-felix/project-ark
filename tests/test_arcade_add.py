@@ -194,6 +194,29 @@ def test_a_visitor_can_change_their_mind_and_nothing_is_kept(public):
 
 
 
+def test_the_name_the_person_types_is_the_name_on_the_shelf(public):
+    """The typed name decides the shelf, not the name the box recognised.
+
+    Found on the box: the confirm step checked one slug (from the typed name) and
+    the publisher derived another (from the recognised name), so a person who
+    renamed a game was told it was "already on the shelf" about a game they had
+    never added. Nothing was published — but the sentence was wrong, and a second
+    homebrew game with the same recognised title could never be added.
+    """
+    looked = _look(public, "prefill.gb", _gb_bytes(b"PREFILL"))
+    assert looked.status_code == 200
+    filled = re.search(r'name="title" value="([^"]*)"', looked.text).group(1)
+    assert filled, "the box should prefill a name"
+    added = _confirm(public, _token(looked.text), "prefill.gb", "My Own Name")
+    assert added.status_code == 303, added.text
+    assert added.headers["location"].startswith("/arcade/g/my-own-name"), added.headers
+    assert _shelf_files(public.ark) == ["my-own-name.gb"], _shelf_files(public.ark)
+    with public.ark.db.read() as conn:
+        game = conn.execute("SELECT * FROM games WHERE slug = 'my-own-name'").fetchone()
+    assert game is not None and game["title"] == "My Own Name"
+    assert "My Own Name" in public.client.get("/arcade/g/my-own-name").text
+
+
 # ---------------------------------------------------------------------------
 #  the owner's switch, and what closing it may not do
 # ---------------------------------------------------------------------------

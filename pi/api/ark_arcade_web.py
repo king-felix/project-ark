@@ -688,9 +688,9 @@ def add_confirm(request: Request, token: str = Form(""), filename: str = Form(""
             request, token, label, pre, filled,
             problem=(f'There is already a game called "{existing["title"]}" on this shelf. '
                      f'Choose another name for this one.'))
-    facts = {"slug": "", "title": title, "system": system, "license_text": license_text,
-             "release": release, "author": author, "description": description,
-             "filename": label}
+    facts = {"slug": wanted or "", "title": title, "system": system,
+             "license_text": license_text, "release": release, "author": author,
+             "description": description, "filename": label}
     try:
         with ark_db.tx() as conn:
             result = ark_arcade_install.import_owner_file(conn, spooled, **facts)
