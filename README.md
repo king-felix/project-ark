@@ -209,12 +209,14 @@ never an administrator account and no page in the arcade can reach `/admin`.
 ```
 
 A game the owner supplies goes through the same gate as a fetched one: bare ROM, its
-own SHA-256 recorded, a Game Boy/NES header and checksum checked, temp-written then
-published, and the shelf left untouched if anything fails. Giving it the same file
-again answers *"already on the shelf, unchanged"*; the same game under a second name is
-refused with the name it already has; a changed file under the same `--slug` becomes
-revision 2. There is no drop folder and no upload button for games — one console
-command is the way in, and `docs/ADMIN.md` §10 walks through it.
+own SHA-256 recorded, the file checked to be shaped like the console it claims (a Game
+Boy file by its header and checksum, a NES file by its magic bytes, any other console by
+its extension and a non-empty, sane size), temp-written then published, and the shelf left
+untouched if anything fails. Giving it the same file again answers *"already on the shelf,
+unchanged"*; the same game under a second name is refused with the name it already has; a
+changed file under the same `--slug` becomes revision 2. There is no drop folder and no
+upload button for games — one console command is the way in, and `docs/ADMIN.md` §10 walks
+through it.
 
 The weekly `ark-arcade-discover.timer` records what the curated community
 catalogues offer. Installation is off unless the owner switches it on in

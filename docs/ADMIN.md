@@ -405,7 +405,9 @@ plus the three repositories it points at, one per family of consoles: Game Boy a
 Game Boy Color in `gbdev/database`, Advance in `gbadev-org/games`, NES in
 `nesdev-org/homebrew-db`. Each console's download URL is rebuilt from a validated
 slug + filename against its own prefix, redirects are refused, the body is capped
-at 64 MB, and nothing is published until its SHA-256 and its console header agree.
+at 64 MB, and nothing is published until its SHA-256 and the shape of the file for
+that console agree — a Game Boy file by its own header and checksum, a NES file by
+its magic bytes, any other console by its extension and a non-empty, sane size.
 The first shelf is `pi/arcade/catalog/seed.json` — 23 pinned games with hashes
 recorded when they were fetched; a changed upstream file is refused rather than
 silently updated. A box with no internet can install that same list from files
