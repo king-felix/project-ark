@@ -889,7 +889,7 @@ re-reading it (`.clinerules` §8.9, move 5).
 
 ## 15. The branch is deployed to the box — 25 Oct 2026
 
-**`pytest` 240 passed (15 files) at that checkpoint — 286 at the tip.** Stages 2–6, ARK
+**`pytest` 240 passed (15 files) at that checkpoint — 299 at the tip.** Stages 2–6, ARK
 Arcade, the 25 Oct hardening pass and R3's book door now run on the Pi. This is the first
 time any of it has been on hardware; the section records what the box said, what that
 proved, the two defects the deploy found in its own probes, and what is still unproven.
@@ -1855,4 +1855,29 @@ this deploy therefore does **not** prove: a real new game arriving on the live s
 visitor's phone (the accepting path is proved locally and in Chromium, and refused-by-fingerprint
 is proved live), a **64 MB** file through the proxy (4 MB is what crossed), and a human's thumb.
 Those are the remaining gaps, and they are the same three the owner's walk-through covers.
+
+
+## 21. The paperwork caught up with the suite — 25 Oct 2026
+
+§20 added thirteen tests (286 → 299: ten in the new `tests/test_arcade_add.py`, the
+tap-before-start player test, and two doors for the game upload in `tests/test_config.py`), but
+four places still advertised **286**: `README.md` (the test block), `docs/ADMIN.md` §12,
+`docs/REQUIREMENTS-MATRIX.md` (its header, plus the add-a-game rows, which said *nine tests* when
+the tenth — the typed name decides — had already been written), and the digest in `.clinerules`.
+One line of §15 claimed "286 at the tip"; the tip is 299.
+
+The per-file counts in `.clinerules` §8.5 had drifted further, because they are only edited when
+somebody remembers: `test_config.py` said **3** and has **18**, `test_backup.py` said **17** and
+has **22**, `test_arcade.py` said **26** and has **34**. They are measured now, file by file, with
+`--collect-only`, and `test_arcade_add.py` (10) and `test_romdb.py` (15) have rows of their own so
+the next change to either has an obvious place to land.
+
+**Measured, this session:** `299 passed in 39.28s`; per file — accounts 14, arcade 34,
+arcade_add 10, arcade_install 36, auth 19, backup 22, board 15, config 18, db 7, health 26,
+import 7, network 29, public 7, romdb 15, search 8, storage 16, tls_probe 16 (17 files).
+
+**Nothing on the box changed.** This was a documentation correction only: no deploy, no restart,
+no schema, no code. The live box was read, not touched — `/api/ready` 200, `/arcade/` 200,
+`/arcade/add` 200.
+
 
