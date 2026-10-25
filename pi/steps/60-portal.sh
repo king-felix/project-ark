@@ -159,5 +159,30 @@ check "http://127.0.0.1/generate_204"     "captive-portal trigger"
 check "http://127.0.0.1/kiwix/"           "offline library" "503"
 check "http://127.0.0.1/books/"           "book shelf"      "503"
 
+# ---- prove the book shelf is a reading door --------------------------------
+# Calibre-Web's own management routes are enumerated from the installed
+# url_map (231 rules); the proxy answers 404 for them and GET/HEAD only for the
+# rest.  A reader never needs a password: anonymous browsing is on.
+must_be() { # <expected code> <method> <url> <what>
+  local want=$1 method=$2 url=$3 what=$4 code
+  if [[ "$method" == "GET" ]]; then code="$(ark_http_code "$url")"
+  else code="$(ark_http_code "$url" -X "$method")"; fi
+  if [[ "$code" == "$want" ]]; then
+    printf '   \033[1;32m✓\033[0m %-42s %s\n' "$what" "$code"
+  else
+    printf '   \033[1;33m!\033[0m %-42s %s (wanted %s)\n' "$what" "$code" "$want"
+    fail=1
+  fi
+}
+must_be 404 GET  "http://127.0.0.1/books/admin"          "books: management page refused"
+must_be 404 GET  "http://127.0.0.1/books/upload"         "books: add-a-book page refused"
+must_be 404 POST "http://127.0.0.1/books/upload"         "books: adding a book refused"
+must_be 404 POST "http://127.0.0.1/books/login"          "books: sign-in refused (nobody needs one)"
+must_be 404 GET  "http://127.0.0.1/books/ajax/listusers" "books: account list refused"
+must_be 404 POST "http://127.0.0.1/books/shelf/create"   "books: shelf change refused"
+must_be 403 POST "http://127.0.0.1/books/book/1"         "books: any other write refused"
+must_be 404 POST "http://127.0.0.1/books/delete/1"       "books: deleting a book refused"
+must_be 200 GET  "http://127.0.0.1/books/advsearch"      "books: advanced search still reads"
+
 (( fail == 0 )) || ark_warn "some pages did not answer 200 — see the column on the right"
 ark_ok "phase 6 complete — the portal is live at http://ark.lan"

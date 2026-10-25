@@ -128,13 +128,13 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 | | |
 |---|---|
 | Released baseline | tag **`v1.0.5`** = `main` = `dd3336c` (the published release; the live Pi runs this) |
-| Current work | branch **`feature/admin-hardening`**, pushed to `origin` (never force-push, never move a tag). The stage 3–6 + ARK Arcade code, the 25 Oct hardening pass (bootstrap password file, timing-safe sign-in, schema v4, restore quiesce, arcade preferences/language/review) and the docs are committed; **run `git status --short` and `git log -1` first**, never assume the tip from this digest |
+| Current work | branch **`feature/admin-hardening`**, pushed to `origin` (never force-push, never move a tag). The stage 3–6 + ARK Arcade code, the 25 Oct hardening pass (bootstrap password file, timing-safe sign-in, schema v4, restore quiesce, arcade preferences/language/review) and the docs are committed; **R3's book door** (`pi/nginx/ark.conf` + the transcribed route inventory in `tests/test_config.py`) is the newest checkpoint — see `docs/IMPLEMENTATION-LOG.md` §14. **Run `git status --short` and `git log -1` first**, never assume the tip from this digest |
 | Stage 3 | shipped in **`a1e5efa`**: `ark_storage.py`, schema v2, board moderation + Community page, sha256 import ledger, bounded search, docs, 84 tests |
 | Stage 4 | shipped in **`58d504b`**: `ark_health.py` (one place decides readiness, with reasons), `/api/ready` (200/503), `/admin/health` ("What is working"), `/api/health` demoted to liveness, measured download progress; tests in `tests/test_health.py` (13) — **97 tests total** |
 | Stage 5 | `ark-net-watch` + `ark-net-watch.timer` (network-loss failover after boot), `ark-mode` pins (`home`/`hotspot` pin, `auto` unpins), phase `70-network` installs/enables/proves it, `90-verify` checks the timer + pin + last decision; measured storage breakdown on **What is working** and in `/api/status`; `tests/test_network.py` (28) + 3 in `tests/test_health.py` — **128 tests total** |
-| Stage 6 | `ark-backup` + `ark-restore` + `ark_bundle.py` (one dated bundle: records via SQLite `.backup`, shared files, import list, sha256 manifest; `.partial` → rename; verify-before-restore; never overwrites a shared file), `pi/RECOVERY-SHEET.txt` (also `docs/RECOVERY-SHEET.txt`, `/srv/ark/RECOVERY-SHEET.txt`, `http://ark.lan/recovery.txt`), phase `95-backup`, **Latest copy** row in `ark_health`/`/api/status` + `90-verify` report; `tests/test_backup.py` (13 at that checkpoint; 14 at the tip, after the arcade save case) + 3 in `tests/test_health.py` — **144 tests at that checkpoint, 174 at the ARK Arcade checkpoint, 231 now** |
-| ARK Arcade | `pi/arcade/` (EmulatorJS 4.2.3 vendored, seed list, styles/templates), `ark_arcade.py`, `ark_arcade_install.py`, `ark_arcade_web.py`, schema v3 tables plus **v4** (`player_game_prefs`, language/rights/provenance/notices evidence on games and candidates), `pi/bin/ark-arcade`, `ark-arcade-discover.timer`, `:8445` player origin, owner **Games** page; named players' saves travel in a backup, favourites/autosave/last-played travel with the name; `tests/test_arcade.py` (25) + `tests/test_arcade_install.py` (29) + 1 in `tests/test_backup.py` — **174 at the first checkpoint; 231 now** |
-| 25 Oct hardening | Bootstrap password is generated into `/srv/ark/api/data/bootstrap-password` (0600) instead of a public literal (`ARK_BOOTSTRAP_PASSWORD` is only the test hook); sign-in and recovery do constant work for an unknown name; restore quiesces every writer and can restore a card in a reader with `--no-service`; owner-file arcade import requires language/rights evidence; schema v4 preferences; `test_tls_probe.py` keeps the installer's plain-HTTP verdict honest. **231 tests** |
+| Stage 6 | `ark-backup` + `ark-restore` + `ark_bundle.py` (one dated bundle: records via SQLite `.backup`, shared files, import list, sha256 manifest; `.partial` → rename; verify-before-restore; never overwrites a shared file), `pi/RECOVERY-SHEET.txt` (also `docs/RECOVERY-SHEET.txt`, `/srv/ark/RECOVERY-SHEET.txt`, `http://ark.lan/recovery.txt`), phase `95-backup`, **Latest copy** row in `ark_health`/`/api/status` + `90-verify` report; `tests/test_backup.py` (13 at that checkpoint; 14 at the tip, after the arcade save case) + 3 in `tests/test_health.py` — **144 tests at that checkpoint, 174 at the ARK Arcade checkpoint, 237 now** |
+| ARK Arcade | `pi/arcade/` (EmulatorJS 4.2.3 vendored, seed list, styles/templates), `ark_arcade.py`, `ark_arcade_install.py`, `ark_arcade_web.py`, schema v3 tables plus **v4** (`player_game_prefs`, language/rights/provenance/notices evidence on games and candidates), `pi/bin/ark-arcade`, `ark-arcade-discover.timer`, `:8445` player origin, owner **Games** page; named players' saves travel in a backup, favourites/autosave/last-played travel with the name; `tests/test_arcade.py` (25) + `tests/test_arcade_install.py` (29) + 1 in `tests/test_backup.py` — **174 at the first checkpoint; 237 now** |
+| 25 Oct hardening | Bootstrap password is generated into `/srv/ark/api/data/bootstrap-password` (0600) instead of a public literal (`ARK_BOOTSTRAP_PASSWORD` is only the test hook); sign-in and recovery do constant work for an unknown name; restore quiesces every writer and can restore a card in a reader with `--no-service`; owner-file arcade import requires language/rights evidence; schema v4 preferences; `test_tls_probe.py` keeps the installer's plain-HTTP verdict honest. **237 tests** |
 | Deployment | **code/config only — stages 2, 3, 4, 5, 6, ARK Arcade and the 25 Oct hardening are NOT deployed**, no hardware or browser test has been done |
 | Release | stages 2–6 and ARK Arcade are **unreleased**; the next tag comes only after a deploy plus a hardware walk-through |
 | Owner decisions pending | rotate the GitHub password; rotate the Pi password; licence choice |
@@ -166,7 +166,7 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 | `pi/nginx/ark.conf` | public `:80`; `location ^~ /admin { return 404; }` |
 | `pi/steps/65-admin.sh` | installs the above and proves each door (404 / 403 / TLS-only, Community and Games behind the sign-in, `:8445` player origin) |
 | `pi/steps/90-verify.sh` | read-only health report: every page, every listener, the admin door, the game shelf and player origin, the File Box folders, free space, the network timer + pin + last watchdog decision, the backup tools + newest copy and its age (soft) + the recovery sheet |
-| `tests/` | 231 pytest tests, throwaway paths and databases, no Pi needed |
+| `tests/` | 237 pytest tests, throwaway paths and databases, no Pi needed |
 
 ### 8.2 Ports and who may reach them
 
@@ -207,7 +207,7 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 ```bash
 # tests (Mac, throwaway DBs, never the live library)
 python3 -m venv .venv && .venv/bin/pip install -r tests/requirements.txt
-.venv/bin/python -m pytest -o addopts='--strict-markers' -q    # prints "231 passed"
+.venv/bin/python -m pytest -o addopts='--strict-markers' -q    # prints "237 passed"
 # `pytest.ini` already passes -q, so a second -q hides the summary line
 
 # the honest answer, on the box or from the Mac
@@ -296,6 +296,14 @@ Fixed on `feature/admin-hardening` (each one now has a test that fails without t
   asset), player pages live on the separate `:8445` origin, the public `:80` location blanks
   `X-ARK-Player-Origin`, player tables/cookie cannot reach `/admin`, and a stored game filename
   that is not a bare name is refused by `rom_path`, `_check_game` and the ROM route.
+* **The book shelf was a management console** (R3, `docs/REQUIREMENTS-MATRIX.md`) — `/books` was
+  proxied wholesale, so Calibre-Web's admin, account, upload and delete routes were reachable from
+  the portal. `pi/nginx/ark.conf` now has two doors on `/books`: a 404 for every management and
+  account route (named from the installed 0.6.27 `url_map`, 231 rules) and `limit_except GET`
+  for the rest. Reading, search, OPDS, covers and downloads are untouched; the importer is
+  unaffected because it talks to `127.0.0.1:8083` directly. `tests/test_config.py` compiles the
+  shipped regex and runs it against the transcribed inventory in both directions. **Proved on
+  the box** on a throwaway `:18080` listener (log §14); the live site still runs the old proxy.
 
 **Still open, and they are deliberate limits, not oversights:**
 
@@ -377,7 +385,7 @@ Two page-size facts, so nobody documents them wrongly again:
 * **`ark_admin` needs `ensure_initialised()`** (the real app does it at import); a bare router mount on an empty directory raises `no such table: admins`.
 * **macOS Python 3.9 links LibreSSL**, so stdlib `hashlib.scrypt` is absent — `cryptography` is the fallback. The Pi vector pinned in `tests/test_db.py` proves the two agree.
 * Reading must survive a broken admin store: the `CRYPTO_ERROR` path keeps the public portal up.
-* **`pytest -q` twice prints no summary.** `pytest.ini` already passes `-q`, so `-q -q` shows dots and no "231 passed" line; use `-o addopts='--strict-markers' -q` when the count is the evidence.
+* **`pytest -q` twice prints no summary.** `pytest.ini` already passes `-q`, so `-q -q` shows dots and no "237 passed" line; use `-o addopts='--strict-markers' -q` when the count is the evidence.
 * **macOS has no `timeout` command** (`zsh: command not found: timeout`, coreutils not installed). Bound a command with `gtimeout` if present, or start it in the background with a log file and poll — do not build a chain that depends on `timeout`.
 * **`git push` from a non-interactive session can hang on an SSH prompt.** Use `GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o BatchMode=yes -o ConnectTimeout=20'`; a failed push then reports instead of waiting for a passphrase.
 * **SQLite `ADD COLUMN` cannot add `NOT NULL` without a `DEFAULT`.** Schema v2 relies on `DEFAULT ''` / `DEFAULT 0`; that is why an upgraded box has `files.stored = ''` for old rows and every read goes through `_stored_name()`. A new query that reads `stored` directly will produce empty download links on an upgraded card.
@@ -409,6 +417,7 @@ Two page-size facts, so nobody documents them wrongly again:
 * **`X-ARK-Player-Origin` is a trust boundary, not a hint.** `:8445` sets it to `1`; the public `:80` location sets it to empty, because nginx would otherwise pass a visitor's invented header through. `ark_arcade_web._player_origin()` is the only reader; a new route that returns a save or sets a player cookie must call it, or it will do so through the public portal.
 * **Python 3.9 is still the floor for `pi/`.** An f-string cannot contain a backslash in its expression part; `f"{json.dumps(v).replace('</', '<\\/')}"` is a `SyntaxError` on the Mac's Python and on the box. Precompute it (`_js()` in `ark_arcade_web.py`) and test with `python3 -m py_compile`.
 * **A player cookie is `Secure`.** It is issued only on `:8445` and deliberately does not travel over plain HTTP; the public shelf therefore shows a signed-in reader as a guest and sends **My saves** to `https://<host>:8445/arcade/player`. A public page must never render the save panel merely because a cookie was present.
+* **The book door is a named route list, and a GET rule cannot replace it.** `limit_except GET` in front of Calibre-Web refuses every POST/PUT/DELETE, but `/admin/*`, `/login`, `/me`, `/generate_auth_token/<id>`, `/shelf/create` and the admin-only `/ajax` endpoints are reachable with GET alone — they are named individually in the 404 door in `pi/nginx/ark.conf`. Do not "simplify" them into `location ^~ /books { return 404; }` or drop one of them: `tests/test_config.py` compiles that exact regex out of the shipped file and runs the transcribed 0.6.27 inventory through it in both directions. `/books/ajax/listbooks` and `/books/ajax/book/<uuid>` are deliberately left open (the table view pages with them) and `/books/advsearch` is the single POST that only reads. When Calibre-Web is upgraded, re-enumerate `calibreweb/cps/*.py` and change the config, the test and `docs/REQUIREMENTS-MATRIX.md` in one commit; when the shelf page starts using a new route, add it to `READING` and to the installer's `must_be` proofs.
 
 
 ### 8.8 Rules for the next stage
@@ -470,7 +479,7 @@ Two page-size facts, so nobody documents them wrongly again:
 Code and tests only: **no deploy, no bundle has ever been written on the box, no
 restore has ever been run, `/recovery.txt` has never been opened in a browser.**
 At that checkpoint `pytest` was **144 passed** (12 files); it stood at **174**
-after ARK Arcade and is **231** now. Detail and the honest gaps:
+after ARK Arcade and is **237** now. Detail and the honest gaps:
 `docs/IMPLEMENTATION-LOG.md` §11; the per-requirement verdict is
 `docs/REQUIREMENTS-MATRIX.md`.
 
@@ -514,7 +523,7 @@ administrator: different tables, different cookie, different origin, and no
 path in the arcade can reach `/admin`. Code and docs are on
 `feature/admin-hardening`; **nothing is deployed, no game has been played on
 the Pi, and the live source has never been asked for a file from the box.**
-`pytest` **174 passed** at that checkpoint (14 files); **231** now. Detail:
+`pytest` **174 passed** at that checkpoint (14 files); **237** now. Detail:
 `docs/IMPLEMENTATION-LOG.md` §12.
 
 | Piece | What it owns |
@@ -561,7 +570,7 @@ a name, save/export/import, and watch the first weekly run.
 ### 8.12 25 OCT HARDENING — delivered, docs updated, **Pi deployment still pending**
 
 Code, tests and docs are committed on `feature/admin-hardening`; `pytest` is
-**231 passed** (15 files). **Nothing in this subsection has been deployed or
+**237 passed** (15 files). **Nothing in this subsection has been deployed or
 exercised on the Pi.** The code changes were committed before this documentation
 pass; this is the checkpoint for both.
 

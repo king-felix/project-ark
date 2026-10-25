@@ -81,26 +81,34 @@ repo; the first is on the walk-through list.
 
 ## R3 — the reading shelf cannot be edited from the reading pages
 
-**Status: NOT STARTED.**
+**Status: DONE (code + test).** The route table was read out of the installed package
+(`calibreweb/cps/*.py`, Calibre-Web 0.6.27, 231 rules, read on the box 2026-10-25, stored as
+`/tmp/cw-routes.txt` during the survey and transcribed into `tests/test_config.py`). The public
+proxy now answers 404 for management/account routes and GET/HEAD only for the rest; the book
+importer is unaffected because it talks to `127.0.0.1:8083` directly.
 
-The requirement is that Calibre-Web's mutating and account routes are not reachable through
-the public portal, while reading, search, download and OPDS keep working. Today `/books` is
-proxied wholesale by `pi/nginx/ark.conf`; there is no allowlist, no deny rule, no test, and
-the route-declaration pattern in the installed Calibre-Web version has not been identified.
-Nothing about this has been built or verified.
+| Acceptance sentence | Where | Test |
+|---|---|---|
+| Mutating Calibre-Web routes are not reachable | `pi/nginx/ark.conf` `limit_except GET { deny all; }` on `location /books` | `test_config.py::test_the_book_shelf_refuses_every_method_that_could_change_it` |
+| Admin/account routes answer 404 at the proxy | `pi/nginx/ark.conf`, the `location ~ ^/books/(?:admin\|…` door | `test_config.py::test_the_book_shelf_answers_404_for_every_management_route` |
+| Reading, search, download, OPDS, covers still work | same file — the door names only what must be refused | `test_config.py::test_every_reading_route_survives_the_door` |
+| The one POST that only reads keeps working | the `advsearch` door, its own location | `test_config.py::test_the_one_post_that_only_reads_has_its_own_door` |
+| Refusing `/upload` and `/login` cannot break the importer | `pi/bin/ark-import-books` talks to loopback, not the proxy | `test_config.py::test_the_block_cannot_break_the_importer_because_it_never_uses_the_proxy` |
+| The installer proves the door on the box | `pi/steps/60-portal.sh` `must_be 404/403 …` proofs | `test_config.py::test_the_installer_proves_the_book_door_on_the_box` |
 
-| Acceptance sentence | State |
-|---|---|
-| Mutating Calibre-Web routes refused at the proxy | **absent** |
-| Admin/account routes refused at the proxy | **absent** |
-| Reading, search, download, OPDS still work through `/books` | works today, untested against a deny set |
-| A test proves a blocked route returns 403/404 and a reading route returns 200 | **absent** |
+**How the two halves work.** A route a GET can reach (the whole `/admin` tree, `/login`,
+`/register`, `/me`, `/generate_auth_token/<id>`, `/shelf/create`, the admin-only `/ajax`
+endpoints, …) is named in the 404 door, because a method rule cannot stop a GET. Everything else
+is refused by verb, and every Calibre-Web route that changes anything uses POST, PUT or DELETE.
+The shell's reading `/ajax` endpoints (`listbooks`, `book/<uuid>`) are deliberately left out of
+the 404 door so the table view keeps paging.
 
-**Why it is not done:** the upstream route table has not been enumerated, and guessing at
-`/admin/...` patterns would break the shelf in a way this repo cannot see without the
-installed package. The next step is to read the installed Calibre-Web's Blueprint route
-declarations (or its `url_map`) on the box, write the read-only allowlist from that list,
-and pin a test that drives the shipped nginx file rather than a hand-written rule.
+**Not proved:** no browser has loaded the shelf through this door yet — the installer's twelve
+proofs (`/books/` 200, `/books/admin` 404, `POST /books/upload` 404, `POST /books/book/1` 403,
+`POST /books/delete/1` 404, `/books/advsearch` 200, …) have only been `bash -n`'d, and `nginx -t`
+has not seen this file on the box. A Calibre-Web upgrade that renames a route would not be caught
+by the suite until the transcribed inventory is re-read; the day that happens, re-run the
+enumeration and update both the config and `tests/test_config.py` in one commit.
 
 ---
 
@@ -340,7 +348,7 @@ deliverable. Nothing here should be described as in progress.
 |---|---|---|
 | R1 | DONE (code + test) | all; hardware run unproven |
 | R2 | DONE (code + test) | all; on-box TLS unproven |
-| R3 | NOT STARTED | none |
+| R3 | DONE (code + test) | all; on-box door unproven |
 | R4 | DONE (code + test) | all; on-box restore unproven |
 | R5 | PARTIAL | write safety + headers yes; admission policy no |
 | R6 | DONE (code + test) | all; on-box nginx unproven |
@@ -367,12 +375,14 @@ evidence about the box.
 3. **R8 one budget** — a single `ark_storage.reserve()` consulted by the File Box, the game
    installer and the save writer, with a cross-process lock and a two-writer test. Without
    it, the per-writer checks are honest but not sufficient.
-4. **R3 upstream route inventory** — read the installed Calibre-Web route table, write the
-   read-only allowlist, and prove both directions (a blocked route, a reading route).
-5. **R7 thumbnails + a second source** — add a thumbnail column, a local route and an owner
+4. **R7 thumbnails + a second source** — add a thumbnail column, a local route and an owner
    upload/fetch step (the Games page does not offer one today), then add one non-Game-Boy
    source so the shelf is not a single point of failure. Only after that is a population run
    meaningful.
+5. **Keep R3 honest** — the 404 door and its reading list are transcribed from Calibre-Web
+   0.6.27. Re-enumerate `calibreweb/cps/*.py` and update the config, the test and this table in
+   one commit the day the package version changes, and add a reading route to the installer's
+   proofs whenever the shelf page starts using a new one.
 
 ## Keeping this page honest
 

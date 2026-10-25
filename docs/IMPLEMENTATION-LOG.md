@@ -845,4 +845,45 @@ deploy with `--only 20-storage,30-calibre,60-portal,65-admin,70-network,95-backu
 run `--only 90-verify`, then complete the phone walk-through in `.clinerules`
 §8.9.
 
+---
+
+## 14. R3 — the book shelf is a reading door — 25 Oct 2026
+
+**Committed on `feature/admin-hardening`; `pytest` 237 passed (15 files).** The
+last NOT STARTED blocking requirement in `docs/REQUIREMENTS-MATRIX.md` is closed
+in code, in test, and — for the first time in this repo — **observed on the box**.
+
+| Piece | What changed |
+|---|---|
+| Route inventory | The installed Calibre-Web 0.6.27 `url_map` was read out of `/srv/ark/venv/lib/python3.13/site-packages/calibreweb/cps/*.py` on the Pi (231 rules, extracted with `ast`, no import of the package) and transcribed into `tests/test_config.py` as `MANAGEMENT_GET`, `MUTATING_POST` and `READING` |
+| `pi/nginx/ark.conf` | Two doors on `/books`: a `location ~ ^/books/(?:admin\|…)(?=/|$)` that answers **404** for the management, account and admin-`/ajax` routes (a method rule cannot stop a GET), and `limit_except GET { deny all; }` on the reading door for everything else (every mutating Calibre-Web route uses POST/PUT/DELETE). `/books/ajax/listbooks` and `/books/ajax/book/<uuid>` stay open because the table view pages with them |
+| The one exception | `/books/advsearch` is a form POST that only reads, so it has its own location without the method rule. It is the only relaxation, and a test keeps it that way |
+| `pi/steps/60-portal.sh` | Nine `must_be <code> <method> <url>` proofs after the page checks: `/books/admin` 404, `/books/upload` 404 (GET and POST), `POST /books/login` 404, `/books/ajax/listusers` 404, `POST /books/shelf/create` 404, `POST /books/book/1` 403, `POST /books/delete/1` 404, `/books/advsearch` 200 |
+| `tests/test_config.py` | 6 new tests drive the **shipped** file: a small nginx `location` parser pulls the two doors out of `ark.conf`, the 404 regex is compiled and run against the transcribed inventory, and the importer is asserted to talk to `127.0.0.1:8083` (which is what makes refusing `/upload` and `/login` safe) |
+
+**Hardware evidence, 25 Oct 2026** — the shipped `ark.conf` was copied to the Pi,
+its `listen` rewritten to `127.0.0.1:18080`, and a **second** nginx started from
+that file beside the live one. Every probe answered as designed:
+
+```
+OK GET  /                         200      OK POST /books/shelf/create   404
+OK GET  /books/                   200      OK POST /books/book/1         403
+OK GET  /books/admin              404      OK POST /books/delete/1       404
+OK GET  /books/upload             404      OK GET  /books/advsearch      200
+OK POST /books/upload             404      OK GET  /books/opds           200
+OK POST /books/login              404      OK GET  /books/static/js/…    200
+OK GET  /books/ajax/listusers     404      OK GET  /books/search?q=water 200
+```
+
+`/books/ajax/listbooks` answered **302** — Flux's own redirect — which is proof it
+was *proxied*, not proof of a reading page; the JS table asks for it with a
+session, so a bare curl is not the right probe. The live listener was not
+reloaded and no live service was restarted: these answers came from the throwaway
+instance on `:18080`, which was stopped and removed afterwards.
+
+**What is still true:** the live site still runs the old wholesale `/books`
+proxy until the deploy in §8.9 happens; nobody has tapped a book through the new
+door; and the route inventory is a snapshot of 0.6.27, so a package upgrade means
+re-reading it (`.clinerules` §8.9, move 5).
+
 

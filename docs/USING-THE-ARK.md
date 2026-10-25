@@ -144,6 +144,11 @@ reading order and author pages all survive, because they all live in the library
 3. Open a book → **Read in browser** (there is a reader built in — it works on phones and
    needs no app), or **Download** the EPUB/PDF to a tablet, Kindle or USB stick.
 
+**There is nothing to sign in to, and nothing to change.** The shelf is read-only from the
+portal: no account, no password, no "add book" button, no settings. The only way books arrive is
+section 4 (the File Box, or adopting a whole library from a computer), which is deliberate — a
+reader cannot rename, move or delete anything by accident, and nobody can be locked out.
+
 **Getting books onto it:** see section 4 — drag-and-drop, on the shelf in seconds.
 As of 24 October 2026 it holds **1,290 books**, adopted from the Windows Calibre library.
 
