@@ -432,7 +432,7 @@ Re-provisioning is idempotent: re-running any phase repairs it rather than dupli
 | Front page dot is red, or `/api/ready` answers 503 | a part exists but cannot be served (the program behind it is not answering) | open `https://ark.lan:8443/admin/health` and follow **What to do:** |
 | Book dropped in, never appears | wrong extension, empty file, or over 2 GB | `sudo ark-import-books --list`; `journalctl -u ark-book-import -n 30` |
 | Collection opens but searches find nothing | bundle present but unreadable (interrupted download) | auto-detected and re-fetched; `tail -f /srv/ark/logs/zim-download.log` |
-| Nothing downloading any more | no network the box can use — the watchdog would have raised the hotspot already | `sudo ark-mode status`; where the home Wi-Fi is back, `sudo ark-mode auto` |
+| Nothing downloading any more | no network the box can use — the watchdog has already raised the hotspot if nothing was reachable | `sudo ark-mode status`, then `tail -n 10 /srv/ark/logs/net-watch.log`; `sudo ark-mode auto` sends it back to the home Wi-Fi now |
 | Downloads crawl or fail repeatedly | flaky Wi-Fi, or the mirror is throttling | they retry with backoff; nothing is lost |
 | The home Wi-Fi went off while the box was running | that is the case the box now handles itself | nothing — within about two minutes it broadcasts `The-Ark-Offline` and keeps reading working. `tail -n 10 /srv/ark/logs/net-watch.log` shows the decision |
 | The hotspot is up but the home Wi-Fi is fine | it comes back on its own once nobody is using the hotspot | or `sudo ark-mode auto` to go back at once |
