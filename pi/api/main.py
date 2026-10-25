@@ -3,6 +3,8 @@
 Serves what a nearby reader needs, all anonymously:
 
   GET  /api/status   what is on the box, as JSON (used by the home page strip)
+  GET  /api/ready    truthful readiness — 200 when every section a reader needs works
+  GET  /api/health   liveness only ("the backend answered"), never a verdict
   GET  /search       one search box across the library, the books and the guides
   GET  /board        message board (read + post)
   GET  /files        shared file box (read + upload)
@@ -19,8 +21,6 @@ cannot travel over plain HTTP even by accident.
 from __future__ import annotations
 
 import html
-import json
-import os
 import re
 import sqlite3
 import urllib.error
@@ -29,23 +29,20 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone
-from pathlib import Path
 
 from fastapi import FastAPI, Form, UploadFile, File
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 import ark_admin
 import ark_db
+import ark_health
 import ark_storage
+from ark_health import (book_count, guide_pages, human_size, library_books,
+                        library_bytes, now_iso)
 
-ARK_ROOT = Path(os.environ.get("ARK_ROOT", "/srv/ark"))
-LIBRARY_XML = ARK_ROOT / "kiwix" / "library.xml"
-ZIM_DIR = Path(os.environ.get("ZIM_DIR", str(ARK_ROOT / "kiwix")))
-ZIM_STATUS = ZIM_DIR / "state" / "status.json"
-CALIBRE_DB = ARK_ROOT / "calibre-library" / "metadata.db"
-VAULT_DIR = ARK_ROOT / "vault"
-DROP_DIR = ark_storage.drop_dir()
-KIWIX_INTERNAL = os.environ.get("KIWIX_INTERNAL", "http://127.0.0.1:8081/kiwix")
+# Paths are read from ark_health at the moment of use, never frozen at import:
+# one place decides where the library, the shelf and the guides live, so a
+# change of location cannot leave half the portal pointing at the old folder.
 
 MAX_UPLOAD = ark_storage.MAX_FILE          # the same number nginx is configured with
 MAX_NOTE = 4000
@@ -97,19 +94,6 @@ app.include_router(ark_admin.router)
 # ---------------------------------------------------------------------------
 #  tiny helpers
 # ---------------------------------------------------------------------------
-def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
-def human_size(n) -> str:
-    n = float(n or 0)
-    for unit in ("B", "kB", "MB", "GB", "TB"):
-        if n < 1024 or unit == "TB":
-            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
-        n /= 1024
-    return f"{n:.1f} TB"
-
-
 def ago(iso: str) -> str:
     """'2 hours ago' — friendlier than a timestamp for a non-technical reader."""
     try:
@@ -195,111 +179,90 @@ def error_page(message: str, hint: str = "", code: int = 400) -> HTMLResponse:
 # ---------------------------------------------------------------------------
 #  what is on the box
 # ---------------------------------------------------------------------------
-def library_books() -> list[dict]:
-    """Books listed in the library index (id, title, size)."""
-    if not LIBRARY_XML.is_file():
-        return []
-    try:
-        root = ET.parse(LIBRARY_XML).getroot()
-    except Exception:
-        return []
-    out = []
-    for book in root.iter():
-        if book.tag.lower() not in ("book", "zim"):
-            continue
-        ident = book.get("id") or book.get("name") or ""
-        if not ident:
-            continue
-        title = book.get("title") or book.get("name") or ident
-        size = book.get("size") or book.get("sizeBytes") or 0
-        try:
-            size = int(size)
-        except (TypeError, ValueError):
-            size = 0
-        out.append({"id": ident, "title": title, "size": size})
-    out.sort(key=lambda b: b["title"].lower())
-    return out
-
-
-def library_bytes() -> int:
-    total = 0
-    try:
-        for f in ZIM_DIR.glob("*.zim"):
-            try:
-                total += f.stat().st_size
-            except OSError:
-                pass
-    except OSError:
-        pass
-    return total
-
-
-def book_count() -> int:
-    if not CALIBRE_DB.is_file():
-        return 0
-    try:
-        conn = sqlite3.connect(f"file:{CALIBRE_DB}?mode=ro", uri=True, timeout=5)
-        try:
-            return int(conn.execute("SELECT COUNT(*) FROM books").fetchone()[0])
-        finally:
-            conn.close()
-    except Exception:
-        return 0
-
-
-def guide_pages() -> list[Path]:
-    if not VAULT_DIR.is_dir():
-        return []
-    return sorted(p for p in VAULT_DIR.rglob("*.html") if p.name != "index.html")
-
-
-def download_state() -> dict:
-    try:
-        return json.loads(ZIM_STATUS.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+#  Reading the index, counting books and pages, and measuring the download queue
+#  all live in ark_health now, so the pages and the verdict cannot disagree.  A
+#  section is "ready" there only when its content is present *and* the thing
+#  that serves it answered — see ark_health.report().
 
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "time": now_iso()}
+    """Is the backend alive?  Only that — and it says so out loud.
+
+    This used to answer ``{"ok": true}`` whatever the box was doing, which made
+    it useless as evidence.  It is still always 200 whenever this code runs (a
+    monitor needs a liveness check that does not page on a full card), but it no
+    longer pretends to be a verdict: the readiness summary rides along and the
+    honest answer lives at ``/api/ready``.
+    """
+    report = ark_health.report()
+    return {
+        "live": True,
+        "scope": "backend-process",
+        "note": "The backend answered. This is not a health verdict — see /api/ready.",
+        "ready": report["ok"],
+        "blocking": report["blocking"],
+        "time": now_iso(),
+    }
+
+
+@app.get("/api/ready")
+def ready():
+    """Truthful readiness: 200 only when every section a reader came for works.
+
+    503 otherwise, with the same body — each section carries ``reason`` (a
+    sentence a person can read) and ``action`` (empty when nothing is wrong), so
+    a script and a human get the same answer out of one call.
+    """
+    report = ark_health.report()
+    return JSONResponse(report, status_code=200 if report["ok"] else 503)
 
 
 @app.get("/api/status")
 def status():
     books = library_books()
-    dl = download_state()
     guides = guide_pages()
     n_books = book_count()
-    # Progress of the bundle being fetched right now: the home page strip shows
-    # "42% of <label>" so a 49 GiB entry is not a silent day.
-    cur = int(dl.get("current_bytes") or 0)
-    tot = int(dl.get("current_total") or 0)
-    pct = min(100, int(round(100.0 * cur / tot))) if tot > 0 else 0
+    report = ark_health.report()
+    sections = {s["key"]: s for s in report["sections"]}
+    dl = ark_health.progress()
     return {
         "time": now_iso(),
+        "ok": report["ok"],
+        "blocking": report["blocking"],
+        # Every section, with the reason it is or is not usable.  This is the
+        # same list the owner's "What is working" page renders.
+        "sections": report["sections"],
         "library": {
-            "ready": bool(books),
+            "ready": sections["library"]["ready"],
+            "reason": sections["library"]["reason"],
             "titles": len(books),
             "bytes": library_bytes(),
             "items": [{"title": b["title"], "id": b["id"], "size": b["size"]} for b in books],
         },
-        "books": {"ready": n_books > 0, "count": n_books},
+        "books": {
+            "ready": sections["books"]["ready"],
+            "reason": sections["books"]["reason"],
+            "count": n_books,
+        },
         "guides": {
+            "ready": sections["manuals"]["ready"],
+            "reason": sections["manuals"]["reason"],
             "count": len(guides),
-            "pages": [{"title": p.stem.replace("-", " ").title(), "path": f"/vault/{p.relative_to(VAULT_DIR)}"} for p in guides],
+            "pages": [{"title": p.stem.replace("-", " ").title(), "path": f"/vault/{p.relative_to(ark_health.vault_dir())}"} for p in guides],
         },
+        # Byte-level truth from the downloader's own report: what is finished,
+        # what is in flight, how fast, and how much is left.  `percent` is the
+        # current collection; `overall_percent` is the whole queue.
         "downloads": {
-            "present": dl.get("present", 0),
-            "pending": dl.get("pending", 0),
-            "current": dl.get("current", ""),
-            "current_bytes": cur,
-            "current_total": tot,
-            "percent": pct,
-            "free_gib": dl.get("free_gib", 0),
-            "paused": bool(dl.get("paused", False)),
-            "updated": dl.get("updated", ""),
+            key: dl[key] for key in
+            ("present", "pending", "total", "current", "current_bytes", "current_total",
+             "percent", "current_percent", "overall_percent", "overall_bytes",
+             "remaining_bytes", "rate_bps", "eta_seconds", "bytes_total",
+             "bytes_on_disk", "free_gib", "paused", "updated", "updated_age_seconds",
+             "stalled", "reported")
         },
+        "download_reason": sections["downloads"]["reason"],
     }
 
 
@@ -346,7 +309,7 @@ def _parse_feed(raw: bytes) -> list[dict]:
 
 def _kiwix_one(book_id: str, pattern: str) -> list[dict]:
     query = urllib.parse.urlencode({"content": book_id, "pattern": pattern, "format": "xml"})
-    req = urllib.request.Request(f"{KIWIX_INTERNAL}/search?{query}",
+    req = urllib.request.Request(f"{ark_health.kiwix_base()}/search?{query}",
                                  headers={"User-Agent": "ark-portal/1.0"})
     with urllib.request.urlopen(req, timeout=9) as resp:
         return _parse_feed(resp.read(3_000_000))[:4]
@@ -438,7 +401,7 @@ def search_guides(pattern: str) -> list[dict]:
         snippet = plain[start: pos + 170].strip()
         found.append({
             "title": title,
-            "link": "/vault/" + str(path.relative_to(VAULT_DIR)),
+            "link": "/vault/" + str(path.relative_to(ark_health.vault_dir())),
             "snippet": ("… " if start else "") + snippet + " …",
             "source": "Manuals & Guides",
             # a page whose title matches is almost always the one you meant
@@ -452,11 +415,12 @@ def search_guides(pattern: str) -> list[dict]:
 
 
 def search_books(pattern: str) -> list[dict]:
-    if not CALIBRE_DB.is_file():
+    catalogue = ark_health.calibre_db()
+    if not catalogue.is_file():
         return []
     like = f"%{pattern}%"
     try:
-        conn = sqlite3.connect(f"file:{CALIBRE_DB}?mode=ro", uri=True, timeout=5)
+        conn = sqlite3.connect(f"file:{catalogue}?mode=ro", uri=True, timeout=5)
         try:
             rows = conn.execute(
                 """SELECT b.id, b.title,

@@ -17,6 +17,7 @@ application code; see the "Tested / not tested" section at the end.
 | Pin / sort out / hide a message, hide a file | no | yes (§7) |
 | Delete a shared file for good | no | yes, with the owner's own password (§7) |
 | Add/edit/remove administrators, read the audit history | no | yes |
+| See what actually works, and why it does not | no — the front page shows one plain sentence | yes (§8) |
 | Change the box's settings | no | only the two Community switches so far (§7) |
 
 The public portal never serves `/admin` at all: on port 80 it answers `404`.
@@ -204,7 +205,53 @@ plainly to whoever asks instead of promising a control that is not there.
 
 ---
 
-## 8. Not in this release yet
+## 8. What is working — the readiness page
+
+`https://ark.lan:8443/admin/health`, or **What is working** in the navigation.
+Open it first whenever something feels wrong. It answers one question — *can a
+visitor actually use this part of the box right now?* — for every part, and it
+says **why not** in a sentence you can act on.
+
+| Part | Ready means |
+|---|---|
+| Offline Library | collections are on the card **and** the reader answered on the box itself |
+| Books | the shelf has a real catalogue **and** the shelf page answered |
+| Manuals & Guides | the manual pages are installed (plain files — nothing to serve) |
+| Message Board | the board can be read (whether or not posting is switched on) |
+| File Box | the shared folder exists and can be opened (whether or not uploads are on) |
+| Space on the card | at least 512 MiB is still free |
+| Incoming collections | work in progress — reported, but never counted as a fault |
+
+Two distinctions the page is careful about, because they are the whole point:
+
+* **Content versus working.** A section with nothing on the card yet is
+  *Not ready* but not broken ("No collection has arrived yet"); a section whose
+  files exist while the program that serves them does not answer is the real
+  fault ("3 collections are on the card, but the reader is not answering").
+* **Downloading is not a fault.** A queue that is working, paused, or empty
+  never makes the box un-ready. Only a queue that has gone silent for over two
+  minutes is reported, and even then it does not block reading.
+
+Each entry ends with **What to do:** when there is something to do, and the
+page states plainly that *nothing on this page has been changed* — it only
+looks. It never starts, stops or deletes anything. Reload to check again; the
+cached answers are dropped each time the page is opened, so what you see is
+what the box answered a second ago.
+
+The same verdict is machine-readable at `http://ark.lan/api/ready` — **200**
+when every part a reader needs works, **503** when one does not, with the
+identical reasons in the body. `http://ark.lan/api/health` is deliberately *not*
+a verdict: it says only that the backend answered, and points at `/api/ready`.
+
+The route works by asking the loopback addresses (`127.0.0.1:8081/kiwix`,
+`127.0.0.1:8083`) for a page. Any HTTP answer counts as "answering" — a 404 is a
+running server with a moved page, which is a different problem from a refused
+connection. The public pages are unaffected by all of this: nothing here is on
+the reader's path.
+
+---
+
+## 9. Not in this release yet
 
 Stated plainly, because a missing control is better than a fake one:
 
@@ -213,21 +260,21 @@ Stated plainly, because a missing control is better than a fake one:
   downloadable at once. Uniqueness and safe naming are done (three files with the
   same name no longer overwrite each other).
 * Deleting a shared file is for ever; there is no trash and no undo.
-* No health panel, storage breakdown, download pause/resume controls, backup or
-  restore screens. The overview page therefore shows only what it can read from
-  the database.
+* No storage breakdown, no download pause/resume buttons in the page (the
+  existing `ark-zim-pause` file still pauses the queue), no backup or restore
+  screens. **What is working** reports the state of the box; it cannot change it.
 * No household page, no "download the essentials" pack, no QR cards, no
   theme/text-size controls yet.
 * Emergency content review (first aid, water, electrical) is still pending.
 
-The audit history, the account rules above, the transport boundary and the
-Community controls are complete and tested.
+The audit history, the account rules above, the transport boundary, the
+Community controls and the readiness page are complete and tested.
 
 ---
 
-## 9. Tested / not tested
+## 10. Tested / not tested
 
-**Tested** — 84 automated tests, disposable databases, `pytest`:
+**Tested** — 97 automated tests, disposable databases, `pytest`:
 
 * bootstrap account exists once; a wiped database becomes recovery-required
   instead of re-creating the default; the marker lives outside the database;
@@ -260,7 +307,21 @@ Community controls are complete and tested.
 * search: a hanging collection cannot hold the page past its budget; one shared
   pool, bounded number of collections; the numbers in `ark.conf` and
   `ark_storage.py` agree, and the library engine no longer listens on every
-  address.
+  address;
+* readiness: an empty box names what is missing and what to do; a collection is
+  only ready when the reader actually answers (a silent loopback address is
+  *not ready*, a live one is); an index with no books, and a catalogue that is a
+  0-byte file, are both told apart from a working shelf; a full card is named as
+  the reason; downloads never make the box un-ready, but a queue silent for over
+  two minutes is reported as stalled;
+* progress: 200 finished bytes plus 100 in flight out of 1000 is **30 %** with a
+  14-second estimate at the measured rate; an unknown total reports `null`, never
+  0; `/api/ready` answers 503 with a reason and an action for every part,
+  `/api/health` says it is liveness only, and `/api/status` carries the same
+  reasons;
+* the owner's **What is working** page lists every part with the reason and the
+  next step, contains none of the jargon the rest of the box hides, and the
+  overview links to it.
 
 **Not tested** — no hardware or browser access in this environment:
 
@@ -272,21 +333,21 @@ Community controls are complete and tested.
   `openssl` calls, but it has not been run on the Pi);
 * `ark-admin-recover` against the live database — reviewed, not executed there;
 * a full 2 GiB upload across the real network (the cap is tested with a smaller
-  limit; the wire behaviour is nginx's).
-
-**Not tested** — no hardware or browser access in this environment:
-
-* anything on the Raspberry Pi: the new nginx listener, the certificate, a real
-  browser warning, a phone on the hotspot, the SSH tunnel end to end;
-* `ark-tls-cert` itself (the script passes `bash -n` and uses standard
-  `openssl` calls, but it has not been run on the Pi);
-* `ark-admin-recover` against the live database — reviewed, not executed there.
+  limit; the wire behaviour is nginx's);
+* the readiness probes against the *real* library and shelf on the Pi (the tests
+  use a local stand-in server, so "answering" and "refused" are both exercised —
+  but no test has yet seen `kiwix-serve` and Calibre-Web in their real states);
+* the front page's amber/red dot and the download speed measurement against a
+  real download (the arithmetic is tested with fixed numbers).
 
 To install and verify this stage on the Pi:
 
 ```bash
 sudo bash /srv/ark/src/install-ark.sh --only 60-portal,65-admin
+sudo bash /srv/ark/src/install-ark.sh --only 90-verify
 ```
 
-then work through §2 with a phone.
+then work through §2 with a phone, and open
+`https://ark.lan:8443/admin/health` on a box that is still filling up: every
+part that is empty says so without calling the box broken.
 

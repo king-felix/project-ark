@@ -16,7 +16,7 @@ API_DIR = Path(__file__).resolve().parents[1] / "pi" / "api"
 if str(API_DIR) not in sys.path:
     sys.path.insert(0, str(API_DIR))
 
-MODULES = ("main", "ark_admin", "ark_security", "ark_db", "ark_storage")
+MODULES = ("main", "ark_admin", "ark_security", "ark_db", "ark_storage", "ark_health")
 
 
 @pytest.fixture()
@@ -30,6 +30,7 @@ def ark(tmp_path, monkeypatch):
     monkeypatch.setenv("ARK_MARKER", str(root / "api/data/ark.installed"))
     monkeypatch.setenv("ARK_TRUSTED_PROXIES", "testclient,127.0.0.1,::1")
     monkeypatch.setenv("KIWIX_INTERNAL", "http://127.0.0.1:9/kiwix")   # nothing listens
+    monkeypatch.setenv("CALIBRE_INTERNAL", "http://127.0.0.1:9")       # ditto
     for name in MODULES:
         sys.modules.pop(name, None)
 

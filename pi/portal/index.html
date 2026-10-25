@@ -144,6 +144,18 @@
     return gb >= 1 ? gb.toFixed(1) + " GB" : Math.max(1, Math.round(n / 1048576)) + " MB";
   }
 
+  // Only shown when the box measured a real speed — never an invented estimate.
+  function duration(sec) {
+    if (!sec || sec < 60) { return "a minute"; }
+    var h = Math.floor(sec / 3600), m = Math.round((sec % 3600) / 60);
+    if (h >= 1) { return h + " h" + (m ? " " + m + " min" : ""); }
+    return m + " min";
+  }
+
+  function plain(text) {
+    return String(text || "").replace(/[<>&"]/g, "");
+  }
+
   function refresh() {
     fetch("/api/status", { cache: "no-store" })
       .then(function (r) { return r.ok ? r.json() : null; })
@@ -157,14 +169,32 @@
         var tail = "";
         if (dl.pending) {
           tail = " Still bringing more in: <b>" + dl.pending + "</b> collection(s) on the way";
-          if (dl.current_total > 0 && dl.current_bytes > 0) {
-            var label = String(dl.current || "").replace(/[<>&"]/g, "");
-            tail += " — <b>" + (dl.percent || 0) + "%</b> of " + label +
+          if (dl.current_total > 0 && dl.current_bytes > 0 && typeof dl.percent === "number") {
+            tail += " — <b>" + dl.percent + "%</b> of " + plain(dl.current) +
                     " (" + size(dl.current_bytes) + " of " + size(dl.current_total) + ")";
+            if (dl.eta_seconds) { tail += ", about " + duration(dl.eta_seconds) + " left"; }
+          }
+          if (typeof dl.overall_percent === "number") {
+            tail += "; <b>" + dl.overall_percent + "%</b> of all of it is already here";
           }
           tail += ".";
         }
-        strip.innerHTML = '<span class="dot" aria-hidden="true"></span><span>' +
+        // If a part cannot be used, the strip says why in the owner's own words
+        // instead of showing a cheerful dot over a broken shelf.  A part that is
+        // merely empty (nothing on the card yet) is amber; something that exists
+        // and cannot be served is red.
+        var dot = "dot";
+        if (s.ok === false && s.sections) {
+          var broken = s.sections.filter(function (x) {
+            return !x.ready && x.key !== "downloads";
+          });
+          var serious = broken.filter(function (x) { return x.content; })[0];
+          var empty = broken.filter(function (x) { return !x.content; })[0];
+          dot = serious ? "dot no" : "dot wait";
+          var first = serious || empty;
+          if (first) { tail += " " + plain(first.reason); }
+        }
+        strip.innerHTML = '<span class="' + dot + '" aria-hidden="true"></span><span>' +
           (bits.length ? "On board right now: " + bits.join(" · ") + "." : "<b>Ready.</b>") +
           tail + " Nothing here needs a login.</span>";
       })

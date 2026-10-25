@@ -59,6 +59,13 @@ And one door that is NOT on the portal: the owner's door, on its own TLS
 address, for whoever maintains the box.
 
   https://ark.lan:8443/admin   sign-in + accounts + audit + Community (404 on port 80)
+                               plus "What is working" — every part, ready or not,
+                               with the plain reason and the next thing to try
+
+Asking a script "is it usable?" has one honest answer: /api/ready, 200 only when
+every part a reader needs actually answered, 503 with the reasons when one did
+not.  /api/health is liveness only ("the backend answered") and says so in its
+own body — it is never a verdict.
 
 ================================================================================
 2. WHO IT IS FOR (this drives every design decision)
@@ -490,6 +497,21 @@ popup resolves to the portal instead of a "no internet" dead end.
     "recovery required" instead of a fresh default. Test it from a LAN
     address: a 403 on the setup step is the pass, not a bug.
 
+27. THE GREEN DOT THAT COULD NOT BE WRONG
+    Symptom: the home strip says the box is ready, the reader taps the library
+    and gets an error; or a page that is merely empty is reported as broken.
+    Cause: readiness was "a file exists". A dead reader leaves the file in
+    place, so the dot stayed green, and an empty card looked like a fault.
+    Fix: readiness is content AND a live answer. One module
+    (pi/api/ark_health.py) decides, per part, with three outcomes: ready,
+    empty (nothing on the card yet — amber, normal while filling up) and
+    broken (content exists and the thing that serves it did not answer — red,
+    with the reason and the next step). /api/ready answers 200 only when every
+    part a reader needs answered, else 503 with the reasons. Prove it by
+    stopping the reader on purpose: the row must turn to Not ready and name
+    the fix. /api/health is NOT this verdict — it only says the backend
+    answered.
+
 ================================================================================
 8. CONTENT: A CATALOGUE, NOT A LIST OF URLS
 ================================================================================
@@ -538,6 +560,10 @@ any failure. Categories:
   pages       HTTP codes for /, /help.html, /assets/ark.css, /search?q=water,
               /board, /files, /api/status, /vault/, /vault/quick-card.html,
               /generate_204, /kiwix/, /books/
+  readiness   one line per part of the box, read from /api/ready: ready / empty /
+              broken, with the reason the box itself gave.  Empty (nothing on
+              the card yet) is soft — a box still filling up is not a fault.
+              Content present but not serviceable is a failure.
   network     when mode=hotspot, the AP address is really on wlan0
   space       free space >= 5 GiB (hard floor; the reserve is 12)
   owner's door  /admin answers 404 on :80; :8443 answers; the loopback :8444
@@ -549,7 +575,7 @@ any failure. Categories:
               reported (a missing folder means phase 20 was skipped)
   content     collections on disk + titles indexed in library.xml, books in
               metadata.db, guides and printable PDFs
-  receipt     JSON summary for the Mac: hostname, mode, ok, problems,
+  receipt     JSON summary for the Mac: hostname, mode, ok, problems, ready,
               collections{files,gib,indexed}, books, guides{pages,pdfs},
               free_gib, addresses
 
@@ -703,13 +729,20 @@ any failure. Categories:
     pi/bin/ark-html2pdf                     HTML → printable PDF (weasyprint)
     pi/bin/ark-mode                         auto | home | hotspot | test N
     pi/bin/ark-boot-guard                   failsafe hotspot after timeout
-    pi/api/main.py                          FastAPI: /api, /search, /board, /files
+    pi/api/main.py                          FastAPI: /api/status, /api/ready,
+                                            /api/health (liveness only),
+                                            /search, /board, /files
+    pi/api/ark_health.py                    the one place that decides readiness:
+                                            content + a live loopback probe per
+                                            part, a plain reason and a next step,
+                                            measured download bytes/rate/ETA
     pi/api/ark_db.py                        one connection policy, numbered
                                             migrations, audit, install marker
     pi/api/ark_security.py                  scrypt hashing, sessions (digests
                                             only), CSRF, per-account throttling
     pi/api/ark_admin.py                     /admin: claim, sign-in, accounts,
-                                            audit, Community (moderation) —
+                                            audit, Community (moderation),
+                                            What is working (readiness) —
                                             mounted, never on :80
     pi/api/ark_storage.py                   the only write path for shared files:
                                             label vs stored name, spool, link(2),
@@ -722,7 +755,7 @@ any failure. Categories:
     pi/bin/ark-tls-cert                     the box's own certificate (SANs,
                                             --show fingerprint, 30-day renew)
     pi/bin/ark-admin-recover                0700 root:root, runs Python as pi
-    tests/                                  42 pytest tests, throwaway DBs
+    tests/                                  97 pytest tests, throwaway DBs
     pi/systemd/*.service|*.path             the enable-and--now contract
     pi/portal/{index.html,help.html,assets} the dark, no-JS, 44 px UI
     pi/kiwix/catalog.tsv                    ~25 bundles in 3 tiers
@@ -740,6 +773,7 @@ any failure. Categories:
     sudo ark-tls-cert --show                             certificate fingerprint
     sudo ark-admin-recover --list                        locked out (console only)
     curl -s http://127.0.0.1/api/status | python3 -m json.tool
+    curl -s http://127.0.0.1/api/ready  | python3 -m json.tool   # the honest one
     .venv/bin/python -m pytest                           the tests, on a Mac
 
   State of the reference box on 2026-10-24 (proof this is achievable):

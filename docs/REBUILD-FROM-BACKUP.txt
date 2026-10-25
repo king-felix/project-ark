@@ -141,8 +141,13 @@ DELIBERATELY NOT IN HERE
     is done (docs/ADMIN.md)
   · http://ark.lan answers on a phone joined to the same network
   · /kiwix/ lists collections, /books/ shows covers, /vault/ lists the guides
+  · `curl -s http://ark.lan/api/ready` answers **200** and names every part; a
+    503 is not a failure by itself — read `blocking` and each part's `reason`
+  · the owner's **What is working** page agrees with that answer, and stopping
+    one reader on purpose turns its row to *Not ready* with the next step
   · the home strip counts collections/books/guides and, while content is still
-    arriving, shows "<n>% of <name> (x GB of y GB)"
+    arriving, shows "<n>% of <name> (x GB of y GB)", the whole-queue share, and
+    a time left only when the box measured a real speed
   · the File Box accepts a file and refuses an empty one with a readable
     sentence; uploading the same filename three times leaves three entries and
     three files in /srv/ark/drop/files with nothing left in /srv/ark/drop/tmp

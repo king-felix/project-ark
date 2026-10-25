@@ -72,6 +72,44 @@ check_page "/generate_204"        "captive-portal trigger"
 check_page "/kiwix/"              "offline library" "200 302 503"
 check_page "/books/"              "book shelf"      "200 302"
 
+# ---- what is ready, and the reason behind each answer -------------------------
+# /api/ready answers 200 only when every part a reader needs actually works, and
+# 503 with the reasons when one does not.  An empty shelf is reported softly: a
+# box that is still filling up is not broken.  Anything that has content but
+# cannot serve it is a failure, and that is the whole point of this block.
+ready_json="$(curl -sS --max-time 25 http://127.0.0.1/api/ready 2>/dev/null || true)"
+if [[ -z "$ready_json" ]]; then
+  say_bad "readiness answer" "the portal did not answer /api/ready"
+else
+  ready_rows="$(printf '%s' "$ready_json" | python3 -c '
+import json, sys
+report = json.load(sys.stdin)
+for s in report.get("sections", []):
+    if s.get("ready"):
+        flag = "ready"
+    elif s.get("content"):
+        flag = "broken"
+    else:
+        flag = "empty"
+    reason = " ".join(str(s.get("reason") or "").split())
+    label = " ".join(str(s.get("label") or s.get("key") or "").split())
+    print("\t".join([flag, label, reason]))
+' 2>/dev/null || true)"
+  ready_rows="${ready_rows:-}"
+  if [[ -z "$ready_rows" ]]; then
+    say_bad "readiness answer" "unreadable JSON from /api/ready"
+  else
+    while IFS=$'\t' read -r flag label reason; do
+      [[ -n "$label" ]] || continue
+      case "$flag" in
+        ready)  say_ok   "$label" "$reason" ;;
+        empty)  say_soft "$label" "$reason" ;;
+        *)      say_bad  "$label" "$reason" ;;
+      esac
+    done <<<"$ready_rows"
+  fi
+fi
+
 # ---- the owner's door --------------------------------------------------------
 check_page "/admin"               "admin stays off the public portal" "404"
 
@@ -153,6 +191,7 @@ printf '   %s collections: %s file(s), %s GiB · %s title(s) indexed\n' "→" "$
 printf '   %s books: %s · guides: %s page(s), %s printable\n' "→" "$books" "$guides" "$pdfs"
 
 # ---- receipt for the Mac ------------------------------------------------------
+ready_line="$(printf '%s' "${ready_json:-}" | python3 -c 'import json,sys; r=json.load(sys.stdin); print(json.dumps({"ok": r.get("ok"), "blocking": r.get("blocking") or [], "checked": r.get("checked")}))' 2>/dev/null || true)"
 STATUS="$ARK_ROOT/ark_status.json"
 tmp="$(mktemp)"
 cat > "$tmp" <<JSON
@@ -162,6 +201,7 @@ cat > "$tmp" <<JSON
   "mode": "$mode",
   "ok": $( (( FAIL == 0 )) && echo true || echo false ),
   "problems": "$(IFS='; '; echo "${problems[*]:-}")",
+  "ready": ${ready_line:-null},
   "collections": {"files": ${zim_count:-0}, "gib": ${zim_gib:-0}, "indexed": ${lib_titles:-0}},
   "books": ${books:-0},
   "guides": {"pages": ${guides:-0}, "pdfs": ${pdfs:-0}},

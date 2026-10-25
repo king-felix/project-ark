@@ -25,13 +25,13 @@ and what the next executable step is.
 | 6 | File storage, upload safety, import workflow | **stage 3 done** — one write path, unique stored names, size cap + free-space reserve, orphan cleanup, content-keyed import ledger. Quotas per person and a quarantine/approval queue **not done** |
 | 7 | Board errors and housekeeping | **done for stage 3** — friendly errors, pagination, reversible moderation (pin / sorted out / hide) with audit lines |
 | 8 | Bounded search | **fixed** — process pool + bounded wait, deadline respected |
-| 9 | Truthful downloads/readiness/health | not started |
+| 9 | Truthful downloads/readiness/health | **stage 4 done** — one module decides per-section readiness with a reason and a next step, `/api/ready` answers 200/503, `/admin/health` is the owner's page, `/api/health` is liveness only, and progress comes from measured bytes (§8) |
 | 10 | Network loss after boot | not started |
 | 11 | Backup / offline recovery kit | not started |
 | 12 | Emergency content review | not started |
 | 13 | Essentials pack, QR, accessibility, household page | not started |
-| 14 | Sequence | stages 1–3 done, stage 4 next |
-| 15 | Acceptance tests | 84 tests, all green (`pytest -q`) |
+| 14 | Sequence | stages 1–4 done, stage 5 next |
+| 15 | Acceptance tests | 97 tests, all green (`pytest -q`) |
 
 ---
 
@@ -238,23 +238,54 @@ promise to wait.** One process-wide `ThreadPoolExecutor` with
 dropped. Shutting the pool down per request is what made the old 12 s deadline
 take 20–30 s.
 
+**D16 — ready means a reader could use it, so the content is not enough.** A
+section is `ready` only when the content is on the card *and* the program that
+serves it answered on the loopback address (`urllib` probe of
+`127.0.0.1:8081/kiwix` and `127.0.0.1:8083`). Any HTTP status counts as an
+answer — a 404 is a running server with a moved page, which is a different
+problem from a refused connection. `ark_health.py` is the only place that
+decides, and every section carries `reason` (a sentence a person can read) and
+`action` (empty when nothing is wrong). Two probes per refresh, cached 10 s,
+0.8 s timeout, and the owner's page clears the cache because it asked *now*.
+
+**D17 — "empty" and "broken" are two different answers, and downloading is never
+a fault.** Each section carries `content` next to `ready`: a box that is still
+filling up is *not ready* with `content=false` ("No collection has arrived yet"),
+while files that exist behind a dead service are *not ready* with
+`content=true` ("3 collections are on the card, but the reader is not
+answering"). Only `BLOCKING_SECTIONS` (library, books, manuals, messages, files,
+storage) can make the box un-ready; `downloads` reports progress, and a queue
+that has gone silent for over two minutes is reported as stalled, but neither
+ever blocks reading. The front page uses the
+same flag to pick green / amber / red, so a dot can be wrong no longer.
+
+**D18 — a percentage or a countdown that was not measured is `null`, never
+0.** `ark-zim-download` writes `current_rate_bps` from the byte delta against
+elapsed time (0 while stalled); `ark_health.progress()` adds the finished bytes
+(`bytes_on_disk`) to the partly written one (`current_bytes`) before dividing,
+reports `overall_percent` for the whole queue while keeping `percent` as the
+current collection for older readers, and yields `eta_seconds = None` whenever
+the queue has no total or no measured rate. `reported: false` says the queue has
+not written a status file at all — the difference between "nothing is
+downloading" and "nobody told us".
+
 ---
 
 ## 6. Test evidence
 
 ```
 $ .venv/bin/python -m pytest -o addopts='--strict-markers' -q
-........................................................................ [ 85%]
-............                                                             [100%]
-84 passed in 13.31s
+........................................................................ [ 74%]
+.........................                                                [100%]
+97 passed in 15.55s
 ```
 
 (`pytest.ini` already passes `-q`, so a second `-q` hides the summary line; the
 command above is the one that prints the count.)
 
-Breakdown: `test_auth` 15 · `test_board` 15 · `test_accounts` 13 · `test_storage`
-11 · `test_import` 7 · `test_public` 7 · `test_db` 7 · `test_search` 6 ·
-`test_config` 3.
+Breakdown: `test_auth` 15 · `test_board` 15 · `test_health` 13 · `test_accounts`
+13 · `test_storage` 11 · `test_import` 7 · `test_public` 7 · `test_db` 7 ·
+`test_search` 6 · `test_config` 3.
 
 Environment: macOS, Python 3.9.6, fastapi/uvicorn/httpx/pytest from
 `tests/requirements.txt`, scrypt via the `cryptography` fallback.
@@ -285,19 +316,14 @@ verified through the Mac's fallback.
 
 ## 7. Next executable step
 
-Stage 3 is closed for the four defects. What it deliberately did **not** do, and
-what comes next (each with a test before the code):
+Stages 3 and 4 are closed. What comes next (each with a test before the code):
 
-1. **Stage 4 — truthful state.** A readiness/health panel that says what is
-   actually true (each listener, each library, free space, last import, last
-   download) instead of a green dot that only means "the process is up";
-   download progress and pause/resume that report real bytes.
-2. **Stage 5 — the network after boot.** Loss of the home network once the box is
+1. **Stage 5 — the network after boot.** Loss of the home network once the box is
    up (not just at start), and the hotspot taking over without a reboot.
-3. **Stage 6 — backup and the offline recovery sheet.** A backup that includes
+2. **Stage 6 — backup and the offline recovery sheet.** A backup that includes
    `drop/files`, `api/data`, the library and `.imported.json`, plus the printed
    card that gets a stranger from a dead box to a working one.
-4. **Stage 7 — the household layer.** Emergency content review, the essentials
+3. **Stage 7 — the household layer.** Emergency content review, the essentials
    pack, QR cards, accessibility and the household page.
 
 Left over from stage 3, on purpose (do not describe these as done):
@@ -346,4 +372,85 @@ nothing deployed, no hardware test — this is a code-and-tests checkpoint only.
 * **Next executable step** — stage 4 (§7.1): truthful readiness and health.
   Still open from stage 3: per-person quotas, a quarantine step between upload
   and download, and a trash instead of for-ever delete.
+
+---
+
+## 9. Stage 4 checkpoint — 24 Oct 2026
+
+`pytest` **97 passed** (10 files, breakdown in §6 — `tests/test_health.py` is the
+new 13). Branch `feature/admin-hardening`, nothing deployed, no hardware test and
+no browser test: a code-and-tests checkpoint, exactly like stage 3.
+
+**The defect.** `/api/status` answered a bare `ready: true` per section whenever a
+*file* existed. A box whose library reader had died reported the library as ready;
+`/api/health` answered `{"ok": true}` unconditionally, so it could never be
+evidence of anything. Download progress was the current collection's percentage
+only, with no rate, no remaining bytes and no whole-queue figure.
+
+**New:** `pi/api/ark_health.py` — the one place that decides.
+
+| Piece | Behaviour |
+|---|---|
+| path helpers | `ark_root()`, `zim_dir()`, `library_xml()`, `status_file()`, `calibre_db()`, `vault_dir()`, read at call time from `ARK_ROOT` / `ZIM_DIR`, so `main.py` no longer freezes paths at import |
+| `library_books()`, `library_bytes()`, `book_count()`, `guide_pages()` | content facts, each tolerant of a missing or corrupt file |
+| `answers(url)` / `forget_probes()` | loopback probe, any HTTP status counts, cached 10 s, 0.8 s timeout (`ARK_PROBE_TIMEOUT`) |
+| seven section builders | `library`, `books`, `manuals`, `messages`, `files`, `storage`, `downloads` — each returns `ready`, `reason`, `action`, `content`, `facts` |
+| `progress()` | measured bytes: `current_percent`, `overall_percent`, `remaining_bytes`, `rate_bps`, `eta_seconds`, `stalled`, `reported` |
+| `report()` | `ok`, `ready`/`total`, `blocking` (labels), `checked`, `sections` |
+
+**Routes.** `/api/ready` → 200 when `ok`, else **503**, same body either way.
+`/api/health` → liveness only, with `scope: "backend-process"`, a note pointing at
+`/api/ready`, and the real verdict riding along as `ready` (never hidden, never
+dressed up as health). `/api/status` → unchanged counts plus per-section
+`ready`/`reason` and a `download_reason`; `downloads` gains the full measured set.
+The public reading path is untouched: no page depends on any of this.
+
+**Owner page.** `/admin/health` ("What is working" in the navigation): one row per
+part, `Ready` / `Not ready`, the reason, and **What to do:** when there is
+something to do; probes are asked fresh on every load; the page says in its own
+words that it never starts, stops or deletes anything. The overview links to it
+and carries the one-line verdict. No banned word appears on it — the test asserts
+that.
+
+**Progress.** `ark-zim-download` now measures its own rate (byte delta over
+elapsed time, 0 when it is not moving) and writes `current_rate_bps` next to the
+byte counters it already wrote. Nothing in the pipeline invents a number: with no
+total there is no percentage, with no measured rate there is no countdown.
+
+**Front page.** The strip shows the current collection's percentage and bytes, the
+whole-queue percentage, and an ETA only when one was measured; the dot is green
+(working), **amber** (a part is still empty) or **red** (a part exists and cannot
+be served), always followed by the plain reason. `plain()` strips markup from
+anything the API sends before it reaches `innerHTML`.
+
+**Scripts.** `60-portal.sh` syntax-checks the new module and calls `/api/ready`
+after `/api/status` (200 ok; 503 warns with the blocking parts named).
+`90-verify.sh` prints a readiness block (ready / empty / broken per part) and puts
+`ready` into `ark_status.json`. Both `bash -n` clean; neither has run on the Pi.
+
+**Tests** (`tests/test_health.py`, 13): a real loopback `http.server` stands in
+for the reader and the shelf, so "answering" and "refused" are two states a test
+can produce — the reason the old green dot could lie. Covered: empty-box
+reasons and actions; content present but the reader silent ⇒ not ready; a live
+reader ⇒ ready; an index with no books; a 0-byte catalogue versus a working shelf;
+a full card named as the reason; 200 finished + 100 in flight of 1000 = 30 % with
+a 14 s ETA; unknown totals ⇒ `None`; downloads never block, but a queue silent
+for 10 minutes is `stalled`; `/api/ready` 503 with a reason and action for every
+part; `/api/health` liveness only; `/api/status` reasons identical to
+`/api/ready`; the owner page's labels/fixes/no-jargon and the overview link.
+
+**Docs changed in the same commit** — `README.md`, `docs/ADMIN.md` (§8 is the new
+readiness page; the stale "no health panel" bullet is gone and a duplicated
+"Not tested" block was removed), `docs/USING-THE-ARK.md` (§3.7, the download
+field table, the 60-second check, troubleshooting rows), `.clinerules`.
+
+**Not done, and not to be claimed:** pause/resume *buttons* (the `ark-zim-pause`
+file still works), a storage breakdown, a reason attached to the last import,
+network-loss failover, any backup/restore screen. `/api/ready` is not on the
+reader's path, so it cannot slow the portal down; it has not been measured under
+a load the way search was.
+
+**Next executable step** — stage 5 (§7.1): the network after boot. Before any
+release: deploy stages 2–4 and walk through them on a phone (§8.9 of
+`.clinerules`).
 

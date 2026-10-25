@@ -31,6 +31,11 @@ h1{font-size:1.9rem;line-height:1.15;margin:16px 0 8px;font-weight:700}
 }
 .status b{color:var(--ink)}
 .dot{width:10px;height:10px;border-radius:50%;background:var(--go);margin-top:7px;flex:0 0 auto}
+/* A dot that is always green is a dot that cannot be wrong.  `.dot.no` means a
+   part a reader needs is not working; `.dot.wait` means the box is fine but a
+   part is still empty (nothing on the card yet). */
+.dot.no{background:var(--bad)}
+.dot.wait{background:var(--warn)}
 
 /* ---------- wifi-popup help ---------- */
 .popup{

@@ -119,25 +119,27 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 
 ## 8. PROJECT STATE — read this before touching anything
 
-**Last updated:** 2026-10-24 · **Read `docs/IMPLEMENTATION-LOG.md` next** (status table, decisions D1–D15, defects, test evidence, next step). This section is the digest; that file is the record.
+**Last updated:** 2026-10-24 · **Read `docs/IMPLEMENTATION-LOG.md` next** (status table, decisions D1–D18, defects, test evidence, next step). This section is the digest; that file is the record.
 
 | | |
 |---|---|
 | Released baseline | tag **`v1.0.5`** = `main` = `dd3336c` (the published release; the live Pi runs this) |
-| Current work | branch **`feature/admin-hardening`**, pushed to `origin` (never force-push, never move a tag). Find the live tip with `git log -1` — this digest pins stage 3, not every later docs commit |
+| Current work | branch **`feature/admin-hardening`**, pushed to `origin` (never force-push, never move a tag). Find the live tip with `git log -1` — this digest pins stage 4, not every later docs commit |
 | Stage 3 | shipped in **`a1e5efa`**: `ark_storage.py`, schema v2, board moderation + Community page, sha256 import ledger, bounded search, docs, 84 tests |
-| Deployment | **code/config only — stages 2 and 3 are NOT deployed**, no hardware or browser test has been done |
-| Release | stages 2–3 are **unreleased**; the next tag comes only after a deploy plus a hardware walk-through |
+| Stage 4 | `ark_health.py` (one place decides readiness, with reasons), `/api/ready` (200/503), `/admin/health` ("What is working"), `/api/health` demoted to liveness, measured download progress; tests in `tests/test_health.py` (13) — **97 tests total** |
+| Deployment | **code/config only — stages 2, 3 and 4 are NOT deployed**, no hardware or browser test has been done |
+| Release | stages 2–4 are **unreleased**; the next tag comes only after a deploy plus a hardware walk-through |
 | Owner decisions pending | rotate the GitHub password; rotate the Pi password; licence choice |
 
 ### 8.1 What exists, and what each piece owns
 
 | Piece | Owns |
 |---|---|
-| `pi/api/main.py` | public FastAPI app: `/api`, `/search`, `/board`, `/files`; mounts the admin router; bumps `session_epoch` at start |
+| `pi/api/main.py` | public FastAPI app: `/api/status`, `/api/ready`, `/api/health` (liveness only), `/search`, `/board`, `/files`; mounts the admin router; bumps `session_epoch` at start |
+| `pi/api/ark_health.py` | **the only place that decides readiness**: path helpers read at call time, content facts, cached loopback probe, seven per-section builders each with `ready`/`reason`/`action`/`content`, measured `progress()`, `report()` |
 | `pi/api/ark_db.py` | one connection policy (`read()` / `tx()`, always closed), numbered migrations in one transaction, audit helper, install marker, `SCHEMA_VERSION` |
 | `pi/api/ark_security.py` | scrypt hashing, length-only policy (12…1024, reject never truncate), opaque sessions (SHA-256 digest of a 256-bit token), CSRF, per-account + per-IP throttling |
-| `pi/api/ark_admin.py` | `/admin` routes: login, forced setup, password, accounts, reset/enable/disable, audit, logout, overview, **Community** (switches + board/file moderation) |
+| `pi/api/ark_admin.py` | `/admin` routes: login, forced setup, password, accounts, reset/enable/disable, audit, logout, overview, **Community** (switches + board/file moderation), **`/admin/health`** ("What is working") |
 | `pi/api/ark_storage.py` | the only write path for shared files: display name vs stored name, spool in `drop/tmp`, `os.link` finalise, size cap + free-space reserve, orphan-temp reconcile |
 | `pi/api/ark_recover.py` | recovery logic, reached only through the root wrapper |
 | `pi/bin/ark-import-books` | the book watcher: scans `drop/files` + `calibre-incoming`, imports once per sha256 into `.imported.json`, moves incoming files to `done/`, copies nothing out of the File Box |
@@ -148,7 +150,7 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 | `pi/nginx/ark.conf` | public `:80`; `location ^~ /admin { return 404; }` |
 | `pi/steps/65-admin.sh` | installs the above and proves each door (404 / 403 / TLS-only, Community behind the sign-in) |
 | `pi/steps/90-verify.sh` | read-only health report: every page, every listener, the admin door, the File Box folders, free space |
-| `tests/` | 84 pytest tests, throwaway databases, no Pi needed |
+| `tests/` | 97 pytest tests, throwaway databases, no Pi needed |
 
 ### 8.2 Ports and who may reach them
 
@@ -178,8 +180,13 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 ```bash
 # tests (Mac, throwaway DBs, never the live library)
 python3 -m venv .venv && .venv/bin/pip install -r tests/requirements.txt
-.venv/bin/python -m pytest -o addopts='--strict-markers' -q    # prints "84 passed"
+.venv/bin/python -m pytest -o addopts='--strict-markers' -q    # prints "97 passed"
 # `pytest.ini` already passes -q, so a second -q hides the summary line
+
+# the honest answer, on the box or from the Mac
+curl -s -o /dev/null -w '%{http_code}\n' http://ark.lan/api/ready   # 200 ok, 503 = look
+curl -s http://ark.lan/api/ready | python3 -m json.tool             # every part + reason
+# /api/health is liveness only and says so; never quote it as a verdict
 
 # push (never force, never move a tag)
 GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o BatchMode=yes -o ConnectTimeout=20' \
@@ -199,7 +206,7 @@ sudo ark-admin-recover --list                 # locked out (console only)
 
 Bootstrap account: `admin` / `ChangeMe-ARK!`, `must_change=1`, claimable **only** through the loopback listener while unclaimed. It is in public code on purpose and useless without the tunnel.
 
-### 8.5 Defects: what stage 3 fixed, and what is still open
+### 8.5 Defects: what stages 3 and 4 fixed, and what is still open
 
 Fixed on `feature/admin-hardening` (each one now has a test that fails without the fix):
 
@@ -218,12 +225,22 @@ Fixed on `feature/admin-hardening` (each one now has a test that fails without t
 * No moderation, no switch — `/admin/community`: two switches, pin/sorted-out/hide for notes,
   hide for files, delete behind a password re-auth; every action audited, hidden items stay in the
   database, reversible except delete.
+* A green dot that could not be wrong, and `/api/health` answering `{"ok": true}` whatever the
+  box was doing — readiness now lives in `pi/api/ark_health.py`: **ready = content present *and*
+  the loopback service answered**, with a `reason` and an `action`; `/api/ready` answers 200/503;
+  `/api/health` is liveness only and says so in its own body; `/admin/health` is the owner's page.
+  `content` (anything on the card yet?) is what tells "still filling up" from "broken".
+* Progress that was one percentage and nothing else — `ark-zim-download` now measures its own
+  rate (byte delta over elapsed time) and `ark_health.progress()` reports `overall_percent`,
+  `remaining_bytes`, `rate_bps`, `eta_seconds` and `stalled`. Unmeasured ⇒ `None`, never 0.
 
 **Still open, and they are deliberate limits, not oversights:**
 
 * Public board posting and File Box uploads are **still anonymous** — the switch turns writing
   off, it never identifies who wrote. There are no per-person quotas, no quarantine and no trash.
 * nginx now agrees with the app on 2 GiB, but nothing tests a real 2 GiB upload over the wire.
+* Readiness looks; it cannot change. There are no pause/resume *buttons* (the `ark-zim-pause`
+  file still pauses the queue), no storage breakdown, and no reason recorded for the last import.
 
 Which test proves which fix (useful when a future change breaks one):
 
@@ -235,19 +252,22 @@ Which test proves which fix (useful when a future change breaks one):
 | the deadline holds when one collection is slow | `tests/test_search.py` (6) |
 | nginx `2064m` still equals the app's 2 GiB | `tests/test_config.py` (3) |
 | schema version, migration/upgrade path, the Pi password vector | `tests/test_db.py` (7) |
+| empty vs broken vs ready per section, a full card, measured progress, `/api/ready` 503, liveness-only `/api/health`, the owner page | `tests/test_health.py` (13) |
 
-### 8.6 Not built yet (stage-3 leftovers, then stages 4–7)
+### 8.6 Not built yet (leftovers, then stages 5–7)
 
 Stage 3 delivered: upload safety (unique stored names, one write path, cap + reserve, empty-file
 refusal, temp reconcile), import idempotency (sha256 ledger, `done/` exclusion, preserved File Box
 links), board moderation + the two Community switches, and bounded search.
 
-Still absent, **do not describe any of it as done**: a health panel that checks the services and
-says *why* a section is not ready, plus queue-wide download state (the current bundle's percent
-**does** exist — do not claim progress is missing altogether); network-loss failover after boot;
-backup/restore kit + offline recovery sheet; emergency content review; essentials pack, QR cards,
-accessibility and the household page; per-person quotas; quarantine/approval queue; trash.
-**Never invent a control that does not exist.**
+Stage 4 delivered: one readiness module (`pi/api/ark_health.py`) that names the reason, `/api/ready`,
+`/admin/health`, `/api/health` reduced to liveness, and measured download progress (rate, bytes left,
+ETA, stalled).
+
+Still absent, **do not describe any of it as done**: network-loss failover after boot; backup/restore
+kit + offline recovery sheet; emergency content review; essentials pack, QR cards, accessibility and
+the household page; per-person quotas; quarantine/approval queue; trash; pause/resume buttons on the
+owner page; a storage breakdown. **Never invent a control that does not exist.**
 
 Two page-size facts, so nobody documents them wrongly again:
 
@@ -256,7 +276,7 @@ Two page-size facts, so nobody documents them wrongly again:
   (`LIMIT 50`) and says so in its own headings. That is the limit to state, not "the last fifty
   items of the board".
 
-**Never quote `/api/health` as evidence the box is well.** It is a constant `{"ok": true}` and checks nothing; `/api/status` is the honest one (library/books/guides counts, the current bundle's percent, free space, paused, updated) but it still gives a bare `ready` boolean per section with no reason attached. That gap is stage 4.
+**Never quote `/api/health` as evidence the box is well.** It answers `{"ok": true}` whenever the web process is up, and its own body now says `scope: "backend-process"` and points at `/api/ready` — quoting it as a verdict is the mistake that made stage 4 necessary. `/api/ready` is the honest one (200 = every part that must work does, 503 = look at `blocking`), and `/api/status` carries the same per-section `ready`/`reason` for the old page.
 
 ### 8.7 Gotchas that have already cost time
 
@@ -266,19 +286,27 @@ Two page-size facts, so nobody documents them wrongly again:
 * **`ark_admin` needs `ensure_initialised()`** (the real app does it at import); a bare router mount on an empty directory raises `no such table: admins`.
 * **macOS Python 3.9 links LibreSSL**, so stdlib `hashlib.scrypt` is absent — `cryptography` is the fallback. The Pi vector pinned in `tests/test_db.py` proves the two agree.
 * Reading must survive a broken admin store: the `CRYPTO_ERROR` path keeps the public portal up.
-* **`pytest -q` twice prints no summary.** `pytest.ini` already passes `-q`, so `-q -q` shows dots and no "84 passed" line; use `-o addopts='--strict-markers' -q` when the count is the evidence.
+* **`pytest -q` twice prints no summary.** `pytest.ini` already passes `-q`, so `-q -q` shows dots and no "97 passed" line; use `-o addopts='--strict-markers' -q` when the count is the evidence.
 * **macOS has no `timeout` command** (`zsh: command not found: timeout`, coreutils not installed). Bound a command with `gtimeout` if present, or start it in the background with a log file and poll — do not build a chain that depends on `timeout`.
 * **`git push` from a non-interactive session can hang on an SSH prompt.** Use `GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o BatchMode=yes -o ConnectTimeout=20'`; a failed push then reports instead of waiting for a passphrase.
 * **SQLite `ADD COLUMN` cannot add `NOT NULL` without a `DEFAULT`.** Schema v2 relies on `DEFAULT ''` / `DEFAULT 0`; that is why an upgraded box has `files.stored = ''` for old rows and every read goes through `_stored_name()`. A new query that reads `stored` directly will produce empty download links on an upgraded card.
 * **The upload guard is one function, not a convention.** The cap, the 512 MiB reserve and the empty-file refusal all live inside `ark_storage.spool()`. Replacing `file.file.read` with `shutil.copyfileobj` anywhere would silently drop all three — `tests/test_storage.py` covers `spool()`, not the route, so the route must keep calling it.
 * **A timed-out search worker is not stopped.** `_kiwix_one` waits 9 s while `SEARCH_DEADLINE` is 6 s, on purpose; the page returns at 6 s and the late answer is discarded, but that thread still occupies one of the 6 pool slots. Do not shrink `SEARCH_WORKERS` without measuring repeated searches.
+* **Readiness has exactly one author.** `pi/api/ark_health.py` decides; `main.py` and `ark_admin.py` only render it. A new "is it ready?" test written anywhere else will disagree with the owner page within a week.
+* **`ready` and `content` are different questions.** `content` = is anything on the card yet (`no` means "still filling up", amber); `ready` = content exists **and** the loopback service answered. Collapsing them makes an empty box look broken or a broken box look fine — the exact defect stage 4 removed.
+* **Any HTTP status counts as "answering".** A reader that returns 500 is up; a reader whose port refuses is down. `answers()` treats a response as life on purpose, so do not "improve" it into a 200-only check.
+* **Probes are cached for 10 s** (`forget_probes()` clears the cache; the owner page calls it). A test that flips a stub server on or off must clear the cache, or it asserts against the previous answer.
+* **`ark_health` paths are read at call time** from `ARK_ROOT` / `ZIM_DIR`. Binding a path to a module constant at import time is how `main.py` used to freeze a directory before the tests could point it somewhere else.
+* **Downloads never block readiness.** `BLOCKING_SECTIONS` excludes `downloads`; a stalled queue is reported (`stalled: true`) and still leaves the box usable. Do not add it to the blocking set.
+* **`ark-zim-download` is the only authority on rate.** It writes the measured byte delta; `progress()` reads it and returns `None` when it was not measured. Never compute an ETA from an assumed speed.
+* **A readiness test needs a real listener.** `tests/test_health.py` starts `http.server` on a loopback port so "answering" and "refused" are two states; mocking the socket layer instead would test the mock.
 
 ### 8.8 Rules for the next stage
 
 1. Test first, then code, then `pytest` green, then a checkpoint line in `docs/IMPLEMENTATION-LOG.md`.
 2. The public reading path must keep working at every commit.
 3. No deploy, reboot, `pkill`, or service restart on the live box without explicit permission.
-4. Docs change in the same commit as the behaviour — `README.md`, `docs/USING-THE-ARK.md`, `docs/REBUILD-ME-ARK.txt` and `docs/REBUILD-FROM-BACKUP.txt` all describe the box and have drifted before.
+4. Docs change in the same commit as the behaviour — `README.md`, `docs/ADMIN.md`, `docs/USING-THE-ARK.md`, `docs/REBUILD-ME-ARK.txt` and `docs/REBUILD-FROM-BACKUP.txt` all describe the box and have drifted before.
 5. Shared files get written by `ark_storage.spool()` and by nothing else (see §6).
 6. New schema steps are a numbered migration in `ark_db.py`, bump `SCHEMA_VERSION`, never rewrite v1, and keep old rows readable (see the `stored = ''` rule in §8.7).
 7. The two switches are settings, not code paths: `public_board_post` and `public_uploads`, absent or `1` means **open**. A fresh database must therefore start with the box usable, and a test must prove the closed state still serves everything already written.
@@ -287,20 +315,20 @@ Two page-size facts, so nobody documents them wrongly again:
 
 **Blocking a release (nothing is wrong with the code; it is unproven on hardware):**
 
-1. **Deploy stages 2 + 3** — `--only 20-storage,30-calibre,60-portal,65-admin` (30-calibre is where the new importer binary and `ark-book-import.path` live), then `--only 90-verify`, then read `/srv/ark/ark_status.json`. **Copy the database aside first:** `60-portal.sh` restarts `ark-api`, which runs migration v2 in place (`ALTER TABLE notes/files`), and there is no downgrade path, only that copy:
+1. **Deploy stages 2 + 3 + 4** — `--only 20-storage,30-calibre,60-portal,65-admin` (30-calibre is where the new importer binary and `ark-book-import.path` live; 60-portal carries `ark_health.py`, `/api/ready` and the new front-page strip), then `--only 90-verify`, then read `/srv/ark/ark_status.json` and `curl -s http://ark.lan/api/ready`. **Copy the database aside first:** `60-portal.sh` restarts `ark-api`, which runs migration v2 in place (`ALTER TABLE notes/files`), and there is no downgrade path, only that copy:
 
    ```bash
    sudo sqlite3 /srv/ark/api/data/ark.db ".backup '/root/ark-db-before-v2.db'"
    ```
 
    Use `.backup`, not `cp` — the live database is WAL (`PRAGMA journal_mode=WAL`), so a plain copy can miss committed data.
-2. **Walk through it on a phone** — claim through the tunnel, post a note, upload two files with the same name, drop an `.epub` in the File Box and watch it reach the shelf without a command, try a file over 2 GiB, hide/restore, password-confirmed delete, switch both Community switches off and confirm reading and downloads still work, then switch them back on. None of this has been done by a human yet.
+2. **Walk through it on a phone** — claim through the tunnel, open **What is working** and read one reason aloud (it must be plain English, not a service name), stop `ark-kiwix` on purpose and watch that row turn to *Not ready* with a fix, post a note, upload two files with the same name, drop an `.epub` in the File Box and watch it reach the shelf without a command, try a file over 2 GiB, hide/restore, password-confirmed delete, switch both Community switches off and confirm reading and downloads still work, then switch them back on. None of this has been done by a human yet.
 3. **A real 2 GiB upload over the wire** — nginx and the app now agree on the number, but no test or human has pushed a file that size through the proxy.
 
 **Owner decisions, still open:** rotate the GitHub password, rotate the Pi password, choose a licence.
 
-**Known gaps left on purpose (say so, never fake them):** per-person quotas; a quarantine/approval step; a trash instead of for-ever delete; pagination on the Community page; readiness is a bare `ready` boolean per section with no reason, and `/api/health` answers `{"ok": true}` whatever the box is doing.
+**Known gaps left on purpose (say so, never fake them):** per-person quotas; a quarantine/approval step; a trash instead of for-ever delete; pagination on the Community page; pause/resume buttons and a storage breakdown on the owner page. The storage row judges free space only — it probes nothing — and nothing has measured `/api/ready` under load.
 
-**Then the brief's remaining stages** — 4 truthful readiness/health + real download progress, 5 network-loss failover after boot, 6 backup/restore kit + offline recovery sheet, 7 emergency content review, essentials pack, QR cards, accessibility, household page. Tag a release only after 1–2 above pass; never move `v1.0.5`.
+**Then the brief's remaining stages** — 5 network-loss failover after boot, 6 backup/restore kit + offline recovery sheet, 7 emergency content review, essentials pack, QR cards, accessibility, household page. Tag a release only after 1–2 above pass; never move `v1.0.5`.
 
 

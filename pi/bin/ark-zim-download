@@ -88,11 +88,11 @@ bytes_present() {
   printf '%s' "$n"
 }
 
-write_status() {   # <current-label> <current-bytes-done> [<current-bytes-total>]
-  local current="${1:-}" done_b="${2:-0}" want_b="${3:-0}" total have todo
+write_status() {   # <current-label> <current-bytes-done> [<current-bytes-total>] [<bytes-per-second>]
+  local current="${1:-}" done_b="${2:-0}" want_b="${3:-0}" rate="${4:-0}" total have todo
   total="$(queue_count todo)"; have="$(queue_count have)"
   cat >"$STATUS.tmp" <<JSON
-{"updated":"$(date -Is)","profile":"$(cat "$PROFILE_FILE" 2>/dev/null || echo core)","total":$(( total + have )),"present":$have,"pending":$total,"bytes_total":$(bytes_total),"bytes_on_disk":$(bytes_present),"current":"$current","current_bytes":$done_b,"current_total":$want_b,"free_gib":$(free_gib),"paused":$([[ -e "$PAUSE" ]] && echo true || echo false)}
+{"updated":"$(date -Is)","profile":"$(cat "$PROFILE_FILE" 2>/dev/null || echo core)","total":$(( total + have )),"present":$have,"pending":$total,"bytes_total":$(bytes_total),"bytes_on_disk":$(bytes_present),"current":"$current","current_bytes":$done_b,"current_total":$want_b,"current_rate_bps":${rate:-0},"free_gib":$(free_gib),"paused":$([[ -e "$PAUSE" ]] && echo true || echo false)}
 JSON
   mv -f "$STATUS.tmp" "$STATUS"
   chmod 644 "$STATUS"
@@ -158,7 +158,9 @@ fetch_one() {   # <url> <bytes> <filename> <label>
     else
       curl "${CURL_ARGS[@]}" -o "$part" "$url" >>"$LOG" 2>&1 &
     fi
-    local fpid=$! rc=0 waited=0
+    local fpid=$! rc=0 waited=0 prev_b=0 prev_t rate=0 now_b now_t
+    prev_t="$(date +%s)"
+    prev_b="$(part_bytes "$part")"
     # Report progress while it runs, otherwise a 4 GiB bundle is a silent hour
     # on the home page. The fetcher is a background job so this loop can look at
     # the file it is writing.
@@ -166,7 +168,17 @@ fetch_one() {   # <url> <bytes> <filename> <label>
       sleep 5
       waited=$(( waited + 5 ))
       if (( waited % PROGRESS_EVERY == 0 )); then
-        write_status "$label" "$(part_bytes "$part")" "$bytes"
+        now_b="$(part_bytes "$part")"; now_t="$(date +%s)"
+        rate=0
+        if (( now_t > prev_t && now_b > prev_b )); then
+          rate=$(( (now_b - prev_b) / (now_t - prev_t) ))
+        fi
+        # A resume or a stalled mirror can make the difference zero or negative;
+        # report zero rather than a made-up speed (the page shows an ETA only
+        # when this number is real).
+        (( rate > 0 )) || rate=0
+        write_status "$label" "$now_b" "$bytes" "$rate"
+        prev_b=$now_b; prev_t=$now_t
       fi
     done
     if wait "$fpid"; then rc=0; else rc=$?; fi

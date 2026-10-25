@@ -27,6 +27,7 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 import ark_db
+import ark_health
 import ark_security as sec
 import ark_storage
 
@@ -210,7 +211,8 @@ def shell(title: str, body: str, *, ctx: Ctx | None = None, status: int = 200,
           tagline: str = "") -> HTMLResponse:
     nav = ""
     if ctx is not None and ctx.admin is not None and not ctx.admin["must_change"]:
-        links = [("/admin", "Overview"), ("/admin/community", "Community"),
+        links = [("/admin", "Overview"), ("/admin/health", "What is working"),
+                 ("/admin/community", "Community"),
                  ("/admin/accounts", "Administrators"),
                  ("/admin/password", "My password"), ("/admin/audit", "History")]
         nav = '<div class="nav">' + "".join(
@@ -594,6 +596,22 @@ def overview(request: Request):
         events = conn.execute("SELECT ts, actor_name, action, result FROM audit_log"
                               " ORDER BY id DESC LIMIT 5").fetchall()
         active = sum(1 for a in admins if a["enabled"] and not a["must_change"])
+    # The overview shows the verdict; /admin/health shows every part and why.
+    health = ark_health.report()
+    if health["ok"]:
+        health_block = f"""
+  <h2>Is it working?</h2>
+  {_notice("good", "<b>Everything a visitor needs is working.</b> "
+                   f"{health['ready']} of {health['total']} parts answered just now.")}
+  <p class="note"><a href="/admin/health">See what was checked</a></p>"""
+    else:
+        names = ", ".join(health["blocking"]) or "some parts"
+        count = len(health["blocking"]) or (health["total"] - health["ready"])
+        health_block = f"""
+  <h2>Is it working?</h2>
+  {_notice("bad", f"<b>{count} part{'s' if count != 1 else ''} need attention:</b> "
+                  f"{esc(names)}.")}
+  <p class="note"><a href="/admin/health">See what is wrong and what to do</a></p>"""
 
     rows = "".join(
         f"<tr><td>{esc(a['username'])}</td><td>{esc(a['display_name'] or '—')}</td>"
@@ -621,10 +639,78 @@ def overview(request: Request):
   <p class="nav"><a href="/admin/accounts">Manage administrators</a></p>
   <h2>Recent activity</h2>
   <ul class="clean">{recent}</ul>
-  <h2>What is not here yet</h2>
-  <p class="note">This page will host the health panel, storage figures and download controls.
-     Until those checks exist it shows only what it can actually read from the database.</p>"""
-    return shell("Overview", body, ctx=ctx, tagline="The owner's side of the box.")
+  {health_block}"""
+    return shell("Overview", body, ctx=ctx,
+                 tagline="The owner's side of the box.")
+
+
+# ---------------------------------------------------------------------------
+#  what is working
+# ---------------------------------------------------------------------------
+def _checked_at(iso: str) -> str:
+    try:
+        then = datetime.fromisoformat(iso)
+        return then.astimezone().strftime("%H:%M")
+    except Exception:
+        return "just now"
+
+
+def _health_row(section: dict) -> str:
+    """One part of the box: its state, what that means, and what to do."""
+    state = ("<span class=\"state\">Ready</span>" if section["ready"]
+             else "<span class=\"state no\">Not ready</span>")
+    fix = (f'<span class="fix">What to do: {esc(section["action"])}</span>'
+           if section["action"] else "")
+    return (f'<li><b>{esc(section["label"])}</b> {state}'
+            f'<span class="sub">{esc(section["reason"])}</span>{fix}</li>')
+
+
+@router.get("/health", response_class=HTMLResponse)
+def health_page(request: Request):
+    """Every part of the box, the reason it is or is not usable, and what to do.
+
+    Nothing here changes anything: it looks, and it tells the truth about what it
+    saw.  The probes are asked fresh (no cached answer) because the owner opened
+    this page to find out what is wrong *now*.
+    """
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.tx() as conn:
+        if (blocked := _gate_recovery(conn)) is not None:
+            return blocked
+        ctx = _load_ctx(conn, request, ark_db.session_epoch(conn))
+        if (blocked := _need_session(ctx, request)) is not None:
+            return blocked
+
+    ark_health.forget_probes()
+    report = ark_health.report()
+    rows = "".join(_health_row(s) for s in report["sections"])
+
+    if report["ok"]:
+        headline = _notice(
+            "good", "<b>Everything a visitor needs is working.</b> "
+                    f"{report['ready']} of {report['total']} parts answered.")
+    else:
+        count = len(report["blocking"])
+        names = esc(", ".join(report["blocking"])) or "some parts"
+        headline = _notice(
+            "bad", f"<b>{count} part{'s' if count != 1 else ''} need"
+                   f"{'s' if count == 1 else ''} attention:</b> {names}.")
+    waiting = [s for s in report["sections"] if not s["ready"]]
+    waiting_line = (""
+                    if not waiting else
+                    '<p class="note">The parts marked <b>Not ready</b> are listed above with '
+                    'a plain reason. Nothing on this page has been changed.</p>')
+    body = f"""
+  {headline}
+  <h2>Checked at {esc(_checked_at(report['checked']))}</h2>
+  <ul class="clean health">{rows}</ul>
+  {waiting_line}
+  <p class="note">Reload this page to check again. It only looks — it never starts,
+     stops or deletes anything. Downloading is ordinary work in progress, so a
+     waiting download does not count as something being wrong.</p>"""
+    return shell("What is working", body, ctx=ctx,
+                 tagline="Every part of the box, and the reason behind each answer.")
 
 
 # ---------------------------------------------------------------------------

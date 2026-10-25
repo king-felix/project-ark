@@ -86,6 +86,22 @@ pre.code.temp {
   background: #04100a;
 }
 
+/* what is working ------------------------------------------------------- */
+ul.health .state {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 3px 10px;
+  border: 1px solid #1f3a29;
+  border-radius: 999px;
+  background: #04100a;
+  color: var(--go);
+  font-size: .74rem;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+ul.health .state.no { border-color: #4a1f1a; background: #170a08; color: #ff9f92; }
+ul.health .fix { display: block; margin-top: 6px; color: #ffe6ae; font-size: .92rem; }
+
 /* print: nothing private should end up on paper by accident ------------- */
 @media print {
   details, form, .nav { display: none; }

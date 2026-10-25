@@ -119,7 +119,10 @@ welcome) and the temporary one stops working immediately. After that you can
 add other administrators, reset or switch off their accounts, read the audit
 history, and use the **Community** page — two switches that pause new notes and
 new uploads, plus pin / sorted-out / hide for messages, hide for files, and a
-delete that asks for your own password again. Losing every password is
+delete that asks for your own password again. **What is working** is the page
+to open when something feels off: every part of the box, whether it answered
+just now, the plain reason it did not, and the one next thing to try. It only
+looks — it never starts, stops or deletes anything. Losing every password is
 recoverable from the console only:
 
 ```bash
@@ -223,6 +226,25 @@ management listeners (`:8443`, and `:8444` while the box is unclaimed) must
 answer, the recovery command must be installed, and it reports how many
 administrators still hold a temporary password — without ever printing one.
 The receipt is machine-readable so the Mac never has to guess.
+
+**Is it actually usable?** Two answers, one for people and one for scripts:
+
+* `http://ark.lan/api/ready` — **200** only when every part a reader came for
+  works, **503** otherwise. The body is the whole picture either way: one entry
+  per part (`library`, `books`, `manuals`, `messages`, `files`, `storage`,
+  `downloads`) with `ready`, `content` (is there anything on the card yet?),
+  `reason` in plain words and `action` (empty when nothing is wrong).
+  `downloads` never blocks: work in progress is not a fault.
+* `https://ark.lan:8443/admin/health` — the same answer as a page for the owner,
+  with the reason and the next step under every part that is not ready.
+* `http://ark.lan/api/health` is only *"the backend answered"* and says so in
+  its own body. It is not a verdict; `/api/ready` is.
+
+`/api/status` still carries the counts, and now carries the same per-section
+`ready`/`reason` pair plus real download bytes: `bytes_on_disk`,
+`current_bytes`, `current_percent`, `overall_percent`, `remaining_bytes`,
+`rate_bps` (measured from the disk over time, never estimated) and
+`eta_seconds`, which is `null` whenever the box has not measured a rate yet.
 
 ---
 

@@ -23,6 +23,7 @@ required. If the internet is gone, everything below still works.
 | put a book on the shelf | `http://ark.lan/files` | drag the `.epub` in and walk away |
 | leave a note for the household | `http://ark.lan/board` | name is optional → **Put it on the board** |
 | see what is on the box | `http://ark.lan/api/status` | plain text, safe to read on any phone |
+| know whether it actually works | `http://ark.lan/api/ready` | `200` = everything works; `503` = the body says which part and why |
 
 Same box, four addresses. Use whichever your device can resolve.
 
@@ -198,7 +199,23 @@ A plain-text page for the curious (or for you, at 2am): how many collections are
 how big they are, how many books are on the shelf, how many guide pages exist, what is
 downloading right now, and how much space is left.
 
-A green dot on the front page means the same thing in one glance.
+It now also says, for each part of the box, **whether a visitor could use it** and — when the
+answer is no — the reason in a sentence. Two words are worth knowing:
+
+- **ready** — someone could use it this second.
+- **content** — whether there is anything on the card for that part yet. A part that is simply
+  empty ("no collection has arrived yet") is *not* broken, and the page says so instead of
+  pretending everything is fine.
+
+The front page shows the same thing in one line: a **green** dot when everything works, **amber**
+while the box is still filling up, and **red** (with the reason) when something that exists
+cannot be served.
+
+If you want the short answer rather than the whole picture, open
+**`http://ark.lan/api/ready`**: it answers `200 OK` only when every part works, and `503` with
+the reasons when one does not. Both are safe to read on any phone — there is nothing to press.
+`http://ark.lan/api/health` is the odd one out on purpose: it only says *"the backend answered"*,
+which is not the same as *"the box works"*.
 
 ---
 
@@ -339,7 +356,23 @@ tail -f /srv/ark/logs/zim-download.log
   reserve rule skips it and says so in the log — on a 256 GB card it can only live there alone.
 
 
-**How much is left?** `http://ark.lan/api/status` → `downloads.pending`.
+**How much is left?** `http://ark.lan/api/status` → `downloads`. The numbers there are measured
+from the card, not estimated:
+
+| Field | What it means |
+|---|---|
+| `pending` | collections still to come |
+| `current`, `current_bytes`, `current_total` | the one being fetched, and its real bytes |
+| `percent` | how far through that one collection |
+| `overall_percent` | how much of the whole queue is already on the card |
+| `remaining_bytes` | bytes still to fetch |
+| `rate_bps` | bytes per second, measured over the last few seconds — `0` when it is not moving |
+| `eta_seconds` | time left at that rate — **`null`** until a rate has actually been measured |
+| `stalled` | `true` when nothing has been reported for over two minutes |
+
+A `null` where you expected a number is the honest answer, not a bug: the box will not invent a
+percentage or a countdown it has not measured. The front page uses exactly the same figures, so
+"34 % of `wikipedia_en_medicine_maxi` (3.2 GB of 9.4 GB), about 2 h 10 min left" is real.
 
 ---
 
@@ -352,7 +385,11 @@ Do this after any power cut, and before you rely on the box for a trip.
 3. `http://ark.lan/vault/` — the manuals index loads.
 4. Open one collection in `/kiwix/` and search it — a hit means the content is readable, not just
    present.
-5. `http://ark.lan/api/status` — space left, and nothing stuck on the same download twice running.
+5. `http://ark.lan/api/ready` — answers `200` when every part works. If it answers `503`, the
+   body names the part and the reason; that is the difference between a box that is *up* and a
+   box that *works*.
+6. `http://ark.lan/api/status` — space left, and nothing stuck on the same download twice running.
+
 
 For whoever looks after the box, one more: `https://ark.lan:8443/admin` shows a
 sign-in page. That is the owner's door — it changes the machine, it is never
@@ -376,6 +413,8 @@ Re-provisioning is idempotent: re-running any phase repairs it rather than dupli
 | `ark.lan` does not load | device on a different Wi-Fi, or the name will not resolve | try `http://10.42.0.1`; on Windows use `http://ark.local` |
 | Odd "Sign in to Wi-Fi" popup | that is the phone's captive window, not the Ark | close it, open `http://ark.lan` in the real browser |
 | Front page fine, `/books/` shows an error | library database missing or unreadable | `sudo ark-import-calibre-library <path>`, or re-run phase `30-calibre` |
+| Front page dot is amber | the box is still filling up — a part has nothing on the card yet | nothing; `/api/ready` names which part and why |
+| Front page dot is red, or `/api/ready` answers 503 | a part exists but cannot be served (the program behind it is not answering) | open `https://ark.lan:8443/admin/health` and follow **What to do:** |
 | Book dropped in, never appears | wrong extension, empty file, or over 2 GB | `sudo ark-import-books --list`; `journalctl -u ark-book-import -n 30` |
 | Collection opens but searches find nothing | bundle present but unreadable (interrupted download) | auto-detected and re-fetched; `tail -f /srv/ark/logs/zim-download.log` |
 | Nothing downloading any more | no network the box can use | `sudo ark-mode status`; at home, `sudo ark-mode home` |

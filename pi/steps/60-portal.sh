@@ -29,7 +29,7 @@ ark_copy "$ARK_SRC/portal/assets/ark-admin.css" "$PORTAL/assets/ark-admin.css" 6
 ark_ok "portal pages installed in $PORTAL"
 
 # ---- backend ----------------------------------------------------------------
-for f in main.py ark_db.py ark_storage.py ark_security.py ark_admin.py ark_recover.py; do
+for f in main.py ark_db.py ark_storage.py ark_security.py ark_admin.py ark_recover.py ark_health.py; do
   ark_copy "$ARK_SRC/api/$f" "$API_DIR/$f" 644 "$ARK_PI_USER:$ARK_PI_GROUP"
 done
 ark_copy "$ARK_SRC/api/requirements.txt" "$API_DIR/requirements.txt" 644 "$ARK_PI_USER:$ARK_PI_GROUP"
@@ -54,7 +54,19 @@ code="$(ark_wait_http http://127.0.0.1:8085/api/health 90 200)" || true
 [[ "$code" == "200" ]] || { journalctl -u ark-api -n 30 --no-pager || true; ark_die "backend health check returned HTTP $code"; }
 code="$(ark_wait_http http://127.0.0.1:8085/api/status 60 200)" || true
 [[ "$code" == "200" ]] || ark_die "status endpoint returned HTTP $code"
-ark_ok "backend answering on 127.0.0.1:8085 (health + status)"
+# /api/ready is the honest one: 200 only when every part a reader needs actually
+# answers, 503 with the reasons when it does not.  A box still filling up is
+# allowed to be 503 here — phase 7 is what holds it to account.
+ready_code="$(ark_wait_http http://127.0.0.1:8085/api/ready 60 200 503)" || true
+case "$ready_code" in
+  200) ark_ok "readiness: every part a visitor needs is working" ;;
+  503) reason="$(curl -fsS --max-time 10 http://127.0.0.1:8085/api/ready 2>/dev/null \
+          | "$VENV/bin/python" -c 'import json,sys; r=json.load(sys.stdin); print("; ".join(r.get("blocking") or ["nothing named"]))' 2>/dev/null \
+          || echo "unknown")"
+       ark_warn "readiness: not ready yet — $reason (normal while the box is still filling up)" ;;
+  *)   ark_die "readiness endpoint returned HTTP ${ready_code:-none}" ;;
+esac
+ark_ok "backend answering on 127.0.0.1:8085 (health + status + readiness)"
 
 # ---- nginx ------------------------------------------------------------------
 NGINX_SITE=/etc/nginx/sites-available/ark
