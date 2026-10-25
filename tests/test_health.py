@@ -499,3 +499,49 @@ def test_a_copy_the_pages_cannot_open_is_reported_not_denied(ark):
         assert section["label"] not in ark_health.report()["blocking"]
     finally:
         bundle.chmod(0o755)                # so the fixture can tidy up
+
+
+# ---------------------------------------------------------------------------
+#  a book is named by its file
+# ---------------------------------------------------------------------------
+def test_a_book_is_asked_for_by_the_name_of_its_file(ark):
+    """Search must ask for a book by the name its file has.
+
+    kiwix-serve indexes a book under ``<file>.zim`` minus the extension, and its
+    own OPDS links use that name.  ``id`` is a UUID (nothing matches it) and
+    ``name`` drops the date suffix (``…_en_all`` while the file says
+    ``…_en_all_2026-10``), so ``path`` is the only attribute that names the file
+    that is really on the card.
+    """
+    import ark_health
+
+    (ark.root / "kiwix" / "library.xml").write_text(
+        '<?xml version="1.0"?><library>'
+        '<book id="2c464b36-1ea7-2646-ba6a-3b7504ec4a63"'
+        ' path="/srv/ark/kiwix/bicycles.stackexchange.com_en_all_2026-10.zim"'
+        ' name="bicycles.stackexchange.com_en_all"'
+        ' title="Bicycles Q&amp;A" size="499254272"/>'
+        '</library>', encoding="utf-8")
+
+    book, = ark_health.library_books()
+    assert book["stem"] == "bicycles.stackexchange.com_en_all_2026-10"
+    assert book["id"] == "2c464b36-1ea7-2646-ba6a-3b7504ec4a63"
+    assert book["title"] == "Bicycles Q&A"
+
+
+def test_a_book_whose_path_is_unusable_says_so_instead_of_guessing(ark):
+    """A path that is not a .zim file is an empty stem, never the short name.
+
+    Guessing from ``name`` would send the search to a book that may not be the
+    one here (two editions of the same collection are two files, one name), and
+    the answer would be indistinguishable from "nothing matched".
+    """
+    import ark_health
+
+    (ark.root / "kiwix" / "library.xml").write_text(
+        '<?xml version="1.0"?><library>'
+        '<book id="abc" path="" name="wikipedia_en_all" title="Wikipedia"/>'
+        '</library>', encoding="utf-8")
+
+    book, = ark_health.library_books()
+    assert book["stem"] == ""

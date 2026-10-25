@@ -95,3 +95,42 @@ def test_the_public_search_page_answers_with_nothing_installed(public):
     page = public.client.get("/search?q=water", headers=LAN)
     assert page.status_code == 200
     assert "Search everything" in page.text
+
+
+# ---------------------------------------------------------------------------
+#  the name a collection is asked for by
+# ---------------------------------------------------------------------------
+def test_a_collection_is_asked_for_by_the_name_of_its_file(public, monkeypatch):
+    """A UUID gets an empty feed, and an empty feed looks like "no results"."""
+    main = public.app
+    stem = "bicycles.stackexchange.com_en_all_2026-10"
+    book = {"id": "2c464b36-1ea7-2646-ba6a-3b7504ec4a63", "stem": stem,
+            "title": "Bicycles Q&A", "size": 1}
+    monkeypatch.setattr(main, "library_books", lambda: [book])
+    asked: list[str] = []
+
+    def fake(handle: str, pattern: str) -> list[dict]:
+        asked.append(handle)
+        return [{"title": "Brakes", "link": f"/kiwix/content/{handle}/Brakes", "snippet": ""}]
+
+    monkeypatch.setattr(main, "_kiwix_one", fake)
+
+    hits = main.search_library("brake")
+
+    assert asked == [stem], "the file name, not the library's UUID"
+    assert hits[0]["source"] == "Bicycles Q&A", "a hit names its own collection"
+    assert hits[0]["link"] == f"/kiwix/content/{stem}/Brakes"
+
+
+def test_a_book_without_a_file_name_still_gets_asked(public, monkeypatch):
+    """An index we could not read a file name from falls back to the id.
+
+    It may answer nothing, but it must not crash the page or skip the book.
+    """
+    main = public.app
+    monkeypatch.setattr(main, "library_books",
+                        lambda: [{"id": "b00", "stem": "", "title": "Book 0", "size": 1}])
+    asked: list[str] = []
+    monkeypatch.setattr(main, "_kiwix_one", lambda handle, pattern: asked.append(handle) or [])
+    main.search_library("water")
+    assert asked == ["b00"]

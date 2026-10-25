@@ -507,3 +507,44 @@ def test_the_owner_can_take_a_game_off_the_shelf_and_put_it_back(ark, client, pu
                  headers=LAN, cookie=f"ark_admin={cookie}")
     assert shown.status_code == 303
     assert "Stars" in public.client.get("/arcade/").text
+
+
+# ---------------------------------------------------------------------------
+#  the question the player asks before it downloads anything
+# ---------------------------------------------------------------------------
+def test_a_game_file_answers_a_size_question_as_well_as_a_download(public):
+    """The player asks with HEAD first, then downloads.
+
+    It caches games in the browser and compares the length it is told with the
+    copy it already has, so a route that answers only GET returns 405 to the
+    question the browser actually asked — and a browser cannot use a 405.
+    """
+    _game(public.ark)
+    got = public.client.get("/arcade/g/stars/rom")
+    assert got.status_code == 200
+    head = public.client.head("/arcade/g/stars/rom")
+    assert head.status_code == 200, "HEAD must be answered, not refused"
+    assert head.content == b""
+    assert int(head.headers["content-length"]) == int(got.headers["content-length"]) == len(got.content)
+
+
+def test_a_hidden_or_absent_game_answers_a_size_question_the_same_way(public):
+    """A name question must not leak a hidden game's file either."""
+    _game(public.ark, hidden=1)
+    assert public.client.head("/arcade/g/stars/rom").status_code == 404
+    assert public.client.head("/arcade/g/nothing/rom").status_code == 404
+
+
+def test_the_player_is_sized_on_a_frame_the_emulator_cannot_overwrite(public):
+    """The player writes its own ``style`` attribute on its own element.
+
+    Sizing the stage inline therefore accomplishes nothing — it is erased as
+    the player starts — so the shape of the screen is set on a frame around it,
+    and the console decides that shape.
+    """
+    _game(public.ark)
+    page = public.client.get("/arcade/g/stars")
+    assert '<div id="arcade-frame" style="aspect-ratio: 10 / 9">' in page.text, \
+        "a Game Boy screen is nearly square"
+    assert '<div id="arcade-stage" aria-label=' in page.text, \
+        "the stage carries no inline style the player would erase"

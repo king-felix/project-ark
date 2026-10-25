@@ -543,7 +543,10 @@ Community controls and the readiness page are complete and tested.
 * the book importer: one import per content, `done/` never rescanned, a File Box
   copy left in place so its link survives, a failed import offered again;
 * search: a hanging collection cannot hold the page past its budget; one shared
-  pool, bounded number of collections; the numbers in `ark.conf` and
+  pool, bounded number of collections; a collection is asked for by its ZIM's
+  **file name** (`…_en_all_2026-10`), never by the library's UUID and never by
+  the shorter `name` that drops the date — both of those answer nothing while
+  looking exactly like "no results"; the numbers in `ark.conf` and
   `ark_storage.py` agree, and the library engine no longer listens on every
   address;
 * readiness: an empty box names what is missing and what to do; a collection is
@@ -572,7 +575,10 @@ Community controls and the readiness page are complete and tested.
   external address; a named player's save round-trips, a stale tab is refused
   with 409, another name sees 404, a missing page token is 403, export/import
   works and a climbing zip path is skipped; a hidden game has no page and no
-  ROM; the emulator route cannot walk out of its folder; the allowlist, redirect,
+  ROM; the emulator route cannot walk out of its folder; a game file answers the
+  size question (`HEAD`) as well as the download; the box the game is drawn into
+  has a height and follows the console's shape, and that shape lives on a frame
+  the player cannot overwrite; the allowlist, redirect,
   archive and renamed-web-page gates each refuse, and a licence is recorded
   rather than refused; a carried first shelf installs from a folder and a file
   that is not the one recorded is refused; the pinned seed dry

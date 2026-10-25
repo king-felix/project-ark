@@ -112,8 +112,21 @@ def human_size(n) -> str:
 # ---------------------------------------------------------------------------
 #  what is on the box (the readers used by the pages and by the checks)
 # ---------------------------------------------------------------------------
+def _book_stem(book) -> str:
+    """The name this book answers to: its file name without ``.zim``.
+
+    ``library.xml`` keeps the file's own name in ``path``.  ``name`` is a
+    separate, shorter handle (it drops the date suffix, so on a card with two
+    editions it can name the edition that is not here) and ``id`` is a UUID the
+    server does not index by.  Neither can be used to ask for the file on the
+    card, so an unusable ``path`` answers "" and the caller falls back.
+    """
+    base = os.path.basename((book.get("path") or "").strip())
+    return base[:-4] if base.endswith(".zim") else ""
+
+
 def library_books() -> list[dict]:
-    """Books listed in the library index (id, title, size)."""
+    """Books listed in the library index (id, stem, title, size)."""
     index = library_xml()
     if not index.is_file():
         return []
@@ -134,7 +147,7 @@ def library_books() -> list[dict]:
             size = int(size)
         except (TypeError, ValueError):
             size = 0
-        out.append({"id": ident, "title": title, "size": size})
+        out.append({"id": ident, "stem": _book_stem(book), "title": title, "size": size})
     out.sort(key=lambda b: b["title"].lower())
     return out
 

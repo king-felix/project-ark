@@ -365,11 +365,14 @@ def game_page(request: Request, slug: str) -> Response:
         return json.dumps(value).replace("</", "<\\/")
 
     boot = "\n".join(f"window.EJS_{key} = {_js(value)};" for key, value in config.items())
+    aspect = system.get("aspect") or "4 / 3"
     body = f"""
     <h1>{arc.esc(game['title'])}</h1>
     <p class="arcade-lede">{arc.esc(game['description'] or 'Ready to play.')}</p>
     <p class="arcade-facts">{arc.esc(' · '.join(facts))}</p>
-    <div id="arcade-stage" aria-label="{arc.esc(game['title'])} game player"></div>
+    <div id="arcade-frame" style="aspect-ratio: {arc.esc(aspect)}">
+      <div id="arcade-stage" aria-label="{arc.esc(game['title'])} game player"></div>
+    </div>
     <p class="arcade-note">Use the arrow keys or the on-screen pad. The game runs on this
     box; nothing is downloaded while you play. <a href="/arcade/static/notices.txt">About the games</a></p>
     {_prefs_panel(game, prefs, csrf) if prefs else ''}
@@ -379,8 +382,15 @@ def game_page(request: Request, slug: str) -> Response:
     return page(game["title"], body, profile_link=link, flash=_flash(request))
 
 
-@router.get("/arcade/g/{slug}/rom")
+@router.api_route("/arcade/g/{slug}/rom", methods=["GET", "HEAD"])
 def game_rom(slug: str) -> Response:
+    """One game's file.
+
+    ``HEAD`` is answered as well as ``GET``: the player asks for the size with a
+    HEAD before it downloads anything (it caches games in the browser and needs
+    the length to tell a complete copy from a stale one).  A GET-only route
+    answers 405 to that question, which is the answer a browser cannot use.
+    """
     with ark_db.read() as conn:
         game = arc.game_by_slug(conn, slug)
         if not game or not game["published"] or game["hidden"]:
@@ -405,7 +415,7 @@ def _inside(base: Path, raw: str) -> Optional[Path]:
     return target if target.is_file() else None
 
 
-@router.get("/arcade/emulator/{path:path}")
+@router.api_route("/arcade/emulator/{path:path}", methods=["GET", "HEAD"])
 def emulator_asset(path: str) -> Response:
     target = _inside(arc.emulator_dir(), path)
     if not target or target.suffix.lower() not in SAFE_EMULATOR_SUFFIXES:
@@ -416,7 +426,7 @@ def emulator_asset(path: str) -> Response:
                                  "X-Content-Type-Options": "nosniff"})
 
 
-@router.get("/arcade/static/{name}")
+@router.api_route("/arcade/static/{name}", methods=["GET", "HEAD"])
 def arcade_static(name: str) -> Response:
     if name not in ("ark-arcade.css", "notices.txt"):
         return Response("Not here", status_code=404)
@@ -428,7 +438,7 @@ def arcade_static(name: str) -> Response:
                         headers={"Cache-Control": "public, max-age=3600"})
 
 
-@router.get("/arcade/notices.txt", include_in_schema=False)
+@router.api_route("/arcade/notices.txt", methods=["GET", "HEAD"], include_in_schema=False)
 def notices() -> Response:
     target = arc.static_dir() / "notices.txt"
     if not target.is_file():

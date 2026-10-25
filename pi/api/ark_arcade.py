@@ -57,12 +57,18 @@ LOGIN_MAX_BACKOFF = 15 * 60
 #: actual header is checked too (see ``rom_facts``), but a name outside this
 #: list never gets that far.
 SYSTEMS: Dict[str, Dict[str, Any]] = {
-    "gb":  {"core": "gambatte",       "label": "Game Boy",          "ext": (".gb",)},
-    "gbc": {"core": "gambatte",       "label": "Game Boy Color",    "ext": (".gbc",)},
-    "nes": {"core": "fceumm",         "label": "Nintendo NES",      "ext": (".nes",)},
-    "snes": {"core": "snes9x",        "label": "Super Nintendo",    "ext": (".sfc", ".smc")},
-    "gba": {"core": "mgba",           "label": "Game Boy Advance",  "ext": (".gba",)},
-    "genesis": {"core": "genesis_plus_gx", "label": "Sega Genesis", "ext": (".md", ".gen", ".bin")},
+    "gb":  {"core": "gambatte",       "label": "Game Boy",          "ext": (".gb",),
+            "aspect": "10 / 9"},
+    "gbc": {"core": "gambatte",       "label": "Game Boy Color",    "ext": (".gbc",),
+            "aspect": "10 / 9"},
+    "nes": {"core": "fceumm",         "label": "Nintendo NES",      "ext": (".nes",),
+            "aspect": "16 / 15"},
+    "snes": {"core": "snes9x",        "label": "Super Nintendo",    "ext": (".sfc", ".smc"),
+             "aspect": "4 / 3"},
+    "gba": {"core": "mgba",           "label": "Game Boy Advance",  "ext": (".gba",),
+            "aspect": "3 / 2"},
+    "genesis": {"core": "genesis_plus_gx", "label": "Sega Genesis", "ext": (".md", ".gen", ".bin"),
+                "aspect": "10 / 7"},
 }
 
 #: Licence names this box recognises when it describes a game.  Nothing is

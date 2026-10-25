@@ -277,3 +277,57 @@ def test_the_installer_proves_the_book_door_on_the_box():
     assert "/books/" in PORTAL_PHASE
     for proof in ("/books/admin", "/books/upload", "/books/login"):
         assert proof in PORTAL_PHASE, proof
+
+
+# ---------------------------------------------------------------------------
+#  the player's box must have a height to fill
+# ---------------------------------------------------------------------------
+def test_the_player_box_has_a_height_to_fill():
+    """The player's canvas is ``height: 100%`` of its box.
+
+    With no height on the box the canvas collapses to nothing, the game runs
+    perfectly and invisibly behind a black rectangle, and it looks exactly like
+    "the player does not load".  That is how it was found, on a phone.
+
+    The height lives on a frame we own, never on the stage: the player writes
+    ``--ejs-primary-color`` into its own element's ``style`` attribute and so
+    erases anything we put there.
+    """
+    css = (REPO / "pi" / "arcade" / "static" / "ark-arcade.css").read_text(encoding="utf-8")
+
+    frame = re.search(r"#arcade-frame\s*\{([^}]*)\}", css)
+    assert frame, "the player needs a frame rule of its own"
+    body = frame.group(1)
+    assert "aspect-ratio" in body or "height:" in body, (
+        "the player's box needs a definite height or an aspect ratio: " + body)
+
+    stage = re.search(r"#arcade-stage[^{]*\{([^}]*)\}", css)
+    assert stage, "#arcade-stage must be told to fill the frame"
+    assert "height: 100%" in stage.group(1), (
+        "the stage must fill the frame's height: " + stage.group(1))
+
+
+def test_every_console_has_a_screen_shape():
+    """A Game Boy screen is nearly square; a Game Boy Advance screen is wide."""
+    import ark_arcade
+
+    for system, facts in ark_arcade.SYSTEMS.items():
+        assert re.fullmatch(r"\d+ / \d+", facts["aspect"]), (system, facts)
+
+
+# ---------------------------------------------------------------------------
+#  the library catalogue must be built where the bundles live
+# ---------------------------------------------------------------------------
+def test_the_library_catalogue_is_built_beside_the_bundles_it_describes():
+    """kiwix-manage records each path relative to the catalogue's own folder.
+
+    Built in /tmp and then moved into place, every path came out as
+    ``/srv/ark/srv/ark/kiwix/<name>.zim``: the library listed twenty books it
+    could not open, the viewer answered 200, search answered
+    "Content not found" for every name, and nothing anywhere said why.
+    """
+    script = (REPO / "pi" / "bin" / "ark-kiwix-library").read_text(encoding="utf-8")
+    assert 'mktemp "$ZIM_DIR/' in script, (
+        "the index must be built inside the folder it describes, or its paths are wrong")
+    assert 'mv -f "$1" "$LIB"' in script, (
+        "publish by rename (publish()), so a half-built catalogue is never served")

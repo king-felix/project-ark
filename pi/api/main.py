@@ -322,11 +322,29 @@ def _parse_feed(raw: bytes) -> list[dict]:
 
 
 def _kiwix_one(book_id: str, pattern: str) -> list[dict]:
+    """Ask one collection.
+
+    ``book_id`` is what the library answers to, which is the ZIM's **file name
+    without ``.zim``** — see ``_handle``.  It is not the ``id`` attribute in
+    ``library.xml`` (a UUID the server does not index by): asking with that gets
+    an empty feed, and an empty feed looks exactly like "nothing matched".
+    """
     query = urllib.parse.urlencode({"content": book_id, "pattern": pattern, "format": "xml"})
     req = urllib.request.Request(f"{ark_health.kiwix_base()}/search?{query}",
                                  headers={"User-Agent": "ark-portal/1.0"})
     with urllib.request.urlopen(req, timeout=9) as resp:
         return _parse_feed(resp.read(3_000_000))[:4]
+
+
+def _handle(book: dict) -> str:
+    """The name one collection is asked for by.
+
+    The library serves a book under its file name minus ``.zim``, and its own
+    OPDS links use that same name.  ``id`` is a UUID (nothing matches it) and
+    ``name`` drops the date suffix, so on a card holding two editions the name
+    can point at a book that is not the one here.
+    """
+    return book.get("stem") or book["id"]
 
 
 def _search_pool() -> ThreadPoolExecutor:
@@ -356,11 +374,15 @@ def search_library(pattern: str) -> list[dict]:
     books = library_books()[:MAX_COLLECTIONS]
     if not books:
         return []
-    by_id = {b["id"]: b for b in books}
+    by_id: dict[str, dict] = {}
+    for book in books:
+        by_id[book["id"]] = book
+        if book.get("stem"):
+            by_id.setdefault(book["stem"], book)
     hits: list[dict] = []
     seen: set[tuple[str, str]] = set()
     pool = _search_pool()
-    jobs = {pool.submit(_kiwix_one, b["id"], pattern): b for b in books}
+    jobs = {pool.submit(_kiwix_one, _handle(b), pattern): b for b in books}
     done, pending = wait(list(jobs), timeout=SEARCH_DEADLINE)
     for future in pending:
         future.cancel()           # a running worker is left to finish and be ignored
@@ -707,7 +729,7 @@ def _download_header(display: str) -> str:
             + urllib.parse.quote(display or "download", safe=""))
 
 
-@app.get("/drop/{name}")
+@app.api_route("/drop/{name}", methods=["GET", "HEAD"])
 def drop_download(name: str) -> Response:
     """Serve a shared file only while its row says it is visible.
 

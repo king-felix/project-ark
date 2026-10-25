@@ -38,7 +38,11 @@ for. The one thing not proved is a real archive being decompressed on a real pho
 | The compression add-ons the minified loader asks for at run time are present | `pi/arcade/emulatorjs/compression/` | `test_config.py::test_the_player_has_every_add_on_it_loads_at_run_time` |
 | Every vendored file matches a recorded digest, and the manifest lists every file | `pi/arcade/emulatorjs/SHA256SUMS` | `test_config.py::test_every_vendored_player_file_matches_its_checksum` |
 | The installer refuses to serve an unverified player | `pi/steps/60-portal.sh` | `test_config.py::test_the_installer_proves_the_player_before_serving_it` |
-| A game page contains no `http://` or `https://` asset reference | `pi/arcade/templates/arcade_game.html` | `test_arcade.py::test_the_game_page_is_entirely_local_and_has_no_guest_save_panel` |
+| A game page contains no `http://` or `https://` asset reference | `pi/arcade/templates/page.html`, `pi/api/ark_arcade_web.py` | `test_arcade.py::test_the_game_page_is_entirely_local_and_has_no_guest_save_panel` |
+| The box the game is drawn into has a definite height, so the picture is on the screen | `pi/arcade/static/ark-arcade.css` (`#arcade-frame`, `#arcade-stage`) | `test_config.py::test_the_player_box_has_a_height_to_fill` |
+| The screen's shape is set on a frame the player cannot overwrite (it writes its own `style`) | `ark_arcade_web.game_page`, `SYSTEMS[*]["aspect"]` | `test_arcade.py::test_the_player_is_sized_on_a_frame_the_emulator_cannot_overwrite`; `test_config.py::test_every_console_has_a_screen_shape` |
+| A game file answers the size question (`HEAD`) as well as the download (`GET`) | `ark_arcade_web.game_rom`, `/drop/<name>` | `test_arcade.py::test_a_game_file_answers_a_size_question_as_well_as_a_download`; `test_arcade.py::test_a_hidden_or_absent_game_answers_a_size_question_the_same_way` |
+| Every file the player asks for is on the card, including its language file | `pi/arcade/emulatorjs/localization/en-US.json` | `test_config.py::test_every_vendored_player_file_matches_its_checksum` |
 
 The add-ons are the subtle part: `extractzip.js`, `extract7z.js`, `libunrar.js` and
 `libunrar.wasm` are fetched only when a zipped game is opened, so their absence used to be
@@ -390,6 +394,32 @@ evidence about the box.
    0.6.27. Re-enumerate `calibreweb/cps/*.py` and update the config, the test and this table in
    one commit the day the package version changes, and add a reading route to the installer's
    proofs whenever the shelf page starts using a new one.
+
+## R9 — a search finds what is on the card
+
+**Status: DONE (code + test + proved on the box, 25 Oct 2026).** The portal asks each
+collection by the name that collection answers to, and it asks the library at the
+address the library is actually mounted on. Both were wrong, and both failed silently:
+search answered "nothing matched" for every word while `/kiwix/` served every book.
+
+| Acceptance sentence | Where | Test |
+|---|---|---|
+| A collection is asked for by its ZIM's file name, not its UUID | `ark_health.library_books()` (`stem`), `main._handle()` | `test_health.py::test_a_book_is_asked_for_by_the_name_of_its_file`; `test_search.py::test_a_collection_is_asked_for_by_the_name_of_its_file` |
+| An index that cannot name a file says so instead of guessing the short name | `ark_health._book_stem()` | `test_health.py::test_a_book_whose_path_is_unusable_says_so_instead_of_guessing` |
+| A book we could not name is still asked (it must not vanish, or crash the page) | `main._handle()` | `test_search.py::test_a_book_without_a_file_name_still_gets_asked` |
+| A result names the collection that owns it, by handle or by id | `main.search_library()` | `test_search.py::test_a_collection_is_asked_for_by_the_name_of_its_file` |
+| The catalogue is built beside the bundles it describes, so its paths exist | `pi/bin/ark-kiwix-library` | `test_config.py::test_the_library_catalogue_is_built_beside_the_bundles_it_describes` |
+
+The endpoint is part of the contract: the library is mounted at `/kiwix` (nginx proxies
+it there), so its search is `/kiwix/search` — a request to bare `/search` returns the
+library's 404 page, whose body says "Content not found" and reads exactly like a failed
+lookup. `ark_health.kiwix_base()` carries the prefix; probes built by hand must too.
+
+**Not proved:** search quality (which articles are ranked first) and behaviour with a
+collection whose full-text index is missing. Both are the library's business, not the
+portal's, and neither is measured here.
+
+---
 
 ## Keeping this page honest
 

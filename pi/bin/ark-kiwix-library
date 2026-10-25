@@ -23,25 +23,56 @@ if (( ${#zims[@]} == 0 )); then
   exit 1
 fi
 
-tmp="$(mktemp)"
+# The catalogue is built IN the folder it describes.  kiwix-manage writes each
+# bundle's path relative to the folder holding the library file, so an index
+# built elsewhere and then moved to /srv/ark/kiwix records
+# "/srv/ark/srv/ark/kiwix/<name>.zim" — a path that does not exist.  The box then
+# serves a library whose every book is unopenable: the viewer 404s and search
+# answers "Content not found", while `kiwix-manage … show` looks perfectly
+# healthy.  Built here, the paths come out as bare file names and the files are
+# found.
+#
+# No lock file, on purpose: this runs both as root (the downloader) and as `pi`
+# (the service), so a lock in this folder is a file one of them cannot open, and
+# a failed lock takes the whole library down.  Two builders racing is harmless —
+# each writes its own uniquely named complete index and renames it into place.
+tmp="$(mktemp "$ZIM_DIR/.library-XXXXXX")"
 rm -f "$tmp"                     # kiwix-manage wants to create the file itself
+# a build killed mid-run leaves one behind; it is not a catalogue and not a bundle
+find "$ZIM_DIR" -maxdepth 1 -name '.library-*' -mmin +60 -delete 2>/dev/null || true
+
+# Publish by rename, and hand the file to the folder's owner.  This script runs
+# as root from the downloader and as `pi` from the service, and a catalogue left
+# owned by the other one cannot be edited in place — the library then refuses to
+# start and says only "Permission denied".
+publish() {
+  chmod 644 "$1"
+  chown --reference="$ZIM_DIR" "$1" 2>/dev/null || true
+  mv -f "$1" "$LIB"
+}
+
 if kiwix-manage "$tmp" add "${zims[@]}" >/dev/null 2>&1; then
-  chmod 644 "$tmp"
-  mv -f "$tmp" "$LIB"
+  publish "$tmp"
   printf 'library.xml rebuilt: %d bundle(s)\n' "${#zims[@]}"
   exit 0
 fi
 
-# A single corrupt ZIM must not cost us the whole catalogue: index one by one.
+# A single corrupt ZIM must not cost us the whole catalogue: index one by one,
+# into a fresh file so that the old owner cannot block the rebuild.
 echo "bulk index failed — retrying bundle by bundle" >&2
 rm -f "$tmp"
 ok=0
 for zim in "${zims[@]}"; do
-  if kiwix-manage "$LIB" add "$zim" >/dev/null 2>&1; then
+  if kiwix-manage "$tmp" add "$zim" >/dev/null 2>&1; then
     ok=$(( ok + 1 ))
   else
     echo "  ! unreadable bundle: $(basename "$zim")" >&2
   fi
 done
 printf 'library.xml rebuilt bundle by bundle: %d of %d\n' "$ok" "${#zims[@]}"
-(( ok > 0 ))
+if (( ok > 0 )); then
+  publish "$tmp"
+  exit 0
+fi
+rm -f "$tmp"
+exit 1

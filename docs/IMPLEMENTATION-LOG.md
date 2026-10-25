@@ -1392,3 +1392,125 @@ not happened: the setting and the dry run are proved, the reboot is not.
 once and watch `The-Ark-Offline` appear with nobody touching anything; then carry one
 SNES title over with `--import` and record what that path asks for.
 
+
+## 18. The player was running invisibly, and the library could not find its own books — 25 Oct 2026
+
+Both defects were found the same way, and the method is worth recording as much as the
+fixes: the box was asked **what a browser sees**, not what the code intends. A headless
+Chromium (`playwright`, installed under `/tmp` on the Mac) loaded the real pages over
+`http://ark.local` and recorded every request, every console message and the emulator's
+own internal state. Neither defect was visible to `curl`: every URL answered 200,
+`90-verify` was green, `/api/ready` was 200.
+
+### 18.1 The library answered, but could not resolve a single book
+
+`curl /kiwix/` was 200 and OPDS listed every collection, so the library looked healthy.
+Search answered `<error>Content not found</error>` for every name that was tried.
+
+Root cause, proved with `kiwix-manage … show`: the catalogue held
+
+```
+path: /srv/ark/srv/ark/kiwix/bicycles.stackexchange.com_en_all_2026-10.zim
+```
+
+a path that does not exist. `ark-kiwix-library` built the index with
+`tmp="$(mktemp)"` — in `/tmp` — and then moved it to `/srv/ark/kiwix/library.xml`.
+**`kiwix-manage` writes each bundle's path relative to the folder holding the library
+file**, so building it in `/tmp` and moving it recorded `/srv/ark` + `/srv/ark/kiwix/…`.
+`kiwix-serve` then had a catalogue of twenty books it could not open: no error, no
+warning, and the file list looked perfect.
+
+* Fix: the index is built **in the folder it describes**
+  (`mktemp "$ZIM_DIR/.library-XXXXXX"`), so the paths come out as bare file names. The
+  published file is handed to the folder's owner (`chown --reference=$ZIM_DIR`), because
+  this script runs as root from the downloader and as `pi` from the service — and a
+  catalogue left owned by the other one cannot be edited in place. The first attempt at a
+  `flock` in that folder proved the point by taking the whole library down with
+  `library.xml.lock: Permission denied`; there is no lock file now, and two builders
+  racing is harmless because each publishes a complete index by rename.
+* The **handle** a collection answers to is the ZIM's **file name without `.zim`** —
+  `bicycles.stackexchange.com_en_all_2026-10`. Not the `id` (a UUID), and not the `name`
+  attribute, which drops the date suffix and so names a different file than the one on the
+  card:
+
+  | `content=` | items |
+  |---|---|
+  | `bicycles.stackexchange.com_en_all_2026-10` | **25** |
+  | `bicycles.stackexchange.com_en_all` | 0 |
+  | `2c464b36-1ea7-2646-ba6a-3b7504ec4a63` | 0 |
+
+  The portal asked with the UUID, so every search was silently empty.
+* `ark_health.library_books()` now carries `stem` (the `path` basename minus `.zim`, or
+  `""` when the index cannot say), and `main._handle()` prefers it. A hit's own
+  `/kiwix/content/<handle>/` link is resolved against the handle **as well as** the id, so
+  a result names the collection that owns it.
+* One more trap, recorded because it cost an hour: the search endpoint is
+  **`/kiwix/search`**, not `/search`. Asking the bare path returns kiwix's own 404 page,
+  whose text says "Content not found" — indistinguishable from a real lookup failure
+  unless the URL is read carefully.
+
+### 18.2 The player was playing, and nobody could see it
+
+The player's page answered 200, every asset answered 200, and the vendored EmulatorJS was
+byte-identical to upstream 4.2.3 (all 25 files hash-clean). The screen was a black
+rectangle with no menu bar.
+
+* **The box the game fills had no height.** `#arcade-stage` was an empty `<div>` with a
+  border and no height; EmulatorJS's own stylesheet makes `.ejs_canvas` `height: 100%`, so
+  the canvas had nothing to resolve against and collapsed. The emulator was *running* the
+  whole time — `gameManager.getState()` returned 35,056 bytes — behind a canvas a few
+  pixels tall. Proved by asking the emulator instead of the network:
+
+  | Question | Before | After |
+  |---|---|---|
+  | `getState().length` | 35,056 | 35,056 |
+  | stage box | 834 × 216 (bogus) | 833 × 572 |
+  | canvas | not composited, black | the 2048 title screen, then Apotris's menu |
+
+* **EmulatorJS overwrites its own element's `style` attribute** (it writes
+  `--ejs-primary-color` into it), so an inline `aspect-ratio` on `#arcade-stage` is erased
+  as the player starts. The shape of the screen now lives on a `#arcade-frame` around it,
+  and `SYSTEMS[...]["aspect"]` decides it per console (Game Boy 10/9, NES 16/15, GBA 3/2,
+  SNES 4/3, Genesis 10/7) — a Game Boy screen is nearly square, and a 4/3 box around it
+  leaves black columns on a phone.
+* **The ROM route answered HEAD with 405.** The player asks for a game's size with a `HEAD`
+  before downloading it (it keeps a copy in the browser and compares lengths), and
+  `@router.get` does not answer HEAD. `Allow: GET` is not an answer a browser can use. The
+  ROM route, the emulator assets, the shelf stylesheet, the notices page and
+  `/drop/<name>` now all answer `GET` **and** `HEAD`.
+* **`localization/en-US.json` was missing**, so the console said
+  `Missing language en-US !!` on every page load. En-US is vendored now (and listed in
+  `SHA256SUMS`, which the vendored-file test checks in both directions).
+
+**Two false leads, recorded so they are not chased again:** the wasm cores were not
+missing (the `.data` files are 7z archives and the browser unpacks them itself), and the
+405 on HEAD did not stop the download (the player falls through to a GET). What settled it
+was the emulator's own `getState()`/`getSaveFile()` — a running core and a black screen at
+the same time.
+
+### 18.3 Deployed, and measured
+
+`--only 50-kiwix,60-portal` (the first attempt failed on the lock file described above),
+then `--only 50-kiwix`, then `--only 60-portal` for the frame, then `--only 90-verify`:
+every run `ARK_INSTALL_COMPLETE`, `failed: none`.
+
+| What | Result |
+|---|---|
+| `pytest` on the Mac | **261 passed** (was 252) |
+| `kiwix-manage … show` | `path: /srv/ark/kiwix/bicycles.stackexchange.com_en_all_2026-10.zim` — real, and `library.xml` is `pi:pi` |
+| `/kiwix/search?content=…_2026-10&pattern=brake&format=xml` | 25 `<item>`s, `totalResults 9,717` |
+| portal `/search?q=brake` | hits from the bicycles **and** ham collections, each linking `/kiwix/content/<stem>/questions/…` |
+| portal `/search?q=water+filter` | **24** result links |
+| eight searches in a row | HTTP 200 every time, `ark-kiwix` `active`, `NRestarts=0`, no segfault/OOM |
+| `/api/ready` | **200**, `ready 8`, `blocking: []` |
+| `HEAD /arcade/g/2048gb/rom` on `:80` | **200**, `content-length: 32768` |
+| `arcade/g/2048gb` in Chromium | `started: true`, `getState()` 35,056 B, **2048-gb title screen drawn** |
+| `arcade/g/apotris` in Chromium | `started: true`, `getState()` **430,168 B**, **Apotris menu drawn** — the mgba core, a second console |
+| every request the game page made | no HTTP ≥ 400 at all (the 404 and the 405 are both gone) |
+| `90-verify` | *"everything a visitor touches is working"* |
+
+**Still not proven.** No human has looked at either page — the evidence is a headless
+browser on the Mac and the box's own answers. No save has been written to a player name
+through the new frame, the phone walk-through in §8.9 is still the gate before a tag, and
+no game has been played **on** the Pi (the emulator runs in the reader's browser; the Pi
+only serves bytes).
