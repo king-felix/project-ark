@@ -300,10 +300,10 @@ unpins, `hotspot --auto` leaves none), phase `70-network` installing and proving
 `90-verify` reporting the timer, the pin and the last decision, and a measured storage breakdown
 with card facts on **What is working** and in `/api/status`.
 
-Still absent, **do not describe any of it as done**: backup/restore kit + offline recovery sheet;
-emergency content review; essentials pack, QR cards, accessibility and the household page;
-per-person quotas; quarantine/approval queue; trash; pause/resume buttons on the owner page.
-**Never invent a control that does not exist.**
+Still absent, **do not describe any of it as done**: backup/restore kit + offline recovery sheet
+(the next piece of work — scope in §8.10); emergency content review; essentials pack, QR cards,
+accessibility and the household page; per-person quotas; quarantine/approval queue; trash;
+pause/resume buttons on the owner page. **Never invent a control that does not exist.**
 
 Two page-size facts, so nobody documents them wrongly again:
 
@@ -322,7 +322,7 @@ Two page-size facts, so nobody documents them wrongly again:
 * **`ark_admin` needs `ensure_initialised()`** (the real app does it at import); a bare router mount on an empty directory raises `no such table: admins`.
 * **macOS Python 3.9 links LibreSSL**, so stdlib `hashlib.scrypt` is absent — `cryptography` is the fallback. The Pi vector pinned in `tests/test_db.py` proves the two agree.
 * Reading must survive a broken admin store: the `CRYPTO_ERROR` path keeps the public portal up.
-* **`pytest -q` twice prints no summary.** `pytest.ini` already passes `-q`, so `-q -q` shows dots and no "97 passed" line; use `-o addopts='--strict-markers' -q` when the count is the evidence.
+* **`pytest -q` twice prints no summary.** `pytest.ini` already passes `-q`, so `-q -q` shows dots and no "128 passed" line; use `-o addopts='--strict-markers' -q` when the count is the evidence.
 * **macOS has no `timeout` command** (`zsh: command not found: timeout`, coreutils not installed). Bound a command with `gtimeout` if present, or start it in the background with a log file and poll — do not build a chain that depends on `timeout`.
 * **`git push` from a non-interactive session can hang on an SSH prompt.** Use `GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o BatchMode=yes -o ConnectTimeout=20'`; a failed push then reports instead of waiting for a passphrase.
 * **SQLite `ADD COLUMN` cannot add `NOT NULL` without a `DEFAULT`.** Schema v2 relies on `DEFAULT ''` / `DEFAULT 0`; that is why an upgraded box has `files.stored = ''` for old rows and every read goes through `_stored_name()`. A new query that reads `stored` directly will produce empty download links on an upgraded card.
@@ -391,6 +391,35 @@ Two page-size facts, so nobody documents them wrongly again:
 
 **Known gaps left on purpose (say so, never fake them):** per-person quotas; a quarantine/approval step; a trash instead of for-ever delete; pagination on the Community page; pause/resume buttons on the owner page; nothing measures `/api/ready` under load, and the watchdog has no manual "switch now" button beyond `ark-mode`. The storage row judges free space, and the breakdown measures the folders it knows — neither probes a service, and neither can delete anything.
 
-**Then the brief's remaining stages** — 6 backup/restore kit + offline recovery sheet, 7 emergency content review, essentials pack, QR cards, accessibility, household page. Tag a release only after 1–2 above pass; never move `v1.0.5`.
+**Then stages 6 and 7** — scope for stage 6 is written out in §8.10 and `docs/IMPLEMENTATION-LOG.md` §7.1; stage 7 is the household layer (emergency content review, essentials pack, QR cards, accessibility, household page). Neither exists. Tag a release only after 1–2 above pass; never move `v1.0.5`.
+
+### 8.10 NEXT WORK — stage 6, the backup and the offline recovery sheet (NOT STARTED)
+
+**Nothing in this section exists.** It is here so a fresh session starts at the
+right place instead of rediscovering the plan. Stages 2–5 are code-complete,
+tested and pushed (`5bbc123`, docs follow-up `6797876`) and the **box still runs
+tag `v1.0.5`** — no deploy has happened, so nothing here changes what the live
+Pi does today.
+
+| Piece | What it must do |
+|---|---|
+| `pi/bin/ark-backup` | write one dated bundle to a path it is given: the database taken with `sqlite3 .backup` (**never `cp`** — it is WAL), `drop/files/`, `calibre-incoming/.imported.json`, and a manifest with per-file sha256, sizes, `SCHEMA_VERSION`, `git describe` and the time. Output is written as `<name>.partial` and becomes `<name>` only by rename, so a half-finished backup can never pass for a whole one |
+| `pi/bin/ark-restore` | verify the manifest first and refuse a bundle that fails it; refuse to touch an installed box without an explicit `--force`; restore into the same absolute paths, `chown -R pi:pi`, then say exactly what it put back |
+| `docs/RECOVERY-SHEET.txt` | one printable page: dead box → working box with a phone, a card reader and nothing else. Plain words only (§5 bans *Kiwix*, *ZIM*, *Calibre*, …); it must not depend on anything that lives on the card |
+| a phase (`95-backup.sh`, or folded into an existing one) | install both binaries, create the folder, prove `--dry-run`, print the restore command |
+| `tests/test_backup.py` | round-trip against throwaway paths: manifest verifies; a corrupted file is refused; `.imported.json` returns so a re-drop is still not a duplicate; an installed database is not overwritten without `--force`; no `.partial` is left behind |
+
+**Invariants it must respect.** A backup only reads — §6 still names
+`ark_storage.spool()` as the single writer of `/srv/ark/drop/files`, and a restore
+is the one deliberate exception, which has to say so out loud. Collections (the
+10–15 GiB of ZIMs) are content, not state — `ark-zim-resolve --profile` fetches
+them again — so they stay out of the default bundle. A figure it cannot measure
+is "not measured yet", never `0` (§8.7).
+
+**Defaults unless the owner says otherwise:** write to `/srv/ark/backup`, keep the
+newest two, run only when asked (`sudo ark-backup --to /path`). The one thing that
+needs an explicit yes is a **nightly timer**: a timer that quietly fills the card
+the box reads from is a defect, not a feature.
+
 
 

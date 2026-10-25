@@ -358,11 +358,25 @@ verified through the Mac's fallback.
 
 Stages 3, 4 and 5 are closed. What comes next (each with a test before the code):
 
-1. **Stage 6 — backup and the offline recovery sheet.** A backup that includes
-   `drop/files`, `api/data`, the library and `.imported.json`, plus the printed
-   card that gets a stranger from a dead box to a working one.
+1. **Stage 6 — backup and the offline recovery sheet.**
 2. **Stage 7 — the household layer.** Emergency content review, the essentials
    pack, QR cards, accessibility and the household page.
+
+### 7.1 Stage 6 in detail — not started, nothing of it exists
+
+| Piece | What it must do |
+|---|---|
+| `pi/bin/ark-backup` | one dated bundle to a path it is given: the database via `sqlite3 .backup` (never `cp` — WAL), `drop/files/`, `calibre-incoming/.imported.json`, and a manifest with per-file sha256, sizes, `SCHEMA_VERSION`, `git describe` and the time. Written as `<name>.partial`, published by rename, so a half-finished backup cannot pass for a whole one |
+| `pi/bin/ark-restore` | verify the manifest and refuse a bad bundle; refuse an installed box without `--force`; restore into the same absolute paths, `chown -R pi:pi`, then say what it put back |
+| `docs/RECOVERY-SHEET.txt` | one printable page, plain words (§5 of the rules), usable with a phone and a card reader and nothing that lives on the card |
+| a phase (`95-backup.sh` or folded in) | install both binaries, create the folder, prove `--dry-run`, print the restore command |
+| `tests/test_backup.py` | round-trip: manifest verifies, a corrupted file is refused, `.imported.json` returns so a re-drop is still not a duplicate, an installed database is not overwritten without `--force`, no `.partial` survives |
+
+A backup only reads; `ark_storage.spool()` stays the single writer of
+`/srv/ark/drop/files`, and a restore is the one deliberate exception. Collections
+(ZIMs) are content, not state, and stay out of the default bundle. Defaults: write
+to `/srv/ark/backup`, keep the newest two, run when asked — a nightly timer needs
+the owner's explicit yes.
 
 Left over from stages 3–5, on purpose (do not describe these as done):
 
@@ -411,7 +425,7 @@ nothing deployed, no hardware test — this is a code-and-tests checkpoint only.
 * **Docs changed in the same commit** — `README.md`, `docs/ADMIN.md`,
   `docs/USING-THE-ARK.md`, `docs/REBUILD-ME-ARK.txt`,
   `docs/REBUILD-FROM-BACKUP.txt`, `.clinerules`.
-* **Next executable step** — stage 4 (§7.1): truthful readiness and health.
+* **Next executable step** — stage 4: truthful readiness and health.
   Still open from stage 3: per-person quotas, a quarantine step between upload
   and download, and a trash instead of for-ever delete.
 
@@ -500,7 +514,7 @@ Also never seen: the amber/red dot in any browser, the probes against a real
 `~/Downloads/Project-Ark` is still built from `v1.0.5`, so it holds none of
 stages 2–4 — `docs/REBUILD-FROM-BACKUP.txt` now says so at the top.
 
-**Next executable step** — stage 5 (§7.1): the network after boot. Before any
+**Next executable step** — stage 5: the network after boot. Before any
 release: deploy stages 2–4 and walk through them on a phone (§8.9 of
 `.clinerules`).
 
