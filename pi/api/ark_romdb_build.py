@@ -507,21 +507,41 @@ def self_test() -> Tuple[bool, List[str]]:
 #  the command
 # ---------------------------------------------------------------------------
 
-def _status() -> int:
-    facts = romdb.stats()
-    if not facts["present"]:
-        print("No game-name database on this box (%s)." % (facts["problem"] or "empty"))
-        print("Every game still plays; a file is only named from its file name.")
-        print("To build one:  ark-romdb-build --fetch")
-        return 1
-    print("Game-name database: %s" % romdb.db_path())
-    print("  %d game(s), %d on a console this box can play, %d console(s)"
-          % (facts["rows"], facts["playable_rows"], facts["systems"]))
-    print("  catalogue dated %s, built %s, format %d"
-          % (facts["source_date"] or "unknown", facts["built"] or "unknown", facts["format"]))
-    if facts["problem"]:
-        print("  problem: %s" % facts["problem"])
-    return 0 if not facts["problem"] else 1
+def _status(target: str = "") -> int:
+    """What a database holds — the one named, or the box's own.
+
+    ``--out`` names the file to answer about, and the answer says which file it
+    read.  Looking at the default path while the caller named another is the same
+    silent fault as ``--list`` answering for the wrong folder (§8.7).
+    """
+    saved = os.environ.get("ARK_ROMDB")
+    if target:
+        os.environ["ARK_ROMDB"] = target
+        romdb.forget_stats()
+    try:
+        facts = romdb.stats()
+        path = romdb.db_path()
+        if not facts["present"]:
+            print("No game-name database at %s (%s)." % (path, facts["problem"] or "empty"))
+            print("Every game still plays; a file is only named from its file name.")
+            print("To build one:  ark-romdb-build --fetch")
+            return 1
+        print("Game-name database: %s" % path)
+        print("  %d game(s), %d on a console this box can play, %d console(s)"
+              % (facts["rows"], facts["playable_rows"], facts["systems"]))
+        print("  catalogue dated %s, built %s, format %d"
+              % (facts["source_date"] or "unknown", facts["built"] or "unknown",
+                 facts["format"]))
+        if facts["problem"]:
+            print("  problem: %s" % facts["problem"])
+        return 0 if not facts["problem"] else 1
+    finally:
+        if target:
+            if saved is None:
+                os.environ.pop("ARK_ROMDB", None)
+            else:
+                os.environ["ARK_ROMDB"] = saved
+            romdb.forget_stats()
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -558,7 +578,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             print("Self-test FAILED.")
         return 0 if ok else 1
     if args.status:
-        return _status()
+        return _status(args.out)
 
     target = Path(args.out) if args.out else romdb.db_path()
     quiet = args.quiet

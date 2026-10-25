@@ -502,6 +502,9 @@ The build prints how many games it understood and the date of the catalogue it r
 same catalogue on a stick is `--from-dir /media/stick/libretro-database` for a machine with
 no connection at all. `pi/bin/ark-romdb-build --self-test` proves the reader against the
 catalogue that is installed, without a network and without touching the shelf.
+`ark-romdb-build --status` says what this box has (how many names, which catalogue, when it
+was built) and `--status --out FILE` says the same about a file you are about to carry over,
+so a half-copied database is caught before it reaches the card.
 
 
 
@@ -612,7 +615,7 @@ Community controls and the readiness page are complete and tested.
 
 ## 12. Tested / not tested
 
-**Tested** — 285 automated tests, disposable databases, `pytest` (the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md`):
+**Tested** — 286 automated tests, disposable databases, `pytest` (the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md`):
 
 * bootstrap account exists once; a wiped database becomes recovery-required
   instead of re-creating the default; the marker lives outside the database;

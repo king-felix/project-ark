@@ -38,7 +38,7 @@ Keep a copy on a phone or taped inside the lid.
 
 **Building another one, or handing this to someone else?** Start with
 [`docs/REBUILD-ME-ARK.txt`](docs/REBUILD-ME-ARK.txt): the complete blueprint,
-the build order, the 30 traps that cost the most time, and the verification gate.
+the build order, the 32 traps that cost the most time, and the verification gate.
 It is written so an assistant with no memory of this project can rebuild the box
 from an empty card.
 
@@ -176,7 +176,7 @@ SHA-256 fingerprint). The same certificate serves the player's secure origin
 with the browser before you trust it — see `docs/ADMIN.md` for the exact steps,
 the session rules and what is deliberately *not* in this release yet.
 
-Tests (no Pi needed, throwaway databases only; the current suite is 285 tests):
+Tests (no Pi needed, throwaway databases only; the current suite is 286 tests):
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r tests/requirements.txt
@@ -407,7 +407,7 @@ one over.
 
 Most of this repo was written by **Cline**, an AI coding agent, working on a
 real Pi 4B over several days — one page at a time, with every claim checked
-against the running box before it went in. The 30 traps in
+against the running box before it went in. The 32 traps in
 [`docs/REBUILD-ME-ARK.txt`](docs/REBUILD-ME-ARK.txt) are all scars from things
 that actually broke here: a mirror that froze at 66,881 bytes, a downloader that
 wrote full-size files full of holes, a Calibre database that answered 500 for

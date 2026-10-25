@@ -87,7 +87,8 @@ if [[ -r "$ROMDB" ]]; then
   fi
 else
   ark_warn "no offline game-name database at $ROMDB — games are named from their file names"
-  ark_warn "build it with: sudo /usr/local/sbin/ark-romdb-build --fetch   (needs internet)"
+  ark_warn "with internet here: sudo /usr/local/sbin/ark-romdb-build --fetch"
+  ark_warn "without it: build one elsewhere and copy romdb.sqlite to $ROMDB"
 fi
 
 [[ -x "$VENV/bin/python" ]] || ark_die "no Python environment at $VENV — run phase 3 (30-calibre) first"

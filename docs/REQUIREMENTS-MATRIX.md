@@ -2,7 +2,7 @@
 
 **Date:** 25 October 2026  
 **Branch:** `feature/admin-hardening`  
-**Suite:** `285 passed` (`python -m pytest -o addopts='--strict-markers' -q`, Mac, throwaway databases)  
+**Suite:** `286 passed` (`python -m pytest -o addopts='--strict-markers' -q`, Mac, throwaway databases)  
 **Hardware:** **deployed 25 Oct 2026** — `90-verify` green, `/api/ready` 200, the doors, the book
 route rules, a bundle and the arcade origin all answered on the Pi (`docs/IMPLEMENTATION-LOG.md`
 §15), and `ark-arcade --import` answered honestly three times on the box (§18.4). No claim below

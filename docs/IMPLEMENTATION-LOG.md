@@ -33,7 +33,7 @@ and what the next executable step is.
 | 13 | Essentials pack, QR, accessibility, household page | not started |
 | — | ARK Arcade | **delivered and tested** — public shelf, guest play, optional named-player saves on the TLS `:8445` origin, owner **Games** page, licence/allowlist/hash gate, weekly discovery, and saves carried by a backup (§12); since 25 Oct a game can also be named from the file itself against an offline catalogue, and added from the owner's page (§19) |
 | 14 | Sequence | stages 1–6, ARK Arcade and R3 **deployed 25 Oct 2026** (§15); the phone walk-through is the next human step; stage 7 after it. The name-from-contents work (§19) is **not deployed yet** |
-| 15 | Acceptance tests | **285 tests**, all green (`pytest -q`); the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md` |
+| 15 | Acceptance tests | **286 tests**, all green (`pytest -q`); the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md` |
 
 ---
 
@@ -889,7 +889,7 @@ re-reading it (`.clinerules` §8.9, move 5).
 
 ## 15. The branch is deployed to the box — 25 Oct 2026
 
-**`pytest` 240 passed (15 files) at that checkpoint — 267 at the tip.** Stages 2–6, ARK
+**`pytest` 240 passed (15 files) at that checkpoint — 286 at the tip.** Stages 2–6, ARK
 Arcade, the 25 Oct hardening pass and R3's book door now run on the Pi. This is the first
 time any of it has been on hardware; the section records what the box said, what that
 proved, the two defects the deploy found in its own probes, and what is still unproven.
@@ -1608,7 +1608,7 @@ cartridge shares. So the box stopped asking a person to type a title it could re
 | `ark-arcade --match FILE` | the same question at a console, for a person: the sentence, then the year, maker, publisher, kind of game and region. Writes nothing |
 | schema **v5** | `games` and `game_revisions` gain `sha1`/`md5`/`crc32` and `rom_*` facts plus `rom_confidence`; `ALTER TABLE … DEFAULT ''` keeps old rows readable and the migration is numbered, never a rewrite of v1 |
 | `pi/nginx/ark-admin.conf` | an upload location on `:8443` with its own body cap, so a game file does not travel through the public portal at all |
-| `tests/test_romdb.py` (13) + 4 in `tests/test_arcade.py` | **285 passed** |
+| `tests/test_romdb.py` (15) + 4 in `tests/test_arcade.py` | **286 passed** |
 
 **The catalogue is information, exactly like a licence.** 56,448 games, 27,723 of them on a
 console this box can play, built from the libretro database on the Mac (25,120,768 B, source
@@ -1639,12 +1639,17 @@ the owner is asked to fill in a form, and the waiting copy is deleted.
 | a file the box cannot play is refused and leaves nothing behind | `test_a_file_the_box_cannot_play_is_refused_and_changes_nothing` |
 | a stranger cannot use the upload door | `test_an_upload_without_a_sign_in_writes_nothing` |
 
-**Two defects found while building it.** `spool_upload()` used `mkstemp`, whose name
+**Two defects found while building it, and one fix made while verifying it.** `spool_upload()`
+used `mkstemp`, whose name
 (`tmpab12cd.gb`) could never match the `upload-<32hex>.<ext>` the rest of the code (and the
 sweep) expects — it is now `secrets.token_hex(16)` with `O_EXCL`, so the waiting name is both
 unguessable and the one the box agrees with itself about. And the upload route was written
 `async def` with a blocking read; it is a plain `def` now, so Starlette runs it in its thread
-pool and a 64 MB file cannot stall the event loop.
+pool and a 64 MB file cannot stall the event loop. Then `--status` was found describing the
+box's own `/srv/ark/romdb.sqlite` even when `--out` named another file — the same silent fault
+as `--list` answering for the default folder (§8.7), one tool over. It answers about the file
+it was asked about now, says which file that was, and
+`test_a_question_about_a_file_is_answered_about_that_file` fails if that ever regresses.
 
 **Not proved yet, and it matters:** nothing in §19 is deployed. `/srv/ark/romdb.sqlite` is not
 on the card, no owner has picked a file in a browser, the v5 migration has not run on the live

@@ -232,6 +232,33 @@ def test_a_page_shows_the_facts_and_the_catalogues_own_spelling():
 
 
 
+def test_a_question_about_a_file_is_answered_about_that_file(tmp_path, monkeypatch, capsys):
+    """``--status --out`` names one file, and says which file it looked at.
+
+    Reading the box's default path while the caller named another is the same
+    fault as ``--list`` answering for the wrong folder: silent, plausible and
+    wrong.  A missing file must be reported as missing *there*.
+    """
+    import ark_romdb_build as build
+
+    monkeypatch.delenv("ARK_ROMDB", raising=False)
+    absent = tmp_path / "carried" / "romdb.sqlite"
+    code = build.main(["--status", "--out", str(absent)])
+    said = capsys.readouterr().out
+    assert code == 1
+    assert str(absent) in said and "No game-name database" in said
+
+    src = build._sample_tree(tmp_path / "src", BODY)
+    db = tmp_path / "carried" / "romdb.sqlite"
+    db.parent.mkdir()
+    rows, facts = build.collect(src)
+    build.write_db(rows, db, facts, source="test")
+    code = build.main(["--status", "--out", str(db)])
+    said = capsys.readouterr().out
+    assert code == 0
+    assert str(db) in said and "1 game(s)" in said
+
+
 def test_an_uploaded_file_waits_under_a_name_the_box_chose(ark):
     """A browser-supplied name never becomes a path: it is only a label."""
     import ark_arcade as arc

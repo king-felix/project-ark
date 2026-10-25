@@ -19,7 +19,7 @@ the code; this is the one to keep next to the backup files.)
 WHAT IS IN THE FOLDER
   Project-ARK-v1.0.5-src.tar.gz    the repo exactly as tagged (small, plain files)
   Project-ARK-v1.0.5.git.bundle    same repo WITH full history — clone-able
-  REBUILD-ME-ARK.txt               the blueprint: build order, 30 traps, gate
+  REBUILD-ME-ARK.txt               the blueprint: build order, 32 traps, gate
   USING-THE-ARK.md                 the plain-English guide for whoever uses it
   README.md                        repo front page / architecture summary
   Project-Ark_bootstrap_architect_deepseek.txt   the original design brief
