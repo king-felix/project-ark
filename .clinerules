@@ -124,8 +124,8 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 | | |
 |---|---|
 | Released baseline | tag **`v1.0.5`** = `main` = `dd3336c` (the published release; the live Pi runs this) |
-| Current work | branch **`feature/admin-hardening`** at **`a1e5efa`**, pushed to `origin` (never force-push, never move a tag) |
-| What `a1e5efa` contains | stage 3 complete: `ark_storage.py`, schema v2, board moderation + Community page, sha256 import ledger, bounded search, docs, 84 tests |
+| Current work | branch **`feature/admin-hardening`**, pushed to `origin` (never force-push, never move a tag). Find the live tip with `git log -1` — this digest pins stage 3, not every later docs commit |
+| Stage 3 | shipped in **`a1e5efa`**: `ark_storage.py`, schema v2, board moderation + Community page, sha256 import ledger, bounded search, docs, 84 tests |
 | Deployment | **code/config only — stages 2 and 3 are NOT deployed**, no hardware or browser test has been done |
 | Release | stages 2–3 are **unreleased**; the next tag comes only after a deploy plus a hardware walk-through |
 | Owner decisions pending | rotate the GitHub password; rotate the Pi password; licence choice |
