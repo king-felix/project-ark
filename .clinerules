@@ -108,7 +108,7 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 
 ## 7. CHANGE / VERIFICATION DISCIPLINE
 
-* Before claiming a phase is done: show the command output that proves it. “Implemented” ≠ “works”.
+* Before claiming a phase is done: show the command output that proves it. “Implemented” ≠ “works”. `/api/health` is **not** evidence — it says `ok` unconditionally (§8.6).
 * Long operations (image download, flash, apt, ZIM downloads) run in `nohup`/background with logs under `~/Survival-Pi/logs` and are polled, never blocked on.
 * Scripts must be idempotent — re-running a phase must not corrupt state.
 * `set -Eeuo pipefail` at the top of every bash script; `|| true` only with an explanatory comment.
@@ -242,10 +242,11 @@ Stage 3 delivered: upload safety (unique stored names, one write path, cap + res
 refusal, temp reconcile), import idempotency (sha256 ledger, `done/` exclusion, preserved File Box
 links), board moderation + the two Community switches, and bounded search.
 
-Still absent, **do not describe any of it as done**: truthful readiness + health panel and real
-download progress; network-loss failover after boot; backup/restore kit + offline recovery sheet;
-emergency content review; essentials pack, QR cards, accessibility and the household page;
-per-person quotas; quarantine/approval queue; trash.
+Still absent, **do not describe any of it as done**: a health panel that checks the services and
+says *why* a section is not ready, plus queue-wide download state (the current bundle's percent
+**does** exist — do not claim progress is missing altogether); network-loss failover after boot;
+backup/restore kit + offline recovery sheet; emergency content review; essentials pack, QR cards,
+accessibility and the household page; per-person quotas; quarantine/approval queue; trash.
 **Never invent a control that does not exist.**
 
 Two page-size facts, so nobody documents them wrongly again:
@@ -254,6 +255,8 @@ Two page-size facts, so nobody documents them wrongly again:
 * the owner's Community page **does not** — it shows the newest 50 notes and the newest 50 files
   (`LIMIT 50`) and says so in its own headings. That is the limit to state, not "the last fifty
   items of the board".
+
+**Never quote `/api/health` as evidence the box is well.** It is a constant `{"ok": true}` and checks nothing; `/api/status` is the honest one (library/books/guides counts, the current bundle's percent, free space, paused, updated) but it still gives a bare `ready` boolean per section with no reason attached. That gap is stage 4.
 
 ### 8.7 Gotchas that have already cost time
 
@@ -296,7 +299,7 @@ Two page-size facts, so nobody documents them wrongly again:
 
 **Owner decisions, still open:** rotate the GitHub password, rotate the Pi password, choose a licence.
 
-**Known gaps left on purpose (say so, never fake them):** per-person quotas; a quarantine/approval step; a trash instead of for-ever delete; pagination on the Community page; downloads and readiness are still not truthful (`/api/status` is a summary, not a health panel).
+**Known gaps left on purpose (say so, never fake them):** per-person quotas; a quarantine/approval step; a trash instead of for-ever delete; pagination on the Community page; readiness is a bare `ready` boolean per section with no reason, and `/api/health` answers `{"ok": true}` whatever the box is doing.
 
 **Then the brief's remaining stages** — 4 truthful readiness/health + real download progress, 5 network-loss failover after boot, 6 backup/restore kit + offline recovery sheet, 7 emergency content review, essentials pack, QR cards, accessibility, household page. Tag a release only after 1–2 above pass; never move `v1.0.5`.
 
