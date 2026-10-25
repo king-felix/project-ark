@@ -5,7 +5,9 @@
 **Suite:** `286 passed` (`python -m pytest -o addopts='--strict-markers' -q`, Mac, throwaway databases)  
 **Hardware:** **deployed 25 Oct 2026** — `90-verify` green, `/api/ready` 200, the doors, the book
 route rules, a bundle and the arcade origin all answered on the Pi (`docs/IMPLEMENTATION-LOG.md`
-§15), and `ark-arcade --import` answered honestly three times on the box (§18.4). No claim below
+§15), `ark-arcade --import` answered honestly three times on the box (§18.4), and the name-from-the-
+bytes work is deployed too — layout **v5**, the catalogue on the card, and the owner's upload door
+proved end to end against a throwaway instance (§19.1). No claim below
 should still be read as "a person has used it"; the phone walk-through in
 `.clinerules` §8.9 item 2 has not been done.
 
@@ -224,6 +226,15 @@ Every row above is a test. The duplicate answers and the owner's words were also
 file given again answered *"already on the shelf"* with one file on the card, the same
 bytes under a second name were refused with the name that game already has, and a freshly
 imported game's page rendered its own description and its credits with the HTML escaped.
+
+The naming and upload rows are **deployed and proved on the box** (`docs/IMPLEMENTATION-LOG.md`
+§19.1): the live database is at layout **v5**, `/srv/ark/romdb.sqlite` holds 56,448 names, a
+carried `apotris.gba` is named *Apotris (Game Boy Advance)* while `2048gb.gb` is honestly
+*"nobody has listed this file"*, and the whole owner door — sign in → **A game you already
+have** → *"This looks like "Apotris" (Game Boy Advance)."* → confirm → one file, one row, two
+audit lines, the game on `/arcade/` — ran against a throwaway instance on the box with the real
+catalogue and a real 4 MB file (29/29 checks). **A person has still not picked a file in a
+browser**, and no game has been added to the live shelf this way.
 
 The multilingual fix matters because a real catalogue entry says `["en", "ja"]`, while a
 stored candidate carries `"en, ja"`. Both now resolve to English; a game in `ja` alone is

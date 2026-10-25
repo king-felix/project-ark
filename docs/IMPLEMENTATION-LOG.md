@@ -32,7 +32,7 @@ and what the next executable step is.
 | 12 | Emergency content review | not started |
 | 13 | Essentials pack, QR, accessibility, household page | not started |
 | — | ARK Arcade | **delivered and tested** — public shelf, guest play, optional named-player saves on the TLS `:8445` origin, owner **Games** page, licence/allowlist/hash gate, weekly discovery, and saves carried by a backup (§12); since 25 Oct a game can also be named from the file itself against an offline catalogue, and added from the owner's page (§19) |
-| 14 | Sequence | stages 1–6, ARK Arcade and R3 **deployed 25 Oct 2026** (§15); the phone walk-through is the next human step; stage 7 after it. The name-from-contents work (§19) is **not deployed yet** |
+| 14 | Sequence | stages 1–6, ARK Arcade, R3 and the name-from-contents work (§19) **deployed 25 Oct 2026** (§15, and §19 for the v4 → v5 deploy); the phone walk-through is the next human step; stage 7 after it |
 | 15 | Acceptance tests | **286 tests**, all green (`pytest -q`); the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md` |
 
 ---
@@ -1651,10 +1651,61 @@ as `--list` answering for the default folder (§8.7), one tool over. It answers 
 it was asked about now, says which file that was, and
 `test_a_question_about_a_file_is_answered_about_that_file` fails if that ever regresses.
 
-**Not proved yet, and it matters:** nothing in §19 is deployed. `/srv/ark/romdb.sqlite` is not
-on the card, no owner has picked a file in a browser, the v5 migration has not run on the live
-database, and `90-verify`'s new game-names block has only ever read a box without a catalogue.
-The next step is the same shape as every deploy before it: `.backup` the database, then
-`--only 20-storage,60-portal,65-admin`, then `--only 90-verify`, then carry the 25 MB catalogue
-over and run `ark-romdb-build --self-test` and `ark-arcade --match` on a file already on the
-shelf.
+### 19.1 Deployed on the box, 25 Oct 2026 — and proved through the owner's door
+
+The branch tip was put on the Pi with the owner's explicit go-ahead, in the shape every
+deploy before it took, because this one **migrates the database**:
+
+```text
+sudo sqlite3 /srv/ark/api/data/ark.db ".backup '/root/ark-db-before-v5.db'"   # layout v4
+sudo tar czf /root/ark-src-before-romdb.tgz -C /srv/ark src
+sudo bash /srv/ark/src/install-ark.sh --only 20-storage,60-portal,65-admin    # v4 → v5
+# the catalogue, built on the Mac (the Pi has no route to GitHub)
+scp /tmp/romdb-ship/romdb.sqlite pi@ark.local:/tmp/
+ssh pi@ark.local 'sudo install -o pi -g pi -m 0644 /tmp/romdb.sqlite /srv/ark/romdb.sqlite'
+sudo bash /srv/ark/src/install-ark.sh --only 90-verify
+```
+
+| Evidence | Answer |
+|---|---|
+| the migration | `schema_version` **5**; the four fingerprint columns (`sha1`, `md5`, `crc32`, `rom_*` facts + `rom_confidence`) are on `games`, and old rows read as `''` |
+| the catalogue | `/srv/ark/romdb.sqlite`, **25,120,768 B**, sha256 `6763ecfc0887b55c9fe3f222116754ed9a25678ec7e4e4a7d280eb8985c6177f`, `pi:pi 0644`, 56,448 names (27,723 on a console this box can play) |
+| `90-verify` | green — *“everything a visitor touches is working”*, `✓ game names 56448 name(s) on this box`, `✓ game name reader a made-up cartridge was recognised from its own bytes` |
+| `/api/ready` | **200**, `ready 8 / total 8`, `blocking: []` |
+| a carried file | `ark-arcade --match /tmp/apotris.gba` → *This looks like “Apotris” (Game Boy Advance)*; `2048gb.gb` → *“Nobody has listed this file; the name on it is all this box has.”* |
+| the refusal path, live | the admin upload door answers **403** without a sign-in, the public door **404**, and `arcade/tmp` stays empty |
+| the live box afterwards | still **23** games, **23** files on the shelf, `arcade/tmp` empty, nothing restarted outside the phase |
+
+**The owner's door, end to end, on the box.** The live admin password is the owner's, so the
+door was proved against a **throwaway instance** rather than by guessing a credential: a second
+API on `127.0.0.1:18099` with its own `ARK_ROOT` (`/tmp/arksmoke`), its own database, its own
+`arcade/`, the **real** `/srv/ark/romdb.sqlite` and a real **4,194,304 B** `apotris.gba`. The
+probe (`logs/arksmoke-proof-20261025.py`) signed in through the real router, opened the real
+**Games** page, posted the file as a browser does, read the answer, confirmed the words, and then
+asked the filesystem, the database and the public page. **29 checks, `SMOKE_RESULT PASS`:**
+
+* the Games page offers **A game you already have**, a file picker and *Look at this file*;
+* posting 4 MB answers *“**This looks like “Apotris” (Game Boy Advance).**”*, and **nothing is on
+  the shelf** yet — the file waits in `arcade/tmp` under a name the box chose (`upload-…`);
+* the confirm form arrives filled in, carrying the waiting file's own token;
+* confirming publishes **exactly one file**, leaves **nothing waiting**, writes **one row** with
+  the title, `system = gba`, `sha1`, `crc32` and `rom_confidence`, adds **two `arcade-upload`
+  audit lines** (including *“added revision …”*), and the game then appears on `/arcade/`.
+
+The throwaway root, its database and its log were deleted afterwards, and the live shelf was
+re-checked afterwards (23 games, nothing in `arcade/tmp`).
+
+**Still not proved, and it is the same gap as before this deploy:** no **person** has picked a
+file in a browser. The proof above is a script speaking HTTP exactly as the page does, against a
+throwaway database seeded by rewriting `admins.pass_hash` — it exercised the router, the spool,
+`publish_candidate()`, the schema and the public page, but not an owner's thumb, not a 64 MB file
+over the real proxy, and not a file added to the **live** shelf. `90-verify`'s game-names block has
+only ever read this one catalogue, and the *nobody has listed this file* answer has only been seen
+for `2048gb.gb` at a console.
+
+**Two probe defects found on the way, both mine, both now in `.clinerules` §8.7:** the first
+version seeded an empty database without `ark_admin.ensure_initialised()` (`no such table: admins`
+— the same trap already written down), and the second reported *“signing in is accepted”* for a
+sign-in that had failed, because `urllib` silently follows a 303 and a followed redirect looks like
+a 200. A probe of an admin door has to ask for the redirect and assert on it.
+
