@@ -60,8 +60,15 @@ unclaimed a second listener on `127.0.0.1:8444` is the only way in.
    short sentence is ideal; up to 1024 characters are kept in full (nothing is
    truncated). The temporary password stops working as soon as you save.
 
-6. Close the tunnel. From now on use **https://ark.lan:8443/admin** from any
+6. Close the tunnel. From now on use **https://ark.local:8443/admin** from any
    device on the network.
+
+   Use the name that resolves where you are: `ark.local` on a home network (it is
+   answered by the box's mDNS service on every modern phone and computer), and
+   `ark.lan` from a device joined to **The-Ark-Offline** — while broadcasting, the
+   box answers every name itself. A Mac on a home network cannot resolve `ark.lan`
+   without help, and a name typed by its number (`https://192.168.1.26:8443`) is
+   refused on purpose, because the management door only answers a known name.
 
 While the box is unclaimed, step 4 only works through the tunnel — a stranger
 on the hotspot cannot reach the temporary password's door at all. The public
@@ -130,7 +137,8 @@ and `::1`.
 
 1. Get the fingerprint from an authenticated channel — the SSH/console command
    above, or the output of `pi/steps/65-admin.sh` during installation.
-2. Open `https://ark.lan:8443/admin`; the browser shows the certificate warning.
+2. Open `https://ark.local:8443/admin` (or `https://ark.lan:8443/admin` from a
+   phone on The-Ark-Offline); the browser shows the certificate warning.
    Compare the fingerprint it displays with the one from step 1.
 3. Only if they match, add an exception for that one address on that one
    device.
@@ -389,26 +397,32 @@ sets it only on `:8445`.
   guests can still play, and every save stays on the box for when the switch is
   turned back on;
 * **Add newly found games without asking me** — off by default. Even when on,
-  the same licence, allowlist, size, SHA-256 and file-shape checks apply.
+  the same allowlist, size, SHA-256 and file-shape checks apply; the licence is
+  recorded beside the game and never used to refuse it.
 
-**Where the games come from.** Only the curated Homebrew Hub source
-(`hh3.gbdev.io` API and its `gbdev/database` raw files). The download URL is
-rebuilt from validated slug + filename, redirects are refused, the address must
-stay under the one allowlisted prefix, the body is capped at 64 MB, and nothing
-is published until its SHA-256 and its console header agree. The first shelf is
-`pi/arcade/catalog/seed.json`, three pinned files with hashes recorded when they
-were fetched; a changed upstream file is refused rather than silently updated.
-Collections and the game files themselves are content and are fetched again;
-named players' saves are state and are included in a backup.
+**Where the games come from.** The curated community catalogue (`hh3.gbdev.io`)
+plus the three repositories it points at, one per family of consoles: Game Boy and
+Game Boy Color in `gbdev/database`, Advance in `gbadev-org/games`, NES in
+`nesdev-org/homebrew-db`. Each console's download URL is rebuilt from a validated
+slug + filename against its own prefix, redirects are refused, the body is capped
+at 64 MB, and nothing is published until its SHA-256 and its console header agree.
+The first shelf is `pi/arcade/catalog/seed.json` — 23 pinned games with hashes
+recorded when they were fetched; a changed upstream file is refused rather than
+silently updated. A box with no internet can install that same list from files
+carried over: `sudo ark-arcade --seed --from-dir /path/to/folder` proves each file
+against its recorded hash before publishing it. Collections and the game files
+themselves are content and are fetched again; named players' saves are state and
+are included in a backup.
 
-**A game has to be in English, or have no words at all.** The language and the
-evidence for it are recorded beside each game and each suggestion. A suggestion
-with no stated language, no evidence, a conflict in the source or a language
-other than English is held as *review* with that reason shown on the Games page;
-it is not installed. A wordless game is allowed. A game file you supply yourself
-goes through the same questions (`sudo ark-arcade --import <file>` asks for title,
-console, licence, language and evidence) — ownership of the file does not skip
-the proof that it may be copied.
+**A game has to be readable, but a licence is only recorded.** The language and
+the evidence for it are recorded beside each game and each suggestion. A game the
+source *says* is in another language, or a source that contradicts itself, is held
+as *review* with that reason shown on the Games page; it is not installed. A game
+with no words at all is allowed, and so is one whose language nobody recorded —
+most homebrew entries say nothing about it. The licence text is stored and shown
+on the game's card, and never refuses anything. A game file you supply yourself
+goes through the same checks (`sudo ark-arcade --import <file>` asks for title,
+console, language and, if you have it, the licence).
 
 **A player's choices belong to the name.** A named player's favourite games sort
 first on their shelf; autosave, favourite and last-played are stored with the name
@@ -463,13 +477,18 @@ Stated plainly, because a missing control is better than a fake one:
   answers them itself the rest of the time:
 
   ```bash
-  sudo ark-mode status        # mode, address, portal answer, and who chose
+  sudo ark-mode status        # mode, address, portal answer, boot choice, and who chose
+  ark-mode boot --dry-run     # what a cold boot would do — no root, no radio
   sudo ark-mode auto          # forget any pin; try home, else broadcast
   sudo ark-mode hotspot       # broadcast, and keep it that way (a pin)
   sudo ark-mode home          # back to the home network (a pin)
   sudo ark-net-watch --dry-run             # what the watchdog sees, changes nothing
   tail -n 20 /srv/ark/logs/net-watch.log   # what it actually did, with times
   ```
+
+  A cold boot broadcasts, because `BOOT_MODE="hotspot"` is recorded in
+  `/etc/ark/ark.env`; edit that line to `"auto"` to try the home network first
+  instead.
 
   `/srv/ark/logs/net-watch.log` is written only when the box *did* something, so a
   short log is a quiet, healthy day; the timer's own state is
@@ -553,8 +572,10 @@ Community controls and the readiness page are complete and tested.
   external address; a named player's save round-trips, a stale tab is refused
   with 409, another name sees 404, a missing page token is 403, export/import
   works and a climbing zip path is skipped; a hidden game has no page and no
-  ROM; the emulator route cannot walk out of its folder; the licence, allowlist,
-  redirect, archive and renamed-web-page gates each refuse; the pinned seed dry
+  ROM; the emulator route cannot walk out of its folder; the allowlist, redirect,
+  archive and renamed-web-page gates each refuse, and a licence is recorded
+  rather than refused; a carried first shelf installs from a folder and a file
+  that is not the one recorded is refused; the pinned seed dry
   run touches nothing; the owner can hide/show a game and close player names;
   the owner's Games page and both switches;
 * copies: one folder holds the records, the shared files, the named players'

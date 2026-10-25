@@ -3,9 +3,10 @@
 Only **one** place is allowed to put a game file on this shelf, and it is this
 module.  Every file travels the same road:
 
-1. the candidate's own catalogue entry states a licence that allows copying
-   (``ark_arcade.license_problem``) — a blank, "freeware" or an unknown string
-   is a refusal, not a maybe;
+1. every candidate is recorded with whatever its catalogue entry says about the
+   licence (``ark_arcade.license_problem``) — that text is provenance on the
+   game's own page, not a door: the owner decided on 25 Oct 2026 that the shelf
+   is built from what is good to play;
 2. the download URL is **built** here from a validated entry id and filename,
    never taken from the response, and must still be under the one curated
    source when the first byte arrives;
@@ -15,8 +16,8 @@ module.  Every file travels the same road:
 5. only then is it published with ``os.replace`` and recorded in ``games`` and
    ``game_revisions``.
 
-Nothing here trusts a page, a redirect or a filename.  An entry that cannot
-prove it may be copied is still shown to the owner, with the reason.
+Nothing here trusts a page, a redirect or a filename.  What a source says about a
+licence is recorded beside the game and shown to the owner, not used to refuse it.
 """
 
 from __future__ import annotations
@@ -39,6 +40,20 @@ import ark_db
 
 SOURCE_API = "https://hh3.gbdev.io/api"
 SOURCE_RAW = "https://raw.githubusercontent.com/gbdev/database/master/entries/"
+# Each console's entries live in its own community repository — gbdev for the two
+# Game Boys, gbadev-org for Advance, nesdev-org for the NES.  One prefix meant a
+# GBA or NES candidate was offered an address that answers 404: the box could name
+# the game and never fetch it.
+SOURCE_RAW_GBA = "https://raw.githubusercontent.com/gbadev-org/games/master/entries/"
+SOURCE_RAW_NES = "https://raw.githubusercontent.com/nesdev-org/homebrew-db/master/entries/"
+SOURCE_RAW_ALL = (SOURCE_RAW, SOURCE_RAW_GBA, SOURCE_RAW_NES)
+# Console -> the one repository that holds its entries.  A console with no entry
+# here is not fetched at all: the address is never guessed from a filename, and
+# SNES and Genesis have nothing in this catalogue yet.
+SOURCE_RAW_BY_SYSTEM = {
+    "gb": SOURCE_RAW, "gbc": SOURCE_RAW,
+    "gba": SOURCE_RAW_GBA, "nes": SOURCE_RAW_NES,
+}
 MAX_DOWNLOAD = 64 * 1024 * 1024       # a homebrew cartridge, not a video
 MIN_FREE_AFTER_INSTALL = 64 * 1024 * 1024   # the card must still have room to live
 HTTP_TIMEOUT = 20
@@ -58,14 +73,25 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def _raw_prefix(system: Any) -> str:
+    """The trusted repository that holds this console's entries, or "" (none)."""
+    return SOURCE_RAW_BY_SYSTEM.get(str(system or "").strip().lower(), "")
+
+
+def _trusted(url: str) -> bool:
+    """True for the catalogue API and either curated repository, and nothing else."""
+    text = str(url or "")
+    return text.startswith(SOURCE_API + "/") or any(text.startswith(p) for p in SOURCE_RAW_ALL)
+
+
 def _get(url: str, limit: int, timeout: int = HTTP_TIMEOUT) -> bytes:
-    if not url.startswith(SOURCE_API + "/") and not url.startswith(SOURCE_RAW):
+    if not _trusted(url):
         raise InstallRefused("That address is not one of the game sources this box trusts.")
     request = urllib.request.Request(url, headers={"User-Agent": "ARK-Arcade/1"})
     opener = urllib.request.build_opener(_NoRedirect)
     with opener.open(request, timeout=timeout) as response:
         final = response.geturl()
-        if not final.startswith(SOURCE_API + "/") and not final.startswith(SOURCE_RAW):
+        if not _trusted(final):
             raise InstallRefused("The source tried to send this box somewhere else.")
         chunks: List[bytes] = []
         total = 0
@@ -134,6 +160,14 @@ def _source_file(raw: str) -> Optional[str]:
     return text
 
 
+#: Extensions that name exactly one console.  ``.bin`` is deliberately absent:
+#: it is used by more than one machine, so it is not a name this box will guess.
+_EXT_SYSTEM = {
+    "gb": "gb", "gbc": "gbc", "gba": "gba", "nes": "nes",
+    "sfc": "snes", "smc": "snes", "md": "genesis", "gen": "genesis",
+}
+
+
 def _system(entry: Dict[str, Any], filename: str) -> str:
     raw = str(entry.get("platform") or entry.get("system") or "").strip().lower()
     ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
@@ -145,7 +179,10 @@ def _system(entry: Dict[str, Any], filename: str) -> str:
         return raw
     if raw in ("genesis", "megadrive"):
         return "genesis"
-    return ""
+    # A search answer sometimes leaves the platform out.  An extension that names
+    # exactly one console is enough to name the game; an extension shared by two
+    # consoles is not, and stays unnamed rather than guessed.
+    return _EXT_SYSTEM.get(ext, "")
 
 
 LANGUAGE_NEUTRAL = {"neutral", "none", "no-text", "no_text", "wordless", "silent"}
@@ -208,21 +245,19 @@ def language_label(code: str) -> str:
 
 
 def language_facts(candidate: Dict[str, Any]) -> Tuple[bool, str]:
-    """Eligibility by language: English, wordless, or a stated conflict refuses.
+    """Eligibility by language: a game the household cannot read is held back.
 
-    The household reads English.  A game with no words at all is fine; a game
-    whose language nobody recorded is *not* silently assumed to be English, and
-    a source that says two different things is a conflict, not a guess.
+    The household reads English.  A game with no words at all is fine, and a
+    game whose language the source never recorded is no longer refused for that
+    silence — the curated catalogue is homebrew, and most of its entries say
+    nothing about language.  What *is* refused is a game the source says is in
+    another language, and a source that contradicts itself.
     """
     if candidate.get("language_conflict"):
         return False, "the source says two different things about this game's language"
     values = _language_values(candidate.get("language"))
     if not values:
-        return False, "the game's language is not recorded"
-    evidence = str(candidate.get("language_evidence") or "").strip()
-    low = evidence.lower()
-    if not evidence or "not stated" in low or "unknown" in low or "unrecorded" in low:
-        return False, "there is no evidence of the game's language"
+        return True, ""
     if LANGUAGE_NEUTRAL & set(values):
         return True, ""
     if LANGUAGE_ENGLISH & set(values):
@@ -232,13 +267,13 @@ def language_facts(candidate: Dict[str, Any]) -> Tuple[bool, str]:
 
 
 def rights_facts(candidate: Dict[str, Any]) -> Tuple[bool, str]:
-    """A licence name is not proof; this asks for the proof in words."""
-    evidence = str(candidate.get("rights_evidence") or "").strip()
-    low = evidence.lower()
-    if not evidence or "not stated" in low or "unknown" in low or "no evidence" in low:
-        return False, "there is no evidence that this game may be copied"
-    if len(evidence) < 12:
-        return False, "the evidence that this game may be copied is too thin to check"
+    """Kept for the record, never a refusal.
+
+    This used to hold a game back when the source said nothing about the right to
+    copy it.  The owner's decision (25 Oct 2026) is that licences are information,
+    so whatever the source says here is stored beside the game and asked no
+    further questions.  The function stays so callers and tests share one name.
+    """
     return True, ""
 
 
@@ -278,8 +313,10 @@ def entry_to_candidate(entry: Dict[str, Any],
         return None
     if not filename.lower().endswith(arc.SYSTEMS[system]["ext"]):
         return None
-    url = (SOURCE_RAW + urllib.parse.quote(slug, safe="") + "/"
+    url = (_raw_prefix(system) + urllib.parse.quote(slug, safe="") + "/"
            + urllib.parse.quote(filename, safe="/"))
+    if not _raw_prefix(system):
+        return None
     license_text = str(entry.get("license") or entry.get("gameLicense") or "").strip()
     title = str(entry.get("title") or entry.get("name") or slug).strip()[:120] or slug
     developer = entry.get("developer") or entry.get("author") or ""
@@ -314,9 +351,11 @@ def entry_to_candidate(entry: Dict[str, Any],
 
 
 def _base_problem(candidate: Dict[str, Any]) -> str:
-    problem = arc.license_problem(candidate.get("license", ""))
-    if problem:
-        return problem
+    """The shape gates: a file must match its console and come from the source.
+
+    A licence is recorded beside a game, not used to refuse it (§8.12, 25 Oct
+    2026), so it is no longer asked about here.
+    """
     system = candidate.get("system", "")
     if system not in arc.SYSTEMS:
         return "this box does not play that kind of game"
@@ -324,17 +363,19 @@ def _base_problem(candidate: Dict[str, Any]) -> str:
     if not filename.lower().endswith(arc.SYSTEMS[system]["ext"]):
         return "the file does not match the console it claims"
     if candidate.get("provider") != "owner":
-        if not str(candidate.get("download_url", "")).startswith(SOURCE_RAW):
+        if not _trusted(candidate.get("download_url", "")):
             return "the download address is not the curated source"
     return ""
 
 
 def review_reason(candidate: Dict[str, Any]) -> str:
-    """Why a candidate needs the owner, when the licence itself is not the block."""
+    """Why a candidate needs the owner.  Language is the only remaining reason.
+
+    A licence and the words a source keeps beside it are recorded as provenance
+    (§8.12); they no longer hold a game back.  What still matters is that the
+    household can read the game — see ``language_facts()``.
+    """
     ok, reason = language_facts(candidate)
-    if not ok:
-        return reason
-    ok, reason = rights_facts(candidate)
     if not ok:
         return reason
     return ""
@@ -419,12 +460,13 @@ def sync_catalog(conn: sqlite3.Connection, limit: int = 80) -> Dict[str, Any]:
                 checked.add(slug)
                 candidate = entry_to_candidate(entry)
                 needs_detail = (candidate is None or not candidate.get("license")
-                                or not candidate.get("language")
-                                or not candidate.get("rights_evidence"))
-                if needs_detail and details_asked < DETAIL_LOOKUPS:
+                                or not candidate.get("language"))
+                prefix = _raw_prefix(platform)
+                if needs_detail and prefix and details_asked < DETAIL_LOOKUPS:
                     details_asked += 1
                     try:
-                        detail = _json(SOURCE_RAW + urllib.parse.quote(slug, safe="") + "/game.json")
+                        detail = _json(prefix + urllib.parse.quote(slug, safe="")
+                                       + "/game.json")
                         if isinstance(detail, dict):
                             merged = dict(entry)
                             merged.update({k: v for k, v in detail.items()
@@ -673,11 +715,12 @@ def owner_candidate(source: Path, *, slug: str, title: str, system: str,
                     release: str = "", notices: str = "",
                     author: str = "", homepage: str = "",
                     description: str = "") -> Dict[str, Any]:
-    """Build the candidate for a hand-supplied game, asking for the same proofs.
+    """Build the candidate for a hand-supplied game, asking for the same checks.
 
-    The owner is trusted to own the file but not to skip the questions: a
-    licence that allows copying, evidence in words for that licence, and a
-    stated language are required before the file can reach the shelf.
+    The owner is trusted to own the file but not to skip the shape checks: the
+    file must match its console and be a sane size, and a game the source says is
+    in another language is still held back.  Its licence, if the owner records
+    one, is kept as provenance.
     """
     if not source.is_file() or source.is_symlink():
         raise InstallRefused("That is not a file this box can read.")
@@ -695,9 +738,6 @@ def owner_candidate(source: Path, *, slug: str, title: str, system: str,
     if size > MAX_DOWNLOAD:
         raise InstallRefused("That file is larger than this box will accept.")
     license_text = str(license_text or "").strip()
-    problem = arc.license_problem(license_text)
-    if problem:
-        raise InstallRefused(f"This one cannot be put on the shelf: {problem}.")
     candidate = {
         "provider": OWNER_PROVIDER,
         "entry_id": safe,
@@ -778,10 +818,24 @@ def seed_candidates() -> List[Dict[str, Any]]:
     return out
 
 
-def install_seed(conn: sqlite3.Connection, dry_run: bool = False) -> Dict[str, Any]:
-    """Put the pinned first shelf on a new box once.  Re-running is quiet."""
+def install_seed(conn: sqlite3.Connection, dry_run: bool = False,
+                 source_dir: Optional[Path] = None) -> Dict[str, Any]:
+    """Put the pinned first shelf on a new box once.  Re-running is quiet.
+
+    ``source_dir`` installs the same list from files carried over (a stick, an
+    ``scp``) instead of the network: a box with no route to the catalogue still
+    gets its first shelf, and each carried file is proved against the SHA-256 and
+    the size recorded beside it — a different file with the right name is
+    refused, never published.
+    """
     installed, skipped, errors = [], [], []
     for candidate in seed_candidates():
+        carried = None
+        if source_dir is not None:
+            carried = Path(source_dir) / Path(str(candidate.get("filename") or "")).name
+            if not carried.is_file():
+                errors.append(f"{candidate['title']}: not carried in {source_dir}")
+                continue
         if dry_run:
             ok, reason = eligibility(candidate)
             (errors if not ok else installed).append(
@@ -791,7 +845,7 @@ def install_seed(conn: sqlite3.Connection, dry_run: bool = False) -> Dict[str, A
             skipped.append(candidate["title"])
             continue
         try:
-            result = publish_candidate(conn, candidate)
+            result = publish_candidate(conn, candidate, source=carried)
             installed.append(result["slug"])
         except (InstallRefused, urllib.error.URLError, TimeoutError, OSError,
                 sqlite3.DatabaseError) as exc:

@@ -889,13 +889,15 @@ any failure. Categories:
                                             wrapper
     pi/api/ark_arcade.py                    shelf rules, players/sessions and
                                             the bounded, atomic save layer
-    pi/api/ark_arcade_install.py            the only game download path: the
-                                            licence → allowlist → hash → shape gate
+    pi/api/ark_arcade_install.py            the only game download path: per-console
+                                            allowlist → hash → shape gate (a licence
+                                            is recorded, never a gate)
     pi/api/ark_arcade_web.py                public shelf, game page, player pages
                                             and save API (TLS origin only)
     pi/arcade/emulatorjs/                  EmulatorJS 4.2.3 vendored (no CDN)
-    pi/arcade/catalog/seed.json             three pinned first games + hashes
-    pi/bin/ark-arcade                       seed / discover / install / refuse
+    pi/arcade/catalog/seed.json             23 pinned first games + size and hashes
+    pi/bin/ark-arcade                       seed (or --from-dir) / discover /
+                                            install / refuse
     pi/nginx/ark.conf                       proxy, captive endpoints, uploads
     pi/nginx/ark-admin.conf                 :8443 management + :8444 loopback
                                             setup, unknown Host rejected

@@ -80,17 +80,23 @@ Phases: `10-base` `20-storage` `30-calibre` `40-vault` `50-kiwix` `60-portal`
 
 ## How the Pi finds a network
 
-`ark-mode` decides, `ark-boot-guard` runs it at every boot, and `ark-net-watch`
-asks the same question every minute afterwards — so a home network that goes away
-at eight in the evening is survived without a reboot:
+A cold boot comes up **broadcasting** `The-Ark-Offline`: `ark-mode boot` reads
+`BOOT_MODE` from `/etc/ark/ark.env` (shipped as `hotspot`), so a box in a cupboard
+with no router and nobody standing next to it is still reachable. `ark-net-watch`
+asks the same question every minute afterwards, so a network that changes under a
+running box is survived without a reboot:
 
 ```bash
-sudo ark-mode status       # mode, address, portal answer, internet, and who chose
+sudo ark-mode status       # mode, address, portal answer, internet, boot choice, who chose
+ark-mode boot --dry-run    # what a cold boot would do — no root, no radio
 sudo ark-mode auto         # try the home network, else broadcast the hotspot (no pin)
 sudo ark-mode hotspot      # broadcast "The-Ark-Offline" (10.42.0.1), and keep it
 sudo ark-mode home         # back to the home network, and keep it
 sudo ark-mode test 180     # try the hotspot for 3 minutes, then go back
 ```
+
+Set `BOOT_MODE="auto"` in `/etc/ark/ark.env` for the older behaviour (try the home
+network on the way up, broadcast only if it is absent).
 
 `home` and `hotspot` are a person's answer, so they are pinned in
 `/etc/ark/mode.pinned` and the watchdog will not undo them; `auto` forgets the
@@ -127,7 +133,12 @@ The public portal has no login and needs none. Everything that *changes* the
 box lives behind one administrator account, served only on the HTTPS
 management listener:
 
-* `https://ark.lan:8443/admin` — sign in from a phone or laptop on the network.
+* `https://ark.local:8443/admin` — sign in from a phone or laptop on the network.
+  `ark.local` is the name that resolves wherever the box sits on a home network
+  (it is answered by the box's own mDNS service). `https://ark.lan:8443/admin`
+  works too whenever the box is broadcasting **The-Ark-Offline**, because then the
+  box itself answers every name. The certificate covers both names, so neither
+  produces a warning once its fingerprint is trusted.
 * On a box that has never been claimed, that address stays shut on purpose.
   The first claim happens through a private tunnel, so the well-known
   temporary password cannot be used by the first stranger on the hotspot:
@@ -187,19 +198,22 @@ never an administrator account and no page in the arcade can reach `/admin`.
 
 ```bash
 sudo ark-arcade --status                 # what is on the shelf, and who has a name
-sudo ark-arcade --seed                   # install the pinned first three (idempotent)
+sudo ark-arcade --seed                   # install the pinned first shelf (idempotent)
+sudo ark-arcade --seed --from-dir DIR    # ...from files carried over, no internet needed
 sudo ark-arcade --discover --auto        # what the weekly timer runs
 sudo ark-arcade --list                   # suggestions and why each was refused
 sudo ark-arcade --install <id>           # add one, after looking at it
 ```
 
-The weekly `ark-arcade-discover.timer` records what the curated Homebrew Hub
-source offers. Installation is off unless the owner switches it on in
-**Games**; even then, the licence must allow copying, the download must come
-from the one allowlisted source, be under 64 MB, match its SHA-256 and look like
-the console it claims. A failure changes nothing. The player is EmulatorJS
-4.2.3, vendored under `pi/arcade/emulatorjs/`; the games page has no CDN, no
-external font and no telemetry.
+The weekly `ark-arcade-discover.timer` records what the curated community
+catalogues offer. Installation is off unless the owner switches it on in
+**Games**; even then, the download must come from one of the allowlisted
+catalogues, be under 64 MB, match its SHA-256 and look like the console it
+claims. What the source says about a licence is recorded on the game's card —
+information, not a gate (the owner's decision, 25 Oct 2026). A failure changes
+nothing. The player is EmulatorJS 4.2.3, vendored under
+`pi/arcade/emulatorjs/`; the games page has no CDN, no external font and no
+telemetry.
 
 Guest saves stay in that browser. A named player can keep three server saves per
 game, export all of them as one zip, and put them back on another ARK. The save

@@ -65,9 +65,10 @@ SYSTEMS: Dict[str, Dict[str, Any]] = {
     "genesis": {"core": "genesis_plus_gx", "label": "Sega Genesis", "ext": (".md", ".gen", ".bin")},
 }
 
-#: A licence the *entry itself* states, and that allows copying.  Freeware,
-#: shareware, "all rights reserved" and a blank all mean the same thing here:
-#: do not publish it.  A source that cannot say is not a source we can use.
+#: Licence names this box recognises when it describes a game.  Nothing is
+#: refused because of this list — since 25 Oct 2026 a licence is provenance, kept
+#: and shown, not a gate (see ``license_problem``).  It stays so the shelf can say
+#: whether a licence looks familiar instead of guessing.
 LICENSES_OK = (
     "mit", "zlib", "apache", "bsd", "isc", "cc0", "cc-by", "cc-by-sa",
     "gpl", "lgpl", "mpl", "unlicense", "wtfpl", "artistic", "public-domain",
@@ -234,18 +235,15 @@ def rom_facts(path: Path, system: str) -> Dict[str, Any]:
 
 
 def license_problem(license_text: str) -> str:
-    """Empty string means "the entry states a licence we may copy"."""
-    text = (license_text or "").strip().lower()
-    if not text:
-        return "the source states no licence"
-    parts = re.split(r"[- ]+", text)
-    if "nc" in parts:
-        return "that licence forbids commercial use, which this box cannot promise"
-    if "nd" in parts:
-        return "that licence forbids changes, so the file cannot be repackaged"
-    if not any(text == ok or text.startswith(ok + "-") or text.startswith(ok + " ")
-               or ok in parts for ok in LICENSES_OK):
-        return f"the stated licence ({text}) does not clearly allow copying"
+    """The licence a source states is recorded, never used to refuse a game.
+
+    Until 25 Oct 2026 this was the first gate: NC/ND licences and entries that
+    stated none were turned away.  The owner's decision is that the shelf is
+    built from what is good to play, and the licence text travels with the game
+    as provenance — it is stored on the row and shown on the game's own page.
+    This function stays because the pages and the tests ask it a question; the
+    answer is now always "no problem", so nothing is refused for a licence.
+    """
     return ""
 
 

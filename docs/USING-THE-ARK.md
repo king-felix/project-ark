@@ -36,8 +36,10 @@ Same box, three addresses. Use whichever your device can resolve.
 ## 1. Getting on
 
 ### On your home Wi-Fi
-The Ark joins your normal network on its own at boot. On any device already on that Wi-Fi,
-open **`http://ark.lan`**.
+If the Ark is plugged into your normal network, open **`http://ark.local`** on any device
+already on that Wi-Fi. (The box broadcasts its own Wi-Fi by default; joining it is the
+section below.) A computer on a home network cannot look up a name ending in `.lan` —
+that name only works while the Ark is broadcasting, because then the box answers it.
 
 ### On the Ark's own hotspot (internet down, or away from home)
 The Ark broadcasts a Wi-Fi network called **`The-Ark-Offline`**. It is open — no password.
@@ -226,9 +228,11 @@ Tap **Games** on the front page, then tap a game. It starts in the browser; ther
 nothing to install and no account. The arrow keys work, and on a phone an on-screen pad
 appears. Everything runs on the box, so a dead internet changes nothing.
 
-A few small games come with the box; the owner can add more from the Games page behind
-the owner's sign-in. Each game's card says what it is and who made it, and the licence is
-shown on the card and in the notes beside the shelf.
+About two dozen small games come with the box (Game Boy, Game Boy Color, Game Boy
+Advance and NES); the owner can add more from the Games page behind the owner's
+sign-in. Each game's card says what it is and who made it, and the licence the source
+states is shown on the card and in the notes beside the shelf — it is a label, not a
+restriction this box applies.
 
 **Saves.** Playing as a guest, your save stays in that one browser on that one device —
 clearing the browser's data removes it. If you want a save to follow you to another
@@ -441,8 +445,9 @@ Do this after any power cut, and before you rely on the box for a trip.
    about the network — an empty or short log is normal, because a quiet check writes nothing.
 
 
-For whoever looks after the box, one more: `https://ark.lan:8443/admin` shows a
-sign-in page. That is the owner's door — it changes the machine, it is never
+For whoever looks after the box, one more: `https://ark.local:8443/admin` shows a
+sign-in page (and `https://ark.lan:8443/admin` does the same from a phone joined to
+The-Ark-Offline). That is the owner's door — it changes the machine, it is never
 part of what a visitor sees, and on a box that has never been claimed it stays
 shut on purpose (`docs/ADMIN.md` explains the one-time claim).
 
@@ -460,7 +465,7 @@ Re-provisioning is idempotent: re-running any phase repairs it rather than dupli
 
 | Symptom | What it means | Fix |
 |---|---|---|
-| `ark.lan` does not load | device on a different Wi-Fi, or the name will not resolve | try `http://10.42.0.1`; on Windows use `http://ark.local` |
+| `ark.lan` does not load | the name only resolves while the box is broadcasting (then the box answers every name) or on a network whose own DNS knows it; a home computer or phone cannot look up a name ending in `.lan` | use `http://ark.local` on a home network, or `http://10.42.0.1` on The-Ark-Offline |
 | Odd "Sign in to Wi-Fi" popup | that is the phone's captive window, not the Ark | close it, open `http://ark.lan` in the real browser |
 | Front page fine, `/books/` shows an error | library database missing or unreadable | `sudo ark-import-calibre-library <path>`, or re-run phase `30-calibre` |
 | Front page dot is amber | the box is still filling up — a part has nothing on the card yet | nothing; `/api/ready` names which part and why |

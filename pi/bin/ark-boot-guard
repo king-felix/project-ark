@@ -24,16 +24,19 @@ say "boot guard starting (delay ${GUARD_DELAY:-20}s)"
 sleep "${GUARD_DELAY:-20}"
 
 # ---- 1. network -------------------------------------------------------------
-# ark-mode auto waits briefly for the saved home network, then broadcasts.
+# ark-mode boot honours BOOT_MODE (/etc/ark/ark.env): "hotspot" — the shipped
+# default — comes up broadcasting and stays there; "auto" tries the home network
+# first and broadcasts if it is absent.  Either way the portal is reachable with
+# nobody in the room.
 # GUARD_SKIP_NETWORK=1 lets phase 7 start this unit for a health check without
 # touching the radio (provisioning must not drop the SSH session it runs over).
 if [[ "${GUARD_SKIP_NETWORK:-0}" == "1" ]]; then
   say "network step skipped (GUARD_SKIP_NETWORK=1)"
 else
-  if ARK_HOME_WIFI_TIMEOUT="${GUARD_HOME_TIMEOUT:-40}" /usr/local/bin/ark-mode auto; then
-    say "network: $(cat /etc/ark/mode 2>/dev/null || echo unknown)"
+  if ARK_HOME_WIFI_TIMEOUT="${GUARD_HOME_TIMEOUT:-40}" /usr/local/bin/ark-mode boot; then
+    say "network: $(cat /etc/ark/mode 2>/dev/null || echo unknown) (BOOT_MODE=${BOOT_MODE:-hotspot})"
   else
-    say "ark-mode auto failed — forcing the hotspot"
+    say "ark-mode boot failed — forcing the hotspot"
     /usr/local/bin/ark-mode hotspot || say "hotspot could not start either (NetworkManager problem?)"
   fi
 fi

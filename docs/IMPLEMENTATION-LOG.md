@@ -1259,3 +1259,135 @@ either profile; the guard is render-time only (it cannot see a hand-edited
 `firstrun.sh`); and the `|`-in-a-home-password case is refused rather than
 supported — a home password containing `|` now needs a different character.
 
+
+## 17. A licence is information, and the shelf is full — 25 Oct 2026
+
+The owner's instruction, twice, in as many messages: *"licences become information,
+not a door — I don't even care about the licence."* That is a change to the code, not
+a change of taste in titles, so it is recorded here as one.
+
+### 17.1 What was removed, and what stayed
+
+| Was | Is |
+|---|---|
+| `ark_arcade.license_problem()` refused a blank, "freeware", "all rights reserved", NC, ND or unknown licence | returns `""` for every input. The function stays so the shelf, the owner page and the tests ask one question; the licence text is still stored on the row and shown on the game's card as provenance |
+| `ark_arcade_install.rights_facts()` refused a source that said nothing about the right to copy, and refused "evidence" shorter than 12 characters | always `(True, "")`. What a source says is recorded beside the game |
+| `language_facts()` refused an unrecorded language and a missing evidence sentence | refuses only a language the source **records** as non-English, and a source that contradicts itself. A wordless game and a game whose language nobody recorded are both allowed |
+| `review_reason()` returned the licence or the rights sentence | returns only the language sentence |
+| `owner_candidate()` refused a file with no licence | keeps the licence if the owner records one; the shape and language proofs still run |
+
+Why the language rule survived at all: it is not a rights question, it is whether
+someone in the household can read the game. Most homebrew entries state no language
+at all, so the old rule was refusing almost everything — 38 of 40 candidates on the
+box sat in *review*, and none of them for a reason a person could act on.
+
+### 17.2 Two real defects found by trying to build the shelf
+
+**One source prefix for every console.** `entry_to_candidate()` built every download
+address under `gbdev/database`. Game Boy and Game Boy Color entries really are there;
+Game Boy Advance entries are in **`gbadev-org/games`** and NES entries in
+**`nesdev-org/homebrew-db`**. Every GBA and NES candidate was therefore offered an
+address that answers 404: the box could name the game and never fetch it. Now
+`SOURCE_RAW_BY_SYSTEM` maps a console to the one repository that holds it, `_raw_prefix()`
+takes the *resolved system*, `_trusted()` accepts exactly those three prefixes, and a
+console with no repository (SNES, Genesis) yields `""` — so `entry_to_candidate()`
+returns `None` instead of inventing an address.
+
+**An entry was dropped when the search answer omitted `platform`.** The catalogue's
+`/search` response sometimes leaves `platform` out, and `_system()` returned `""` for a
+`.gb` file whose extension names exactly one console. Two shortlisted 2021 games
+(*Dawn Will Come*, *Porklike GB*) were reported as "cannot be named". `_system()` now
+falls back to `_EXT_SYSTEM`; `.bin` is deliberately absent from that table because two
+consoles share the extension.
+
+
+### 17.3 The shelf, as built
+
+`pi/arcade/catalog/seed.json` now holds **23 games**: 10 Game Boy, 6 Game Boy Color,
+6 Game Boy Advance, 1 NES — 46,787,812 bytes. A throwaway builder on the Mac read the
+harvested catalogue, fetched each default file, refused anything the box's own
+`rom_facts()` did not accept (and, for Advance, anything without the GBA cartridge
+logo at `0x04`), then wrote the entry with its measured size and SHA-256. The blurbs
+are one plain sentence each, because they are read on the shelf.
+
+New: **`ark-arcade --seed --from-dir DIR`** publishes that list from files carried over.
+It goes through `publish_candidate(..., source=…)`, so the recorded SHA-256 and size are
+still enforced — a different file with the right name is refused, and re-running skips
+what is already there. This exists because a box may have no route to the catalogue at
+all; on this box the route happened to work, and `60-portal` fetched all 20 new titles
+itself.
+
+### 17.4 A cold boot broadcasts
+
+`BOOT_MODE` in `/etc/ark/ark.env` decides, and it is now written by phase 7 as
+**`hotspot`** (only when absent — an existing answer is never overwritten).
+`ark-mode boot` reads it; `ark-boot-guard` calls `ark-mode boot` instead of `ark-mode
+auto`; the hotspot choice **pins**, so `ark-net-watch` will not walk the box back onto a
+router nobody asked for, and `ark-mode auto` releases it. `ark-mode boot --dry-run`
+prints the decision without root and without touching the radio, which is how the boot
+path is proved on a live box that must not be rebooted during a working session.
+
+### 17.5 `ark.lan` on a Mac: the name, not the door
+
+The reported defect — `https://ark.lan:8443/admin` unreachable — is a **name
+resolution** fact, not nginx. Measured from the Mac:
+
+| Probe | Result |
+|---|---|
+| `dscacheutil -q host -a name ark.lan` | no answer |
+| `dscacheutil -q host -a name ark.local` | `192.168.1.26` (mDNS, via the box's avahi) |
+| `curl -k https://ark.local:8443/admin` | **303** → `/admin/login` |
+| `curl -k https://ark.local:8445/arcade/player` | **200** |
+| `curl -k https://192.168.1.26:8443/admin` | `000` — no SNI, so nginx serves the management listener's default server, which rejects the handshake on purpose |
+
+`.lan` is not a special-use name: nothing asks mDNS about it. So `ark.lan` resolves only
+while the box is broadcasting (its own dnsmasq wildcard answers every name) or where a
+network's DNS knows it, and `.local` is the name for a home LAN. The certificate already
+covers both. The words were wrong, not the server: `README.md`, `docs/ADMIN.md`,
+`docs/USING-THE-ARK.md`, `pi/portal/index.html` and `pi/portal/help.html` now say which
+name resolves where, and the troubleshooting row says why.
+
+
+### 17.6 Deployed, and the File Box told the truth again
+
+Source synced to `/srv/ark/src` (rsync, as `03-provision.sh` does), then
+`--only 60-portal,70-network`, then `--only 90-verify`. Rollback points taken first:
+`/root/ark-db-before-games.db` (SQLite `.backup`, WAL-safe) and
+`/root/ark-src-before-games.tgz`.
+
+The leftover `e2e-drop-test.epub` row — a record whose file had long gone, and the only
+reason `/api/ready` answered 503 — was removed on the box by a one-off script that
+deleted that **one named record** and wrote the same audit line the owner page writes
+(*"record removed; the file was already gone"*). It did not sweep the folder: a row can
+outlive its file by design, and a tidy-up pass would be data loss wearing a maintenance
+costume.
+
+**Evidence, as measured on the box and from the Mac.**
+
+| What | Result |
+|---|---|
+| `pytest` on the Mac | **252 passed** (was 248) |
+| `install-ark.sh --only 60-portal,70-network` | `ARK_INSTALL_COMPLETE`, 0m36s, `failed: none` |
+| `install-ark.sh --only 90-verify` | *"everything a visitor touches is working"*, `ARK_INSTALL_COMPLETE` |
+| `ark-arcade --status` | **23 game(s)** on the shelf, 0 players, 0 suggestions pending |
+| `curl http://ark.local/api/ready` | **200**, `ready 8 / total 8`, `blocking: []` |
+| `/arcade/`, `/arcade/g/apotris`, `/arcade/g/cybercoaster`, `/arcade/g/aevilia` | 200, 200, 200, 200 |
+| `/arcade/g/apotris/rom` | 200, **4,194,304 B** (Apotris) |
+| game page asset references | **none** matching `http(s)://` — the page still works with the internet unplugged |
+| `/arcade/player` on `:80` | 307 → `:8445` (by design) |
+| `ark-mode status` | mode `home`, *at boot: hotspot (BOOT_MODE)* |
+| `ark-mode boot --dry-run` | *"boot would broadcast \"The-Ark-Offline\" and stay there (BOOT_MODE=hotspot)"*, nothing changed |
+| free space | **121.5 GiB** (root filesystem 45% used; card is 229 GB) |
+
+**Not proven.** No game has been **played** on the Pi — EmulatorJS has not run on that
+hardware, no phone has signed in, no save has been kept. The carried-file path is proved
+in tests only; the box fetched its shelf over its own internet route. **SNES and Genesis
+have no catalogue entries at all** (the source returns none for either), so a game for
+those two consoles must be hand-carried with `--import` — the consoles are supported by
+the player, the sourcing is not. And the first real **cold boot** into broadcast mode has
+not happened: the setting and the dry run are proved, the reboot is not.
+
+**Next step.** Play one game on the phone with the box off the router; then reboot it
+once and watch `The-Ark-Offline` appear with nobody touching anything; then carry one
+SNES title over with `--import` and record what that path asks for.
+

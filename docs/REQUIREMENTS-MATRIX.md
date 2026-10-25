@@ -187,16 +187,17 @@ only been syntax-checked.
 ## R7 — adding games is a careful owner action, not a browser link
 
 **Status: PARTIAL.** The gates are real and tested, including the fixes made this session.
-The catalogue is still one source, and the owner's queue is not a durable background system.
+The catalogue is still one upstream service (`hh3.gbdev.io`) with three per-console
+repositories behind it, and SNES/Genesis have no entries at all; the owner's queue is
+not a durable background system.
 
 ### What ships and is tested
 
 | Acceptance sentence | Where | Test |
 |---|---|---|
-| Refuses a licence that does not allow copying | `license_problem()` | `test_arcade_install.py` |
-| Refuses a game that is not in English (or wordless) | `language_facts()`, `_language_values()` | `test_arcade_install.py::test_the_language_table_refuses_everything_it_cannot_prove_is_english`; `test_arcade_install.py::test_multilingual_english_survives_the_trip_through_a_catalogue_entry` |
-| Refuses a source with no stated language or rights evidence, or a conflict | `_base_problem()`, `review_reason()` | `test_arcade_install.py::test_a_candidate_without_proof_is_held_for_review_not_silently_installed`; `test_arcade_install.py::test_an_owner_file_without_proof_of_language_or_rights_is_refused` |
-| Holds an unproven candidate for review instead of installing it | `candidate_status()` | `test_a_candidate_without_proof_is_held_for_review_not_silently_installed` |
+| A licence is recorded as provenance and never refuses a game (owner's decision, 25 Oct 2026) | `license_problem()`, `rights_facts()` | `test_arcade_install.py::test_a_licence_is_recorded_and_never_refuses_a_game`; `test_arcade_install.py::test_a_candidate_without_a_licence_is_not_held_for_review` |
+| Refuses a game the source *says* is in another language (wordless and unrecorded are allowed) | `language_facts()`, `_language_values()` | `test_arcade_install.py::test_the_language_table_allows_english_wordless_and_unrecorded`; `test_arcade_install.py::test_multilingual_english_survives_the_trip_through_a_catalogue_entry` |
+| Holds a candidate the source contradicts, or says is not English, for review | `review_reason()`, `candidate_status()` | `test_arcade_install.py::test_a_candidate_without_a_licence_is_not_held_for_review`; `test_arcade_install.py::test_an_owner_file_is_accepted_without_a_licence_but_held_back_in_another_language` |
 | Rebuilds the download address from a validated slug + bare filename | `ark_arcade_install` candidate model | download gate tests |
 | Source prefix allowlist, redirects refused, size cap, ROM shape | `_download_url`, `publish_candidate` | `test_arcade_install.py` |
 | A candidate is temp-written, fsynced, hashed, then `os.replace`d | `publish_candidate` | publish tests |
@@ -216,9 +217,9 @@ still refused, and `"no-text"` is no longer mistaken for a language called `no`.
 
 | Acceptance sentence | State |
 |---|---|
-| More than one legal source; adapters for GBA/NES/SNES/Genesis | **absent** — only the Homebrew Hub/Game Boy path exists |
+| More than one legal source; per-console adapters | **GBA and NES done** — `gbadev-org/games` and `nesdev-org/homebrew-db`, each with its own allowlisted prefix; **SNES and Genesis still absent** (no catalogue entries: hand-carried with `--import`) |
 | A durable background job queue with progress, cancellation and retry | **absent** — a run is a timer/CLI invocation, and a killed run leaves no resumable job |
-| A populated shelf: target titles and a size budget actually reached | **absent** — three pinned seed games, no population run |
+| A populated shelf: target titles and a size budget actually reached | **done** — 23 seeded games (10 GB, 6 GBC, 6 GBA, 1 NES), installed on the box on 25 Oct 2026 and served over `/arcade/`; measured 46.8 MB |
 | Compatibility/boot check before publication | **absent** — a file that is the right shape can still fail to boot |
 | Archive handling (zip/7z) for owner imports | **absent** — the install path accepts a bare ROM file |
 | External source verification against official hashes/schemas | **absent** — the live source has never been asked for a file from the box |

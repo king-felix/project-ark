@@ -3,10 +3,10 @@
 #  PHASE 7 — the Ark's own Wi-Fi
 #
 #  Creates the "The-Ark-Offline" access point, makes every hostname resolve to
-#  the portal while it is broadcasting, and installs the boot guard that falls
-#  back to it whenever no home network is around.  ark-net-watch then keeps
-#  asking the same question every minute, so a home network that disappears
-#  after boot is survived without a reboot.
+#  the portal while it is broadcasting, and installs the boot guard that brings
+#  the box up broadcasting (BOOT_MODE=hotspot, the shipped default).  ark-net-watch
+#  then asks the same question every minute, so a network that disappears after
+#  boot is survived without a reboot.
 #
 #  NOTHING here switches the radio: you are most likely connected over that same
 #  Wi-Fi right now.  Use "sudo ark-mode test 180" to try it deliberately.
@@ -77,6 +77,20 @@ ark_write /etc/NetworkManager/dnsmasq-shared.d/ark-wildcard.conf 644 root:root <
 address=/#/$HOTSPOT_ADDRESS
 EOF
 
+# ---- what a cold boot should do ---------------------------------------------
+# The Ark's own broadcast is the default: a box in a cupboard, with no router and
+# nobody to type a command, must come up broadcasting.  "auto" restores the older
+# habit of trying the home network first.  Written once; an existing answer is
+# never overwritten.
+BOOT_MODE="${BOOT_MODE:-hotspot}"
+if grep -q '^BOOT_MODE=' "$ENV_FILE"; then
+  ark_info "boot choice kept from $ENV_FILE: $BOOT_MODE"
+else
+  printf '\n# What a cold boot should do: "hotspot" (broadcast and stay) or "auto".\nBOOT_MODE="%s"\n' \
+    "$BOOT_MODE" >> "$ENV_FILE"
+  ark_ok "boot choice recorded in $ENV_FILE: BOOT_MODE=\"$BOOT_MODE\""
+fi
+
 # ---- scripts and the boot guard --------------------------------------------
 for b in ark-mode ark-boot-guard ark-net-watch; do
   ark_copy "$ARK_SRC/bin/$b" "/usr/local/bin/$b" 755 root:root
@@ -121,6 +135,11 @@ fi
 mode_shown="$(nmcli -g 802-11-wireless.mode connection show "$HOTSPOT_CONNECTION" 2>/dev/null || true)"
 method_shown="$(nmcli -g ipv4.method connection show "$HOTSPOT_CONNECTION" 2>/dev/null || true)"
 printf '   profile %-12s mode=%s  ipv4=%s\n' "$HOTSPOT_CONNECTION" "${mode_shown:-?}" "${method_shown:-?}"
+printf '   boot choice   %s (BOOT_MODE in %s)\n' "${BOOT_MODE:-hotspot}" "$ENV_FILE"
+case "${BOOT_MODE:-hotspot}" in
+  hotspot|auto|home) ;;
+  *) ark_warn "BOOT_MODE=\"${BOOT_MODE:-}\" is not hotspot, auto or home — a boot would broadcast instead" ;;
+esac
 [[ "${mode_shown:-}" == "ap" ]] || ark_warn "hotspot profile is not in access-point mode"
 [[ "${method_shown:-}" == "shared" ]] || ark_warn "hotspot profile is not sharing its connection"
 [[ -f /etc/NetworkManager/dnsmasq-shared.d/ark-wildcard.conf ]] || ark_warn "wildcard DNS file is missing"
@@ -133,6 +152,7 @@ printf '   profile %-12s mode=%s  ipv4=%s\n' "$HOTSPOT_CONNECTION" "${mode_shown
 
 ark_info "try it on purpose:  sudo ark-mode test 180   (SSH drops while it runs)"
 ark_info "hotspot on/off:     sudo ark-mode hotspot | sudo ark-mode auto"
+ark_info "boot choice:        BOOT_MODE in $ENV_FILE (currently ${BOOT_MODE:-hotspot})"
 ark_info "what is happening:  sudo ark-mode status"
 ark_info "network decisions:  tail -n 20 $ARK_ROOT/logs/net-watch.log"
-ark_ok "phase 7 complete — the box now reaches the home network or broadcasts, at boot and afterwards"
+ark_ok "phase 7 complete — a cold boot comes up broadcasting, and the box stays reachable"

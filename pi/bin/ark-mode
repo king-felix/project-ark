@@ -2,12 +2,19 @@
 # =============================================================================
 #  ark-mode — choose how the Ark is reachable.
 #
+#    ark-mode boot      what a cold boot does, from BOOT_MODE in /etc/ark/ark.env
+#                       (add --dry-run to be told without touching the radio)
 #    ark-mode auto      try the home network, fall back to broadcasting
 #    ark-mode home      use the home network (needs one saved already)
 #    ark-mode hotspot   broadcast "The-Ark-Offline" and serve the portal
 #    ark-mode status    what is happening right now
 #    ark-mode test [s]  switch to the hotspot, wait s seconds (default 180),
 #                       then go back to "auto" — SSH will drop while it runs
+#
+#  BOOT_MODE is the box's standing answer, written by the installer:
+#    "hotspot" (the shipped default) — come up broadcasting, and stay there
+#    "auto"                          — try the home network first, then broadcast
+#    "home"                          — try the home network, broadcast if absent
 #
 #  "home" and "hotspot" are answers the owner gave, so they are remembered in
 #  /etc/ark/mode.pinned and the network watchdog will not take them back.
@@ -95,6 +102,56 @@ cmd_hotspot() { # [--auto]  — --auto means "Ark did this to itself", so no pin
   say "broadcasting \"${HOTSPOT_SSID:-The-Ark-Offline}\" — open http://$HOTSPOT_ADDRESS"
 }
 
+# What a cold boot does.  The installer writes BOOT_MODE into /etc/ark/ark.env;
+# "hotspot" is the shipped default because the box is meant to broadcast with
+# nobody standing next to it.  It pins, so the watchdog does not walk the box
+# back onto a router the owner never asked for; "ark-mode auto" releases it.
+boot_hotspot() {
+  hotspot_up || die "could not start the hotspot (check: journalctl -u NetworkManager)"
+  pin hotspot
+  say "broadcasting \"${HOTSPOT_SSID:-The-Ark-Offline}\" — open http://$HOTSPOT_ADDRESS"
+  say "the box stays here until someone runs: sudo ark-mode auto"
+}
+
+cmd_boot() {
+  local want="${BOOT_MODE:-hotspot}" dry="${1:-}"
+  if [[ "$dry" == "--dry-run" ]]; then
+    case "$want" in
+      hotspot) say "boot would broadcast \"${HOTSPOT_SSID:-The-Ark-Offline}\" and stay there (BOOT_MODE=$want)" ;;
+      auto)    say "boot would try \"$HOME_WIFI_CONNECTION\", then broadcast (BOOT_MODE=$want)" ;;
+      home)    say "boot would try \"$HOME_WIFI_CONNECTION\", then broadcast if absent (BOOT_MODE=$want)" ;;
+      *)       say "boot would broadcast: BOOT_MODE=\"$want\" is not an answer this box knows" ;;
+    esac
+    say "nothing was changed ($(active_names | paste -sd ', ' -) is active now)"
+    return 0
+  fi
+  case "$want" in
+    auto)
+      say "boot choice: auto (home network first, broadcasting if it is absent)"
+      cmd_auto
+      ;;
+    home)
+      say "boot choice: home network \"$HOME_WIFI_CONNECTION\" (broadcasting if it is absent)"
+      if home_up; then
+        is_active "$HOTSPOT_CONNECTION" && deactivate "$HOTSPOT_CONNECTION"
+        pin home
+        say "joined \"$HOME_WIFI_CONNECTION\" — the Ark is reachable at its usual address"
+        return 0
+      fi
+      say "no home network at boot — broadcasting instead"
+      boot_hotspot
+      ;;
+    hotspot)
+      say "boot choice: broadcast (BOOT_MODE=hotspot)"
+      boot_hotspot
+      ;;
+    *)
+      say "BOOT_MODE=\"$want\" is not an answer this box knows — broadcasting instead"
+      boot_hotspot
+      ;;
+  esac
+}
+
 cmd_status() {
   local mode ip4 portal held
   mode="$(cat "$MODE_FILE" 2>/dev/null || echo unknown)"
@@ -103,6 +160,7 @@ cmd_status() {
   portal="$(curl -s -o /dev/null -m 5 -w '%{http_code}' "http://127.0.0.1/" 2>/dev/null || echo 000)"
   printf '   mode          : %s\n' "$mode"
   printf '   chosen by     : %s\n' "$([[ -n "$held" ]] && echo "owner ($held)" || echo auto)"
+  printf '   at boot       : %s (BOOT_MODE)\n' "${BOOT_MODE:-hotspot}"
   printf '   wifi address  : %s\n' "${ip4:-none}"
   printf '   portal        : HTTP %s on 127.0.0.1\n' "$portal"
   printf '   active links  : %s\n' "$(active_names | paste -sd ', ' -)"
@@ -119,12 +177,18 @@ cmd_test() {
   cmd_auto
 }
 
-need_root "$*"
+# Reading needs no privilege: "status" and "boot --dry-run" touch nothing.
+if [[ "${1:-status}" == "boot" && "${2:-}" == "--dry-run" ]]; then
+  :
+else
+  need_root "$*"
+fi
 case "${1:-status}" in
+  boot)    cmd_boot "${2:-}" ;;
   auto)    cmd_auto ;;
   home)    cmd_home ;;
   hotspot) cmd_hotspot "${2:-}" ;;
   test)    cmd_test "${2:-180}" ;;
   status)  cmd_status ;;
-  *)       die "usage: ark-mode {auto|home|hotspot [--auto]|status|test [seconds]}" ;;
+  *)       die "usage: ark-mode {boot [--dry-run]|auto|home|hotspot [--auto]|status|test [seconds]}" ;;
 esac

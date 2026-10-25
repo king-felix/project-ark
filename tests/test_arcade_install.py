@@ -2,8 +2,9 @@
 
 Every gate is tested on its own, because the gate is the feature.  The source may
 say whatever it likes; what reaches ``/srv/ark/arcade/games`` is decided by the
-licence, the allowlist, the size cap, the SHA-256 and the shape of the file —
-never by a URL a catalogue entry supplied.
+allowlist, the size cap, the SHA-256 and the shape of the file — never by a URL a
+catalogue entry supplied.  A licence is recorded beside a game, not used to refuse
+it (owner's decision, 25 Oct 2026).
 """
 
 from __future__ import annotations
@@ -40,14 +41,38 @@ def _gb_rom() -> bytes:
     return bytes(data)
 
 
-def test_the_licence_is_the_first_gate():
+def test_a_licence_is_recorded_and_never_refuses_a_game():
+    """The owner's decision: the shelf is built from what is good to play."""
+    import ark_arcade as arc
     import ark_arcade_install as install
-    for licence in ("", "Freeware", "All rights reserved", "CC-BY-NC", "CC-BY-ND"):
+    for licence in ("", "Freeware", "All rights reserved", "CC-BY-NC", "CC-BY-ND", "MIT"):
+        assert arc.license_problem(licence) == "", licence
         ok, reason = install.eligibility(_candidate(license=licence))
-        assert not ok, licence
-        assert reason
-    for licence in ("MIT", "Zlib", "GPL-3.0-or-later", "public-domain"):
-        assert install.eligibility(_candidate(license=licence))[0], licence
+        assert ok, (licence, reason)
+    # ...and it is still carried on the row, so the game's page can say what it is.
+    entry = {
+        "typetag": "game", "slug": "stars", "title": "Stars", "platform": "GB",
+        "license": "CC-BY-NC-ND", "files": [{"filename": "stars.gb", "default": True}],
+    }
+    candidate = install.entry_to_candidate(entry)
+    assert candidate and candidate["license"] == "CC-BY-NC-ND"
+
+
+def test_a_game_boy_advance_entry_is_fetched_from_the_repository_that_holds_it():
+    """GBA entries are not in gbdev/database; the old single prefix answered 404."""
+    import ark_arcade_install as install
+    entry = {
+        "typetag": "game", "slug": "Apotris", "title": "Apotris", "platform": "GBA",
+        "files": [{"filename": "Apotris.gba", "default": True}],
+    }
+    candidate = install.entry_to_candidate(entry)
+    assert candidate and candidate["system"] == "gba"
+    assert candidate["download_url"] == install.SOURCE_RAW_GBA + "apotris/Apotris.gba"
+    assert install.eligibility(candidate)[0]
+    assert install._trusted(candidate["download_url"])
+    assert install._trusted(install.SOURCE_RAW + "stars/stars.gb")
+    assert not install._trusted("https://raw.githubusercontent.com/gbadev-org/games-evil/x")
+    assert not install._trusted("https://raw.githubusercontent.com.evil.example/x.gb")
 
 
 def test_an_entry_cannot_move_the_download_to_another_host():
@@ -190,6 +215,42 @@ def test_automatic_installing_is_off_unless_the_owner_says_yes(ark):
     assert "off" in answer["skipped"]
 
 
+def test_the_first_shelf_can_be_carried_to_a_box_with_no_internet(ark, tmp_path, monkeypatch):
+    """A box with no route to the catalogue still gets its shelf, from a stick."""
+    import ark_arcade_install as install
+    data = _gb_rom()
+    (tmp_path / "stars.gb").write_bytes(data)
+    candidate = _candidate(filename="stars.gb", size=len(data),
+                           sha256=hashlib.sha256(data).hexdigest())
+    monkeypatch.setattr(install, "seed_candidates", lambda: [candidate])
+    with ark.db.tx() as conn:
+        answer = install.install_seed(conn, source_dir=tmp_path)
+    assert answer["installed"] == ["stars"], answer
+    with ark.db.read() as conn:
+        game = conn.execute("SELECT * FROM games WHERE slug = 'stars'").fetchone()
+    assert game["sha256"] == candidate["sha256"]
+    stored = ark.root / "arcade" / "games" / game["filename"]
+    assert stored.read_bytes() == data
+    with ark.db.tx() as conn:
+        again = install.install_seed(conn, source_dir=tmp_path)
+    assert again["installed"] == [] and again["skipped"] == ["Stars"]
+
+
+def test_a_carried_file_that_is_not_the_one_recorded_is_refused(ark, tmp_path, monkeypatch):
+    import ark_arcade_install as install
+    data = _gb_rom()
+    (tmp_path / "stars.gb").write_bytes(data)
+    monkeypatch.setattr(install, "seed_candidates", lambda: [
+        _candidate(filename="stars.gb", size=len(data), sha256="0" * 64)])
+    with ark.db.tx() as conn:
+        answer = install.install_seed(conn, source_dir=tmp_path)
+    assert answer["installed"] == []
+    assert answer["errors"] and "promised" in answer["errors"][0]
+    with ark.db.read() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM games").fetchone()[0] == 0
+    assert not any((ark.root / "arcade" / "games").iterdir())
+
+
 def _owner_source(tmp_path: Path) -> Path:
     source = tmp_path / "stars.gb"
     source.write_bytes(_gb_rom())
@@ -224,38 +285,41 @@ def test_an_owner_file_goes_through_the_same_gate_and_is_marked_owner_supplied(a
     assert stored.is_file() and stored.read_bytes() == source.read_bytes()
 
 
-def test_an_owner_file_without_proof_of_language_or_rights_is_refused(ark, tmp_path):
+def test_an_owner_file_is_accepted_without_a_licence_but_held_back_in_another_language(ark, tmp_path):
+    """A licence is provenance; language is still about whether a reader can play."""
     import ark_arcade_install as install
     source = _owner_source(tmp_path)
-    for field, value, words in (
-        ("rights_evidence", "", "copied"),
-        ("rights_evidence", "unknown", "copied"),
-        ("language", "", "language"),
-        ("language_evidence", "not stated", "language"),
-        ("language", "de", "english"),
-    ):
-        facts = _owner_facts(source)
-        facts[field] = value
-        with ark.db.tx() as conn:
-            with pytest.raises(install.InstallRefused) as refused:
-                install.import_owner_file(conn, source, **facts)
-        assert words in str(refused.value).lower(), (field, value)
+    facts = _owner_facts(source)
+    facts.update({"license_text": "", "license_evidence": "", "rights_evidence": "",
+                  "language": "", "language_evidence": ""})
+    with ark.db.tx() as conn:
+        result = install.import_owner_file(conn, source, **facts)
+    assert result["installed"] is True
     with ark.db.read() as conn:
-        assert conn.execute("SELECT COUNT(*) FROM games").fetchone()[0] == 0
-    games = ark.root / "arcade" / "games"
-    assert not games.exists() or not any(games.iterdir())
+        assert conn.execute("SELECT COUNT(*) FROM games").fetchone()[0] == 1
+
+    other = tmp_path / "other.gb"
+    other.write_bytes(_gb_rom())
+    facts = _owner_facts(other)
+    facts.update({"slug": "other", "title": "Other", "language": "de"})
+    with ark.db.tx() as conn:
+        with pytest.raises(install.InstallRefused) as refused:
+            install.import_owner_file(conn, other, **facts)
+    assert "english" in str(refused.value).lower()
     tmp = ark.root / "arcade" / "tmp"
     assert not tmp.exists() or not any(tmp.iterdir())
 
 
-def test_a_candidate_without_proof_is_held_for_review_not_silently_installed():
+def test_a_candidate_without_a_licence_is_not_held_for_review(ark):
     import ark_arcade_install as install
     assert install.candidate_status(_candidate())[0] == "pending"
-    status, reason = install.candidate_status(_candidate(language_evidence="not stated"))
-    assert status == "review" and "language" in reason
-    status, reason = install.candidate_status(_candidate(rights_evidence=""))
-    assert status == "review" and "copied" in reason
-    assert install.candidate_status(_candidate(license="Freeware"))[0] == "refused"
+    # A blank licence, a "freeware" string and missing words beside it are fine.
+    status, _ = install.candidate_status(
+        _candidate(license="", license_evidence="", rights_evidence=""))
+    assert status == "pending"
+    # A game the source says is in another language is still the owner's call.
+    status, reason = install.candidate_status(_candidate(language="ja"))
+    assert status == "review" and "japanese" in reason.lower()
 
 
 @pytest.mark.parametrize("overrides, allowed", [
@@ -271,14 +335,15 @@ def test_a_candidate_without_proof_is_held_for_review_not_silently_installed():
     # A game in another language is not made English by a title or a filename.
     ({"language": "ja"}, False),
     ({"language": "de, fr"}, False),
-    # A tag alone is not evidence, and an unrecorded language is not English.
-    ({"language": "", "language_evidence": "the filename ends in (J)"}, False),
-    ({"language": "", "language_evidence": ""}, False),
-    ({"language": "en", "language_evidence": "not stated"}, False),
+    # A tag alone is not evidence — but an unrecorded language is no longer a
+    # refusal: the catalogue is homebrew and most entries say nothing at all.
+    ({"language": "", "language_evidence": "the filename ends in (J)"}, True),
+    ({"language": "", "language_evidence": ""}, True),
+    ({"language": "en", "language_evidence": "not stated"}, True),
     # The source saying two different things is a conflict, not a guess.
     ({"language": "en", "language_conflict": True}, False),
 ])
-def test_the_language_table_refuses_everything_it_cannot_prove_is_english(overrides, allowed):
+def test_the_language_table_allows_english_wordless_and_unrecorded(overrides, allowed):
     import ark_arcade_install as install
     ok, reason = install.language_facts(_candidate(**overrides))
     assert ok is allowed, (overrides, reason)
@@ -337,9 +402,11 @@ def test_a_card_that_fills_while_copying_leaves_nothing_behind(ark, tmp_path, mo
 
 def test_the_first_shelf_dry_run_touches_nothing(ark):
     import ark_arcade_install as install
+    shelf = install.seed_candidates()
+    assert shelf, "the pinned first shelf must not be empty"
     with ark.db.tx() as conn:
         answer = install.install_seed(conn, dry_run=True)
-    assert len(answer["installed"]) == 3
+    assert len(answer["installed"]) == len(shelf)
     assert not answer["errors"]
     with ark.db.read() as conn:
         assert conn.execute("SELECT COUNT(*) FROM games").fetchone()[0] == 0

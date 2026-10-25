@@ -5,18 +5,20 @@ Run by the installer's first fill and by ``ark-arcade-discover.timer``.  This
 tool is deliberately the only thing besides the web app that writes into
 ``/srv/ark/arcade/games``:
 
-* ``--seed`` installs the pinned first shelf (``catalog/seed.json``) once;
+* ``--seed`` installs the pinned first shelf (``catalog/seed.json``) once — from
+  the catalogue, or with ``--from-dir`` from files carried over on a stick;
 * ``--discover`` asks the curated source what it has and records every answer;
 * ``--auto`` lets a discovery run install a few only when the owner switched
   automatic installing on (``arcade_auto_install = 1``);
 * ``--install N`` installs one suggestion the owner allowed;
 * ``--refuse N`` puts one away without deleting anything;
-* ``--import FILE`` adds a game the owner supplied, with the owner's own
-  evidence for its licence, rights and language — the same gate as a download.
+* ``--import FILE`` adds a game the owner supplied, with whatever the owner can
+  say about its licence and language, kept beside the game as provenance.
 
-Every download is checked against the licence, the source allowlist, the size
-cap, its SHA-256 and the shape of the console it claims to be.  A failure leaves
-the shelf exactly as it was.
+Every file is checked against the source allowlist, the size cap, its SHA-256 and
+the shape of the console it claims to be; the licence a source states is recorded
+and shown on the game's page, not used to refuse it (owner's decision, 25 Oct
+2026).  A failure leaves the shelf exactly as it was.
 """
 
 from __future__ import annotations
@@ -56,6 +58,8 @@ def _show(rows) -> None:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="ARK Arcade's shelf keeper")
     parser.add_argument("--seed", action="store_true", help="install the pinned first shelf")
+    parser.add_argument("--from-dir", dest="from_dir", metavar="DIR",
+                        help="with --seed: install from files carried over, not the internet")
     parser.add_argument("--discover", action="store_true", help="ask the source what it has")
     parser.add_argument("--auto", action="store_true", help="with --discover: install when switched on")
     parser.add_argument("--install", type=int, metavar="ID", help="install one suggestion")
@@ -109,7 +113,7 @@ def main(argv=None) -> int:
                     _say(f'  last check: {job["finished_at"] or job["started_at"]} — {job["detail"]}')
 
         if args.seed:
-            result = install.install_seed(conn, dry_run=args.dry_run)
+            result = install.install_seed(conn, dry_run=args.dry_run, source_dir=args.from_dir)
             if args.json:
                 _say(json.dumps(result))
             else:

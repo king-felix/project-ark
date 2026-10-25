@@ -235,7 +235,27 @@ def test_a_pin_is_written_only_by_a_person():
     assert "hotspot --auto" in WATCH.read_text(encoding="utf-8")
 
 
-def test_the_watchdog_is_a_timer_that_starts_after_boot():
+def test_a_cold_boot_broadcasts_unless_the_owner_says_otherwise():
+    """The shipped default is the hotspot, and the guard asks for it by name."""
+    root = Path(__file__).resolve().parents[1] / "pi"
+    mode = (root / "bin" / "ark-mode").read_text()
+    guard = (root / "bin" / "ark-boot-guard").read_text()
+    step = (root / "steps" / "70-network.sh").read_text()
+    assert 'local want="${BOOT_MODE:-hotspot}"' in mode        # default is broadcast
+    assert "boot)    cmd_boot" in mode
+    assert '"$dry" == "--dry-run"' in mode                     # provable with no radio
+    assert "/usr/local/bin/ark-mode boot" in guard              # the guard asks "boot"
+    assert "ark-mode auto" not in guard                        # ...and never the old call
+    assert 'BOOT_MODE=' in step and "hotspot" in step          # the installer records it
+
+
+def test_the_fields_a_boot_choice_relies_on_are_kept_in_one_file():
+    """BOOT_MODE lives in /etc/ark/ark.env, which ark-mode already sources."""
+    root = Path(__file__).resolve().parents[1] / "pi"
+    mode = (root / "bin" / "ark-mode").read_text()
+    assert 'ENV_FILE=/etc/ark/ark.env' in mode
+    assert '[[ -r "$ENV_FILE" ]] && . "$ENV_FILE"' in mode
+
     service = (SYSTEMD / "ark-net-watch.service").read_text(encoding="utf-8")
     timer = (SYSTEMD / "ark-net-watch.timer").read_text(encoding="utf-8")
     assert "ExecStart=/usr/local/bin/ark-net-watch" in service
