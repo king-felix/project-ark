@@ -377,6 +377,8 @@ nothing deployed, no hardware test — this is a code-and-tests checkpoint only.
 
 ## 9. Stage 4 checkpoint — 24 Oct 2026
 
+Shipped in **`58d504b`** on `feature/admin-hardening`.
+
 `pytest` **97 passed** (10 files, breakdown in §6 — `tests/test_health.py` is the
 new 13). Branch `feature/admin-hardening`, nothing deployed, no hardware test and
 no browser test: a code-and-tests checkpoint, exactly like stage 3.

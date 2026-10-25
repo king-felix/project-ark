@@ -126,7 +126,7 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 | Released baseline | tag **`v1.0.5`** = `main` = `dd3336c` (the published release; the live Pi runs this) |
 | Current work | branch **`feature/admin-hardening`**, pushed to `origin` (never force-push, never move a tag). Find the live tip with `git log -1` — this digest pins stage 4, not every later docs commit |
 | Stage 3 | shipped in **`a1e5efa`**: `ark_storage.py`, schema v2, board moderation + Community page, sha256 import ledger, bounded search, docs, 84 tests |
-| Stage 4 | `ark_health.py` (one place decides readiness, with reasons), `/api/ready` (200/503), `/admin/health` ("What is working"), `/api/health` demoted to liveness, measured download progress; tests in `tests/test_health.py` (13) — **97 tests total** |
+| Stage 4 | shipped in **`58d504b`**: `ark_health.py` (one place decides readiness, with reasons), `/api/ready` (200/503), `/admin/health` ("What is working"), `/api/health` demoted to liveness, measured download progress; tests in `tests/test_health.py` (13) — **97 tests total** |
 | Deployment | **code/config only — stages 2, 3 and 4 are NOT deployed**, no hardware or browser test has been done |
 | Release | stages 2–4 are **unreleased**; the next tag comes only after a deploy plus a hardware walk-through |
 | Owner decisions pending | rotate the GitHub password; rotate the Pi password; licence choice |
