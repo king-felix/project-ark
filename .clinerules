@@ -125,7 +125,7 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 |---|---|
 | Released baseline | tag **`v1.0.5`** = `main` = `dd3336c` (the published release; the live Pi runs this) |
 | Current work | branch **`feature/admin-hardening`**, pushed to `origin` (never force-push, never move a tag). Find the live tip with `git log -1` — this digest pins stage 4, not every later docs commit |
-| Tip at this writing | `e22fe43` = stage-4 code `58d504b` + the docs pin; `origin` agrees; `v1.0.5` still `dd3336c` |
+| Tip at this writing | stage-4 code is **`58d504b`**; everything after it is docs only (`git log --oneline 58d504b..HEAD` shows it). Confirm the live tip with `git log -1` rather than trusting this row — it goes stale the moment a code commit lands |
 | Stage 3 | shipped in **`a1e5efa`**: `ark_storage.py`, schema v2, board moderation + Community page, sha256 import ledger, bounded search, docs, 84 tests |
 | Stage 4 | shipped in **`58d504b`**: `ark_health.py` (one place decides readiness, with reasons), `/api/ready` (200/503), `/admin/health` ("What is working"), `/api/health` demoted to liveness, measured download progress; tests in `tests/test_health.py` (13) — **97 tests total** |
 | Deployment | **code/config only — stages 2, 3 and 4 are NOT deployed**, no hardware or browser test has been done |
