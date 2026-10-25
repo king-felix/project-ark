@@ -70,10 +70,11 @@ Required enabled units (final state):
 | `ark-api.service` | 8085 | FastAPI backend behind `/api` |
 | `ark-boot-guard.service` | — | failsafe hotspot failover |
 | `ark-zim-downloader.service` | — | background ZIM queue (resumable) |
+| `ark-book-import.path` (+ `ark-book-import.service`) | — | fires the book importer whenever something lands in `drop/files` or `calibre-incoming`; `TimeoutStartSec=1800` |
 | `ssh.service`, `NetworkManager`, `avahi-daemon` | — | access |
 | `dnsmasq` | — | only via NM `ipv4.method shared` (do not enable the standalone unit) |
 
-Verification gate before declaring success: `systemctl is-enabled` **and** `systemctl is-active` must both be `enabled`/`active` for all of the above, plus `curl` on every endpoint must return 200/302.
+Verification gate before declaring success: `systemctl is-enabled` **and** `systemctl is-active` must both be `enabled`/`active` for all of the above, plus `curl` on every endpoint must return 200/302. `pi/steps/90-verify.sh` is the executable form of this gate — run it and keep its output; it also reports the Community page, the File Box folders and free space.
 
 ---
 
@@ -88,6 +89,8 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 * Phone/tablet users get the explicit “if this opened inside a *Sign in to Wi-Fi* popup, close it and open `http://ark.lan`” instruction with a 1-tap **Copy Address** button.
 * No feature may require a login. Anonymous browse + anonymous download + anonymous read + anonymous upload are on by default.
 * UI must be OLED-dark (true `#000000` background), mobile-first, ≥16 px body text, ≥44 px tap targets, works with zero JavaScript for the critical paths (search + links), progressive enhancement only.
+* **The owner's pages stay just as plain.** The Community page says *Who can write*, *Messages*, *Shared files*, *Show again*, *Delete for ever* — never “toggle”, “moderate”, “soft delete”, “quarantine”.
+* **Any text echoed back from a query string is escaped** (`esc()`), including the File Box's “Not uploaded: …” banner, which carries the refusal sentence from `?err=`.
 
 ---
 
@@ -97,6 +100,8 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 * `firstrun.sh` embeds the Wi-Fi PSK → `chmod 700`, deleted from the Pi after first boot, and removed from `cmdline.txt`.
 * `.nmconnection` files must be `chmod 600` / `chown root:root`.
 * Never weaken SSH beyond: key auth + password auth (first-boot convenience), root login disabled.
+* **Shared files have exactly one writer:** `ark_storage.spool()` in `pi/api/ark_storage.py`. Nothing else may create a file in `/srv/ark/drop/files`. Bytes go to `drop/tmp` as a `0600` temp file (`mkstemp`), are `fsync`ed, `chmod 0644`ed and only then published; `os.link` is what makes a collision impossible rather than unlikely.
+* **Never add an nginx location for `/drop/tmp`.** `/drop/` aliases `/srv/ark/drop/files/` and nothing else; a half-written upload must never be reachable over the wire.
 * `dnsmasq-shared.d` wildcard DNS is only active while the AP profile is up.
 
 ---
@@ -119,8 +124,10 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 | | |
 |---|---|
 | Released baseline | tag **`v1.0.5`** = `main` = `dd3336c` (the published release; the live Pi runs this) |
-| Current work | branch **`feature/admin-hardening`**, pushed to `origin` (never force-push, never move a tag) |
-| Deployment | **code/config only — stages 2 and 3 are NOT deployed, no hardware or browser test has been done** |
+| Current work | branch **`feature/admin-hardening`** at **`a1e5efa`**, pushed to `origin` (never force-push, never move a tag) |
+| What `a1e5efa` contains | stage 3 complete: `ark_storage.py`, schema v2, board moderation + Community page, sha256 import ledger, bounded search, docs, 84 tests |
+| Deployment | **code/config only — stages 2 and 3 are NOT deployed**, no hardware or browser test has been done |
+| Release | stages 2–3 are **unreleased**; the next tag comes only after a deploy plus a hardware walk-through |
 | Owner decisions pending | rotate the GitHub password; rotate the Pi password; licence choice |
 
 ### 8.1 What exists, and what each piece owns
@@ -133,6 +140,8 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 | `pi/api/ark_admin.py` | `/admin` routes: login, forced setup, password, accounts, reset/enable/disable, audit, logout, overview, **Community** (switches + board/file moderation) |
 | `pi/api/ark_storage.py` | the only write path for shared files: display name vs stored name, spool in `drop/tmp`, `os.link` finalise, size cap + free-space reserve, orphan-temp reconcile |
 | `pi/api/ark_recover.py` | recovery logic, reached only through the root wrapper |
+| `pi/bin/ark-import-books` | the book watcher: scans `drop/files` + `calibre-incoming`, imports once per sha256 into `.imported.json`, moves incoming files to `done/`, copies nothing out of the File Box |
+| `pi/systemd/ark-book-import.path` / `.service` | the trigger for the above: `PathChanged` on both folders, `oneshot`, runs as `pi`, 30-minute ceiling |
 | `pi/bin/ark-tls-cert` | the box's own certificate: SANs, `--show` fingerprint, renew at 30 days, `--force` |
 | `pi/bin/ark-admin-recover` | `0700 root:root`, runs the Python as `pi` (keeps WAL owned by the service user) |
 | `pi/nginx/ark-admin.conf` | `:8443` management origin (`/admin` + stylesheet only, unknown Host rejected) and `:8444` loopback-only setup listener; blanks `X-ARK-Setup-Channel` on `:8443` |
@@ -154,8 +163,13 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 
 | Path | What it is |
 |---|---|
-| `/srv/ark/api/data/ark.db` | accounts, sessions, audit rows |
+| `/srv/ark/api/data/ark.db` | accounts, sessions, audit rows, notes, files, `settings` (`public_board_post`, `public_uploads`) |
 | `/srv/ark/api/data/ark.installed` | marker **outside** the DB: a wiped DB ⇒ `recovery-required`, never a recreated default |
+| `/srv/ark/drop/files/` | published shared files, `0644`, served as `/drop/<stored name>`; the stored name is `<16 hex>-<label>` |
+| `/srv/ark/drop/tmp/` | partial uploads (`upload-*.part`), **never served**; swept at startup if older than 6 h |
+| `/srv/ark/calibre-incoming/.imported.json` | import ledger keyed by sha256 — the only reason a re-drop is not a duplicate |
+| `/srv/ark/calibre-incoming/done/` | incoming books already in the library; **never rescanned** |
+| `/etc/ark/calibre-admin` | Calibre-Web credentials the importer uses over loopback (**not** in git) |
 | `/etc/ssl/ark/ark-admin.crt` / `.key` | certificate (0644) and key (**0600 root:root**) |
 | `/usr/local/sbin/ark-admin-recover` | the only way back in without a password; console only |
 
@@ -164,10 +178,16 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 ```bash
 # tests (Mac, throwaway DBs, never the live library)
 python3 -m venv .venv && .venv/bin/pip install -r tests/requirements.txt
-.venv/bin/python -m pytest -q                 # expect 84 passed
+.venv/bin/python -m pytest -o addopts='--strict-markers' -q    # prints "84 passed"
+# `pytest.ini` already passes -q, so a second -q hides the summary line
+
+# push (never force, never move a tag)
+GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o BatchMode=yes -o ConnectTimeout=20' \
+  git push origin feature/admin-hardening
 
 # deploy / verify on the Pi (only with the owner's explicit go-ahead)
-sudo bash /srv/ark/src/install-ark.sh --only 60-portal,65-admin
+# 30-calibre ships the new importer binary and enables ark-book-import.path
+sudo bash /srv/ark/src/install-ark.sh --only 20-storage,30-calibre,60-portal,65-admin
 sudo bash /srv/ark/src/install-ark.sh --only 90-verify
 cat /srv/ark/ark_status.json
 
@@ -205,7 +225,18 @@ Fixed on `feature/admin-hardening` (each one now has a test that fails without t
   off, it never identifies who wrote. There are no per-person quotas, no quarantine and no trash.
 * nginx now agrees with the app on 2 GiB, but nothing tests a real 2 GiB upload over the wire.
 
-### 8.6 Not built yet (stages 4–7 of the brief)
+Which test proves which fix (useful when a future change breaks one):
+
+| Behaviour | Test file |
+|---|---|
+| unique stored names, no overwrite, empty refusal, cap, reserve, temp sweep | `tests/test_storage.py` (11) |
+| pin / sorted out / hide / restore, both switches, re-auth delete, CSRF, allowlist | `tests/test_board.py` (15) |
+| one import per sha256, renamed re-drop, `done/` skipped, File Box link kept | `tests/test_import.py` (7) |
+| the deadline holds when one collection is slow | `tests/test_search.py` (6) |
+| nginx `2064m` still equals the app's 2 GiB | `tests/test_config.py` (3) |
+| schema version, migration/upgrade path, the Pi password vector | `tests/test_db.py` (7) |
+
+### 8.6 Not built yet (stage-3 leftovers, then stages 4–7)
 
 Stage 3 delivered: upload safety (unique stored names, one write path, cap + reserve, empty-file
 refusal, temp reconcile), import idempotency (sha256 ledger, `done/` exclusion, preserved File Box
@@ -214,8 +245,15 @@ links), board moderation + the two Community switches, and bounded search.
 Still absent, **do not describe any of it as done**: truthful readiness + health panel and real
 download progress; network-loss failover after boot; backup/restore kit + offline recovery sheet;
 emergency content review; essentials pack, QR cards, accessibility and the household page;
-per-person quotas; quarantine/approval queue; trash; board pagination beyond the last fifty items.
+per-person quotas; quarantine/approval queue; trash.
 **Never invent a control that does not exist.**
+
+Two page-size facts, so nobody documents them wrongly again:
+
+* the public board **does** paginate — `BOARD_PAGE = 20`, with Older/Newer links and a total;
+* the owner's Community page **does not** — it shows the newest 50 notes and the newest 50 files
+  (`LIMIT 50`) and says so in its own headings. That is the limit to state, not "the last fifty
+  items of the board".
 
 ### 8.7 Gotchas that have already cost time
 
@@ -225,6 +263,12 @@ per-person quotas; quarantine/approval queue; trash; board pagination beyond the
 * **`ark_admin` needs `ensure_initialised()`** (the real app does it at import); a bare router mount on an empty directory raises `no such table: admins`.
 * **macOS Python 3.9 links LibreSSL**, so stdlib `hashlib.scrypt` is absent — `cryptography` is the fallback. The Pi vector pinned in `tests/test_db.py` proves the two agree.
 * Reading must survive a broken admin store: the `CRYPTO_ERROR` path keeps the public portal up.
+* **`pytest -q` twice prints no summary.** `pytest.ini` already passes `-q`, so `-q -q` shows dots and no "84 passed" line; use `-o addopts='--strict-markers' -q` when the count is the evidence.
+* **macOS has no `timeout` command** (`zsh: command not found: timeout`, coreutils not installed). Bound a command with `gtimeout` if present, or start it in the background with a log file and poll — do not build a chain that depends on `timeout`.
+* **`git push` from a non-interactive session can hang on an SSH prompt.** Use `GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o BatchMode=yes -o ConnectTimeout=20'`; a failed push then reports instead of waiting for a passphrase.
+* **SQLite `ADD COLUMN` cannot add `NOT NULL` without a `DEFAULT`.** Schema v2 relies on `DEFAULT ''` / `DEFAULT 0`; that is why an upgraded box has `files.stored = ''` for old rows and every read goes through `_stored_name()`. A new query that reads `stored` directly will produce empty download links on an upgraded card.
+* **The upload guard is one function, not a convention.** The cap, the 512 MiB reserve and the empty-file refusal all live inside `ark_storage.spool()`. Replacing `file.file.read` with `shutil.copyfileobj` anywhere would silently drop all three — `tests/test_storage.py` covers `spool()`, not the route, so the route must keep calling it.
+* **A timed-out search worker is not stopped.** `_kiwix_one` waits 9 s while `SEARCH_DEADLINE` is 6 s, on purpose; the page returns at 6 s and the late answer is discarded, but that thread still occupies one of the 6 pool slots. Do not shrink `SEARCH_WORKERS` without measuring repeated searches.
 
 ### 8.8 Rules for the next stage
 
@@ -232,5 +276,28 @@ per-person quotas; quarantine/approval queue; trash; board pagination beyond the
 2. The public reading path must keep working at every commit.
 3. No deploy, reboot, `pkill`, or service restart on the live box without explicit permission.
 4. Docs change in the same commit as the behaviour — `README.md`, `docs/USING-THE-ARK.md`, `docs/REBUILD-ME-ARK.txt` and `docs/REBUILD-FROM-BACKUP.txt` all describe the box and have drifted before.
+5. Shared files get written by `ark_storage.spool()` and by nothing else (see §6).
+6. New schema steps are a numbered migration in `ark_db.py`, bump `SCHEMA_VERSION`, never rewrite v1, and keep old rows readable (see the `stored = ''` rule in §8.7).
+7. The two switches are settings, not code paths: `public_board_post` and `public_uploads`, absent or `1` means **open**. A fresh database must therefore start with the box usable, and a test must prove the closed state still serves everything already written.
+
+### 8.9 OUTSTANDING — what is not done yet, in the order it matters
+
+**Blocking a release (nothing is wrong with the code; it is unproven on hardware):**
+
+1. **Deploy stages 2 + 3** — `--only 20-storage,30-calibre,60-portal,65-admin` (30-calibre is where the new importer binary and `ark-book-import.path` live), then `--only 90-verify`, then read `/srv/ark/ark_status.json`. **Copy the database aside first:** `60-portal.sh` restarts `ark-api`, which runs migration v2 in place (`ALTER TABLE notes/files`), and there is no downgrade path, only that copy:
+
+   ```bash
+   sudo sqlite3 /srv/ark/api/data/ark.db ".backup '/root/ark-db-before-v2.db'"
+   ```
+
+   Use `.backup`, not `cp` — the live database is WAL (`PRAGMA journal_mode=WAL`), so a plain copy can miss committed data.
+2. **Walk through it on a phone** — claim through the tunnel, post a note, upload two files with the same name, drop an `.epub` in the File Box and watch it reach the shelf without a command, try a file over 2 GiB, hide/restore, password-confirmed delete, switch both Community switches off and confirm reading and downloads still work, then switch them back on. None of this has been done by a human yet.
+3. **A real 2 GiB upload over the wire** — nginx and the app now agree on the number, but no test or human has pushed a file that size through the proxy.
+
+**Owner decisions, still open:** rotate the GitHub password, rotate the Pi password, choose a licence.
+
+**Known gaps left on purpose (say so, never fake them):** per-person quotas; a quarantine/approval step; a trash instead of for-ever delete; pagination on the Community page; downloads and readiness are still not truthful (`/api/status` is a summary, not a health panel).
+
+**Then the brief's remaining stages** — 4 truthful readiness/health + real download progress, 5 network-loss failover after boot, 6 backup/restore kit + offline recovery sheet, 7 emergency content review, essentials pack, QR cards, accessibility, household page. Tag a release only after 1–2 above pass; never move `v1.0.5`.
 
 
