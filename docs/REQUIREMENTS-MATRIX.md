@@ -215,6 +215,12 @@ not a durable background system.
 | Auto-install only when the owner's switch is on | `arcade_auto_install` setting | `test_arcade_install.py::test_automatic_installing_is_off_unless_the_owner_says_yes` |
 | The weekly check records suggestions, it does not install by itself | `ark-arcade-discover.timer`, `--discover --auto` | `test_arcade_install.py::test_discovery_asks_for_the_game_file_when_search_has_no_licence` |
 
+Every row above is a test. The duplicate answers and the owner's words were also
+**proved on the box** on 25 Oct 2026 (`docs/IMPLEMENTATION-LOG.md` §18.4): the identical
+file given again answered *"already on the shelf"* with one file on the card, the same
+bytes under a second name were refused with the name that game already has, and a freshly
+imported game's page rendered its own description and its credits with the HTML escaped.
+
 The multilingual fix matters because a real catalogue entry says `["en", "ja"]`, while a
 stored candidate carries `"en, ja"`. Both now resolve to English; a game in `ja` alone is
 still refused, and `"no-text"` is no longer mistaken for a language called `no`.

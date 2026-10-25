@@ -176,7 +176,7 @@ SHA-256 fingerprint). The same certificate serves the player's secure origin
 with the browser before you trust it — see `docs/ADMIN.md` for the exact steps,
 the session rules and what is deliberately *not* in this release yet.
 
-Tests (no Pi needed, throwaway databases only; the current suite is 248 tests):
+Tests (no Pi needed, throwaway databases only; the current suite is 267 tests):
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r tests/requirements.txt
@@ -197,13 +197,24 @@ its own cookie, on its own HTTPS origin (`https://ark.lan:8445/arcade/`). It is
 never an administrator account and no page in the arcade can reach `/admin`.
 
 ```bash
-sudo ark-arcade --status                 # what is on the shelf, and who has a name
-sudo ark-arcade --seed                   # install the pinned first shelf (idempotent)
-sudo ark-arcade --seed --from-dir DIR    # ...from files carried over, no internet needed
-sudo ark-arcade --discover --auto        # what the weekly timer runs
-sudo ark-arcade --list                   # suggestions and why each was refused
-sudo ark-arcade --install <id>           # add one, after looking at it
+# run as pi, no sudo: /usr/local/sbin is not on pi's PATH, hence the full path
+/usr/local/sbin/ark-arcade --status                # what is on the shelf, and who has a name
+/usr/local/sbin/ark-arcade --seed                  # install the pinned first shelf (idempotent)
+/usr/local/sbin/ark-arcade --seed --from-dir DIR   # ...from files carried over, no internet needed
+/usr/local/sbin/ark-arcade --discover --auto       # what the weekly timer runs
+/usr/local/sbin/ark-arcade --list                  # suggestions and why each was refused
+/usr/local/sbin/ark-arcade --install <id>          # add one, after looking at it
+/usr/local/sbin/ark-arcade --import F --slug S --title T --system gb \
+  --description "one line a reader sees" --notices "who to thank"   # a game you supply
 ```
+
+A game the owner supplies goes through the same gate as a fetched one: bare ROM, its
+own SHA-256 recorded, a Game Boy/NES header and checksum checked, temp-written then
+published, and the shelf left untouched if anything fails. Giving it the same file
+again answers *"already on the shelf, unchanged"*; the same game under a second name is
+refused with the name it already has; a changed file under the same `--slug` becomes
+revision 2. There is no drop folder and no upload button for games — one console
+command is the way in, and `docs/ADMIN.md` §10 walks through it.
 
 The weekly `ark-arcade-discover.timer` records what the curated community
 catalogues offer. Installation is off unless the owner switches it on in

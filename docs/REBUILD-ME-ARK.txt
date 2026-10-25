@@ -931,9 +931,10 @@ any failure. Categories:
     sudo tail -f /srv/ark/logs/zim-download.log          content progress
     echo full | sudo tee /etc/ark/zim-profile            change profile
     sudo ark-import-calibre-library /srv/ark/imported-library
-    sudo ark-arcade --status                             shelf, names, saves
-    sudo ark-arcade --seed                               restore the pinned three
-    sudo ark-arcade --discover --auto                    what the weekly check runs
+    /usr/local/sbin/ark-arcade --status                  shelf, names, saves (as pi, no sudo)
+    /usr/local/sbin/ark-arcade --seed                    restore the pinned first shelf
+    /usr/local/sbin/ark-arcade --import F --slug S ...   a game you supply (needs --title/--system)
+    /usr/local/sbin/ark-arcade --discover --auto         what the weekly check runs
     sudo ark-tls-cert --show                             certificate fingerprint
     sudo ark-admin-recover --list                        locked out (console only)
     sudo ark-backup --to /srv/ark/backup                 copy notes+files+records+saves

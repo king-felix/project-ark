@@ -10,8 +10,8 @@ and what the next executable step is.
 | Branch | `feature/admin-hardening` (nothing force-pushed; no release tag moved) |
 | Platform used for work | macOS 26.x, Python 3.9.6 (LibreSSL), venv in `.venv/` |
 | Appliance target | Raspberry Pi 4B, Raspberry Pi OS Lite, Python 3.13.5, nginx 1.22 |
-| Deployment status | **deployed on the box 25 Oct 2026** — stages 2–6, ARK Arcade, the 25 Oct hardening and R3's book door are live; `90-verify` green, `/api/ready` 200, database at layout **v4** (§15). Rollback: `/root/ark-snapshot-20261025-092106` |
-| Hardware tests | **scripted proofs only** — the installer, the verifier, the doors, a bundle, `/api/ready` and the arcade origin have all answered on the Pi. **No human has used it on a phone yet**, no game has been played, no 2 GiB upload has crossed the proxy, and the watchdog has never seen a real radio event |
+| Deployment status | **deployed on the box 25 Oct 2026** — stages 2–6, ARK Arcade, the 25 Oct hardening, R3's book door and the owner-import fix are live; `90-verify` green, `/api/ready` 200, database at layout **v4** (§15, §18.4). Rollback: `/root/ark-snapshot-20261025-092106`; the owner-import redeploy changed no schema and took its own copy at `/root/ark-db-before-owner-import.db` |
+| Hardware tests | **scripted proofs only** — the installer, the verifier, the doors, a bundle, `/api/ready`, the arcade origin and `ark-arcade --import` have all answered on the Pi. **No human has used it on a phone yet**, no game has been played by a person, no 2 GiB upload has crossed the proxy, and the watchdog has never seen a real radio event |
 | Requirements matrix | `docs/REQUIREMENTS-MATRIX.md` — R1–R8/A–D, each status with the test that proves it and the sentences still missing |
 
 ---
@@ -33,7 +33,7 @@ and what the next executable step is.
 | 13 | Essentials pack, QR, accessibility, household page | not started |
 | — | ARK Arcade | **delivered and tested** — public shelf, guest play, optional named-player saves on the TLS `:8445` origin, owner **Games** page, licence/allowlist/hash gate, weekly discovery, and saves carried by a backup (§12) |
 | 14 | Sequence | stages 1–6, ARK Arcade and R3 **deployed 25 Oct 2026** (§15); the phone walk-through is the next human step; stage 7 after it |
-| 15 | Acceptance tests | **240 tests**, all green (`pytest -q`); the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md` |
+| 15 | Acceptance tests | **267 tests**, all green (`pytest -q`); the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md` |
 
 ---
 
@@ -889,10 +889,10 @@ re-reading it (`.clinerules` §8.9, move 5).
 
 ## 15. The branch is deployed to the box — 25 Oct 2026
 
-**`pytest` 240 passed (15 files).** Stages 2–6, ARK Arcade, the 25 Oct hardening
-pass and R3's book door now run on the Pi. This is the first time any of it has
-been on hardware; the section records what the box said, what that proved, the
-two defects the deploy found in its own probes, and what is still unproven.
+**`pytest` 240 passed (15 files) at that checkpoint — 267 at the tip.** Stages 2–6, ARK
+Arcade, the 25 Oct hardening pass and R3's book door now run on the Pi. This is the first
+time any of it has been on hardware; the section records what the box said, what that
+proved, the two defects the deploy found in its own probes, and what is still unproven.
 
 **Rollback first.** `/root/ark-snapshot-20261025-092106` (pointer in
 `/root/ark-snapshot.latest`): `ark.db` taken with SQLite `.backup` (the live file
@@ -1545,19 +1545,46 @@ it was stored but never shown. Both are escaped (`arc.esc`), proved by
 `test_arcade.py::test_what_a_person_wrote_about_a_game_reaches_the_page_as_text` with a `<b>`
 payload in the credits.
 
-**Also corrected:** `docs/ADMIN.md` told the owner to run `sudo ark-arcade --import`. The
-web service and the weekly check run as `pi`, and `/srv/ark/arcade/games` is `pi:pi`; a
+**Also corrected:** the docs told the owner to run the shelf command with `sudo`. The web
+service and the weekly check run as `pi`, and `/srv/ark/arcade/games` is `pi:pi`; a
 root-run import leaves root-owned game files and root-written rows in a database `pi` has
 to keep writing — the same class of fault as the root-made backup bundle that the owner
 page could not read (§16.3). Every command shown is now `/usr/local/sbin/ark-arcade …`,
 run as `pi` (that directory is not on `pi`'s `PATH`, which is the only reason for the full
-path).
+path) — `README.md`, `docs/ADMIN.md`, `docs/USING-THE-ARK.md` and
+`docs/REBUILD-ME-ARK.txt`. The same pass found two claims that had never been true:
+`docs/USING-THE-ARK.md` said a game could be added from the **Games** page behind the
+owner's sign-in, and `docs/REBUILD-ME-ARK.txt` still offered to *"restore the pinned
+three"* of a 23-game shelf. Both are corrected; there is no add-a-game button.
 
 | What | Result |
 |---|---|
 | `pytest` on the Mac | **267 passed** (was 262) |
 | the test that fails without the fix | `test_the_same_file_given_twice_is_not_put_on_the_shelf_twice` |
 | proven on the box | `--dry-run` → *"Would add Import test (gb) as zz-import-test."*; real run → `Added zz-import-test (revision 1)`; the file served, the page drawn, then the test rows and files removed and the shelf back to 23 games, `/api/ready` 200 |
+
+**Deployed the same day, and re-proved on the box.** The database was taken aside first
+(`sudo sqlite3 … ".backup '/root/ark-db-before-owner-import.db'"`, 225,280 B — `.backup`,
+never `cp`, because the live database is WAL), then `--only 60-portal`, then
+`--only 90-verify`: both `ARK_INSTALL_COMPLETE`, `failed: none`. There was **no schema
+change** — the layout stayed v4 and no migration ran — so the deploy carried only the
+new module code, and `/root/ark-db-before-owner-import.db` is the way back.
+
+| What the box was asked | What it said |
+|---|---|
+| the same file, same `--slug`, a third time | `zz-import-test was already on the shelf` — no revision 3, one file on the card |
+| those bytes under a new name (`zz-import-other`) | `Not done: That game is already on the shelf as "2048".` — nothing written |
+| a different game's bytes under a new name | `Not done: That game is already on the shelf as "5 mazes".` |
+| a new file with `--description` and `--notices` (credits carrying `<b>`) | `Added zz-import-words (revision 1)`; its page answered `A small game about mazes.` and `Made by &lt;b&gt;friends&lt;/b&gt;.` — rendered **and** escaped |
+| after removing the test rows and files | `23 game(s) on the shelf`, `/arcade/` 200, `/arcade/g/2048gb` 200, `/api/ready` 200 `ready 8 / total 8`, `blocking: []`; `90-verify` *"everything a visitor touches is working"* |
+
+**Two small facts worth knowing before reading that table.** The refusal names the
+**earliest** game holding those bytes (`ORDER BY id`), not the copy just made — in the
+second row that is the shelf's own `2048`, because the test copy *was* 2048's bytes;
+naming the original is the useful answer. And the public page
+for a slug that is not on the shelf answers **200** with *"That game is not here"* (a
+friendly page, not an error), while its ROM route answers 404 — so no probe may read
+that 200 as "the game exists".
 
 **What this does not add: a drop folder.** There is still no `drop/games` watched by a
 unit, no upload button on the **Games** page, no zip handling and no cover art

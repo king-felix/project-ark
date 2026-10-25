@@ -229,10 +229,11 @@ nothing to install and no account. The arrow keys work, and on a phone an on-scr
 appears. Everything runs on the box, so a dead internet changes nothing.
 
 About two dozen small games come with the box (Game Boy, Game Boy Color, Game Boy
-Advance and NES); the owner can add more from the Games page behind the owner's
-sign-in. Each game's card says what it is and who made it, and the licence the source
-states is shown on the card and in the notes beside the shelf — it is a label, not a
-restriction this box applies.
+Advance and NES). More are added by whoever looks after the box, sitting at the box
+itself — there is no button on the page that adds one, and the File Box is for
+documents, not games. Each game's card says what it is and who made it, and the licence
+the source states is shown on the card and in the notes beside the shelf — it is a
+label, not a restriction this box applies.
 
 **Saves.** Playing as a guest, your save stays in that one browser on that one device —
 clearing the browser's data removes it. If you want a save to follow you to another
@@ -498,10 +499,13 @@ sudo ark-import-books --status         # how many books are on the shelf
 sudo ark-import-books                  # scan the drop folders now (normally automatic)
 sudo ark-import-calibre-library PATH   # adopt a whole Calibre library
 sudo ark-zim-resolve --profile full    # queue more offline content
-sudo ark-arcade --status               # games on the shelf, player names, saves
-sudo ark-arcade --seed                 # put the pinned first games back
-sudo ark-arcade --discover --auto      # what the weekly check runs
-sudo ark-arcade --list                 # suggestions waiting, and why refused
+
+# the game shelf runs as pi and needs no sudo (/usr/local/sbin is not on pi's PATH):
+/usr/local/sbin/ark-arcade --status    # games on the shelf, player names, saves
+/usr/local/sbin/ark-arcade --seed      # put the pinned first games back
+/usr/local/sbin/ark-arcade --import F --slug S --title T --system gb  # a game of your own
+/usr/local/sbin/ark-arcade --discover --auto  # what the weekly check runs
+/usr/local/sbin/ark-arcade --list      # suggestions waiting, and why refused
 sudo ark-tls-cert --show               # the owner's-door certificate fingerprint
 sudo ark-admin-recover --list          # locked out? console only, never the web
 

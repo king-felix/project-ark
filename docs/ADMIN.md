@@ -409,8 +409,9 @@ at 64 MB, and nothing is published until its SHA-256 and its console header agre
 The first shelf is `pi/arcade/catalog/seed.json` — 23 pinned games with hashes
 recorded when they were fetched; a changed upstream file is refused rather than
 silently updated. A box with no internet can install that same list from files
-carried over: `sudo ark-arcade --seed --from-dir /path/to/folder` proves each file
-against its recorded hash before publishing it. Collections and the game files
+carried over: `/usr/local/sbin/ark-arcade --seed --from-dir /path/to/folder`
+(run as `pi`, no `sudo`) proves each file against its recorded hash before
+publishing it. Collections and the game files
 themselves are content and are fetched again; named players' saves are state and
 are included in a backup.
 
