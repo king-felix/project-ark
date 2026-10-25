@@ -26,8 +26,10 @@ import errno
 import json
 import os
 import re
+import secrets
 import shutil
 import sqlite3
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -37,6 +39,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import ark_arcade as arc
 import ark_db
+import ark_romdb as romdb
+import ark_rommeta as rommeta
 
 SOURCE_API = "https://hh3.gbdev.io/api"
 SOURCE_RAW = "https://raw.githubusercontent.com/gbdev/database/master/entries/"
@@ -601,6 +605,110 @@ def _copy_to_temp(source: Path) -> Path:
     return Path(name)
 
 
+#: An owner's upload waits in temp under a name this box chose, never a name a
+#: browser sent: ``upload-<32 hex>.<ext>``.  The extension is the only part of the
+#: browser's name that is kept, because the file's own shape is checked later.
+UPLOAD_PREFIX = "upload-"
+_UPLOAD_TOKEN = re.compile(r"upload-[0-9a-f]{32}\.[a-z0-9]{1,8}")
+
+
+def spool_upload(stream, *, filename: str = "", limit: int = MAX_DOWNLOAD) -> Path:
+    """Save a file an owner picked, where nothing is served from, and prove its size.
+
+    This is the arcade's ``ark_storage.spool()``: one writer, one folder, one cap.
+    What lands here is **not** a game yet — it becomes one only when
+    :func:`publish_candidate` proves its shape and publishes it, which reads the
+    file again from this same path.  A refusal unlinks it.
+
+    The name is this box's own ``upload-<32 hex>.<ext>``: ``mkstemp`` would give a
+    name that does not match what :func:`upload_path` accepts, so the confirm step
+    could never find the file it was told about.
+    """
+    suffix = Path(str(filename or "")).suffix.lower()
+    if not re.fullmatch(r"\.[a-z0-9]{1,8}", suffix or ""):
+        suffix = ".rom"
+    arc.ensure_dirs()
+    _ensure_room(0, arc.temp_root())
+    target = None
+    fd = -1
+    for _attempt in range(8):
+        candidate = arc.temp_root() / (UPLOAD_PREFIX + secrets.token_hex(16) + suffix)
+        try:
+            fd = os.open(str(candidate), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            continue
+        target = candidate
+        break
+    if target is None or fd < 0:
+        raise InstallRefused("This box could not make room for that file.")
+    name = str(target)
+    written = 0
+    try:
+        with os.fdopen(fd, "wb") as out:
+            while True:
+                chunk = stream.read(1024 * 1024)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > limit:
+                    raise InstallRefused("That file is larger than this box will accept.")
+                out.write(chunk)
+            out.flush()
+            os.fsync(out.fileno())
+        if written == 0:
+            raise InstallRefused("That file is empty.")
+        os.chmod(name, 0o600)
+    except OSError as exc:
+        try:
+            os.unlink(name)
+        except OSError:
+            pass
+        if exc.errno == errno.ENOSPC:
+            raise InstallRefused("The card filled up while the game was being saved.") from exc
+        raise
+    except Exception:
+        try:
+            os.unlink(name)
+        except OSError:
+            pass
+        raise
+    return Path(name)
+
+
+def upload_path(token: str) -> Optional[Path]:
+    """The waiting upload a form named, or ``None`` if that name is not one of ours."""
+    name = str(token or "").strip()
+    if not _UPLOAD_TOKEN.fullmatch(name):
+        return None
+    path = arc.temp_root() / name
+    if path.parent != arc.temp_root() or not path.is_file() or path.is_symlink():
+        return None
+    return path
+
+
+def discard_upload(path: Optional[Path]) -> bool:
+    """Throw away a waiting upload; a file that is already gone is not an error."""
+    if path is None:
+        return False
+    try:
+        path.unlink()
+        return True
+    except OSError:
+        return False
+
+
+#: The columns a catalogue row lands in, plus the fingerprints themselves.  One
+#: tuple, taken from ``ark_rommeta``, so the migration, the writer and the game's
+#: own page cannot drift apart.
+ROM_COLUMNS: Tuple[str, ...] = tuple(rommeta.FACT_COLUMNS) + tuple(rommeta.FINGERPRINTS)
+
+
+
+#: ``col = COALESCE(NULLIF(?, ''), col)`` — a new revision fills the blanks and
+#: never wipes a fact the row already carried (a copy the catalogue does not know).
+_ROM_KEEP = ", ".join("%s = COALESCE(NULLIF(?, ''), %s)" % (c, c) for c in ROM_COLUMNS)
+
+
 def publish_candidate(conn: sqlite3.Connection, candidate: Dict[str, Any],
                       auto: bool = False, source: Optional[Path] = None) -> Dict[str, Any]:
     """Download, verify, and only then show a game.  A failure changes nothing."""
@@ -637,6 +745,20 @@ def publish_candidate(conn: sqlite3.Connection, candidate: Dict[str, Any],
         facts = arc.rom_facts(temp, system)
         if not facts["ok"]:
             raise InstallRefused(facts["reason"])
+        # What the bytes *are*, from the box's own offline catalogue.  A word the
+        # owner typed is never replaced; everything blank is filled in here, before
+        # anything is written, and a file the catalogue has already given a place
+        # to is refused by its fingerprints rather than by its file name.
+        typed_title = str(candidate.get("title") or "").strip()
+        pre = rommeta.prefill(temp, filename=Path(candidate["filename"]).name,
+                              system=system)
+        candidate = rommeta.apply(candidate, pre)
+        if existing and not typed_title:
+            candidate["title"] = str(existing["title"] or candidate["title"])
+        twin_row = romdb.game_by_identity(conn, pre.get("ident") or {}, not_slug=slug)
+        if twin_row:
+            raise InstallRefused(
+                f'That game is already on the shelf as "{twin_row["title"]}".')
         ext = Path(candidate["filename"]).suffix.lower()
         revision = 1 if not existing else int(existing["revision"]) + 1
         stored = arc.stored_rom_name(slug, ext) if revision == 1 else f"{slug}-r{revision}{ext}"
@@ -652,6 +774,7 @@ def publish_candidate(conn: sqlite3.Connection, candidate: Dict[str, Any],
         raise
 
     stamp = arc.now_iso()
+    rom_values = tuple(str(candidate.get(col) or "") for col in ROM_COLUMNS)
     try:
         with ark_db.tx(conn):
             if existing:
@@ -659,16 +782,20 @@ def publish_candidate(conn: sqlite3.Connection, candidate: Dict[str, Any],
                     "UPDATE games SET title = ?, system = ?, core = ?, filename = ?, size = ?, "
                     "sha256 = ?, revision = ?, license = ?, license_evidence = ?, "
                     "rights_evidence = ?, language = ?, language_evidence = ?, provenance = ?, "
-                    "release = ?, notices = ?, author = ?, homepage = ?, description = ?, "
-                    "provider = ?, entry_id = ?, updated_at = ?, published = 1 WHERE id = ?",
+                    "release = ?, notices = ?, author = ?, homepage = ?, "
+                    "description = COALESCE(NULLIF(?, ''), description), "
+                    "provider = ?, entry_id = ?, updated_at = ?, published = 1, "
+                    + _ROM_KEEP + " WHERE id = ?",
                     (candidate["title"], system, arc.SYSTEMS[system]["core"], stored, size,
                      digest, revision, candidate.get("license", ""),
                      candidate.get("license_evidence", ""), candidate.get("rights_evidence", ""),
                      candidate.get("language", ""), candidate.get("language_evidence", ""),
                      candidate.get("provenance", ""), candidate.get("release", ""),
                      candidate.get("notices", ""), candidate.get("author", ""),
-                     candidate.get("homepage", ""), candidate.get("description", ""),
-                     candidate["provider"], candidate["entry_id"], stamp, int(existing["id"])),
+                     candidate.get("homepage", ""),
+                     candidate.get("description", ""),
+                     candidate["provider"], candidate["entry_id"], stamp)
+                    + rom_values + (int(existing["id"]),),
                 )
                 game_id = int(existing["id"])
             else:
@@ -676,8 +803,10 @@ def publish_candidate(conn: sqlite3.Connection, candidate: Dict[str, Any],
                     "INSERT INTO games (slug, title, system, core, filename, size, sha256, revision, "
                     "license, license_evidence, rights_evidence, language, language_evidence, "
                     "provenance, release, notices, author, homepage, description, provider, "
-                    "entry_id, installed_at, updated_at, published, hidden) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0)",
+                    "entry_id, installed_at, updated_at, published, hidden, "
+                    + ", ".join(ROM_COLUMNS) + ") "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, "
+                    + ", ".join("?" for _ in ROM_COLUMNS) + ")",
                     (slug, candidate["title"], system, arc.SYSTEMS[system]["core"], stored, size,
                      digest, candidate.get("license", ""), candidate.get("license_evidence", ""),
                      candidate.get("rights_evidence", ""), candidate.get("language", ""),
@@ -685,16 +814,20 @@ def publish_candidate(conn: sqlite3.Connection, candidate: Dict[str, Any],
                      candidate.get("release", ""), candidate.get("notices", ""),
                      candidate.get("author", ""), candidate.get("homepage", ""),
                      candidate.get("description", ""), candidate["provider"],
-                     candidate["entry_id"], stamp, stamp),
+                     candidate["entry_id"], stamp, stamp) + rom_values,
                 )
                 game_id = int(cur.lastrowid)
             conn.execute(
                 "INSERT INTO game_revisions (game_id, revision, filename, size, sha256, installed_at, "
-                "note, release, provenance, notices) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "note, release, provenance, notices, crc32, md5, sha1, rom_title, rom_confidence) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (game_id, revision, stored, size, digest, stamp,
                  f"from {candidate['provider']} {candidate['entry_id']}"[:200],
                  candidate.get("release", ""), candidate.get("provenance", ""),
-                 candidate.get("notices", "")),
+                 candidate.get("notices", ""), str(candidate.get("crc32") or ""),
+                 str(candidate.get("md5") or ""), str(candidate.get("sha1") or ""),
+                 str(candidate.get("rom_title") or ""),
+                 str(candidate.get("rom_confidence") or "")),
             )
             conn.execute(
                 "UPDATE acquisition_candidates SET status = 'installed', game_id = ?, sha256 = ?, "
@@ -714,28 +847,49 @@ def publish_candidate(conn: sqlite3.Connection, candidate: Dict[str, Any],
 OWNER_PROVIDER = "owner"
 
 
-def owner_candidate(source: Path, *, slug: str, title: str, system: str,
-                    license_text: str, license_evidence: str, rights_evidence: str,
+def owner_candidate(source: Path, *, slug: str = "", title: str = "", system: str = "",
+                    license_text: str = "", license_evidence: str = "",
+                    rights_evidence: str = "",
                     language: str = "", language_evidence: str = "",
                     release: str = "", notices: str = "",
                     author: str = "", homepage: str = "",
-                    description: str = "") -> Dict[str, Any]:
+                    description: str = "", filename: str = "") -> Dict[str, Any]:
     """Build the candidate for a hand-supplied game, asking for the same checks.
 
     The owner is trusted to own the file but not to skip the shape checks: the
     file must match its console and be a sane size, and a game the source says is
     in another language is still held back.  Its licence, if the owner records
     one, is kept as provenance.
+
+    Everything the owner left blank is filled from the file itself: the console,
+    the name, the maker, the year and the one-line description come from the
+    box's own offline catalogue when it knows these bytes, and from the file name
+    when it does not (``ark_rommeta.prefill``).  A word the owner did type is
+    never replaced.
+
+    ``filename`` is the name the file had where the owner found it.  It is used
+    for the title fallback, the extension check and the provenance line when the
+    bytes are waiting in this box's own temp folder under a name it chose.
     """
     if not source.is_file() or source.is_symlink():
         raise InstallRefused("That is not a file this box can read.")
-    safe = arc.safe_slug(slug)
+    shown = str(filename or "").strip()
+    if not shown or Path(shown).name != shown or shown in (".", ".."):
+        shown = source.name
+    pre = rommeta.prefill(source, filename=shown, system=system)
+    if not system:
+        system = str(pre.get("system") or "")
+    if system not in arc.SYSTEMS:
+        named = str(pre.get("found_system_label") or "")
+        raise InstallRefused(
+            "This box cannot play that kind of game (%s)." % named if named
+            else "That is not a kind of game this box can play.")
+    safe = (arc.safe_slug(slug) or arc.safe_slug(str(pre.get("title") or ""))
+            or arc.safe_slug(Path(shown).stem))
     if not safe:
         raise InstallRefused("That name has no letters or numbers this box can use.")
-    if system not in arc.SYSTEMS:
-        raise InstallRefused("That is not a kind of game this box can play.")
     ext = arc.SYSTEMS[system]["ext"]
-    if source.suffix.lower() not in ext:
+    if Path(shown).suffix.lower() not in ext:
         raise InstallRefused(f"That file is not a {arc.SYSTEMS[system]['label']} game.")
     size = source.stat().st_size
     if size <= 0:
@@ -746,10 +900,10 @@ def owner_candidate(source: Path, *, slug: str, title: str, system: str,
     candidate = {
         "provider": OWNER_PROVIDER,
         "entry_id": safe,
-        "title": (str(title or "").strip() or safe)[:120],
+        "title": str(title or "").strip()[:120],
         "system": system,
         "core": arc.SYSTEMS[system]["core"],
-        "filename": source.name,
+        "filename": shown,
         "size": size,
         # The fingerprint is what lets the shelf say "you already gave me this
         # one" instead of adding revision 2 of an identical file.
@@ -765,8 +919,10 @@ def owner_candidate(source: Path, *, slug: str, title: str, system: str,
         "author": str(author or "").strip()[:80],
         "homepage": str(homepage or "").strip()[:200],
         "description": str(description or "").strip()[:300],
-        "provenance": f"owner-supplied:{source.name}",
+        "provenance": f"owner-supplied:{shown[:120]}",
     }
+    candidate = rommeta.apply(candidate, pre)
+    candidate["title"] = candidate["title"] or safe
     problem = review_reason(candidate)
     if problem:
         raise InstallRefused(f"This one cannot be put on the shelf yet: {problem}.")
@@ -920,10 +1076,16 @@ def auto_install(conn: sqlite3.Connection, limit: int = 3) -> Dict[str, Any]:
 
 
 def sweep_temp(max_age: int = 6 * 3600) -> int:
-    """A half-downloaded game is never a game; old leftovers are removed."""
+    """A half-downloaded game is never a game; old leftovers are removed.
+
+    Two kinds of leftover live here: ``*.part`` (a download or a copy that never
+    finished) and ``upload-*`` (a file an owner picked and then did not confirm).
+    Neither is ever served from, and both are removed once they are old.
+    """
     removed = 0
     try:
-        entries = list(arc.temp_root().glob("*.part"))
+        entries = [p for p in arc.temp_root().iterdir()
+                   if p.is_file() and (p.suffix == ".part" or p.name.startswith(UPLOAD_PREFIX))]
     except OSError:
         return 0
     cutoff = time.time() - max_age

@@ -233,6 +233,38 @@ else
   say_soft "last game check" "none yet — the first is 15 minutes after boot"
 fi
 
+# ---- recognising a game from the bytes inside it -----------------------------
+# The name database is knowledge, not a service: a card without it plays every
+# game and names each one from its file name.  So nothing here is a failure —
+# but the reader itself is proved on a made-up cartridge, which needs no
+# catalogue and no internet, so "it would recognise a real game" is a checked
+# fact rather than a hope.
+romdb_rows=""                     # unknown, never 0 (§8.7)
+if [[ -r "$ARK_ROOT/romdb.sqlite" ]]; then
+  romdb_rows="$(sqlite3 -readonly "$ARK_ROOT/romdb.sqlite" \
+    "SELECT value FROM meta WHERE key = 'rows';" 2>/dev/null || true)"
+fi
+if [[ ! -f "$ARK_ROOT/romdb.sqlite" ]]; then
+  say_soft "game names" "no name database yet — every game is named from its file name"
+elif ! runuser -u "$ARK_PI_USER" -- test -r "$ARK_ROOT/romdb.sqlite" 2>/dev/null; then
+  say_soft "game names" "the pages cannot open it — hand it to $ARK_PI_USER (chown $ARK_PI_USER: $ARK_ROOT/romdb.sqlite)"
+elif [[ -n "$romdb_rows" ]]; then
+  say_ok "game names" "$romdb_rows name(s) on this box"
+else
+  say_soft "game names" "present (how many names it holds could not be read)"
+fi
+if [[ -x /usr/local/sbin/ark-romdb-build ]]; then
+  if runuser -u "$ARK_PI_USER" -- /usr/local/sbin/ark-romdb-build --self-test --quiet \
+       >/dev/null 2>&1; then
+    say_ok "game name reader" "a made-up cartridge was recognised from its own bytes"
+  else
+    say_soft "game name reader" \
+      "the self-test did not pass — run: /usr/local/sbin/ark-romdb-build --self-test"
+  fi
+else
+  say_soft "game name reader" "not installed — run phase 60-portal"
+fi
+
 # ---- the copy that makes a dead card survivable ------------------------------
 # Nothing here is visitor-facing, so a missing or stale copy is reported softly:
 # it is not a reason to call the box broken while somebody is reading it.
@@ -296,6 +328,7 @@ cat > "$tmp" <<JSON
   "guides": {"pages": ${guides:-0}, "pdfs": ${pdfs:-0}},
   "arcade": {"games": ${games:-0}, "players": ${player_names:-0}, "saves": ${player_saves:-0},
              "player_origin": "${player_code:-none}"},
+  "game_names": {"rows": ${romdb_rows:-null}},
   "free_gib": ${free_gib:-0},
   "free_pct_used": "$root_use",
   "backup": {"copies": ${backup_copies:-0}, "newest": "$backup_newest", "made": "$backup_made"},

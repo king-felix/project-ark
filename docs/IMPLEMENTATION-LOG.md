@@ -31,9 +31,9 @@ and what the next executable step is.
 | 11 | Backup / offline recovery kit | **stage 6 done** — `ark-backup` writes one dated, verified bundle (records, shared files, import list, a manifest with a sha256 per file) built as `.partial` and published by rename; `ark-restore` proves a bundle before touching anything, refuses an occupied box without `--force`, and never replaces a shared file; the printed recovery sheet needs only a phone, a card reader and a working card (§11) |
 | 12 | Emergency content review | not started |
 | 13 | Essentials pack, QR, accessibility, household page | not started |
-| — | ARK Arcade | **delivered and tested** — public shelf, guest play, optional named-player saves on the TLS `:8445` origin, owner **Games** page, licence/allowlist/hash gate, weekly discovery, and saves carried by a backup (§12) |
-| 14 | Sequence | stages 1–6, ARK Arcade and R3 **deployed 25 Oct 2026** (§15); the phone walk-through is the next human step; stage 7 after it |
-| 15 | Acceptance tests | **267 tests**, all green (`pytest -q`); the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md` |
+| — | ARK Arcade | **delivered and tested** — public shelf, guest play, optional named-player saves on the TLS `:8445` origin, owner **Games** page, licence/allowlist/hash gate, weekly discovery, and saves carried by a backup (§12); since 25 Oct a game can also be named from the file itself against an offline catalogue, and added from the owner's page (§19) |
+| 14 | Sequence | stages 1–6, ARK Arcade and R3 **deployed 25 Oct 2026** (§15); the phone walk-through is the next human step; stage 7 after it. The name-from-contents work (§19) is **not deployed yet** |
+| 15 | Acceptance tests | **285 tests**, all green (`pytest -q`); the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md` |
 
 ---
 
@@ -1590,3 +1590,66 @@ that 200 as "the game exists".
 unit, no upload button on the **Games** page, no zip handling and no cover art
 (`docs/REQUIREMENTS-MATRIX.md` R7). A game the owner supplies goes on with one console
 command, and the shelf tells the truth about a file it already has.
+
+## 19. The box can name a game it has never seen — 25 Oct 2026
+
+A game file carries its own name. A Game Boy cartridge has a title at `0x134`, a region and a
+header checksum; every console has a size it will accept; and the bytes themselves — with the
+cataloguing header some dumps carry stripped off — are a fingerprint every copy of that
+cartridge shares. So the box stopped asking a person to type a title it could read.
+
+| Piece | What it owns |
+|---|---|
+| `pi/api/ark_romdb.py` | reads a game file and fingerprints it: `strip_headers()` (a `.smc`, an iNES header, a copier header), `identify_path()` / `identify_bytes()`, `match()` against the catalogue, `game_by_identity()` (the same bytes under another name), `title_from_filename()` / `tags_of()` / `region_of()` for the no-catalogue answer, `stats()`, `may_reuse()` |
+| `pi/api/ark_romdb_build.py` + `pi/bin/ark-romdb-build` | the only builder of `/srv/ark/romdb.sqlite`: `--fetch` (needs a connection), `--from-dir` (a carried checkout), `--status`, `--self-test`, `--quiet`, `--out`. Writes `.partial` then renames, and hands the file to the folder's owner because the pages run as `pi` |
+| `pi/api/ark_rommeta.py` | the words: `prefill()` returns what to put on the card (`title`, `system`, `facts`, `sentence`, `confidence`), `apply()` fills a candidate **without replacing anything a person typed** (`_ROM_KEEP` + `COALESCE`), `game_facts()` / `confidence_words()` / `also_listed_as()` for the page |
+| `ark_arcade_install.py` | `prefill`/`apply` on both the download path and the owner path, `spool_upload()` (one file, into `arcade/tmp`, under a name this box chose), `discard_upload()`, and a startup sweep of stale `rom-*.part` / `upload-*` |
+| `ark_admin.py` | **A game you already have** on the Games page: `POST /admin/arcade/upload` shows what the box made of the file, `POST /upload/add` publishes it, `POST /upload/discard` throws the waiting copy away. Every step audited; all three sit behind the sign-in and the TLS origin |
+| `ark-arcade --match FILE` | the same question at a console, for a person: the sentence, then the year, maker, publisher, kind of game and region. Writes nothing |
+| schema **v5** | `games` and `game_revisions` gain `sha1`/`md5`/`crc32` and `rom_*` facts plus `rom_confidence`; `ALTER TABLE … DEFAULT ''` keeps old rows readable and the migration is numbered, never a rewrite of v1 |
+| `pi/nginx/ark-admin.conf` | an upload location on `:8443` with its own body cap, so a game file does not travel through the public portal at all |
+| `tests/test_romdb.py` (13) + 4 in `tests/test_arcade.py` | **285 passed** |
+
+**The catalogue is information, exactly like a licence.** 56,448 games, 27,723 of them on a
+console this box can play, built from the libretro database on the Mac (25,120,768 B, source
+dated `2026.10.07`). Nothing in a record can refuse a file: no catalogue at all, no record, a
+record with no licence and a record naming a console this box cannot play all end the same way
+— the game is added, named from its file name, with the sentence *"Nobody has listed this
+file; the name on it is all this box has."* A file the box cannot play at all is refused before
+the owner is asked to fill in a form, and the waiting copy is deleted.
+
+| What the tests prove | Test |
+|---|---|
+| a file called `unknown-1.gb` becomes *Cave Diver* | `test_a_game_is_named_from_its_bytes_even_when_the_file_name_says_nothing` |
+| the fingerprint kept is of the cartridge, not of the wrapper around it | `test_the_fingerprint_kept_describes_the_cartridge_not_the_wrapper` |
+| the strongest fingerprint wins and is the one stored | `test_the_strongest_fingerprint_is_the_one_used_and_kept` |
+| a zipped game is looked inside | `test_a_game_inside_an_archive_is_looked_inside` |
+| no record ⇒ usable, and claiming nothing | `test_a_file_nobody_listed_is_still_usable_and_claims_nothing` |
+| a word the owner typed is never replaced | `test_a_word_the_owner_typed_is_never_replaced` |
+| only consoles on this box are recognised | `test_the_box_only_recognises_the_consoles_it_can_play` |
+| no catalogue at all still names every game | `test_a_box_with_no_catalogue_still_names_every_game_from_its_file_name` |
+| the owner-facing words name no algorithm | `test_the_page_words_never_name_an_algorithm` |
+| the card shows the facts and the catalogue's own spelling | `test_a_page_shows_the_facts_and_the_catalogues_own_spelling` |
+| an upload waits under a name the box chose | `test_an_uploaded_file_waits_under_a_name_the_box_chose` |
+| an upload is not a game until somebody confirms it | `test_an_upload_is_not_a_game_until_somebody_confirms_it` |
+| a copy of a game already on the shelf is refused by its bytes | `test_an_uploaded_copy_of_a_game_already_on_the_shelf_is_refused_by_its_bytes` |
+| a recognised file is stored with what the catalogue said | `test_a_recognised_file_is_stored_with_what_the_catalogue_said` |
+| the whole door: pick a file → confirm → on the shelf, one file, one row, one audit line | `test_the_owner_can_add_a_file_and_watches_it_become_a_game` |
+| the same cartridge offered twice is named, not added | `test_the_same_cartridge_offered_twice_is_named_not_added_again` |
+| a file the box cannot play is refused and leaves nothing behind | `test_a_file_the_box_cannot_play_is_refused_and_changes_nothing` |
+| a stranger cannot use the upload door | `test_an_upload_without_a_sign_in_writes_nothing` |
+
+**Two defects found while building it.** `spool_upload()` used `mkstemp`, whose name
+(`tmpab12cd.gb`) could never match the `upload-<32hex>.<ext>` the rest of the code (and the
+sweep) expects — it is now `secrets.token_hex(16)` with `O_EXCL`, so the waiting name is both
+unguessable and the one the box agrees with itself about. And the upload route was written
+`async def` with a blocking read; it is a plain `def` now, so Starlette runs it in its thread
+pool and a 64 MB file cannot stall the event loop.
+
+**Not proved yet, and it matters:** nothing in §19 is deployed. `/srv/ark/romdb.sqlite` is not
+on the card, no owner has picked a file in a browser, the v5 migration has not run on the live
+database, and `90-verify`'s new game-names block has only ever read a box without a catalogue.
+The next step is the same shape as every deploy before it: `.backup` the database, then
+`--only 20-storage,60-portal,65-admin`, then `--only 90-verify`, then carry the 25 MB catalogue
+over and run `ark-romdb-build --self-test` and `ark-arcade --match` on a file already on the
+shelf.

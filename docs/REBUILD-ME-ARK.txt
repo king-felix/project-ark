@@ -179,6 +179,10 @@ On the Pi, everything the Ark owns lives under /srv/ark:
   /srv/ark/api/data/ark.installed  marker kept OUTSIDE the database, so a wiped
                             database means "recovery required", never a new
                             default password
+  /srv/ark/romdb.sqlite     OPTIONAL offline game-name catalogue (25 MB, 56,448
+                            games). Built on a networked machine by
+                            ark-romdb-build --fetch and carried over; without it
+                            every game plays and is named from its file name
   /etc/ssl/ark/             ark-admin.crt + ark-admin.key (0600 root:root)
   /etc/ark/ark.env          operator settings (single place to change things)
   /etc/ark/zim-queue.tsv    resolved download queue (pinned URLs + sizes)
@@ -245,8 +249,10 @@ popup resolves to the portal instead of a "no internet" dead end.
                   systemd unit. Proof: :8081/kiwix/ answers, queue written.
   60  portal      static portal, API venv, systemd unit, nginx site, captive
                   endpoints, print styles, help page, the arcade modules/player,
-                  the first game shelf and its weekly discovery timer.
-                  Proof: every route 200/302, including /arcade/ and its player.
+                  the offline game-name catalogue reader, the first game shelf
+                  and its weekly discovery timer.
+                  Proof: every route 200/302, including /arcade/ and its player,
+                  and ark-romdb-build --self-test reading the installed catalogue.
   65  admin       the owner's door: scrypt accounts, forced first password,
                   nginx :8443 management origin (+ :8444 loopback setup while
                   unclaimed) and the :8445 player origin, self-signed certificate,
@@ -632,6 +638,27 @@ popup resolves to the portal instead of a "no internet" dead end.
     — NOT by connecting, which moves the radio off the network you are testing
     over and can cut your own SSH session.
 
+32. THE GAME NAMED BY A FILE NAME NOBODY CHOSE
+    Symptom: a game appears on the shelf as "cave1" or "pokemon_red_usa", with no
+    year, no maker and no idea what kind of game it is — and on a box with no
+    internet there is no way to look it up. Or: the box "recognises" a game and
+    then refuses to add it because of what the recognition said.
+    Cause: nothing reads the file itself. A ROM carries its own title, its region,
+    and (in a Game Boy header) its checksum; the bytes, with any cataloguing
+    header stripped, are a fingerprint that every dump of that cartridge shares.
+    And a catalogue is a name source, not a judge: a record missing, wrong or
+    licence-less must never stop a game the owner wants to play.
+    Fix: `pi/api/ark_romdb.py` reads the header and sizes the console needs, then
+    fingerprints the file (CRC-32, MD5, SHA-1) with the header stripped, and asks
+    a local SQLite catalogue (`/srv/ark/romdb.sqlite`, built by
+    `pi/bin/ark-romdb-build --fetch` or `--from-dir`, carried to a box with no
+    connection). `pi/api/ark_rommeta.py` turns an answer into the words on the
+    card, and NOTHING it says can refuse a file: no record means "nobody has
+    listed this file; the name on it is all this box has", and the file name is
+    used. The catalogue file is optional — every game plays without it. Prove it
+    with `ark-romdb-build --self-test` (a synthetic cartridge, no network, no
+    shelf) and `ark-arcade --match FILE`, which writes nothing.
+
 ================================================================================
 8. CONTENT: A CATALOGUE, NOT A LIST OF URLS
 ================================================================================
@@ -891,9 +918,18 @@ any failure. Categories:
                                             the bounded, atomic save layer
     pi/api/ark_arcade_install.py            the only game download path: per-console
                                             allowlist → hash → shape gate (a licence
-                                            is recorded, never a gate)
+                                            is recorded, never a gate); the waiting
+                                            copy behind the owner's upload button
     pi/api/ark_arcade_web.py                public shelf, game page, player pages
                                             and save API (TLS origin only)
+    pi/api/ark_romdb.py                     reads a game file itself (header, sizes,
+                                            fingerprints) and asks the offline
+                                            catalogue what it is — writes nothing
+    pi/api/ark_romdb_build.py               the only builder of that catalogue
+                                            (--fetch or --from-dir, --self-test)
+    pi/api/ark_rommeta.py                   the words: what a recognition pre-fills
+                                            and how a game's facts are printed
+    pi/bin/ark-romdb-build                  the command for the above
     pi/arcade/emulatorjs/                  EmulatorJS 4.2.3 vendored (no CDN)
     pi/arcade/catalog/seed.json             23 pinned first games + size and hashes
     pi/bin/ark-arcade                       seed (or --from-dir) / discover /

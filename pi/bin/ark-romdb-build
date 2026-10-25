@@ -1,0 +1,63 @@
+#!/usr/bin/env python3
+"""ark-romdb-build — build the offline game-name database.
+
+The box recognises a game file by the fingerprints inside it (CRC-32, MD5,
+SHA-1) against every cartridge ever dumped for the consoles it can play.  That
+knowledge is one small SQLite file, and this is the only thing that builds it:
+
+    ark-romdb-build --fetch                        # from GitHub, needs internet
+    ark-romdb-build --from-dir /media/stick/libretro-database
+    ark-romdb-build --status                       # what is there now
+    ark-romdb-build --self-test                    # prove it on synthetic files
+
+A box with no database is still a working box: every game plays and its name
+comes from its file name.  Nothing here is needed to play, and nothing here is
+fetched or written unless somebody asks.
+
+Run it as ``pi`` when the database is already in place; a first build on a fresh
+card needs ``sudo`` because ``/srv/ark`` is not the reader's to write.  The file
+is handed to the folder's owner so the pages can read it afterwards.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+API_DIR = Path(os.environ.get("ARK_API_DIR", "/srv/ark/api"))
+if not (API_DIR / "ark_romdb.py").is_file():
+    # Running from a checkout, before an install: the modules sit beside this file.
+    API_DIR = Path(__file__).resolve().parent.parent / "api"
+sys.path.insert(0, str(API_DIR))
+
+import ark_romdb_build as build   # noqa: E402
+
+
+def _release(path: Path) -> None:
+    """Hand a root-written database to the folder's owner, never fatally.
+
+    The pages that use it run as ``pi``.  A ``root:root`` file here is the same
+    fault as a root-made backup bundle the owner page could not open, so a first
+    build done with ``sudo`` must not leave one behind.
+    """
+    try:
+        info = Path(path).parent.stat()
+        os.chmod(path, 0o644)
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            os.chown(path, info.st_uid, info.st_gid)
+    except OSError:
+        pass  # a build in a checkout or on a stick has no owner to give
+
+
+def main(argv=None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    code = build.main(args)
+    target = build.romdb.db_path()
+    if code == 0 and target.is_file():
+        _release(target)
+    return code
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

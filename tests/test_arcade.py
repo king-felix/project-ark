@@ -19,7 +19,7 @@ import io
 import re
 import zipfile
 
-from helpers import BIG_PASSWORD, LAN, claim_box, csrf_of, get, post
+from helpers import LAN, claim_box, csrf_of, get, post
 
 PASSWORD = "correct horse battery staple 42"
 SECOND_PASSWORD = "a much better passphrase 7"
@@ -560,3 +560,114 @@ def test_the_player_is_sized_on_a_frame_the_emulator_cannot_overwrite(public):
         "a Game Boy screen is nearly square"
     assert '<div id="arcade-stage" aria-label=' in page.text, \
         "the stage carries no inline style the player would erase"
+
+
+# ---------------------------------------------------------------------------
+#  one file the owner picked (the only door that accepts a body on :8443)
+# ---------------------------------------------------------------------------
+
+def _gb_bytes(seed: bytes = b"ARK TEST") -> bytes:
+    data = bytearray(0x150)
+    data[0x134:0x144] = seed.ljust(16, b"\0")
+    csum = 0
+    for byte in data[0x134:0x14D]:
+        csum = (csum - byte - 1) & 0xFF
+    data[0x14D] = csum
+    return bytes(data)
+
+
+def _upload(client, cookie: str, csrf: str, name: str, data: bytes):
+    return client.post("/admin/arcade/upload",
+                       files={"file": (name, data, "application/octet-stream")},
+                       data={"csrf": csrf}, headers=LAN,
+                       cookies={"ark_admin": cookie}, follow_redirects=False)
+
+
+def test_the_owner_can_add_a_file_and_watches_it_become_a_game(ark, client):
+    """Look at the file, confirm the words, and only then is it on the shelf."""
+    cookie = claim_box(client)
+    page = get(client, "/admin/arcade", headers=LAN, cookie=f"ark_admin={cookie}")
+    csrf = csrf_of(page.text)
+
+    data = _gb_bytes()
+    looked = _upload(client, cookie, csrf, "Pocket Quest (Europe).gb", data)
+    assert looked.status_code == 200, looked.text
+    assert "Does this look right?" in looked.text
+    token = re.search(r'name="token" value="([^"]+)"', looked.text).group(1)
+    # The waiting file is under a name the box chose, and nothing is on the shelf.
+    assert re.fullmatch(r"upload-[0-9a-f]{32}\.gb", token), token
+    assert not any((ark.root / "arcade" / "games").iterdir())
+    # The name is pre-filled from the file name, and the form says so plainly.
+    assert 'value="Pocket Quest"' in looked.text
+
+    added = client.post("/admin/arcade/upload/add",
+                        data={"csrf": csrf, "token": token,
+                              "filename": "Pocket Quest (Europe).gb",
+                              "title": "Pocket Quest", "system": "gb",
+                              "description": "", "author": "", "release": "",
+                              "license_text": "MIT"},
+                        headers=LAN, cookies={"ark_admin": cookie}, follow_redirects=False)
+    assert added.status_code == 303
+    assert "ok=" in added.headers["location"]
+
+    with ark.db.read() as conn:
+        game = conn.execute("SELECT * FROM games WHERE slug = 'pocket-quest'").fetchone()
+        audit = conn.execute("SELECT result, detail FROM audit_log "
+                             "WHERE action = 'arcade-upload' ORDER BY id DESC").fetchone()
+    assert game is not None and game["title"] == "Pocket Quest"
+    assert game["sha1"] == hashlib.sha1(data).hexdigest()
+    assert audit["result"] == "ok" and "revision 1" in audit["detail"]
+    # The waiting copy is gone and exactly one file was published.
+    tmp = ark.root / "arcade" / "tmp"
+    assert not tmp.exists() or not any(tmp.iterdir())
+    assert len(list((ark.root / "arcade" / "games").iterdir())) == 1
+
+
+def test_the_same_cartridge_offered_twice_is_named_not_added_again(ark, client):
+    cookie = claim_box(client)
+    page = get(client, "/admin/arcade", headers=LAN, cookie=f"ark_admin={cookie}")
+    csrf = csrf_of(page.text)
+    data = _gb_bytes(b"TWICE")
+
+    first = _upload(client, cookie, csrf, "first.gb", data)
+    token = re.search(r'name="token" value="([^"]+)"', first.text).group(1)
+    client.post("/admin/arcade/upload/add",
+                data={"csrf": csrf, "token": token, "filename": "first.gb",
+                      "title": "First", "system": "gb", "license_text": "MIT"},
+                headers=LAN, cookies={"ark_admin": cookie}, follow_redirects=False)
+
+    again = _upload(client, cookie, csrf, "another name entirely.gb", data)
+    assert again.status_code == 200
+    assert "already on the shelf" in again.text
+    assert "First" in again.text
+    assert len(list((ark.root / "arcade" / "games").iterdir())) == 1
+
+
+def test_a_file_the_box_cannot_play_is_refused_and_changes_nothing(ark, client):
+    cookie = claim_box(client)
+    page = get(client, "/admin/arcade", headers=LAN, cookie=f"ark_admin={cookie}")
+    csrf = csrf_of(page.text)
+
+    refused = _upload(client, cookie, csrf, "notes.txt", b"just some words\n")
+    assert refused.status_code == 400
+    assert "Nothing was added" in refused.text
+    games = ark.root / "arcade" / "games"
+    assert not games.exists() or not any(games.iterdir())
+    # Nothing is left waiting either: a refusal does not keep bytes on the card.
+    assert not (ark.root / "arcade" / "tmp").exists() or not any(
+        (ark.root / "arcade" / "tmp").iterdir())
+
+
+def test_an_upload_without_a_sign_in_writes_nothing(ark, client, public):
+    """The upload door is on the sign-in origin; a stranger cannot use it."""
+    cookie = claim_box(client)
+    page = get(client, "/admin/arcade", headers=LAN, cookie=f"ark_admin={cookie}")
+    csrf = csrf_of(page.text)
+    refused = public.client.post(
+        "/admin/arcade/upload",
+        files={"file": ("x.gb", _gb_bytes(), "application/octet-stream")},
+        data={"csrf": csrf}, follow_redirects=False)
+    assert refused.status_code in (401, 403, 404)
+    assert not (ark.root / "arcade" / "tmp").exists() or not any(
+        (ark.root / "arcade" / "tmp").iterdir())
+

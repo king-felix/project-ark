@@ -176,7 +176,7 @@ SHA-256 fingerprint). The same certificate serves the player's secure origin
 with the browser before you trust it — see `docs/ADMIN.md` for the exact steps,
 the session rules and what is deliberately *not* in this release yet.
 
-Tests (no Pi needed, throwaway databases only; the current suite is 267 tests):
+Tests (no Pi needed, throwaway databases only; the current suite is 285 tests):
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r tests/requirements.txt
@@ -204,19 +204,35 @@ never an administrator account and no page in the arcade can reach `/admin`.
 /usr/local/sbin/ark-arcade --discover --auto       # what the weekly timer runs
 /usr/local/sbin/ark-arcade --list                  # suggestions and why each was refused
 /usr/local/sbin/ark-arcade --install <id>          # add one, after looking at it
+/usr/local/sbin/ark-arcade --match FILE            # what the box makes of one file (writes nothing)
 /usr/local/sbin/ark-arcade --import F --slug S --title T --system gb \
   --description "one line a reader sees" --notices "who to thank"   # a game you supply
 ```
 
-A game the owner supplies goes through the same gate as a fetched one: bare ROM, its
-own SHA-256 recorded, the file checked to be shaped like the console it claims (a Game
-Boy file by its header and checksum, a NES file by its magic bytes, any other console by
-its extension and a non-empty, sane size), temp-written then published, and the shelf left
-untouched if anything fails. Giving it the same file again answers *"already on the shelf,
-unchanged"*; the same game under a second name is refused with the name it already has; a
-changed file under the same `--slug` becomes revision 2. There is no drop folder and no
-upload button for games — one console command is the way in, and `docs/ADMIN.md` §10 walks
-through it.
+**The box can name a game it has never seen.** `pi/api/ark_romdb.py` reads a game file
+itself — the header and the sizes the console needs, then a fingerprint of the bytes with
+any cataloguing header stripped — and looks it up in an **offline catalogue** of 56,448
+games (`/srv/ark/romdb.sqlite`, 25 MB, built once by `pi/bin/ark-romdb-build` from the
+libretro database and copied onto the card; 27,723 of them are on a console this box can
+play). A match pre-fills the title, the console, the year, who made it and what kind of
+game it is, so nobody types a title that is already in the file. No internet, no service,
+no network call — an absent catalogue is simply "nobody has listed this file", and the
+file name is used instead. The console spelling and its own list of titles are recorded as
+provenance beside the game, and nothing is ever refused for what the catalogue says.
+
+**Two ways to add a game, and both run the same gate.** On the owner's **Games** page
+(`https://ark.lan:8443/admin/arcade`) there is **A game you already have**: pick the
+file, press **Look at this file**, and the next screen says what the box recognised it as
+and shows the words it would put on the card — *Add this game* publishes it, *Throw it
+away* deletes the waiting copy. Nothing is published on the strength of a form alone. A
+game the owner supplies goes through the same
+gate as a fetched one: bare ROM, its own fingerprints recorded (SHA-1, MD5, CRC-32 and
+SHA-256), the file checked to be shaped like the console it claims (a Game Boy file by its
+header and checksum, a NES file by its magic bytes, any other console by its extension and a
+non-empty, sane size), temp-written then published, and the shelf left untouched if anything
+fails. Giving it the same file again answers *"already on the shelf"*; the same game under a
+second name is refused with the name it already has; a changed file under the same name
+becomes revision 2. `docs/ADMIN.md` §10 walks through both ways.
 
 The weekly `ark-arcade-discover.timer` records what the curated community
 catalogues offer. Installation is off unless the owner switches it on in

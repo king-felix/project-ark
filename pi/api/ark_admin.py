@@ -25,7 +25,7 @@ import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 import ark_db
@@ -34,6 +34,8 @@ import ark_security as sec
 import ark_storage
 import ark_arcade
 import ark_arcade_install
+import ark_romdb
+import ark_rommeta
 
 router = APIRouter(prefix="/admin", include_in_schema=False)
 
@@ -1414,7 +1416,8 @@ def arcade_page(request: Request):
     auto_switch = _switch(
         auto, "auto", "Add newly found games without asking me",
         "Leave this off to see each suggestion first. Even when it is on, a game is only "
-        "kept if its own entry states a licence that allows copying and every check passes.")
+        "kept if every check passes; the licence its source states is written on the "
+        "game's page as provenance, never used to refuse it.")
     flash = ""
     if request.query_params.get("ok"):
         flash = _notice("good", esc(request.query_params["ok"][:300]))
@@ -1422,6 +1425,18 @@ def arcade_page(request: Request):
         flash = _notice("bad", esc(request.query_params["err"][:300]))
     body = f"""
   {flash}
+  <h2>A game you already have</h2>
+  <p class="note">Pick a game file that is already on this computer or phone. The box
+  reads the file itself and shows you the words it would put on the games page before
+  anything is added.</p>
+  <form method="post" action="/admin/arcade/upload" enctype="multipart/form-data">
+    {_csrf_field(ctx.csrf)}
+    <p><input type="file" name="file" required></p>
+    <button class="go-btn" type="submit">Look at this file</button>
+  </form>
+  <p class="note">One file at a time, and no bigger than 64 MB. A file the box cannot
+  play is refused with the reason, and the shelf is left exactly as it was.</p>
+
   <h2>Games on the shelf</h2>
   <table class="plain"><thead><tr><th>Game</th><th>Kind</th><th>Licence</th>
     <th>State</th><th>What to do</th></tr></thead><tbody>{game_rows}</tbody></table>
@@ -1447,6 +1462,172 @@ def arcade_page(request: Request):
   and only then puts it on the shelf. A failure changes nothing.</p>"""
     return shell("Games", body, ctx=ctx,
                  tagline="The game shelf, who may keep saves, and every suggestion the box has recorded.")
+
+
+def _own_game_form(ctx, token: str, filename: str, pre: dict, filled: dict,
+                   problem: str = "") -> HTMLResponse:
+    """The words the box would put on the games page, before anything is added."""
+    options = "".join(
+        f'<option value="{esc(key)}"{" selected" if key == filled.get("system") else ""}>'
+        f'{esc(info["label"])}</option>'
+        for key, info in sorted(ark_arcade.SYSTEMS.items(),
+                                key=lambda item: item[1]["label"]))
+    notice = _notice("bad", "<b>" + esc(problem) + "</b>") if problem else ""
+    facts = " · ".join(ark_rommeta.game_facts(pre.get("facts") or {}, limit=6))
+    facts_line = f'<p class="hint">{esc(facts)}</p>' if facts else ""
+    return shell("Games", f"""
+  {notice}
+  <h2>Does this look right?</h2>
+  <p><b>{esc(pre.get("sentence") or "")}</b></p>
+  {facts_line}
+  <p class="hint">The file you picked is <b>{esc(filename)}</b>. Nothing has been added yet.</p>
+  <form method="post" action="/admin/arcade/upload/add">
+    {_csrf_field(ctx.csrf)}
+    <input type="hidden" name="token" value="{esc(token)}">
+    <input type="hidden" name="filename" value="{esc(filename)}">
+    <p><label>Name on the games page<br>
+      <input type="text" name="title" value="{esc(filled.get('title') or '')}" maxlength="120" required></label></p>
+    <p><label>Which console<br><select name="system" required>{options}</select></label></p>
+    <p><label>One line under the name<br>
+      <input type="text" name="description" value="{esc(filled.get('description') or '')}" maxlength="300"></label></p>
+    <p><label>Who made it<br>
+      <input type="text" name="author" value="{esc(filled.get('author') or '')}" maxlength="80"></label></p>
+    <p><label>Year<br>
+      <input type="text" name="release" value="{esc(filled.get('release') or '')}" maxlength="40"></label></p>
+    <p><label>What its licence says (shown on the game's page)<br>
+      <input type="text" name="license_text" value="{esc(filled.get('license') or '')}" maxlength="80"></label></p>
+    <button class="go-btn" type="submit">Add this game</button>
+  </form>
+  <form method="post" action="/admin/arcade/upload/discard">
+    {_csrf_field(ctx.csrf)}
+    <input type="hidden" name="token" value="{esc(token)}">
+    <button class="go-btn small" type="submit">Throw it away</button>
+  </form>
+  <p class="note">Adding a game copies it onto this box and shows it on the games page.
+  Nothing else on the card is touched, and a file the checks refuse changes nothing.</p>""",
+                 ctx=ctx, tagline="One game you already have, checked before it is added.")
+
+
+@router.post("/arcade/upload", response_class=HTMLResponse)
+def arcade_upload(request: Request, file: UploadFile = File(...), csrf: str = Form("")):
+    """Take one file an owner picked, and say what this box makes of it.
+
+    The bytes go to the arcade's own temp folder under a name this box chose —
+    never into ``games/`` — and the file only becomes a game when the owner
+    confirms the words on the next screen.
+    """
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.read() as conn:
+        ctx, blocked = _committed(request, conn, csrf)
+        if blocked is not None:
+            return blocked
+        me = ctx.admin
+        shown = str(file.filename or "").replace("\\", "/")
+        shown = shown.rsplit("/", 1)[-1].strip()[:120]
+        try:
+            spooled = ark_arcade_install.spool_upload(file.file, filename=shown)
+        except (ark_arcade_install.InstallRefused, OSError) as exc:
+            with ark_db.tx() as conn:
+                ark_db.audit(conn, action="arcade-upload", actor_id=me["id"],
+                             actor_name=me["username"], target=shown or "a file",
+                             result="failed", detail=str(exc)[:300])
+            return shell("Games", _notice("bad", "<b>Nothing was added.</b> " + esc(str(exc))),
+                         ctx=ctx, status=400)
+        pre = ark_rommeta.prefill(spooled, filename=shown)
+        if not pre.get("playable"):
+            # A file whose kind this box cannot play is refused before the owner
+            # is asked to fill in a form: the shelf could only ever be broken by it.
+            with ark_db.tx() as conn:
+                ark_db.audit(conn, action="arcade-upload", actor_id=me["id"],
+                             actor_name=me["username"], target=shown or spooled.name,
+                             result="failed", detail="not a kind of game this box can play")
+            ark_arcade_install.discard_upload(spooled)
+            return shell("Games", _notice(
+                "bad", "<b>Nothing was added.</b> This box cannot play that kind of file"
+                       " — it has no game from a console on this box inside it."),
+                ctx=ctx, status=400)
+        twin = ark_romdb.game_by_identity(conn, pre.get("ident") or {})
+        with ark_db.tx() as conn:
+            ark_db.audit(conn, action="arcade-upload", actor_id=me["id"],
+                         actor_name=me["username"], target=shown or spooled.name,
+                         result="ok", detail="looked at, not added yet")
+    if twin:
+        ark_arcade_install.discard_upload(spooled)
+        return shell("Games", _notice(
+            "bad", "<b>That game is already on the shelf</b> as "
+                   f"“{esc(twin['title'])}”, so there is nothing to add."),
+            ctx=ctx, tagline="One game you already have, checked before it is added.")
+    filled = ark_rommeta.apply({}, pre)
+    return _own_game_form(ctx, spooled.name, shown or spooled.name, pre, filled)
+
+
+@router.post("/arcade/upload/add", response_class=HTMLResponse)
+def arcade_upload_add(request: Request, token: str = Form(""), filename: str = Form(""),
+                      title: str = Form(""), system: str = Form(""),
+                      description: str = Form(""), author: str = Form(""),
+                      release: str = Form(""), license_text: str = Form(""),
+                      csrf: str = Form("")):
+    """Publish the waiting file under the words the owner confirmed."""
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.read() as conn:
+        ctx, blocked = _committed(request, conn, csrf)
+        if blocked is not None:
+            return blocked
+        me = ctx.admin
+        spooled = ark_arcade_install.upload_path(token)
+        if spooled is None:
+            return shell("Games", _notice(
+                "bad", "<b>Nothing was added.</b> That file is no longer waiting — "
+                       "pick it again."), ctx=ctx, status=404)
+        label = filename or spooled.name
+        facts = {"slug": "", "title": title, "system": system,
+                 "license_text": license_text, "release": release, "author": author,
+                 "description": description, "filename": label}
+        pre = ark_rommeta.prefill(spooled, filename=label)
+        try:
+            result = ark_arcade_install.import_owner_file(conn, spooled, **facts)
+        except (ark_arcade_install.InstallRefused, OSError, sqlite3.DatabaseError) as exc:
+            with ark_db.tx() as conn:
+                ark_db.audit(conn, action="arcade-upload", actor_id=me["id"],
+                             actor_name=me["username"], target=label,
+                             result="failed", detail=str(exc)[:300])
+            return _own_game_form(ctx, token, label, pre, ark_rommeta.apply(facts, pre),
+                                  problem="That one was not added: " + str(exc))
+        with ark_db.tx() as conn:
+            ark_db.audit(conn, action="arcade-upload", actor_id=me["id"],
+                         actor_name=me["username"], target=result.get("slug") or title,
+                         result="ok",
+                         detail=(f"added revision {result['revision']}"
+                                 if result.get("installed")
+                                 else result.get("reason", "already here")))
+    ark_arcade_install.discard_upload(spooled)
+    said = (f"{title or result.get('slug')} was checked and added."
+            if result.get("installed")
+            else f"{title or result.get('slug')} is already on the shelf.")
+    return _redirect("/admin/arcade?" + urllib.parse.urlencode({"ok": said}))
+
+
+@router.post("/arcade/upload/discard", response_class=HTMLResponse)
+def arcade_upload_discard(request: Request, token: str = Form(""), csrf: str = Form("")):
+    """Throw away a file the owner decided not to add. Nothing was ever published."""
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.tx() as conn:
+        ctx, blocked = _committed(request, conn, csrf)
+        if blocked is not None:
+            return blocked
+        me = ctx.admin
+        spooled = ark_arcade_install.upload_path(token)
+        removed = ark_arcade_install.discard_upload(spooled)
+        ark_db.audit(conn, action="arcade-upload", actor_id=me["id"],
+                     actor_name=me["username"], target=(spooled.name if spooled else token[:40]),
+                     result="ok" if removed else "failed",
+                     detail="thrown away before it was added" if removed
+                            else "that file was already gone")
+    return _redirect("/admin/arcade?" + urllib.parse.urlencode(
+        {"ok": "That file was thrown away. Nothing was added."}))
 
 
 @router.post("/arcade/switches", response_class=HTMLResponse)

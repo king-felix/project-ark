@@ -229,9 +229,11 @@ nothing to install and no account. The arrow keys work, and on a phone an on-scr
 appears. Everything runs on the box, so a dead internet changes nothing.
 
 About two dozen small games come with the box (Game Boy, Game Boy Color, Game Boy
-Advance and NES). More are added by whoever looks after the box, sitting at the box
-itself — there is no button on the page that adds one, and the File Box is for
-documents, not games. Each game's card says what it is and who made it, and the licence
+Advance and NES). More are added by whoever looks after the box — from the private
+**Games** page behind their own sign-in, or at the box itself. A game added that way is
+often named by the box from the file itself rather than from the file's name, so a
+carelessly named file still appears with the right title, year and maker. The File Box is
+for documents, not games. Each game's card says what it is and who made it, and the licence
 the source states is shown on the card and in the notes beside the shelf — it is a
 label, not a restriction this box applies.
 

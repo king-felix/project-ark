@@ -425,8 +425,25 @@ with no words at all is allowed, and so is one whose language nobody recorded �
 most homebrew entries say nothing about it. The licence text is stored and shown
 on the game's card, and never refuses anything.
 
-**Putting a game of your own on the shelf.** Copy the file onto the box (a stick,
-or `scp` into `/home/pi`), then run this on the console. It runs as `pi` and
+**Putting a game of your own on the shelf — the page.** On **Games**
+(`https://ark.lan:8443/admin/arcade`) there is **A game you already have**. Choose the
+file in the browser, press **Look at this file**, and it is copied to the arcade's own
+waiting folder under a name the box
+chose (the name in the browser is only a label). **Nothing is on the shelf yet.** The next
+screen says what this box made of the file and shows the words it would print on the game's
+card:
+
+* **what it recognised** — *“This looks like "Cave Diver" (Game Boy, 2021, Someone).”* — or,
+  when nothing on the box has listed those bytes, *“Nobody has listed this file; the name on
+  it is all this box has.”*;
+* **the title, console, year, maker and one-line description, already filled in** from that
+  recognition, which is why the title on the card matches the game inside the file;
+* **Add this game** publishes it, and **Throw it away** deletes the waiting copy there and
+  then. A file that is not a game for a console on this box is refused on the spot, and a
+  game already on the shelf is named instead of added twice.
+
+**Putting a game of your own on the shelf — the console.** Copy the file onto the box (a
+stick, or `scp` into `/home/pi`), then run this on the console. It runs as `pi` and
 needs no `sudo` — `/usr/local/sbin` is simply not on `pi`'s `PATH`, which is why
 the full path is spelled out:
 
@@ -456,6 +473,37 @@ The copy is made under a temporary name first, its SHA-256 is recorded, a Game
 Boy or NES file has its own header and checksum checked, and only then does it
 appear on `http://ark.lan/arcade/` for everybody. A failure changes nothing.
 `--dry-run` says what would happen and writes nothing.
+**The title you do not have to know.** The box carries an offline catalogue of game files
+(`/srv/ark/romdb.sqlite`, built once by `pi/bin/ark-romdb-build`, 25 MB, 56,448 games of
+which 27,723 are on a console this box can play). It is asked by the file's own fingerprint,
+not by its name, so a file called `cave1.gb` still becomes *Cave Diver*. `--match` is that
+question on its own and writes nothing:
+
+```bash
+/usr/local/sbin/ark-arcade --match /home/pi/games/cave1.gb
+# This looks like "Cave Diver" (~1998, Someone).
+#   Year 1998 · Maker Someone · Kind of game Action · Region Europe
+```
+
+The catalogue is a convenience, not a requirement: with no catalogue, on a card that never
+received one, the box says *"Nobody has listed this file; the name on it is all this box
+has"* and everything else works exactly the same. What it says about a game — its console,
+its own spelling of the title, its year and its genre — is stored beside the game as
+provenance and is **never** a reason to refuse one. To build one on a machine with a
+connection — the Mac is fine, it needs `git` and Python 3 — and carry it over:
+
+```bash
+pi/bin/ark-romdb-build --fetch --out /tmp/romdb.sqlite   # ~1 min, ~25 MB
+scp /tmp/romdb.sqlite pi@ark.local:/tmp/
+ssh pi@ark.local 'sudo install -o pi -g pi -m 0644 /tmp/romdb.sqlite /srv/ark/romdb.sqlite'
+```
+
+The build prints how many games it understood and the date of the catalogue it read; the
+same catalogue on a stick is `--from-dir /media/stick/libretro-database` for a machine with
+no connection at all. `pi/bin/ark-romdb-build --self-test` proves the reader against the
+catalogue that is installed, without a network and without touching the shelf.
+
+
 
 **What it says if you give it the same file twice.** The identical file again
 answers *"already on the shelf, unchanged"*; the same game under a second name is
@@ -549,11 +597,12 @@ Stated plainly, because a missing control is better than a fake one:
   button on the owner's page — the weekly timer does the check. A forgotten
   player password cannot be recovered; the person makes a new name, and the old
   saves remain on the box under the old one.
-* Arcade: **there is no drop folder and no upload button.** A game you supply
-  yourself goes on with one console command (§10) — the File Box does not feed
-  the shelf, a zip is not unpacked, there is no cover art, there is no delete
-  button for a game (hiding it is reversible and deletes nothing), and a new
-  revision leaves the previous file on the card until someone removes it.
+* Arcade: **no drop folder.** A game you supply yourself goes on through **Add a
+  game you already have** on the Games page (§10) or with one console command —
+  the File Box does not feed the shelf, a zip is not unpacked, there is no cover
+  art, there is no delete button for a game (hiding it is reversible and deletes
+  nothing), and a new revision leaves the previous file on the card until someone
+  removes it.
 * Emergency content review (first aid, water, electrical) is still pending.
 
 The audit history, the account rules above, the transport boundary, the
@@ -563,7 +612,7 @@ Community controls and the readiness page are complete and tested.
 
 ## 12. Tested / not tested
 
-**Tested** — 267 automated tests, disposable databases, `pytest` (the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md`):
+**Tested** — 285 automated tests, disposable databases, `pytest` (the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md`):
 
 * bootstrap account exists once; a wiped database becomes recovery-required
   instead of re-creating the default; the marker lives outside the database;

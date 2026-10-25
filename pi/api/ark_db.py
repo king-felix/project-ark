@@ -30,7 +30,7 @@ ARK_ROOT = Path(os.environ.get("ARK_ROOT", "/srv/ark"))
 DB_PATH = Path(os.environ.get("ARK_DB", str(ARK_ROOT / "api" / "data" / "ark.db")))
 MARKER_PATH = Path(os.environ.get("ARK_MARKER", str(DB_PATH.parent / "ark.installed")))
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # ---------------------------------------------------------------------------
 #  migrations — append, never edit an entry that has already shipped
@@ -310,6 +310,43 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             # licence that was recorded but never proved, read as 'needs review'.
             "UPDATE acquisition_candidates SET status = 'review' "
             " WHERE status = 'pending' AND (language = '' OR rights_evidence = '')",
+        ],
+    ),
+    (
+        5,
+        [
+            # -- what the file *is*, from the box's own offline catalogue ------
+            # A cartridge's name, publisher and year are facts about the bytes,
+            # not about the page: they are read from the fingerprints and stored
+            # beside the game so a card with no internet can still say what it
+            # is holding.  Every column defaults to '' so a row written before
+            # this migration keeps reading exactly as it did (the ``stored``
+            # rule of §8.7, one table over).
+            "ALTER TABLE games ADD COLUMN crc32 TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE games ADD COLUMN md5 TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE games ADD COLUMN sha1 TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE games ADD COLUMN rom_title TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE games ADD COLUMN rom_region TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE games ADD COLUMN rom_year TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE games ADD COLUMN rom_developer TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE games ADD COLUMN rom_publisher TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE games ADD COLUMN rom_genre TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE games ADD COLUMN rom_players TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE games ADD COLUMN rom_franchise TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE games ADD COLUMN rom_esrb TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE games ADD COLUMN rom_source TEXT NOT NULL DEFAULT ''",
+            # sha1 / md5 / crc32 when a fingerprint chose this row, and 'name'
+            # when nobody had listed the file and its file name had to do.
+            "ALTER TABLE games ADD COLUMN rom_confidence TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE game_revisions ADD COLUMN crc32 TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE game_revisions ADD COLUMN md5 TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE game_revisions ADD COLUMN sha1 TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE game_revisions ADD COLUMN rom_title TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE game_revisions ADD COLUMN rom_confidence TEXT NOT NULL DEFAULT ''",
+            # One file, one row: the same bytes offered twice must be found
+            # without reading every game's name.
+            "CREATE INDEX IF NOT EXISTS games_sha1 ON games(sha1) WHERE sha1 <> ''",
+            "CREATE INDEX IF NOT EXISTS games_crc32 ON games(crc32) WHERE crc32 <> ''",
         ],
     ),
 ]

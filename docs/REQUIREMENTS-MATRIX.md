@@ -2,7 +2,7 @@
 
 **Date:** 25 October 2026  
 **Branch:** `feature/admin-hardening`  
-**Suite:** `267 passed` (`python -m pytest -o addopts='--strict-markers' -q`, Mac, throwaway databases)  
+**Suite:** `285 passed` (`python -m pytest -o addopts='--strict-markers' -q`, Mac, throwaway databases)  
 **Hardware:** **deployed 25 Oct 2026** — `90-verify` green, `/api/ready` 200, the doors, the book
 route rules, a bundle and the arcade origin all answered on the Pi (`docs/IMPLEMENTATION-LOG.md`
 §15), and `ark-arcade --import` answered honestly three times on the box (§18.4). No claim below
@@ -209,6 +209,9 @@ not a durable background system.
 | Writes file + rows in one transaction; unlinks the new file if the DB refuses | `publish_candidate`, `ark_db.tx(conn)` | transaction test |
 | Leaves the shelf exactly as it was on failure | publish tests | `test_arcade_install.py` |
 | Owner import copies a local file with recorded origin, never trusts a browser path | `import_owner_file()`, `_copy_to_temp()`, `OWNER_PROVIDER` | `test_arcade_install.py::test_an_owner_file_goes_through_the_same_gate_and_is_marked_owner_supplied` |
+| The owner can add one file from the owner's page: the bytes land in the arcade's own waiting folder under a name this box chose, nothing is published until the owner confirms, and the waiting copy is deleted on refusal or on a duplicate | `ark_admin.arcade_upload`, `/admin/arcade/upload/add`, `/upload/discard`, `ark_arcade_install.spool_upload`/`discard_upload` | `test_arcade.py::test_the_owner_can_add_a_file_and_watches_it_become_a_game`; `test_arcade.py::test_the_same_cartridge_offered_twice_is_named_not_added_again`; `test_arcade.py::test_a_file_the_box_cannot_play_is_refused_and_changes_nothing`; `test_arcade.py::test_an_upload_without_a_sign_in_writes_nothing` |
+| A game file is named from its own contents (header, stripped-header fingerprints) against an offline catalogue, and the answer pre-fills the title, console, year, maker and description | `ark_romdb.identify_path`/`match`, `ark_rommeta.prefill`/`apply` | `test_romdb.py::test_a_game_is_named_from_its_bytes_even_when_the_file_name_says_nothing`; `test_romdb.py::test_the_fingerprint_kept_describes_the_cartridge_not_the_wrapper`; `test_romdb.py::test_the_strongest_fingerprint_is_the_one_used_and_kept`; `test_romdb.py::test_a_recognised_file_is_stored_with_what_the_catalogue_said` |
+| Recognition never refuses a file: no catalogue, no record, or a record with no licence still adds the game with the name from its file name, and a word the owner typed is never replaced | `ark_rommeta.sentence`/`apply`, `_ROM_KEEP` | `test_romdb.py::test_a_file_nobody_listed_is_still_usable_and_claims_nothing`; `test_romdb.py::test_a_box_with_no_catalogue_still_names_every_game_from_its_file_name`; `test_romdb.py::test_a_word_the_owner_typed_is_never_replaced` |
 | A file given twice is not put on the shelf twice: the same file says "unchanged", the same game under another name is refused with the name it already has, new bytes under the same name are revision 2 | `game_by_sha()`, `owner_candidate()` (records the file's own SHA-256) | `test_arcade_install.py::test_the_same_file_given_twice_is_not_put_on_the_shelf_twice`; `test_arcade_install.py::test_the_same_game_under_a_second_name_is_refused_with_the_name_it_has`; `test_arcade_install.py::test_a_changed_file_under_the_same_name_is_still_a_new_revision` |
 | What the owner typed about a game (`--description`, `--notices`) reaches the game's page as text | `ark-arcade --import`, the game page | `test_arcade.py::test_what_a_person_wrote_about_a_game_reaches_the_page_as_text`; `test_arcade_install.py::test_a_game_the_owner_describes_carries_its_words_onto_the_shelf` |
 | A full card is refused before a byte is written | `_ensure_room()`, `InstallRefused` | full-card refusal test |
@@ -235,7 +238,7 @@ still refused, and `"no-text"` is no longer mistaken for a language called `no`.
 | A populated shelf: target titles and a size budget actually reached | **done** — 23 seeded games (10 GB, 6 GBC, 6 GBA, 1 NES), installed on the box on 25 Oct 2026 and served over `/arcade/`; measured 46.8 MB |
 | Compatibility/boot check before publication | **absent** — a file that is the right shape can still fail to boot |
 | Archive handling (zip/7z) for owner imports | **absent** — the install path accepts a bare ROM file |
-| A place to drop a game file, or a button on the owner's page that adds one | **absent** — one console command (`/usr/local/sbin/ark-arcade --import …`, run as `pi`); the File Box does not feed the shelf, and no watch unit looks at a game folder |
+| A place to drop a game file, or a button on the owner's page that adds one | **the button is done** — the **A game you already have** section of the owner's Games page takes one file, shows what the box recognised and publishes only on confirmation (`test_arcade.py`, four tests); the bytes never leave the arcade's own waiting folder, and no watch unit looks at a game folder. Still **absent**: a drop folder the File Box or a stick feeds, zip/7z, and cover art |
 | External source verification against official hashes/schemas | **absent** — the live source has never been asked for a file from the box |
 | Thumbnails: permission recorded, image fetched or uploaded by the owner, served locally | **absent** — no thumbnail column, route or UI |
 | A source-specific rate limit and on-disk metadata cache | **absent** |

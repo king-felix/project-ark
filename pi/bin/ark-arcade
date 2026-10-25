@@ -38,6 +38,8 @@ sys.path.insert(0, str(API_DIR))
 import ark_arcade as arc                    # noqa: E402
 import ark_arcade_install as install       # noqa: E402
 import ark_db                              # noqa: E402
+import ark_romdb as romdb                  # noqa: E402
+import ark_rommeta as rommeta              # noqa: E402
 
 
 def _say(message: str) -> None:
@@ -66,6 +68,46 @@ def _show(rows) -> None:
             _say(f'      {row["reason"]}')
 
 
+def _match(conn, path: Path, system: str = "") -> dict:
+    """What this box makes of one file, as plain facts and an answer for a script."""
+    pre = rommeta.prefill(path, filename=path.name, system=system)
+    twin = romdb.game_by_identity(conn, pre.get("ident") or {})
+    return {
+        "path": str(path),
+        "known": bool(pre.get("known")),
+        "title": pre.get("title") or "",
+        "system": pre.get("system") or "",
+        "system_label": pre.get("system_label") or "",
+        "playable": bool(pre.get("playable")),
+        "confidence": pre.get("confidence") or "",
+        "where": pre.get("where") or "",
+        "facts": {key: value for key, value in (pre.get("facts") or {}).items() if value},
+        "sentence": pre.get("sentence") or "",
+        "problem": pre.get("problem") or "",
+        "on_the_shelf": ({"slug": twin["slug"], "title": twin["title"]} if twin else None),
+    }
+
+
+def _say_match(result: dict) -> None:
+    """The same facts, for a person standing at a console."""
+    _say(result["sentence"] or "Nothing on this box has listed that file.")
+    if result.get("problem"):
+        _say("Not this one: " + result["problem"])
+        return
+    for label, key in (("Year", "rom_year"),
+                       ("Maker", "rom_developer"),
+                       ("Publisher", "rom_publisher"),
+                       ("Kind of game", "rom_genre"),
+                       ("Players", "rom_players"),
+                       ("Region", "rom_region"),
+                       ("Listed as", "rom_title")):
+        value = str((result.get("facts") or {}).get(key) or "").strip()
+        if value:
+            _say(f"  {label}: {value}")
+    if result.get("on_the_shelf"):
+        _say(f'Already on the shelf as "{result["on_the_shelf"]["title"]}".')
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="ARK Arcade's shelf keeper")
     parser.add_argument("--seed", action="store_true", help="install the pinned first shelf")
@@ -79,6 +121,8 @@ def main(argv=None) -> int:
     parser.add_argument("--import", dest="import_file", metavar="FILE",
                         help="add a game file the owner supplied (with the evidence below)")
     parser.add_argument("--slug", help="with --import: the short name for the game")
+    parser.add_argument("--match", metavar="FILE",
+                        help="say what this box thinks a file is, and add nothing")
     parser.add_argument("--title", help="with --import: the name a reader sees")
     parser.add_argument("--system", help="with --import: gb, gbc, nes, snes, gba or genesis")
     parser.add_argument("--license", dest="license_text",
@@ -103,13 +147,25 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     if not any((args.seed, args.discover, args.install, args.refuse, args.allow,
-                args.list, args.status, args.import_file)):
+                args.list, args.status, args.import_file, args.match)):
         parser.print_help()
         return 2
 
     ark_db.migrate()
     code = 0
     with ark_db.read() as conn:
+        if args.match:
+            try:
+                result = _match(conn, Path(args.match).expanduser(), args.system or "")
+            except (install.InstallRefused, OSError) as exc:
+                _say("Cannot read that file: " + str(exc))
+                return 1
+            if args.json:
+                _say(json.dumps(result))
+            else:
+                _say_match(result)
+            return 1 if result.get("problem") else code
+
         if args.status:
             games = arc.all_games(conn)
             if args.json:
@@ -195,8 +251,20 @@ def main(argv=None) -> int:
                 source = Path(args.import_file).expanduser()
                 if args.dry_run:
                     candidate = install.owner_candidate(source, **facts)
-                    _say(f'Would add {candidate["title"]} ({candidate["system"]}) '
-                         f'as {candidate["entry_id"]}.')
+                    # What the box would fill in, so the owner can see the words
+                    # before they are on a card at all.
+                    _say(f'Would add "{candidate["title"]}" as {candidate["entry_id"]} '
+                         f'({arc.SYSTEMS[candidate["system"]]["label"]}).')
+                    if candidate.get("author"):
+                        _say("  Made by: " + candidate["author"])
+                    if candidate.get("release"):
+                        _say("  Year: " + candidate["release"])
+                    if candidate.get("description"):
+                        _say("  The card would say: " + candidate["description"])
+                    extra = rommeta.game_facts(candidate, limit=4)
+                    if extra:
+                        _say("  From the file itself: " + ", ".join(extra))
+                    _say("  Named by " + rommeta.confidence_words(candidate.get("rom_confidence")) + ".")
                 else:
                     result = install.import_owner_file(conn, source, **facts)
                     _say(json.dumps(result) if args.json

@@ -32,7 +32,8 @@ ark_ok "portal pages installed in $PORTAL"
 
 # ---- backend ----------------------------------------------------------------
 for f in main.py ark_db.py ark_storage.py ark_security.py ark_admin.py ark_recover.py ark_health.py \
-         ark_arcade.py ark_arcade_install.py ark_arcade_web.py; do
+         ark_arcade.py ark_arcade_install.py ark_arcade_web.py \
+         ark_romdb.py ark_romdb_build.py ark_rommeta.py; do
   ark_copy "$ARK_SRC/api/$f" "$API_DIR/$f" 644 "$ARK_PI_USER:$ARK_PI_GROUP"
 done
 ark_copy "$ARK_SRC/api/requirements.txt" "$API_DIR/requirements.txt" 644 "$ARK_PI_USER:$ARK_PI_GROUP"
@@ -62,6 +63,32 @@ ark_ok "vendored player and its add-ons match SHA256SUMS"
 ark_copy "$ARK_SRC/bin/ark-arcade" /usr/local/sbin/ark-arcade 755 root:root
 chmod +x /usr/local/sbin/ark-arcade
 ark_ok "ARK Arcade files present; shelf keeper installed in /usr/local/sbin"
+
+# The offline game-name database is knowledge, not a service: a card without it
+# plays every game and names each one from its file name.  Install the builder so
+# a box with internet can make it, and say plainly whether one is already here.
+ark_copy "$ARK_SRC/bin/ark-romdb-build" /usr/local/sbin/ark-romdb-build 755 root:root
+chmod +x /usr/local/sbin/ark-romdb-build
+ROMDB="$ARK_ROOT/romdb.sqlite"
+if [[ -f "$ROMDB" ]]; then
+  # The pages that read it run as pi.  A file carried over with sudo, or copied
+  # by hand at 0600, is the same fault as a root-made backup bundle the owner
+  # page could not open (§8.7) — so the shape it must have is set here.
+  chown "$ARK_PI_USER:$ARK_PI_USER" "$ROMDB" 2>/dev/null || true  # best effort: a shared folder may refuse
+  chmod 0644 "$ROMDB" 2>/dev/null || true                          # ditto; the verify step reports it if it failed
+fi
+if [[ -r "$ROMDB" ]]; then
+  rmdb_rows="$(sqlite3 -readonly "$ROMDB" "SELECT value FROM meta WHERE key = 'rows';" 2>/dev/null || true)"
+  # a database nobody measured is reported as unknown, never as 0 (§8.7)
+  if [[ -n "$rmdb_rows" ]]; then
+    ark_ok "offline game-name database present: $rmdb_rows entries"
+  else
+    ark_ok "offline game-name database present (how many entries it holds could not be read)"
+  fi
+else
+  ark_warn "no offline game-name database at $ROMDB — games are named from their file names"
+  ark_warn "build it with: sudo /usr/local/sbin/ark-romdb-build --fetch   (needs internet)"
+fi
 
 [[ -x "$VENV/bin/python" ]] || ark_die "no Python environment at $VENV — run phase 3 (30-calibre) first"
 

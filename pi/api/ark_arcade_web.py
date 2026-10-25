@@ -25,6 +25,7 @@ from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
 
 import ark_arcade as arc
 import ark_db
+import ark_rommeta as rommeta
 import ark_security as sec
 
 router = APIRouter()
@@ -139,6 +140,11 @@ def _game_card(game: Dict[str, Any]) -> str:
         facts.append(game["author"])
     if game["license"]:
         facts.append(game["license"])
+    # What the file itself says about the game, when this box has a list that
+    # knows these bytes: the year, the maker, the kind of game it is.
+    for extra in rommeta.game_facts(game, limit=3):
+        if extra not in facts:
+            facts.append(extra)
     star = ('<p class="arcade-favourite">Kept at the top</p>'
             if game.get("pref_favourite") else "")
     return f"""
@@ -350,6 +356,16 @@ def game_page(request: Request, slug: str) -> Response:
         facts.append(game["author"])
     if game["license"]:
         facts.append(game["license"])
+    for extra in rommeta.game_facts(game, limit=4):
+        if extra not in facts:
+            facts.append(extra)
+    # Two plain sentences about where the name came from, printed only when they
+    # are true: a card named from its file keeps its file's name and says nothing.
+    recognised = rommeta.recognised(game)
+    badge = ('<p class="arcade-note">This box recognised the game from the file '
+             'itself, not from its name.</p>' if recognised else "")
+    listed = rommeta.also_listed_as(game)
+    listed_html = f'<p class="arcade-note">{arc.esc(listed)}</p>' if listed else ""
     config = {
         "player": "#arcade-stage",
         "core": game["core"],
@@ -372,6 +388,8 @@ def game_page(request: Request, slug: str) -> Response:
     <h1>{arc.esc(game['title'])}</h1>
     <p class="arcade-lede">{arc.esc(game['description'] or 'Ready to play.')}</p>
     <p class="arcade-facts">{arc.esc(' · '.join(facts))}</p>
+    {badge}
+    {listed_html}
     {credits}
     <div id="arcade-frame" style="aspect-ratio: {arc.esc(aspect)}">
       <div id="arcade-stage" aria-label="{arc.esc(game['title'])} game player"></div>
