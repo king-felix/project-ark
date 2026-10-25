@@ -238,6 +238,16 @@ looks. It never starts, stops or deletes anything. Reload to check again; the
 cached answers are dropped each time the page is opened, so what you see is
 what the box answered a second ago.
 
+Under **Space on the card** the page shows where the room went, measured folder
+by folder: *Offline Library*, *Books*, *Manuals & Guides*, *File Box* and
+*Settings and records* — and only the folders that actually hold something,
+because five rows of "0 B" tell you nothing about what to delete. Under the list
+is the measured total, and, when the filesystem answers, the card's own figure
+("The card holds 46 GB in all, the operating system included"). Nothing in that
+list is an estimate: a folder the box could not read is left out rather than
+shown as zero. The same numbers are in `http://ark.lan/api/status` under
+`sections` → `storage` → `facts` for anyone who prefers JSON.
+
 The same verdict is machine-readable at `http://ark.lan/api/ready` — **200**
 when every part a reader needs works, **503** when one does not, with the
 identical reasons in the body. `http://ark.lan/api/health` is deliberately *not*
@@ -260,9 +270,30 @@ Stated plainly, because a missing control is better than a fake one:
   downloadable at once. Uniqueness and safe naming are done (three files with the
   same name no longer overwrite each other).
 * Deleting a shared file is for ever; there is no trash and no undo.
-* No storage breakdown, no download pause/resume buttons in the page (the
-  existing `ark-zim-pause` file still pauses the queue), no backup or restore
-  screens. **What is working** reports the state of the box; it cannot change it.
+* No download pause/resume buttons in the page (the existing `ark-zim-pause`
+  file still pauses the queue), no backup or restore screens, and nothing on
+  **What is working** can be changed from the page — it reports the state of the
+  box, it does not alter it. The space breakdown says *where* the room went, not
+  how to get it back.
+* No network controls in the page. Broadcasting the hotspot, going back to the
+  home network and reading what the box decided are still SSH jobs — the box
+  answers them itself the rest of the time:
+
+  ```bash
+  sudo ark-mode status        # mode, address, portal answer, and who chose
+  sudo ark-mode auto          # forget any pin; try home, else broadcast
+  sudo ark-mode hotspot       # broadcast, and keep it that way (a pin)
+  sudo ark-mode home          # back to the home network (a pin)
+  sudo ark-net-watch --dry-run             # what the watchdog sees, changes nothing
+  tail -n 20 /srv/ark/logs/net-watch.log   # what it actually did, with times
+  ```
+
+  `/srv/ark/logs/net-watch.log` is written only when the box *did* something, so a
+  short log is a quiet, healthy day; the timer's own state is
+  `systemctl status ark-net-watch.timer`. The box does fail over on its own when
+  the home network disappears, and returns on its own when it comes back and
+  nobody is connected — that is automatic, not a control you can see here, and a
+  pin you set with `ark-mode home`/`hotspot` is never overruled.
 * No household page, no "download the essentials" pack, no QR cards, no
   theme/text-size controls yet.
 * Emergency content review (first aid, water, electrical) is still pending.
@@ -274,7 +305,7 @@ Community controls and the readiness page are complete and tested.
 
 ## 10. Tested / not tested
 
-**Tested** — 97 automated tests, disposable databases, `pytest`:
+**Tested** — 128 automated tests, disposable databases, `pytest`:
 
 * bootstrap account exists once; a wiped database becomes recovery-required
   instead of re-creating the default; the marker lives outside the database;
@@ -321,7 +352,15 @@ Community controls and the readiness page are complete and tested.
   reasons;
 * the owner's **What is working** page lists every part with the reason and the
   next step, contains none of the jargon the rest of the box hides, and the
-  overview links to it.
+  overview links to it;
+* the space breakdown measures each folder, lists no empty folder as "0 B", and
+  the owner's page shows the measured size (4.0 kB for a 4096-byte collection);
+* the network watchdog's decision table (14 cases): one lost check is a blink and
+  two is a network, a reader on the hotspot is never disconnected, an uncountable
+  client list is treated as occupied, the owner's pin is respected but never
+  leaves the box dark, and a failed return is not retried immediately; the
+  observer, against a fake `nmcli`/`iw`; a dry run that writes nothing at all;
+  and the real call to `ark-mode hotspot --auto` (recorded, logged, state filed).
 
 **Not tested** — no hardware or browser access in this environment:
 
@@ -338,14 +377,22 @@ Community controls and the readiness page are complete and tested.
   use a local stand-in server, so "answering" and "refused" are both exercised —
   but no test has yet seen `kiwix-serve` and Calibre-Web in their real states);
 * the front page's amber/red dot and the download speed measurement against a
-  real download (the arithmetic is tested with fixed numbers).
+  real download (the arithmetic is tested with fixed numbers);
+* the network watchdog on the box itself: the timer has never been enabled, no
+  real access point has been asked for its station list, no home network has been
+  switched off to watch the hotspot come up, no pin has been set by a human, and
+  the 3-minute first check and 30-minute back-off have never elapsed in real
+  time. Everything above is a table, a fake `nmcli`/`iw`, and `bash -n`.
 
 To install and verify this stage on the Pi:
 
 ```bash
-sudo bash /srv/ark/src/install-ark.sh --only 60-portal,65-admin
+sudo bash /srv/ark/src/install-ark.sh --only 60-portal,65-admin,70-network
 sudo bash /srv/ark/src/install-ark.sh --only 90-verify
 ```
+
+(`70-network` installs the watchdog and starts its timer; nothing in it switches
+the radio, so it is safe over the same Wi-Fi you are connected to.)
 
 then work through §2 with a phone, and open
 `https://ark.lan:8443/admin/health` on a box that is still filling up: every

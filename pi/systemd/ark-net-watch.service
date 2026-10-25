@@ -1,0 +1,14 @@
+[Unit]
+Description=Project ARK — keep the box reachable when the home network goes away
+Documentation=http://ark.lan/help
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ark-net-watch
+Nice=5
+# The check may spend 30 s trying the home network on top of nmcli's own
+# timeouts: long enough to finish, short enough that two runs never overlap
+# (systemd will not start a unit that is still running).
+TimeoutStartSec=240

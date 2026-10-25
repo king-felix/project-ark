@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sqlite3
 import time
 import urllib.error
@@ -73,6 +74,11 @@ def calibre_db() -> Path:
 
 def vault_dir() -> Path:
     return ark_root() / "vault"
+
+
+def data_dir() -> Path:
+    """Accounts, records and settings — the database and its install marker."""
+    return ark_root() / "api" / "data"
 
 
 def kiwix_base() -> str:
@@ -139,6 +145,55 @@ def library_bytes() -> int:
     except OSError:
         pass
     return total
+
+
+def tree_bytes(folder: Path) -> int:
+    """Bytes in a folder, counted file by file.
+
+    A folder that is missing is zero, not an error: an empty box is a normal
+    state, and a check that raises because nothing has arrived yet would be the
+    same lie the old green dot told.
+    """
+    total = 0
+    try:
+        for path in Path(folder).rglob("*"):
+            try:
+                if path.is_file() and not path.is_symlink():
+                    total += path.stat().st_size
+            except OSError:
+                continue
+    except OSError:
+        pass
+    return total
+
+
+def card_facts() -> dict:
+    """What the whole card holds, as the filesystem reports it.
+
+    ``None`` means "could not ask", which the pages must show as *not measured
+    yet* rather than as zero.
+    """
+    try:
+        usage = shutil.disk_usage(str(ark_root()))
+    except OSError:
+        return {"card_total_bytes": None, "card_used_bytes": None}
+    return {"card_total_bytes": usage.total, "card_used_bytes": usage.used}
+
+
+def storage_breakdown() -> list[dict]:
+    """Where the room went, measured folder by folder — never estimated.
+
+    Only folders that hold something are listed: five rows of "0 B" is noise on
+    an empty card and tells the owner nothing about what to delete.
+    """
+    parts = (
+        ("Offline Library", library_bytes()),
+        ("Books", tree_bytes(calibre_db().parent)),
+        ("Manuals & Guides", tree_bytes(vault_dir())),
+        ("File Box", tree_bytes(ark_storage.drop_dir())),
+        ("Settings and records", tree_bytes(data_dir())),
+    )
+    return [{"label": label, "bytes": size} for label, size in parts if size > 0]
 
 
 def book_count() -> int:
@@ -372,7 +427,14 @@ def files_section() -> dict:
 
 def storage_section() -> dict:
     free = ark_storage.free_bytes(ark_root())
-    facts = {"free_bytes": free, "reserve_bytes": ark_storage.MIN_FREE_RESERVE}
+    parts = storage_breakdown()
+    facts = {
+        "free_bytes": free,
+        "reserve_bytes": ark_storage.MIN_FREE_RESERVE,
+        "breakdown": parts,
+        "breakdown_bytes": sum(p["bytes"] for p in parts),
+        **card_facts(),
+    }
     if free < ark_storage.MIN_FREE_RESERVE:
         return _section(
             "storage", "Space on the card", False,

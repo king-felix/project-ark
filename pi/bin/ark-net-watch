@@ -1,0 +1,253 @@
+#!/usr/bin/env bash
+# =============================================================================
+#  ark-net-watch — the network after boot.
+#
+#  ark-boot-guard decides once, shortly after a cold start.  This asks the same
+#  question every minute for the rest of the day, because a home Wi-Fi can
+#  disappear from under a running box (router rebooted, someone switched it
+#  off, the household moved).  The answer must not be "reboot it".
+#
+#    1. the box already has a working link    -> stay
+#    2. nothing is up                          -> broadcast the hotspot
+#    3. hotspot up, nobody connected to it,
+#       the home network in range again        -> go back on its own
+#
+#  Two rules are absolute:
+#    * never take the hotspot away while a device is connected to it;
+#    * never overrule the mode the owner asked for.  "ark-mode home" and
+#      "ark-mode hotspot" leave a pin, and a pin suppresses the return home
+#      only — a box that has lost its link is still rescued.
+#
+#  Usage:
+#    ark-net-watch                look, decide, act (what the timer runs)
+#    ark-net-watch --dry-run      print what it sees and would do; changes nothing
+#    ark-net-watch --decide ...   the decision table alone (no radio, no root)
+#                                 mode link hotspot home_in_range clients pinned
+#                                 lost_streak home_streak home_blocked
+#
+#  Every action is appended to /srv/ark/logs/net-watch.log.  A quiet check
+#  writes nothing, so the log stays readable for months.
+# =============================================================================
+set -Eeuo pipefail
+
+ENV_FILE="${ENV_FILE:-/etc/ark/ark.env}"
+# shellcheck disable=SC1090
+if [[ -r "$ENV_FILE" ]]; then . "$ENV_FILE"; fi
+
+ARK_ROOT="${ARK_ROOT:-/srv/ark}"
+LOG_DIR="${ARK_LOG_DIR:-$ARK_ROOT/logs}"
+LOG="$LOG_DIR/net-watch.log"
+STATE="${ARK_NET_STATE:-$LOG_DIR/net-watch.state}"
+MODE_FILE="${MODE_FILE:-/etc/ark/mode}"
+PIN_FILE="${PIN_FILE:-/etc/ark/mode.pinned}"
+HOTSPOT_CONNECTION="${HOTSPOT_CONNECTION:-ark-hotspot}"
+HOME_WIFI_CONNECTION="${HOME_WIFI_CONNECTION:-home-wifi}"
+WIFI_DEV="${WIFI_DEV:-wlan0}"
+ARK_MODE_BIN="${ARK_MODE_BIN:-/usr/local/bin/ark-mode}"
+NMCLI="${NMCLI:-nmcli}"
+IW="${IW:-iw}"
+# Consecutive checks before acting.  One lost check is a router blinking; two
+# is a network that has gone.  Returning home is slower because it costs a
+# reader the access point they may be about to join.
+LOST_STREAK="${LOST_STREAK:-2}"
+RETURN_STREAK="${RETURN_STREAK:-3}"
+# After a return that did not work, leave the box on the hotspot instead of
+# asking again every few minutes: an access point that flaps is worse than one
+# that stayed up.  Cleared as soon as a link is up.
+HOME_RETRY_SECONDS="${HOME_RETRY_SECONDS:-1800}"
+
+say() { printf '%s  %s\n' "$(date -Is)" "$*" >>"$LOG" 2>/dev/null || true; }
+
+usage() { sed -n '22,29p' "$0" | sed 's/^# \{0,1\}//'; }
+
+# ---------------------------------------------------------------------------
+#  the decision table — pure, so a test needs no radio and no root
+# ---------------------------------------------------------------------------
+decide() { # mode link hotspot home_in_range clients pinned lost home_streak blocked
+  local mode=$1 link_active=$2 hotspot_active=$3 home_in_range=$4
+  local clients=$5 pinned=$6 lost_streak=$7 home_streak=$8 home_blocked=$9
+
+  if (( hotspot_active )); then
+    # Broadcasting.  Leave it alone unless the home network can be joined
+    # without costing anybody the access point they are using.
+    if (( link_active )); then printf 'stay'; return 0; fi
+    if (( pinned )); then printf 'stay'; return 0; fi
+    if (( ! home_in_range )); then printf 'stay'; return 0; fi
+    if (( clients != 0 )); then printf 'stay'; return 0; fi  # -1 = unknown
+    if (( home_blocked )); then printf 'stay'; return 0; fi
+    if (( home_streak >= RETURN_STREAK )); then printf 'to-home'; return 0; fi
+    printf 'stay'
+    return 0
+  fi
+
+  if (( link_active )); then printf 'stay'; return 0; fi
+
+  # Nothing is up.  A box that believes it is at home gets one more check
+  # before the radio is turned into an access point.
+  if [[ "$mode" == "home" ]] && (( lost_streak < LOST_STREAK )); then
+    printf 'stay'
+    return 0
+  fi
+  printf 'to-hotspot'
+}
+
+# ---------------------------------------------------------------------------
+#  looking at the box
+# ---------------------------------------------------------------------------
+mode_now() {
+  # A missing mode file is "unknown", not a shell error in the owner's log.
+  if [[ -r "$MODE_FILE" ]]; then tr -d '[:space:]' <"$MODE_FILE" 2>/dev/null || true; fi
+}
+
+flag() { if "$@" >/dev/null 2>&1; then printf 1; else printf 0; fi; }
+
+active_connections() { "$NMCLI" -t -f NAME,TYPE connection show --active 2>/dev/null || true; }
+
+any_wireless_active() {
+  # Any Wi-Fi connection counts as "at home", not only the saved profile name:
+  # a renamed network is still a network, and a box that cannot reach the
+  # portal is not helped by turning its radio into an access point.
+  active_connections | awk -F':' -v ap="$HOTSPOT_CONNECTION" \
+    '$2 ~ /wireless/ && $1 != ap {found=1} END {exit !found}'
+}
+
+any_wired_active() {
+  active_connections | awk -F':' '$2 ~ /ethernet/ {found=1} END {exit !found}'
+}
+
+is_hotspot_active() {
+  active_connections | awk -F':' -v ap="$HOTSPOT_CONNECTION" \
+    '$1 == ap {found=1} END {exit !found}'
+}
+
+home_in_range() {
+  local ssid visible
+  ssid="$("$NMCLI" -g 802-11-wireless.ssid connection show "$HOME_WIFI_CONNECTION" \
+            2>/dev/null | head -1 || true)"
+  [[ -n "$ssid" ]] || return 1
+  # Reading the scan result is the only honest way to know the network is back.
+  # An access point cannot always scan (the radio is busy broadcasting); then
+  # this answers "not in range" and the box simply stays on the hotspot.
+  visible="$("$NMCLI" -g SSID device wifi list ifname "$WIFI_DEV" 2>/dev/null || true)"
+  grep -Fxq -- "$ssid" <<<"$visible"
+}
+
+ap_clients() {
+  # -1 means "could not count", which the decision treats as "somebody may be
+  # there" — the safe answer when the cost of being wrong is dropping a reader.
+  if ! "$IW" dev "$WIFI_DEV" info >/dev/null 2>&1; then
+    printf '%s' -1
+    return 0
+  fi
+  local n
+  n="$("$IW" dev "$WIFI_DEV" station dump 2>/dev/null | grep -c '^Station' || true)"
+  printf '%s' "${n:-0}"
+}
+
+read_state() {
+  LOST_NOW="$(sed -n 's/^lost_streak=//p' "$STATE" 2>/dev/null | head -1 || true)"
+  HOME_NOW="$(sed -n 's/^home_streak=//p' "$STATE" 2>/dev/null | head -1 || true)"
+  HOME_BLOCK_UNTIL="$(sed -n 's/^home_block_until=//p' "$STATE" 2>/dev/null | head -1 || true)"
+  [[ "$LOST_NOW" =~ ^[0-9]+$ ]] || LOST_NOW=0
+  [[ "$HOME_NOW" =~ ^[0-9]+$ ]] || HOME_NOW=0
+  [[ "$HOME_BLOCK_UNTIL" =~ ^[0-9]+$ ]] || HOME_BLOCK_UNTIL=0
+  if (( HOME_BLOCK_UNTIL > $(date +%s) )); then HOME_BLOCKED=1; else HOME_BLOCKED=0; fi
+}
+
+write_state() { # <lost-streak> <home-streak> <block-until>
+  mkdir -p "$(dirname "$STATE")" 2>/dev/null || true
+  printf 'lost_streak=%s\nhome_streak=%s\nhome_block_until=%s\nupdated=%s\n' \
+    "$1" "$2" "$3" "$(date -Is)" >"$STATE" 2>/dev/null || true
+}
+
+observe() {
+  MODE="$(mode_now)"
+  MODE="${MODE:-unknown}"
+  if any_wireless_active || any_wired_active; then LINK_ACTIVE=1; else LINK_ACTIVE=0; fi
+  HOTSPOT_ACTIVE=$(flag is_hotspot_active)
+  HOME_SEEN=$(flag home_in_range)
+  CLIENTS="$(ap_clients)"
+  PINNED=$(flag test -e "$PIN_FILE")
+  read_state
+}
+
+# ---------------------------------------------------------------------------
+#  doing it
+# ---------------------------------------------------------------------------
+main() {
+  local dry=0
+
+  case "${1:-}" in
+    --decide)
+      shift
+      if (( $# != 9 )); then
+        printf 'ark-net-watch: --decide needs 9 values, got %s\n' "$#" >&2
+        return 2
+      fi
+      decide "$@"
+      printf '\n'
+      return 0
+      ;;
+    --dry-run) dry=1 ;;
+    -h|--help|help) usage; return 0 ;;
+    '') : ;;
+    *) printf 'ark-net-watch: unknown argument: %s\n' "$1" >&2; return 2 ;;
+  esac
+
+  observe
+
+  # The streak the *next* decision table should see.
+  local next_lost=0 next_home=0 next_block="$HOME_BLOCK_UNTIL"
+  if (( LINK_ACTIVE == 0 && HOTSPOT_ACTIVE == 0 )); then
+    next_lost=$(( LOST_NOW + 1 ))
+  fi
+  if (( HOTSPOT_ACTIVE == 1 && LINK_ACTIVE == 0 && HOME_SEEN == 1 && CLIENTS == 0 )); then
+    next_home=$(( HOME_NOW + 1 ))
+  fi
+  if (( LINK_ACTIVE == 1 )); then next_block=0; fi
+
+  local action summary
+  action="$(decide "$MODE" "$LINK_ACTIVE" "$HOTSPOT_ACTIVE" "$HOME_SEEN" \
+                   "$CLIENTS" "$PINNED" "$next_lost" "$next_home" "$HOME_BLOCKED")"
+  summary="mode=$MODE link=$LINK_ACTIVE hotspot=$HOTSPOT_ACTIVE in-range=$HOME_SEEN"
+  summary="$summary clients=$CLIENTS pinned=$PINNED lost=$next_lost back=$next_home -> $action"
+
+  if (( dry )); then
+    printf '%s\n' "$summary"
+    return 0
+  fi
+
+  mkdir -p "$LOG_DIR" 2>/dev/null || true
+  write_state "$next_lost" "$next_home" "$next_block"
+
+  case "$action" in
+    to-hotspot)
+      say "$summary"
+      if "$ARK_MODE_BIN" hotspot --auto >>"$LOG" 2>&1; then
+        say "broadcasting now — a phone can join the hotspot and open the portal"
+      else
+        say "WARNING: ark-mode hotspot failed; see journalctl -u NetworkManager"
+      fi
+      ;;
+    to-home)
+      say "$summary"
+      if ARK_HOME_WIFI_TIMEOUT=30 "$ARK_MODE_BIN" auto >>"$LOG" 2>&1; then
+        if [[ "$(mode_now)" == "home" ]]; then
+          say "back on \"$HOME_WIFI_CONNECTION\"; the hotspot is closed"
+          write_state 0 0 0
+        else
+          say "home did not answer — still broadcasting, next try in $(( HOME_RETRY_SECONDS / 60 )) min"
+          write_state 0 0 "$(( $(date +%s) + HOME_RETRY_SECONDS ))"
+        fi
+      else
+        say "WARNING: ark-mode auto failed — still broadcasting"
+        write_state 0 0 "$(( $(date +%s) + HOME_RETRY_SECONDS ))"
+      fi
+      ;;
+    *)
+      : # a quiet check leaves no trace, so the log stays readable
+      ;;
+  esac
+}
+
+main "$@"

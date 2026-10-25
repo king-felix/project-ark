@@ -26,12 +26,12 @@ and what the next executable step is.
 | 7 | Board errors and housekeeping | **done for stage 3** — friendly errors, pagination, reversible moderation (pin / sorted out / hide) with audit lines |
 | 8 | Bounded search | **fixed** — process pool + bounded wait, deadline respected |
 | 9 | Truthful downloads/readiness/health | **stage 4 done** — one module decides per-section readiness with a reason and a next step, `/api/ready` answers 200/503, `/admin/health` is the owner's page, `/api/health` is liveness only, and progress comes from measured bytes (§8) |
-| 10 | Network loss after boot | not started |
+| 10 | Network loss after boot | **stage 5 done** — `ark-net-watch` asks the boot guard's question again every minute, rescues the hotspot after two lost checks, returns home when the network is back and nobody is using the hotspot, never takes the access point from a connected device, and never overrules a choice the owner made with `ark-mode home` / `ark-mode hotspot` (§10) |
 | 11 | Backup / offline recovery kit | not started |
 | 12 | Emergency content review | not started |
 | 13 | Essentials pack, QR, accessibility, household page | not started |
-| 14 | Sequence | stages 1–4 done, stage 5 next |
-| 15 | Acceptance tests | 97 tests, all green (`pytest -q`) |
+| 14 | Sequence | stages 1–5 done, stage 6 next |
+| 15 | Acceptance tests | 128 tests, all green (`pytest -q`) |
 
 ---
 
@@ -269,23 +269,63 @@ the queue has no total or no measured rate. `reported: false` says the queue has
 not written a status file at all — the difference between "nothing is
 downloading" and "nobody told us".
 
+**D19 — the network question is asked every minute, and the decision is a pure
+function.** `ark-boot-guard` answers once, on the way up; a home router can be
+rebooted at any hour afterwards. `ark-net-watch` (oneshot, timer
+`OnBootSec=3min` + `OnUnitActiveSec=60s`) reads six facts — saved mode, any link
+up, hotspot up, home network in range, clients on the hotspot, owner pin — plus
+three counters from `/srv/ark/logs/net-watch.state`, and hands them to
+`decide()`, which returns `stay`, `to-hotspot` or `to-home` and touches nothing.
+`--decide` exposes that function alone (no radio, no root, no NetworkManager), so
+the whole table is a table-driven test instead of a re-implementation in Python.
+
+**D20 — a reader on the hotspot outranks a tidier network.** The hotspot is only
+given up when the home network is in range **and** `iw … station dump` counts
+zero stations. A count that could not be taken (`iw` missing, radio busy) is
+`-1`, which the table treats as *somebody may be there* — the safe answer, because
+the cost of being wrong is dropping the page someone is reading. Two consecutive
+lost checks (`LOST_STREAK=2`) are needed before the hotspot is raised, so a
+router blinking for one minute does not rewrite the network.
+
+**D21 — a pin is a person's answer; a failed return is not retried every minute.**
+`ark-mode home` and `ark-mode hotspot` write `/etc/ark/mode.pinned`; `ark-mode
+auto` deletes it; the watchdog calls `ark-mode hotspot --auto`, which is the one
+call that leaves no pin — that is how "the box did this to itself" and "the owner
+said so" stay distinguishable. A pin suppresses the return home **only**: a box
+that has lost its link is still rescued, a pinned hotspot is never closed by the
+watchdog, and a pinned home network is still replaced by the hotspot when the link
+dies. After a return that failed (`ark-mode auto` ran, the mode is still
+`hotspot`) the next attempt waits `HOME_RETRY_SECONDS=1800`: an access point that
+flaps is worse for a reader than one that stayed up. A quiet check writes nothing,
+so `net-watch.log` holds decisions, not a heartbeat.
+
+**D22 — the storage breakdown is measured, folder by folder, and absent is not
+zero.** `ark_health.storage_breakdown()` walks five folders (Offline Library,
+Books, Manuals & Guides, File Box, Settings and records) and lists only the ones
+that hold something, because five rows of "0 B" tell the owner nothing about what
+to delete; `card_facts()` adds `shutil.disk_usage()` for the whole card and
+returns `None` when it cannot ask. `storage_section()` carries `breakdown`,
+`breakdown_bytes`, `card_total_bytes` and `card_used_bytes`; the owner's page
+renders the table and the measured total, and renders nothing at all when the
+card is empty. No figure on that page is an estimate.
+
 ---
 
 ## 6. Test evidence
 
 ```
 $ .venv/bin/python -m pytest -o addopts='--strict-markers' -q
-........................................................................ [ 74%]
-.........................                                                [100%]
-97 passed in 15.55s
+........................................................................ [ 56%]
+................................................................         [100%]
+128 passed in 19.93s
 ```
 
 (`pytest.ini` already passes `-q`, so a second `-q` hides the summary line; the
 command above is the one that prints the count.)
 
-Breakdown: `test_auth` 15 · `test_board` 15 · `test_health` 13 · `test_accounts`
-13 · `test_storage` 11 · `test_import` 7 · `test_public` 7 · `test_db` 7 ·
-`test_search` 6 · `test_config` 3.
+Breakdown: `test_network` 28 · `test_health` 16 · `test_board` 15 · `test_auth`
+15 · `test_accounts` 13 · `test_storage` 11 · `test_import` 7 · `test_public` 7 ·
+`test_db` 7 · `test_search` 6 · `test_config` 3.
 
 Environment: macOS, Python 3.9.6, fastapi/uvicorn/httpx/pytest from
 `tests/requirements.txt`, scrypt via the `cryptography` fallback.
@@ -316,17 +356,15 @@ verified through the Mac's fallback.
 
 ## 7. Next executable step
 
-Stages 3 and 4 are closed. What comes next (each with a test before the code):
+Stages 3, 4 and 5 are closed. What comes next (each with a test before the code):
 
-1. **Stage 5 — the network after boot.** Loss of the home network once the box is
-   up (not just at start), and the hotspot taking over without a reboot.
-2. **Stage 6 — backup and the offline recovery sheet.** A backup that includes
+1. **Stage 6 — backup and the offline recovery sheet.** A backup that includes
    `drop/files`, `api/data`, the library and `.imported.json`, plus the printed
    card that gets a stranger from a dead box to a working one.
-3. **Stage 7 — the household layer.** Emergency content review, the essentials
+2. **Stage 7 — the household layer.** Emergency content review, the essentials
    pack, QR cards, accessibility and the household page.
 
-Left over from stage 3, on purpose (do not describe these as done):
+Left over from stages 3–5, on purpose (do not describe these as done):
 
 * **Per-person quotas and a quarantine/approval queue** — the cap is per file
   (2 GiB) and the box protects its last 512 MiB, nothing is metered per device,
@@ -334,6 +372,10 @@ Left over from stage 3, on purpose (do not describe these as done):
 * **Trash** — hide is reversible but delete is for ever; there is no middle step.
 * **Anonymous uploads are still anonymous** — the switch turns writing off, it
   does not tell the owner *who* wrote.
+* **Nothing on the owner's page can act on the network.** `ark-mode` still needs
+  a console; there is no "broadcast now" button, and the watchdog's own log is a
+  file to read, not a screen. Network-loss failover has never been tried on the
+  real box (see §10).
 
 Definition of done for each: a failing test first, then the fix, then
 `pytest` green, then a checkpoint line here.
@@ -461,4 +503,105 @@ stages 2–4 — `docs/REBUILD-FROM-BACKUP.txt` now says so at the top.
 **Next executable step** — stage 5 (§7.1): the network after boot. Before any
 release: deploy stages 2–4 and walk through them on a phone (§8.9 of
 `.clinerules`).
+
+
+---
+
+## 10. Stage 5 checkpoint — 24 Oct 2026
+
+`pytest` **128 passed** (11 files: `tests/test_network.py` is the new 28,
+`tests/test_health.py` grew from 13 to 16). Branch `feature/admin-hardening`,
+nothing deployed, no hardware test: the same kind of code-and-tests checkpoint as
+stages 3 and 4.
+
+**The defect.** `ark-boot-guard` decided the network once, twenty seconds after a
+cold start. A router rebooted at eight in the evening left the box on a home
+network that no longer existed: the portal was up, nothing could reach it, and the
+only cure was a reboot. The owner's own choice of network was also unrecorded, so
+the guard's opinion and the owner's could not be told apart, and the storage row
+on **What is working** said only "30 GB free" — no answer to *what is using it*.
+
+**New:** `pi/bin/ark-net-watch` (+ `ark-net-watch.service` oneshot,
+`ark-net-watch.timer` `OnBootSec=3min` / `OnUnitActiveSec=60s`).
+
+| Piece | Behaviour |
+|---|---|
+| `decide()` | pure: mode, any-link, hotspot, home-in-range, clients, pinned, lost streak, home streak, home-blocked → `stay` / `to-hotspot` / `to-home` |
+| `--decide …` | prints that answer alone — no radio, no root, no NetworkManager, so the table is a test |
+| `--dry-run` | prints `mode=… link=… hotspot=… in-range=… clients=… pinned=… lost=… back=… -> …`, writes nothing (the observer only reads) |
+| observation | `nmcli connection show --active` (any wireless/ethernet profile counts, not only the saved name), `nmcli -g 802-11-wireless.ssid`, `nmcli device wifi list`, `iw … station dump` |
+| state | `/srv/ark/logs/net-watch.state` — `lost_streak`, `home_streak`, `home_block_until`, `updated` |
+| log | `/srv/ark/logs/net-watch.log` — one timestamped line per decision that acted, plus what happened next; a quiet check writes nothing |
+| acting | `ark-mode hotspot --auto` (no pin) or `ark-mode auto`; a failed return blocks retries for `HOME_RETRY_SECONDS=1800` |
+
+**`ark-mode` pins.** `home` and `hotspot` write `/etc/ark/mode.pinned`; `auto`
+removes it; `hotspot --auto` is the rescue path and leaves no pin. `status` gained
+a line — `chosen by : owner (home)` or `chosen by : auto` — so the one question
+that used to need a guess ("did the box decide this, or did I?") is answered by the
+box. `test 180` still pins for the duration and unpins when it goes back to auto,
+so the watchdog cannot cut a deliberate test short.
+
+**Storage breakdown** (D22). `ark_health.storage_breakdown()` measures Offline
+Library, Books, Manuals & Guides, File Box and Settings and records; only non-empty
+folders are listed; `card_facts()` reports the whole card from `shutil.disk_usage()`
+and `None` when it cannot ask. `ark_admin._storage_breakdown()` renders it under
+the storage row of **What is working** with a measured total and the card's own
+figure; nothing is estimated and no empty folder is dressed up as "0 B". The same
+numbers ride along in `/api/status` → `sections[storage].facts`.
+
+**Scripts.** `70-network.sh` installs the binary and both units, enables and starts
+the timer, then runs `--dry-run` and echoes what the watchdog sees *without touching
+the radio*; its verify block warns when the timer is not enabled or not running, and
+its closing line names the phase as "at boot and afterwards". `90-verify.sh` adds
+`ark-net-watch.timer` to the enabled+active list, prints a `held on "home" by the
+owner` line when a pin exists, and prints the last watchdog decision (or says the
+first check is three minutes after boot). Both `bash -n` clean.
+
+**Tests** (`tests/test_network.py`, 28). The decision table is 14 cases, including
+*one lost check is a blink*, *two is a network*, *somebody is reading ⇒ stay*,
+*`-1` clients ⇒ stay*, *the owner pinned the hotspot ⇒ stay*, *a return already
+failed ⇒ stay*, and *a pin never leaves the box dark*. Then the observer against a
+fake `nmcli`/`iw`: a healthy home left alone; a lost network counted and then
+rescued; a hotspot with a station never closed; an uncountable hotspot treated as
+occupied; the return home after `RETURN_STREAK` quiet checks; a dry run writing
+nothing (state byte-identical, no log file); a quiet real run writing nothing; a
+lost network really calling `hotspot --auto` and recording the call, the log line
+and the state; the pin contract in `ark-mode`; the units; and the two phases that
+install and verify them. `tests/test_health.py` adds the measured breakdown, the
+empty-folder omission and the owner page's `4.0 kB` line.
+
+**Live smoke check** (macOS, uvicorn on `127.0.0.1:8137`, throwaway `ARK_ROOT`, a
+4096-byte collection and a 700-byte guide):
+
+```
+sections[storage].facts.breakdown = [Offline Library 4096, Manuals & Guides 700,
+                                     Settings and records 106507]
+breakdown_bytes = 111303       card_total_bytes = 245107195904
+card_used_bytes = 212101849088  free_bytes = 33005346816
+ark-net-watch --dry-run (no nmcli on this Mac):
+  mode=unknown link=0 hotspot=0 in-range=0 clients=-1 pinned=0 lost=1 back=0 -> to-hotspot
+```
+
+The dry run is the point: with no radio at all the watchdog still reaches a
+decision, and it is the safe one.
+
+**Docs changed in the same commit** — `README.md`, `docs/ADMIN.md` (§8 gains the
+breakdown; §9 no longer claims there is none), `docs/USING-THE-ARK.md` (the
+troubleshooting rows and the cheat sheet), `docs/REBUILD-ME-ARK.txt`, `.clinerules`.
+
+**Never run on the Pi — say so, do not imply otherwise.** The timer has never been
+enabled on the box; `iw … station dump` has never been asked a real access point for
+its station list; no home network has been switched off to watch the hotspot come
+up; no pin has been set by a human; `70-network.sh`'s new block and `90-verify.sh`'s
+network lines have been `bash -n`'d and nothing more. The 3-minute first check and
+the 30-minute back-off have never elapsed in real time.
+
+**Still absent, deliberately:** any network control in the owner's web page, a
+client list ("who is on the hotspot"), signal strength, a warning before the return
+home, and a choice of hotspot channel from the page.
+
+**Next executable step** — stage 6 (§7.1): the backup and the offline recovery
+sheet. Before any release: deploy stages 2–5 and walk through them on a phone
+(`.clinerules` §8.9).
+
 

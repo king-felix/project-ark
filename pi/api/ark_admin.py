@@ -655,14 +655,37 @@ def _checked_at(iso: str) -> str:
         return "just now"
 
 
+def _storage_breakdown(section: dict) -> str:
+    """Where the room went, measured folder by folder.
+
+    Only the storage row gets this: everywhere else a size list would be noise.
+    An empty card renders nothing at all rather than five zeroes — a figure the
+    box did not measure must never appear as a claim.
+    """
+    parts = section["facts"].get("breakdown") or []
+    if not parts:
+        return ""
+    rows = "".join(
+        f'<li>{esc(p["label"])}<span>{esc(ark_health.human_size(p["bytes"]))}</span></li>'
+        for p in parts)
+    total = section["facts"].get("breakdown_bytes") or 0
+    card_used = section["facts"].get("card_used_bytes")
+    card = (f"  The card holds {esc(ark_health.human_size(card_used))} in all, the "
+            "operating system included.") if card_used else ""
+    return (f'<ul class="breakdown">{rows}</ul>'
+            f'<span class="sub">Measured: {esc(ark_health.human_size(total))} in these '
+            f'folders.{card}</span>')
+
+
 def _health_row(section: dict) -> str:
     """One part of the box: its state, what that means, and what to do."""
     state = ("<span class=\"state\">Ready</span>" if section["ready"]
              else "<span class=\"state no\">Not ready</span>")
     fix = (f'<span class="fix">What to do: {esc(section["action"])}</span>'
            if section["action"] else "")
+    extra = _storage_breakdown(section) if section["key"] == "storage" else ""
     return (f'<li><b>{esc(section["label"])}</b> {state}'
-            f'<span class="sub">{esc(section["reason"])}</span>{fix}</li>')
+            f'<span class="sub">{esc(section["reason"])}</span>{fix}{extra}</li>')
 
 
 @router.get("/health", response_class=HTMLResponse)

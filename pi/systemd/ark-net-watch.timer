@@ -1,0 +1,13 @@
+[Unit]
+Description=Project ARK — check the network every minute (failover after boot)
+
+[Timer]
+# First check well after ark-boot-guard has finished with the cold start
+# (GUARD_DELAY=20 + GUARD_HOME_TIMEOUT=40), then once a minute for ever.
+OnBootSec=3min
+OnUnitActiveSec=60s
+AccuracySec=5s
+Unit=ark-net-watch.service
+
+[Install]
+WantedBy=timers.target

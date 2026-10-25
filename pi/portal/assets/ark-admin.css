@@ -102,6 +102,25 @@ ul.health .state {
 ul.health .state.no { border-color: #4a1f1a; background: #170a08; color: #ff9f92; }
 ul.health .fix { display: block; margin-top: 6px; color: #ffe6ae; font-size: .92rem; }
 
+/* where the room went — measured folder by folder, storage row only ------- */
+ul.breakdown {
+  margin: 10px 0 6px;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 2px;
+  font-size: .9rem;
+}
+ul.breakdown li {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 5px 0;
+  border-bottom: 1px dotted var(--line);
+  color: var(--dim);
+}
+ul.breakdown li span { color: var(--ink); font-variant-numeric: tabular-nums; }
+
 /* print: nothing private should end up on paper by accident ------------- */
 @media print {
   details, form, .nav { display: none; }

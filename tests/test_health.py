@@ -274,5 +274,49 @@ def test_the_overview_links_to_the_owner_page(client):
     cookie = claim_box(client, password=BIG_PASSWORD)
     page = get(client, "/admin", headers=LAN, cookie=f"ark_admin={cookie}")
     assert page.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+#  where the room went — measured folder by folder, never estimated
+# ---------------------------------------------------------------------------
+def test_the_breakdown_measures_each_folder(ark):
+    import ark_health
+
+    (ark.root / "kiwix" / "wiki.zim").write_bytes(b"z" * 4096)
+    (ark.root / "vault" / "repair.html").write_bytes(b"v" * 1000)
+    (ark.root / "drop" / "files" / "notes.txt").write_bytes(b"n" * 500)
+    (ark.root / "calibre-library").mkdir()
+    (ark.root / "calibre-library" / "a book.epub").write_bytes(b"b" * 2048)
+
+    section = _section(ark_health.report(), "storage")
+    sizes = {p["label"]: p["bytes"] for p in section["facts"]["breakdown"]}
+    assert sizes["Offline Library"] == 4096
+    assert sizes["Manuals & Guides"] == 1000
+    assert sizes["File Box"] == 500
+    assert sizes["Books"] == 2048
+    assert section["facts"]["breakdown_bytes"] == sum(sizes.values())
+    assert section["facts"]["card_total_bytes"] >= section["facts"]["free_bytes"]
+
+
+def test_an_empty_folder_is_left_out_rather_than_reported_as_zero(ark):
+    import ark_health
+
+    section = _section(ark_health.report(), "storage")
+    labels = [p["label"] for p in section["facts"]["breakdown"]]
+    assert "Offline Library" not in labels          # nothing measured, nothing claimed
+    assert all(p["bytes"] > 0 for p in section["facts"]["breakdown"])
+
+
+def test_the_owner_page_says_where_the_room_went(client, ark):
+    (ark.root / "kiwix" / "wiki.zim").write_bytes(b"z" * 4096)
+    cookie = claim_box(client, password=BIG_PASSWORD)
+    page = get(client, "/admin/health", headers=LAN, cookie=f"ark_admin={cookie}")
+    assert page.status_code == 200
+    assert "Offline Library" in page.text
+    assert "4.0 kB" in page.text             # the measured size, not a guess
+    assert "Measured:" in page.text
+    for jargon in ("Kiwix", "ZIM", "systemd", "Calibre"):
+        assert jargon not in page.text, jargon
+
     assert "/admin/health" in page.text
     assert "What is working" in page.text

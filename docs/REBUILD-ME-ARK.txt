@@ -181,6 +181,8 @@ Services (all enabled AND started; this is the cold-boot contract):
   ark-calibre.service         :8083  calibre-web, served under /books
   ark-api.service             :8085  FastAPI: /api, /search, /board, /files
   ark-boot-guard.service      —      failsafe: no home net → raise hotspot
+  ark-net-watch.service/.timer —     every minute: link lost → hotspot, back
+                                     → home; never drops a connected reader
   ark-zim-downloader.service  —      background, resumable content queue
   ark-book-import.path/.service —    watch drop/files, shelve books in seconds
   ssh, NetworkManager, avahi-daemon, and dnsmasq ONLY via NM ipv4.method shared
@@ -231,8 +233,11 @@ popup resolves to the portal instead of a "no internet" dead end.
                   :8444 only answers through the tunnel, recovery is 0700 root.
   70  network     NM hotspot profile (ipv4.method shared, 10.42.0.1/24, ch 6),
                   dnsmasq-shared.d wildcard for ark.lan/ark.local, boot guard,
-                  ark-mode (auto|home|hotspot|test). Proof: profile exists,
-                  guard unit active, `ark-mode test` works when a human tries it.
+                  ark-mode (auto|home|hotspot|test), and the watchdog
+                  (ark-net-watch + .timer, phase 70 enables and starts it).
+                  Proof: profile exists, guard active, timer enabled AND active,
+                  `ark-net-watch --dry-run` prints what it sees, and
+                  `ark-mode test` works when a human tries it.
   90  verify      the gate (section 9) + JSON receipt back to the Mac.
 
   Rule: a phase that cannot print its own proof is not finished. Write the
@@ -512,6 +517,28 @@ popup resolves to the portal instead of a "no internet" dead end.
     the fix. /api/health is NOT this verdict — it only says the backend
     answered.
 
+28. THE NETWORK THAT ONLY EXISTED AT BOOT
+    Symptom: the box is up, the portal answers on the box itself, and nothing
+    can reach it. Wait ten minutes — nothing changes. Reboot and it works.
+    Cause: the network was decided once, on the way up (a boot guard), so a
+    router rebooted at eight in the evening left the box on a home network that
+    no longer existed. The only cure was a human with a keyboard.
+    Fix: ask the same question every minute. ark-net-watch (oneshot) under
+    ark-net-watch.timer (OnBootSec=3min, OnUnitActiveSec=60s) reads: saved mode,
+    any link up, hotspot up, home network in range, clients on the hotspot, and
+    the owner's pin; then a pure decide() function returns stay, to-hotspot or
+    to-home. Two rules are absolute: never take the hotspot away while a device
+    is connected (and an uncountable station list means "somebody may be
+    there"), and never overrule a choice a person made with ark-mode home /
+    ark-mode hotspot (a pin in /etc/ark/mode.pinned; the watchdog's own rescue
+    calls `ark-mode hotspot --auto`, which leaves no pin). Two lost checks
+    before acting, three quiet ones before returning, and a 30-minute back-off
+    after a return that failed — an access point that flaps is worse than one
+    that stayed up. Prove it without touching the radio:
+    `ark-net-watch --dry-run` prints what it sees and would do, and
+    `--decide M L H R C P LOST BACK BLOCKED` prints only the decision, so the
+    whole table is testable with no NetworkManager at all.
+
 ================================================================================
 8. CONTENT: A CATALOGUE, NOT A LIST OF URLS
 ================================================================================
@@ -554,7 +581,8 @@ any failure. Categories:
 
   services    is-enabled AND is-active (or waiting/activating for the guard),
               for nginx, ark-api, ark-zim-downloader, ark-boot-guard,
-              ark-book-import.path, ssh, NetworkManager, avahi-daemon, and
+              ark-net-watch.timer, ark-book-import.path, ssh, NetworkManager,
+              avahi-daemon, and
               ark-kiwix (soft when no bundles have arrived yet — an empty
               library is a normal state, not a bug)
   pages       HTTP codes for /, /help.html, /assets/ark.css, /search?q=water,
@@ -728,14 +756,19 @@ any failure. Categories:
     pi/bin/ark-import-calibre-library       whole-library adopt, probe, rollback
     pi/bin/ark-html2pdf                     HTML → printable PDF (weasyprint)
     pi/bin/ark-mode                         auto | home | hotspot | test N
+                                            (home/hotspot pin, auto unpins)
     pi/bin/ark-boot-guard                   failsafe hotspot after timeout
+    pi/bin/ark-net-watch                    the same question every minute:
+                                            --dry-run | --decide (pure table)
     pi/api/main.py                          FastAPI: /api/status, /api/ready,
                                             /api/health (liveness only),
                                             /search, /board, /files
     pi/api/ark_health.py                    the one place that decides readiness:
                                             content + a live loopback probe per
                                             part, a plain reason and a next step,
-                                            measured download bytes/rate/ETA
+                                            measured download bytes/rate/ETA,
+                                            and a measured storage breakdown
+                                            per folder (None, never a made-up 0)
     pi/api/ark_db.py                        one connection policy, numbered
                                             migrations, audit, install marker
     pi/api/ark_security.py                  scrypt hashing, sessions (digests
@@ -755,7 +788,7 @@ any failure. Categories:
     pi/bin/ark-tls-cert                     the box's own certificate (SANs,
                                             --show fingerprint, 30-day renew)
     pi/bin/ark-admin-recover                0700 root:root, runs Python as pi
-    tests/                                  97 pytest tests, throwaway DBs
+    tests/                                  128 pytest tests, throwaway DBs
     pi/systemd/*.service|*.path             the enable-and--now contract
     pi/portal/{index.html,help.html,assets} the dark, no-JS, 44 px UI
     pi/kiwix/catalog.tsv                    ~25 bundles in 3 tiers
@@ -765,7 +798,10 @@ any failure. Categories:
     bash scripts/03-provision.sh <ip>                    full build/repair
     bash scripts/03-provision.sh <ip> --only 90-verify   the gate
     sudo ark-mode test 180                               raise the hotspot 3 min
-    sudo ark-mode auto                                   back to normal
+    sudo ark-mode auto                                   back to normal, no pin
+    sudo ark-mode status                                 mode + who chose it
+    sudo ark-net-watch --dry-run                         what the watchdog sees
+    sudo tail -f /srv/ark/logs/net-watch.log             what the network did
     sudo cat /srv/ark/ark_status.json                    last receipt
     sudo tail -f /srv/ark/logs/zim-download.log          content progress
     echo full | sudo tee /etc/ark/zim-profile            change profile

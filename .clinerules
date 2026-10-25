@@ -69,6 +69,7 @@ Required enabled units (final state):
 | `ark-calibre.service` | 8083 | Calibre-Web behind `/books` |
 | `ark-api.service` | 8085 | FastAPI backend behind `/api` |
 | `ark-boot-guard.service` | — | failsafe hotspot failover |
+| `ark-net-watch.timer` (+ `ark-net-watch.service`) | — | every minute after boot: link lost → hotspot, home back + nobody on the hotspot → home; never overrules a pin, never drops a connected reader |
 | `ark-zim-downloader.service` | — | background ZIM queue (resumable) |
 | `ark-book-import.path` (+ `ark-book-import.service`) | — | fires the book importer whenever something lands in `drop/files` or `calibre-incoming`; `TimeoutStartSec=1800` |
 | `ssh.service`, `NetworkManager`, `avahi-daemon` | — | access |
@@ -119,17 +120,17 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 
 ## 8. PROJECT STATE — read this before touching anything
 
-**Last updated:** 2026-10-24 · **Read `docs/IMPLEMENTATION-LOG.md` next** (status table, decisions D1–D18, defects, test evidence, next step). This section is the digest; that file is the record.
+**Last updated:** 2026-10-24 · **Read `docs/IMPLEMENTATION-LOG.md` next** (status table, decisions D1–D22, defects, test evidence, next step). This section is the digest; that file is the record.
 
 | | |
 |---|---|
 | Released baseline | tag **`v1.0.5`** = `main` = `dd3336c` (the published release; the live Pi runs this) |
-| Current work | branch **`feature/admin-hardening`**, pushed to `origin` (never force-push, never move a tag). Find the live tip with `git log -1` — this digest pins stage 4, not every later docs commit |
-| Tip at this writing | stage-4 code is **`58d504b`**; everything after it is docs only (`git log --oneline 58d504b..HEAD` shows it). Confirm the live tip with `git log -1` rather than trusting this row — it goes stale the moment a code commit lands |
+| Current work | branch **`feature/admin-hardening`**, pushed to `origin` (never force-push, never move a tag). Find the live tip with `git log -1` — this digest pins stage 5, not every later docs commit |
 | Stage 3 | shipped in **`a1e5efa`**: `ark_storage.py`, schema v2, board moderation + Community page, sha256 import ledger, bounded search, docs, 84 tests |
 | Stage 4 | shipped in **`58d504b`**: `ark_health.py` (one place decides readiness, with reasons), `/api/ready` (200/503), `/admin/health` ("What is working"), `/api/health` demoted to liveness, measured download progress; tests in `tests/test_health.py` (13) — **97 tests total** |
-| Deployment | **code/config only — stages 2, 3 and 4 are NOT deployed**, no hardware or browser test has been done |
-| Release | stages 2–4 are **unreleased**; the next tag comes only after a deploy plus a hardware walk-through |
+| Stage 5 | `ark-net-watch` + `ark-net-watch.timer` (network-loss failover after boot), `ark-mode` pins (`home`/`hotspot` pin, `auto` unpins), phase `70-network` installs/enables/proves it, `90-verify` checks the timer + pin + last decision; measured storage breakdown on **What is working** and in `/api/status`; `tests/test_network.py` (28) + 3 in `tests/test_health.py` — **128 tests total** |
+| Deployment | **code/config only — stages 2, 3, 4 and 5 are NOT deployed**, no hardware or browser test has been done |
+| Release | stages 2–5 are **unreleased**; the next tag comes only after a deploy plus a hardware walk-through |
 | Owner decisions pending | rotate the GitHub password; rotate the Pi password; licence choice |
 
 ### 8.1 What exists, and what each piece owns
@@ -137,7 +138,10 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 | Piece | Owns |
 |---|---|
 | `pi/api/main.py` | public FastAPI app: `/api/status`, `/api/ready`, `/api/health` (liveness only), `/search`, `/board`, `/files`; mounts the admin router; bumps `session_epoch` at start |
-| `pi/api/ark_health.py` | **the only place that decides readiness**: path helpers read at call time, content facts, cached loopback probe, seven per-section builders each with `ready`/`reason`/`action`/`content`, measured `progress()`, `report()` |
+| `pi/api/ark_health.py` | **the only place that decides readiness**: path helpers read at call time, content facts, cached loopback probe, seven per-section builders each with `ready`/`reason`/`action`/`content`, measured `progress()`, measured `storage_breakdown()` + `card_facts()`, `report()` |
+| `pi/bin/ark-net-watch` | **the only place that decides the network after boot**: pure `decide()`, `--dry-run` observer, counters in `net-watch.state`, decisions in `net-watch.log`, acts by calling `ark-mode` |
+| `pi/systemd/ark-net-watch.service` / `.timer` | the clock for the above: `oneshot` every 60 s after a 3-minute boot delay; it acts through `ark-mode`, never by itself |
+| `pi/bin/ark-mode` | the one writer of `/etc/ark/mode.pinned` (`home`/`hotspot` pin, `auto` unpins, `hotspot --auto` leaves no pin) and the only thing the watchdog calls |
 | `pi/api/ark_db.py` | one connection policy (`read()` / `tx()`, always closed), numbered migrations in one transaction, audit helper, install marker, `SCHEMA_VERSION` |
 | `pi/api/ark_security.py` | scrypt hashing, length-only policy (12…1024, reject never truncate), opaque sessions (SHA-256 digest of a 256-bit token), CSRF, per-account + per-IP throttling |
 | `pi/api/ark_admin.py` | `/admin` routes: login, forced setup, password, accounts, reset/enable/disable, audit, logout, overview, **Community** (switches + board/file moderation), **`/admin/health`** ("What is working") |
@@ -150,8 +154,8 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 | `pi/nginx/ark-admin.conf` | `:8443` management origin (`/admin` + stylesheet only, unknown Host rejected) and `:8444` loopback-only setup listener; blanks `X-ARK-Setup-Channel` on `:8443` |
 | `pi/nginx/ark.conf` | public `:80`; `location ^~ /admin { return 404; }` |
 | `pi/steps/65-admin.sh` | installs the above and proves each door (404 / 403 / TLS-only, Community behind the sign-in) |
-| `pi/steps/90-verify.sh` | read-only health report: every page, every listener, the admin door, the File Box folders, free space |
-| `tests/` | 97 pytest tests, throwaway databases, no Pi needed |
+| `pi/steps/90-verify.sh` | read-only health report: every page, every listener, the admin door, the File Box folders, free space, the network timer + pin + last watchdog decision |
+| `tests/` | 128 pytest tests, throwaway databases, no Pi needed |
 
 ### 8.2 Ports and who may reach them
 
@@ -175,13 +179,16 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 | `/etc/ark/calibre-admin` | Calibre-Web credentials the importer uses over loopback (**not** in git) |
 | `/etc/ssl/ark/ark-admin.crt` / `.key` | certificate (0644) and key (**0600 root:root**) |
 | `/usr/local/sbin/ark-admin-recover` | the only way back in without a password; console only |
+| `/etc/ark/mode.pinned` | the owner's network answer (`home` / `hotspot`); **absent = auto**. Written only by `ark-mode` |
+| `/srv/ark/logs/net-watch.state` | the watchdog's counters: `lost_streak`, `home_streak`, `home_block_until` |
+| `/srv/ark/logs/net-watch.log` | one line per decision that acted; a quiet check writes nothing |
 
 ### 8.4 Commands that matter
 
 ```bash
 # tests (Mac, throwaway DBs, never the live library)
 python3 -m venv .venv && .venv/bin/pip install -r tests/requirements.txt
-.venv/bin/python -m pytest -o addopts='--strict-markers' -q    # prints "97 passed"
+.venv/bin/python -m pytest -o addopts='--strict-markers' -q    # prints "128 passed"
 # `pytest.ini` already passes -q, so a second -q hides the summary line
 
 # the honest answer, on the box or from the Mac
@@ -189,13 +196,20 @@ curl -s -o /dev/null -w '%{http_code}\n' http://ark.lan/api/ready   # 200 ok, 50
 curl -s http://ark.lan/api/ready | python3 -m json.tool             # every part + reason
 # /api/health is liveness only and says so; never quote it as a verdict
 
+# the network, without touching the radio
+sudo ark-mode status                         # mode + address + who chose it
+sudo ark-net-watch --decide auto 0 0 1 0 0 2 0 0    # pure table: no link → to-hotspot
+sudo ark-net-watch --dry-run                 # what it sees, what it would do
+tail -n 20 /srv/ark/logs/net-watch.log       # what it actually did
+
 # push (never force, never move a tag)
 GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o BatchMode=yes -o ConnectTimeout=20' \
   git push origin feature/admin-hardening
 
 # deploy / verify on the Pi (only with the owner's explicit go-ahead)
 # 30-calibre ships the new importer binary and enables ark-book-import.path
-sudo bash /srv/ark/src/install-ark.sh --only 20-storage,30-calibre,60-portal,65-admin
+# 70-network installs/enables ark-net-watch.service + .timer
+sudo bash /srv/ark/src/install-ark.sh --only 20-storage,30-calibre,60-portal,65-admin,70-network
 sudo bash /srv/ark/src/install-ark.sh --only 90-verify
 cat /srv/ark/ark_status.json
 
@@ -207,7 +221,7 @@ sudo ark-admin-recover --list                 # locked out (console only)
 
 Bootstrap account: `admin` / `ChangeMe-ARK!`, `must_change=1`, claimable **only** through the loopback listener while unclaimed. It is in public code on purpose and useless without the tunnel.
 
-### 8.5 Defects: what stages 3 and 4 fixed, and what is still open
+### 8.5 Defects: what stages 3, 4 and 5 fixed, and what is still open
 
 Fixed on `feature/admin-hardening` (each one now has a test that fails without the fix):
 
@@ -234,6 +248,16 @@ Fixed on `feature/admin-hardening` (each one now has a test that fails without t
 * Progress that was one percentage and nothing else — `ark-zim-download` now measures its own
   rate (byte delta over elapsed time) and `ark_health.progress()` reports `overall_percent`,
   `remaining_bytes`, `rate_bps`, `eta_seconds` and `stalled`. Unmeasured ⇒ `None`, never 0.
+* The network was decided once, at boot — a home Wi-Fi that disappeared from under a running box
+  left it unreachable until a human rebooted it. `pi/bin/ark-net-watch` now asks the same question
+  every minute under `ark-net-watch.timer`: two lost checks ⇒ `ark-mode hotspot --auto`; home back
+  in range, three quiet checks and **nobody on the hotspot** ⇒ home again; 30-minute back-off after
+  a return that failed. It never overrules a pin (`/etc/ark/mode.pinned`) and never drops a
+  connected reader — an uncountable station list (`-1`) counts as "somebody may be there".
+* Free space was one number with no idea where it went — `ark_health.storage_breakdown()` measures
+  five folders (`Offline Library`, `Books`, `Manuals & Guides`, `File Box`, `Settings and records`)
+  plus `card_facts()` for the card total and used; **What is working** renders it with a
+  plain-English summary and lists only non-empty folders. Unmeasurable ⇒ `None`, never 0.
 
 **Still open, and they are deliberate limits, not oversights:**
 
@@ -241,7 +265,11 @@ Fixed on `feature/admin-hardening` (each one now has a test that fails without t
   off, it never identifies who wrote. There are no per-person quotas, no quarantine and no trash.
 * nginx now agrees with the app on 2 GiB, but nothing tests a real 2 GiB upload over the wire.
 * Readiness looks; it cannot change. There are no pause/resume *buttons* (the `ark-zim-pause`
-  file still pauses the queue), no storage breakdown, and no reason recorded for the last import.
+  file still pauses the queue) and no reason recorded for the last import. The storage breakdown
+  measures the folders it knows about; it cannot change them either.
+* The watchdog acts on what NetworkManager and `iw` report. If `iw` is missing or the radio is
+  busy broadcasting, `ap_clients()` answers `-1` and the box deliberately stays on the hotspot
+  rather than risk cutting off a reader.
 
 Which test proves which fix (useful when a future change breaks one):
 
@@ -253,9 +281,10 @@ Which test proves which fix (useful when a future change breaks one):
 | the deadline holds when one collection is slow | `tests/test_search.py` (6) |
 | nginx `2064m` still equals the app's 2 GiB | `tests/test_config.py` (3) |
 | schema version, migration/upgrade path, the Pi password vector | `tests/test_db.py` (7) |
-| empty vs broken vs ready per section, a full card, measured progress, `/api/ready` 503, liveness-only `/api/health`, the owner page | `tests/test_health.py` (13) |
+| empty vs broken vs ready per section, a full card, measured progress, `/api/ready` 503, liveness-only `/api/health`, the owner page, the storage breakdown | `tests/test_health.py` (16) |
+| the 14-case decision table, a fake `nmcli`/`iw` observer, pins, back-off, the timer/unit files, wiring to `ark-mode` | `tests/test_network.py` (28) |
 
-### 8.6 Not built yet (leftovers, then stages 5–7)
+### 8.6 Not built yet (leftovers, then stages 6–7)
 
 Stage 3 delivered: upload safety (unique stored names, one write path, cap + reserve, empty-file
 refusal, temp reconcile), import idempotency (sha256 ledger, `done/` exclusion, preserved File Box
@@ -265,10 +294,16 @@ Stage 4 delivered: one readiness module (`pi/api/ark_health.py`) that names the 
 `/admin/health`, `/api/health` reduced to liveness, and measured download progress (rate, bytes left,
 ETA, stalled).
 
-Still absent, **do not describe any of it as done**: network-loss failover after boot; backup/restore
-kit + offline recovery sheet; emergency content review; essentials pack, QR cards, accessibility and
-the household page; per-person quotas; quarantine/approval queue; trash; pause/resume buttons on the
-owner page; a storage breakdown. **Never invent a control that does not exist.**
+Stage 5 delivered: `pi/bin/ark-net-watch` + `ark-net-watch.service`/`.timer` (the network is asked
+about every minute after boot, not only at boot), `ark-mode` pins (`home`/`hotspot` pin, `auto`
+unpins, `hotspot --auto` leaves none), phase `70-network` installing and proving all of it,
+`90-verify` reporting the timer, the pin and the last decision, and a measured storage breakdown
+with card facts on **What is working** and in `/api/status`.
+
+Still absent, **do not describe any of it as done**: backup/restore kit + offline recovery sheet;
+emergency content review; essentials pack, QR cards, accessibility and the household page;
+per-person quotas; quarantine/approval queue; trash; pause/resume buttons on the owner page.
+**Never invent a control that does not exist.**
 
 Two page-size facts, so nobody documents them wrongly again:
 
@@ -303,6 +338,11 @@ Two page-size facts, so nobody documents them wrongly again:
 * **A readiness test needs a real listener.** `tests/test_health.py` starts `http.server` on a loopback port so "answering" and "refused" are two states; mocking the socket layer instead would test the mock.
 * **`KIWIX_INTERNAL` is a unit setting; `CALIBRE_INTERNAL` is only a code default.** `pi/systemd/ark-api.service` sets the library address explicitly but not the shelf one, so the bookshelf probe reads the built-in `127.0.0.1:8083`. If calibre ever moves port, `ark_health` keeps probing the old one and the owner page says "not answering" while the shelf is fine. Set both in the unit before changing a port; the probe address should never be an implicit default.
 * **A number that may be unknown must render as "not measured yet", never as `0`.** `progress()` returns `None` for rate, ETA and bytes-left when nobody measured them, and the front-page strip therefore omits those figures rather than printing zero (`index.html`: `if (dl.eta_seconds)`). `0 %` and `0 B/s` are claims — write them only when they are true. The owner's *What is working* page goes further and prints only the reason, no percentages at all; do not add a figure to it that the box cannot measure.
+* **The network decision is a pure shell function on purpose.** `decide()` in `pi/bin/ark-net-watch` takes nine numbers and prints `stay`/`to-hotspot`/`to-home`; `--decide` exposes it with no radio, no root and no NetworkManager. `tests/test_network.py` drives that table directly (28 collected tests, the 14-case table is parametrized) and separately stubs `nmcli`/`iw` against the observer. Move the table into a "cleaner" place and the test stops testing the shipped script.
+* **A station count it could not read is `-1`, not `0`.** `iw` may be absent or the radio busy broadcasting; `ap_clients()` then answers `-1` and `decide()` treats anything non-zero — including `-1` — as "somebody may be there". A `0` there would drop a reader mid-page. Never "fix" `-1` into a zero.
+* **A pin suppresses only the return home, never the rescue.** `ark-mode home` / `ark-mode hotspot` write `/etc/ark/mode.pinned`; `ark-mode auto` removes it; the watchdog's own rescue calls `ark-mode hotspot --auto`, which deliberately leaves none — that is how "the box did this" stays distinguishable from "the owner said so". A pin must never be able to leave the box dark.
+* **The watchdog acts only through `ark-mode`.** It reads NetworkManager and `iw` and writes a log line and its state file, nothing else; `ARK_MODE_BIN` is the seam the tests stub. Bringing NetworkManager up directly from the watcher would create a second writer to the network, and the two would disagree within a week.
+* **`net-watch.log` is quiet by design.** Only decisions that *did* something are logged; a short log is a healthy day, and "the log is nearly empty" is not evidence the timer is dead — `systemctl status ark-net-watch.timer` and `ark-net-watch --dry-run` are.
 
 ### 8.8 Rules for the next stage
 
@@ -315,22 +355,24 @@ Two page-size facts, so nobody documents them wrongly again:
 7. The two switches are settings, not code paths: `public_board_post` and `public_uploads`, absent or `1` means **open**. A fresh database must therefore start with the box usable, and a test must prove the closed state still serves everything already written.
 8. A probe is cheap, cached and cannot raise. Anything that decides readiness goes in `ark_health` with a timeout, and no reader's page may wait on a service that is down — stage 4 exists because readiness was cheap enough to be wrong, not because it was too slow to check.
 9. When a rendered value disappears, say so in the same commit: `/api/health` no longer carries `ok`, so anything outside this repo that polls it must be told to read `/api/ready` (200/503) instead.
+10. The network is decided in exactly one place after boot: `pi/bin/ark-net-watch`. It may only act through `ark-mode`, it may not overrule a pin, and it may never take the hotspot away while a device is connected (an uncountable station list counts as connected). Prove any change to it with `--decide`, which needs no radio — never by experiment on the live box.
+11. New measurements follow the `None` rule: a folder size, a rate or an ETA the box could not measure renders as "not measured yet", never as `0` (§8.7).
 
 ### 8.9 OUTSTANDING — what is not done yet, in the order it matters
 
 **Blocking a release (nothing is wrong with the code; it is unproven on hardware):**
 
-1. **Deploy stages 2 + 3 + 4** — `--only 20-storage,30-calibre,60-portal,65-admin` (30-calibre is where the new importer binary and `ark-book-import.path` live; 60-portal carries `ark_health.py`, `/api/ready` and the new front-page strip), then `--only 90-verify`, then read `/srv/ark/ark_status.json` and `curl -s http://ark.lan/api/ready`. **Copy the database aside first:** `60-portal.sh` restarts `ark-api`, which runs migration v2 in place (`ALTER TABLE notes/files`), and there is no downgrade path, only that copy:
+1. **Deploy stages 2 + 3 + 4 + 5** — `--only 20-storage,30-calibre,60-portal,65-admin,70-network` (30-calibre is where the new importer binary and `ark-book-import.path` live; 60-portal carries `ark_health.py`, `/api/ready`, the storage breakdown and the new front-page strip; 70-network installs and enables `ark-net-watch.service` + `.timer`), then `--only 90-verify`, then read `/srv/ark/ark_status.json` and `curl -s http://ark.lan/api/ready`. **Copy the database aside first:** `60-portal.sh` restarts `ark-api`, which runs migration v2 in place (`ALTER TABLE notes/files`), and there is no downgrade path, only that copy:
 
    ```bash
    sudo sqlite3 /srv/ark/api/data/ark.db ".backup '/root/ark-db-before-v2.db'"
    ```
 
    Use `.backup`, not `cp` — the live database is WAL (`PRAGMA journal_mode=WAL`), so a plain copy can miss committed data.
-2. **Walk through it on a phone** — claim through the tunnel, open **What is working** and read one reason aloud (it must be plain English, not a service name), stop `ark-kiwix` on purpose and watch that row turn to *Not ready* with a fix, post a note, upload two files with the same name, drop an `.epub` in the File Box and watch it reach the shelf without a command, try a file over 2 GiB, hide/restore, password-confirmed delete, switch both Community switches off and confirm reading and downloads still work, then switch them back on. None of this has been done by a human yet.
+2. **Walk through it on a phone** — claim through the tunnel, open **What is working** and read one reason aloud (it must be plain English, not a service name), stop `ark-kiwix` on purpose and watch that row turn to *Not ready* with a fix, post a note, upload two files with the same name, drop an `.epub` in the File Box and watch it reach the shelf without a command, try a file over 2 GiB, hide/restore, password-confirmed delete, switch both Community switches off and confirm reading and downloads still work, then switch them back on, read the storage breakdown aloud and check it matches `du -sh`, then **pull the home Wi-Fi out from under it** and watch the hotspot come up by itself within two minutes (and go back once the router returns and nobody is connected). None of this has been done by a human yet.
 3. **A real 2 GiB upload over the wire** — nginx and the app now agree on the number, but no test or human has pushed a file that size through the proxy.
 
-**Never executed, not even once — stage 4's own blind spots:**
+**Never executed, not even once — stage 4's and stage 5's own blind spots:**
 
 * `60-portal.sh`'s `/api/ready` branch (the accepted 200/503 pair and the inline Python that pulls the blocking names out of the body) has only been `bash -n`'d, never run on a Pi.
 * `90-verify.sh`'s readiness block — its `python3 -c` parser and the tab-separated `while read` loop — has never run on a Pi either.
@@ -338,13 +380,17 @@ Two page-size facts, so nobody documents them wrongly again:
 * The amber/red dot on the front page and the "What to do:" line on **What is working** have never been seen in a browser, on any device.
 * `ark-zim-download`'s measured rate has never come from a real download — every figure the tests assert was a hand-written status file.
 * `/api/health` has lost its `ok` field on purpose. If anything outside this repo polls it (a phone monitor, a script on the Mac), repoint it at `/api/ready` — the only endpoint whose status code is a verdict.
+* `ark-net-watch` has only ever met a fake `nmcli` and a fake `iw` (`tests/test_network.py`). It has never seen a real NetworkManager scan, a real AP-mode station dump, or `iw` refusing while broadcasting — the three cases the `-1` rule exists for.
+* The watchdog's real transitions — link lost → hotspot; home back with nobody on the hotspot → home; a return that failed → 30-minute back-off — have never happened on hardware once. `--dry-run` has been run on the live box; acting has not.
+* `70-network.sh`'s timer branch (install, `enable --now`, `is-active` proof) and `90-verify.sh`'s timer/pin/last-decision block have only been `bash -n`'d — same as the stage-4 script branches.
+* The storage breakdown has only been seen with the fixture folders in `tests/test_health.py` and once through `/api/status` on the box; nobody has compared a row against `du -sh` on a full card.
 
-**Before handing the box, or its backups, to anyone:** the set in `~/Downloads/Project-Ark` was built from **tag `v1.0.5`**, so it contains none of stages 2–4. Tag first, then regenerate it by the section 5 procedure in `docs/REBUILD-FROM-BACKUP.txt` — and keep the folder's "27 traps" line in step with `docs/REBUILD-ME-ARK.txt`.
+**Before handing the box, or its backups, to anyone:** the set in `~/Downloads/Project-Ark` was built from **tag `v1.0.5`**, so it contains none of stages 2–5. Tag first, then regenerate it by the section 5 procedure in `docs/REBUILD-FROM-BACKUP.txt` — and keep the folder's "28 traps" line in step with `docs/REBUILD-ME-ARK.txt`.
 
 **Owner decisions, still open:** rotate the GitHub password, rotate the Pi password, choose a licence.
 
-**Known gaps left on purpose (say so, never fake them):** per-person quotas; a quarantine/approval step; a trash instead of for-ever delete; pagination on the Community page; pause/resume buttons and a storage breakdown on the owner page. The storage row judges free space only — it probes nothing — and nothing has measured `/api/ready` under load.
+**Known gaps left on purpose (say so, never fake them):** per-person quotas; a quarantine/approval step; a trash instead of for-ever delete; pagination on the Community page; pause/resume buttons on the owner page; nothing measures `/api/ready` under load, and the watchdog has no manual "switch now" button beyond `ark-mode`. The storage row judges free space, and the breakdown measures the folders it knows — neither probes a service, and neither can delete anything.
 
-**Then the brief's remaining stages** — 5 network-loss failover after boot, 6 backup/restore kit + offline recovery sheet, 7 emergency content review, essentials pack, QR cards, accessibility, household page. Tag a release only after 1–2 above pass; never move `v1.0.5`.
+**Then the brief's remaining stages** — 6 backup/restore kit + offline recovery sheet, 7 emergency content review, essentials pack, QR cards, accessibility, household page. Tag a release only after 1–2 above pass; never move `v1.0.5`.
 
 

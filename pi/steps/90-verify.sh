@@ -25,7 +25,8 @@ say_soft() { printf '   \033[1;33m·\033[0m %-40s %s\n' "$1" "$2"; }
 # ark-kiwix only runs once at least one collection has arrived, so it is checked
 # softly: an empty library is a normal state on a metered connection, not a bug.
 for u in nginx.service ark-api.service ark-zim-downloader.service ark-boot-guard.service \
-         ark-book-import.path ssh.service NetworkManager.service avahi-daemon.service; do
+         ark-net-watch.timer ark-book-import.path ssh.service NetworkManager.service \
+         avahi-daemon.service; do
   en="$(systemctl is-enabled "$u" 2>/dev/null || true)"
   ac="$(systemctl is-active  "$u" 2>/dev/null || true)"
   if [[ "$en" == "enabled" && ( "$ac" == "active" || "$ac" == "waiting" ) ]]; then
@@ -168,6 +169,18 @@ if [[ "$mode" == "hotspot" ]]; then
   else
     say_bad "hotspot address" "not on ${WIFI_DEV:-wlan0}"
   fi
+fi
+held="$(cat "$ARK_ETC/mode.pinned" 2>/dev/null || true)"
+if [[ -n "$held" ]]; then
+  printf '   %s network choice: held on "%s" by the owner (ark-mode auto undoes it)\n' "→" "$held"
+fi
+# The watchdog's last word, so "it stopped broadcasting" arrives with a reason.
+if [[ -s "$ARK_ROOT/logs/net-watch.log" ]]; then
+  last_word="$(tail -n 1 "$ARK_ROOT/logs/net-watch.log")"
+  last_word="${last_word#*  }"
+  say_soft "network watchdog" "last: ${last_word:0:80}"
+else
+  say_soft "network watchdog" "no decision logged yet (first check 3 min after boot)"
 fi
 
 # ---- how much room is left ---------------------------------------------------

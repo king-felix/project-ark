@@ -4,7 +4,9 @@
 #
 #  Creates the "The-Ark-Offline" access point, makes every hostname resolve to
 #  the portal while it is broadcasting, and installs the boot guard that falls
-#  back to it whenever no home network is around.
+#  back to it whenever no home network is around.  ark-net-watch then keeps
+#  asking the same question every minute, so a home network that disappears
+#  after boot is survived without a reboot.
 #
 #  NOTHING here switches the radio: you are most likely connected over that same
 #  Wi-Fi right now.  Use "sudo ark-mode test 180" to try it deliberately.
@@ -76,7 +78,7 @@ address=/#/$HOTSPOT_ADDRESS
 EOF
 
 # ---- scripts and the boot guard --------------------------------------------
-for b in ark-mode ark-boot-guard; do
+for b in ark-mode ark-boot-guard ark-net-watch; do
   ark_copy "$ARK_SRC/bin/$b" "/usr/local/bin/$b" 755 root:root
 done
 ark_install_unit ark-boot-guard.service
@@ -97,6 +99,24 @@ else
   ark_warn "boot guard did not start — journalctl -u ark-boot-guard"
 fi
 
+# ---- the network after boot -------------------------------------------------
+# ark-boot-guard decides once, on the way up.  This asks the same question every
+# minute for the rest of the day: if the home Wi-Fi goes away, the hotspot comes
+# up on its own; if it comes back while nobody is using the hotspot, the box
+# returns by itself.  Installing it changes nothing now — it only looks.
+ark_install_unit ark-net-watch.service
+ark_install_unit ark-net-watch.timer
+if systemctl enable --now ark-net-watch.timer >/dev/null 2>&1; then
+  ark_ok "network watchdog enabled + started (checks every minute)"
+else
+  ark_warn "could not enable ark-net-watch.timer — the box fails over at boot only"
+fi
+if watch_view="$(/usr/local/bin/ark-net-watch --dry-run 2>&1)"; then
+  ark_info "watchdog sees now: $watch_view"
+else
+  ark_warn "the watchdog could not read the network: $watch_view"
+fi
+
 # ---- prove the pieces are in place (without changing the radio) -------------
 mode_shown="$(nmcli -g 802-11-wireless.mode connection show "$HOTSPOT_CONNECTION" 2>/dev/null || true)"
 method_shown="$(nmcli -g ipv4.method connection show "$HOTSPOT_CONNECTION" 2>/dev/null || true)"
@@ -106,8 +126,13 @@ printf '   profile %-12s mode=%s  ipv4=%s\n' "$HOTSPOT_CONNECTION" "${mode_shown
 [[ -f /etc/NetworkManager/dnsmasq-shared.d/ark-wildcard.conf ]] || ark_warn "wildcard DNS file is missing"
 [[ "$(systemctl is-enabled ark-boot-guard.service 2>/dev/null || true)" == "enabled" ]] \
   || ark_warn "boot guard is not enabled"
+[[ "$(systemctl is-enabled ark-net-watch.timer 2>/dev/null || true)" == "enabled" ]] \
+  || ark_warn "network watchdog timer is not enabled"
+[[ "$(systemctl is-active ark-net-watch.timer 2>/dev/null || true)" == "active" ]] \
+  || ark_warn "network watchdog timer is not running"
 
 ark_info "try it on purpose:  sudo ark-mode test 180   (SSH drops while it runs)"
 ark_info "hotspot on/off:     sudo ark-mode hotspot | sudo ark-mode auto"
 ark_info "what is happening:  sudo ark-mode status"
-ark_ok "phase 7 complete — a cold boot now brings up either the home network or the hotspot"
+ark_info "network decisions:  tail -n 20 $ARK_ROOT/logs/net-watch.log"
+ark_ok "phase 7 complete — the box now reaches the home network or broadcasts, at boot and afterwards"

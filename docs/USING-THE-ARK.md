@@ -46,6 +46,18 @@ The Ark broadcasts a Wi-Fi network called **`The-Ark-Offline`**. It is open — 
 
 Everything works the same on the hotspot; only the address changes (`10.42.0.1` also works).
 
+### If the Wi-Fi goes away while the box is running
+
+It does not need a reboot, and you do not need to do anything. About two minutes after the
+home Wi-Fi disappears, the Ark turns its radio into the `The-Ark-Offline` hotspot by itself, and
+join as above. When the home Wi-Fi comes back **and nobody is connected to the hotspot**, the box
+returns to it on its own — it will not take the hotspot away from a phone that is reading.
+Raised by itself, it goes back by itself; if you asked for a network (`sudo ark-mode home` or
+`sudo ark-mode hotspot`), that choice is remembered until `sudo ark-mode auto`.
+
+`/srv/ark/logs/net-watch.log` is the record: one line per decision that did something, with the
+time. A quiet check writes nothing, so a short log means a quiet day.
+
 ### Make it feel like an app (recommended for phones)
 Open `http://ark.lan` in the phone browser → menu → **Add to Home Screen**. You now have an
 icon that opens the Ark in one tap, and it still works with no internet.
@@ -389,6 +401,9 @@ Do this after any power cut, and before you rely on the box for a trip.
    body names the part and the reason; that is the difference between a box that is *up* and a
    box that *works*.
 6. `http://ark.lan/api/status` — space left, and nothing stuck on the same download twice running.
+7. `sudo ark-mode status` — the mode, and **chosen by**: `owner` means a person pinned it,
+   `auto` means the box decided. `tail -n 5 /srv/ark/logs/net-watch.log` says what the box did
+   about the network — an empty or short log is normal, because a quiet check writes nothing.
 
 
 For whoever looks after the box, one more: `https://ark.lan:8443/admin` shows a
@@ -417,10 +432,13 @@ Re-provisioning is idempotent: re-running any phase repairs it rather than dupli
 | Front page dot is red, or `/api/ready` answers 503 | a part exists but cannot be served (the program behind it is not answering) | open `https://ark.lan:8443/admin/health` and follow **What to do:** |
 | Book dropped in, never appears | wrong extension, empty file, or over 2 GB | `sudo ark-import-books --list`; `journalctl -u ark-book-import -n 30` |
 | Collection opens but searches find nothing | bundle present but unreadable (interrupted download) | auto-detected and re-fetched; `tail -f /srv/ark/logs/zim-download.log` |
-| Nothing downloading any more | no network the box can use | `sudo ark-mode status`; at home, `sudo ark-mode home` |
+| Nothing downloading any more | no network the box can use — the watchdog would have raised the hotspot already | `sudo ark-mode status`; where the home Wi-Fi is back, `sudo ark-mode auto` |
 | Downloads crawl or fail repeatedly | flaky Wi-Fi, or the mirror is throttling | they retry with backoff; nothing is lost |
+| The home Wi-Fi went off while the box was running | that is the case the box now handles itself | nothing — within about two minutes it broadcasts `The-Ark-Offline` and keeps reading working. `tail -n 10 /srv/ark/logs/net-watch.log` shows the decision |
+| The hotspot is up but the home Wi-Fi is fine | it comes back on its own once nobody is using the hotspot | or `sudo ark-mode auto` to go back at once |
+| The hotspot never closes even though nobody is connected | the box could not read the station list, so it assumes somebody is reading | `sudo ark-mode status`, then `sudo ark-mode auto`; check `journalctl -u ark-net-watch` |
 | Cannot reach it from a phone at all | hotspot not up | `sudo ark-mode hotspot`, then join `The-Ark-Offline` |
-| Out of space | something large added by hand | `sudo du -sh /srv/ark/*`; the downloader keeps 12 GiB free on its own |
+| Out of space | something large added by hand | **What is working** shows which folder holds what; `sudo du -sh /srv/ark/*` for the detail; the downloader keeps 12 GiB free on its own |
 | Forgot the address | — | `ark.lan`, `ark.local`, `10.42.0.1` — all the same box |
 
 ---
@@ -430,9 +448,10 @@ Re-provisioning is idempotent: re-running any phase repairs it rather than dupli
 ```bash
 ssh pi@ark.local                       # password: in staging/pi-password.txt (or your key)
 
-sudo ark-mode status                   # which network is it on right now
-sudo ark-mode home                     # use the home Wi-Fi
-sudo ark-mode hotspot                  # broadcast The-Ark-Offline
+sudo ark-mode status                   # which network is it on right now, and who chose it
+sudo ark-mode home                     # use the home Wi-Fi, and keep it that way (pin)
+sudo ark-mode hotspot                  # broadcast The-Ark-Offline, and keep it (pin)
+sudo ark-mode auto                     # forget the pin; try home, else broadcast
 sudo ark-mode test 180                 # hotspot for 3 min, then back to auto (SSH drops)
 
 sudo ark-import-books --status         # how many books are on the shelf
@@ -443,6 +462,7 @@ sudo ark-tls-cert --show               # the owner's-door certificate fingerprin
 sudo ark-admin-recover --list          # locked out? console only, never the web
 
 tail -f /srv/ark/logs/zim-download.log # watch downloads
+tail -f /srv/ark/logs/net-watch.log    # watch the box's own network decisions
 systemctl list-units 'ark-*' --all     # every Ark service and its state
 sudo reboot
 ```
@@ -487,6 +507,14 @@ sudo reboot
   working hotspot and portal. The expected unit list is in the repo README.
 - The book importer is a `systemd` path unit (`ark-book-import.path`), not a timer — it reacts to
   a file landing instead of polling on a schedule.
+- The network watchdog is `ark-net-watch.service` (oneshot) driven by `ark-net-watch.timer`
+  (first check 3 minutes after boot, then every minute). It keeps its counters in
+  `/srv/ark/logs/net-watch.state` (`lost_streak`, `home_streak`, `home_block_until`) and its
+  decisions in `/srv/ark/logs/net-watch.log`. The decision itself is a pure shell function, so
+  `ark-net-watch --decide MODE LINK HOTSPOT IN_RANGE CLIENTS PINNED LOST BACK BLOCKED` prints the
+  answer without touching the radio, and `--dry-run` prints what it sees and would do. A pin lives
+  in `/etc/ark/mode.pinned`; `ark-mode` writes it, `ark-mode auto` removes it, and
+  `ark-mode hotspot --auto` is the rescue path that deliberately leaves none.
 - Non-negotiable project rules: SD-card guard before any flash, no secrets in git,
   `set -Eeuo pipefail`, LF line endings, and no jargon on any page a household will read.
 - **Building another one?** Start from `docs/REBUILD-ME-ARK.txt` — the full blueprint,

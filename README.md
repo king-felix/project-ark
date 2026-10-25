@@ -36,7 +36,7 @@ Keep a copy on a phone or taped inside the lid.
 
 **Building another one, or handing this to someone else?** Start with
 [`docs/REBUILD-ME-ARK.txt`](docs/REBUILD-ME-ARK.txt): the complete blueprint,
-the build order, the 27 traps that cost the most time, and the verification gate.
+the build order, the 28 traps that cost the most time, and the verification gate.
 It is written so an assistant with no memory of this project can rebuild the box
 from an empty card.
 
@@ -78,15 +78,37 @@ Phases: `10-base` `20-storage` `30-calibre` `40-vault` `50-kiwix` `60-portal`
 
 ## How the Pi finds a network
 
-`ark-mode` decides, and `ark-boot-guard` runs it at every boot:
+`ark-mode` decides, `ark-boot-guard` runs it at every boot, and `ark-net-watch`
+asks the same question every minute afterwards — so a home network that goes away
+at eight in the evening is survived without a reboot:
 
 ```bash
-sudo ark-mode status       # mode, address, portal answer, internet
-sudo ark-mode auto         # try the home network, else broadcast the hotspot
-sudo ark-mode hotspot      # broadcast "The-Ark-Offline" (10.42.0.1)
-sudo ark-mode home         # back to the home network
+sudo ark-mode status       # mode, address, portal answer, internet, and who chose
+sudo ark-mode auto         # try the home network, else broadcast the hotspot (no pin)
+sudo ark-mode hotspot      # broadcast "The-Ark-Offline" (10.42.0.1), and keep it
+sudo ark-mode home         # back to the home network, and keep it
 sudo ark-mode test 180     # try the hotspot for 3 minutes, then go back
 ```
+
+`home` and `hotspot` are a person's answer, so they are pinned in
+`/etc/ark/mode.pinned` and the watchdog will not undo them; `auto` forgets the
+pin. The watchdog's own rescue calls `ark-mode hotspot --auto`, which leaves no
+pin — that is how "the box did this" stays distinguishable from "the owner said
+so".
+
+What the watchdog will and will not do:
+
+* two lost checks in a row (about two minutes) before it raises the hotspot;
+* never takes the hotspot away while a device is connected to it — and a station
+  count it could not read is treated as *somebody may be there*;
+* returns home only when the network is in range **and** nobody is on the hotspot,
+  after three quiet checks, and waits 30 minutes before trying again after a
+  failed return (an access point that flaps is worse than one that stayed up).
+
+Its record is `/srv/ark/logs/net-watch.log` (one line per decision that acted; a
+quiet check writes nothing) and its counters are in `net-watch.state` beside it.
+`/usr/local/bin/ark-net-watch --dry-run` prints what it sees and would do, and
+changes nothing.
 
 The hotspot is open on purpose: a stranger with a dead phone must be able to
 read the library. While it is broadcasting, every hostname resolves to the
@@ -252,7 +274,7 @@ The receipt is machine-readable so the Mac never has to guess.
 
 Most of this repo was written by **Cline**, an AI coding agent, working on a
 real Pi 4B over several days — one page at a time, with every claim checked
-against the running box before it went in. The 27 traps in
+against the running box before it went in. The 28 traps in
 [`docs/REBUILD-ME-ARK.txt`](docs/REBUILD-ME-ARK.txt) are all scars from things
 that actually broke here: a mirror that froze at 66,881 bytes, a downloader that
 wrote full-size files full of holes, a Calibre database that answered 500 for

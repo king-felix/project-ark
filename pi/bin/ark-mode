@@ -8,6 +8,11 @@
 #    ark-mode status    what is happening right now
 #    ark-mode test [s]  switch to the hotspot, wait s seconds (default 180),
 #                       then go back to "auto" — SSH will drop while it runs
+#
+#  "home" and "hotspot" are answers the owner gave, so they are remembered in
+#  /etc/ark/mode.pinned and the network watchdog will not take them back.
+#  "auto" forgets the answer.  Ark's own failover uses "hotspot --auto", which
+#  leaves no pin — the box is rescuing itself, not being told what to do.
 # =============================================================================
 set -Eeuo pipefail
 
@@ -20,6 +25,7 @@ HOTSPOT_ADDRESS="${HOTSPOT_ADDRESS:-10.42.0.1}"
 HOME_WIFI_CONNECTION="${HOME_WIFI_CONNECTION:-home-wifi}"
 HOME_WIFI_TIMEOUT="${ARK_HOME_WIFI_TIMEOUT:-${HOME_WIFI_TIMEOUT:-75}}"
 MODE_FILE="${MODE_FILE:-/etc/ark/mode}"
+PIN_FILE="${PIN_FILE:-/etc/ark/mode.pinned}"
 WIFI_DEV="${WIFI_DEV:-wlan0}"
 
 say()  { printf '%s\n' "$*"; }
@@ -28,6 +34,11 @@ die()  { printf 'ark-mode: %s\n' "$*" >&2; exit 1; }
 need_root() { [[ "${EUID:-$(id -u)}" -eq 0 ]] || die "run this as root (sudo ark-mode $*)"; }
 
 set_mode() { printf '%s\n' "$1" > "$MODE_FILE" 2>/dev/null || true; }
+
+pin()   { printf '%s\n' "$1" > "$PIN_FILE" 2>/dev/null || true; }
+unpin() { rm -f "$PIN_FILE" 2>/dev/null || true; }
+pinned() { cat "$PIN_FILE" 2>/dev/null || true; }
+
 
 active_names() { nmcli -t -f NAME connection show --active 2>/dev/null | cut -d: -f1; }
 
@@ -55,6 +66,7 @@ hotspot_up() {
 }
 
 cmd_auto() {
+  unpin                       # "auto" is the box deciding for itself
   say "looking for the home network \"$HOME_WIFI_CONNECTION\" (up to ${HOME_WIFI_TIMEOUT}s)"
   if home_up; then
     is_active "$HOTSPOT_CONNECTION" && deactivate "$HOTSPOT_CONNECTION"
@@ -69,20 +81,28 @@ cmd_auto() {
 cmd_home() {
   is_active "$HOTSPOT_CONNECTION" && deactivate "$HOTSPOT_CONNECTION"
   home_up || die "could not join \"$HOME_WIFI_CONNECTION\" — is it saved on this machine?"
-  say "back on \"$HOME_WIFI_CONNECTION\""
+  pin home
+  say "back on \"$HOME_WIFI_CONNECTION\" — the watchdog will keep it that way"
 }
 
-cmd_hotspot() {
+cmd_hotspot() { # [--auto]  — --auto means "Ark did this to itself", so no pin
   hotspot_up || die "could not start the hotspot (check: journalctl -u NetworkManager)"
+  if [[ "${1:-}" == "--auto" ]]; then
+    unpin
+  else
+    pin hotspot
+  fi
   say "broadcasting \"${HOTSPOT_SSID:-The-Ark-Offline}\" — open http://$HOTSPOT_ADDRESS"
 }
 
 cmd_status() {
-  local mode ip4 portal
+  local mode ip4 portal held
   mode="$(cat "$MODE_FILE" 2>/dev/null || echo unknown)"
+  held="$(pinned)"
   ip4="$(ip -4 -o addr show "$WIFI_DEV" 2>/dev/null | awk '{print $4}' | head -1)"
   portal="$(curl -s -o /dev/null -m 5 -w '%{http_code}' "http://127.0.0.1/" 2>/dev/null || echo 000)"
   printf '   mode          : %s\n' "$mode"
+  printf '   chosen by     : %s\n' "$([[ -n "$held" ]] && echo "owner ($held)" || echo auto)"
   printf '   wifi address  : %s\n' "${ip4:-none}"
   printf '   portal        : HTTP %s on 127.0.0.1\n' "$portal"
   printf '   active links  : %s\n' "$(active_names | paste -sd ', ' -)"
@@ -103,8 +123,8 @@ need_root "$*"
 case "${1:-status}" in
   auto)    cmd_auto ;;
   home)    cmd_home ;;
-  hotspot) cmd_hotspot ;;
+  hotspot) cmd_hotspot "${2:-}" ;;
   test)    cmd_test "${2:-180}" ;;
   status)  cmd_status ;;
-  *)       die "usage: ark-mode {auto|home|hotspot|status|test [seconds]}" ;;
+  *)       die "usage: ark-mode {auto|home|hotspot [--auto]|status|test [seconds]}" ;;
 esac
