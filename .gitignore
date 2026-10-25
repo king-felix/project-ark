@@ -9,6 +9,7 @@ staging/*.img
 staging/*.img.xz
 staging/*.dmg
 logs/*.log
+logs/*.png
 logs/.flash.done
 logs/ark_host.txt
 logs/ark_status.json

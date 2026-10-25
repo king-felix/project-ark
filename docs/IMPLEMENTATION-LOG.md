@@ -1763,8 +1763,8 @@ real `2048gb.gb`:
 | after one tap on the button | `started: true`, canvas **622 × 560** (10:9), the 2048 title screen drawn, and the save state changes between two readings |
 | the same on a phone-sized viewport (420 × 900) with a NES game added through the new public door | canvas **382 × 358** (16:15), the *Cyber Coaster* title screen drawn |
 
-The picture was read back as an image, not inferred: `/tmp/local-playing.png` and
-`/tmp/nes-playing.png` are screenshots of the real pages. Guards:
+The picture was read back as an image, not inferred: each check saved a screenshot of the frame and
+the title screens were looked at, not trusted from a byte count. Guards:
 `test_arcade.py::test_the_game_waits_for_a_real_tap_before_it_starts` (the page must not contain
 `EJS_startOnLoaded` and must say what to tap) and
 `test_arcade.py::test_the_player_is_sized_on_a_frame_the_emulator_cannot_overwrite`.
