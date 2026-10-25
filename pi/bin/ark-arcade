@@ -49,6 +49,9 @@ def _say(message: str) -> None:
     try:
         print(message, flush=True)
     except BrokenPipeError:
+        # Point fd 1 at /dev/null so the interpreter's shutdown flush cannot
+        # raise the same error all over again.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
         raise SystemExit(0) from None
 
 
