@@ -51,14 +51,14 @@ Doors on the box (once built):
   /books/               the book shelf (EPUB/PDF, read in browser or download)
   /vault/               11 survival manuals + repair guides, each printable
   /board                message board, anyone can post, no login
-  /files                File Box: anyone can drop a file in; books auto-shelve
+  /files                File Box: anyone can drop a file in (2 GB each); books auto-shelve
   /help.html            how it works, in plain words
   /status.json          machine-readable health (also mirrored in the portal)
 
 And one door that is NOT on the portal: the owner's door, on its own TLS
 address, for whoever maintains the box.
 
-  https://ark.lan:8443/admin   sign-in + accounts + audit (404 on port 80)
+  https://ark.lan:8443/admin   sign-in + accounts + audit + Community (404 on port 80)
 
 ================================================================================
 2. WHO IT IS FOR (this drives every design decision)
@@ -147,8 +147,11 @@ On the Pi, everything the Ark owns lives under /srv/ark:
   /srv/ark/portal           static portal (index.html, help.html, assets/)
   /srv/ark/kiwix            .zim bundles + library.xml (the source of truth)
   /srv/ark/calibre-library  the book shelf's database and cover art
-  /srv/ark/drop/{files,done}   incoming File Box (path units watch "files")
+  /srv/ark/drop/files       File Box (the only folder nginx serves); every upload
+                            gets a random stored name, links never overwrite
+  /srv/ark/drop/tmp         half-arrived uploads, reconciled at start, never served
   /srv/ark/calibre-incoming/done   where auto-imported books retire to
+  /srv/ark/calibre-incoming/.imported.json  sha256 ledger: one import per content
   /srv/ark/imported-library one-off staging area for a whole-library adopt
   /srv/ark/vault            manuals, guides and generated PDFs
   /srv/ark/logs             zim-download.log, import logs, status receipts
@@ -347,13 +350,17 @@ popup resolves to the portal instead of a "no internet" dead end.
     Fix: chown -R pi:pi, chmod 775 on the library root and .calnotes, 644 on
     files. Calibre complains (harmlessly) if .calnotes is absent — create it.
 
-14. AUTO-IMPORT GRABBING A HALF-COPIED FILE
-    Symptom: a book appears on the shelf and cannot be opened; the same book
-    works when added by hand.
-    Cause: the watcher fires on create, while the copy is still in progress.
+14. AUTO-IMPORT GRABBING A HALF-COPIED FILE, OR IMPORTING THE SAME BOOK FOR EVER
+    Symptom: a book appears on the shelf and cannot be opened; or the same book is
+    added again on every scan; or a download link in the File Box stops working.
+    Cause: the watcher fires while the copy is still in progress; `done/` is
+    rescanned; the importer moves the File Box copy away after importing it.
     Fix: a systemd .path unit (PathModified on drop/files) triggers a .service
-    that waits for size to stop changing for ~3 s before calling `calibredb add`,
-    then moves the original to done/. Debounce, then act.
+    that waits for size to stop changing for ~3 s before importing. Keep a sha256
+    ledger (`calibre-incoming/.imported.json`) and skip any content already in it,
+    so a rescan is free and a renamed re-drop is a no-op. Never rescan `done/`,
+    and never move a file out of `drop/files` — that is the folder the portal
+    links to. Debounce, fingerprint, then act.
 
 15. CALIBRE-WEB BEHIND /books
     Symptom: the shelf loads at /books/ but every cover, style and link points
@@ -373,13 +380,19 @@ popup resolves to the portal instead of a "no internet" dead end.
 
 17. THE FILE UPLOAD THAT WORKS IN TESTS AND FAILS IN REAL LIFE
     Symptom: a 60 MB PDF upload returns 413, or the File Box accepts a file and
-    the API sees zero bytes.
-    Cause: nginx client_max_body_size default is 1 MB; and multipart parsing
-    needs the body streamed to disk.
-    Fix: client_max_body_size 2g on the upload location only; upload to a temp
-    file and move into place; return 303 (never 200) so a browser refresh does
-    not re-upload. Also block .apk downloads with a friendly page explaining
-    that installing apps is not needed here.
+    the API sees zero bytes; or two people uploading "photo.jpg" in the same
+    minute end up with one file and two list entries.
+    Cause: nginx client_max_body_size default is 1 MB; multipart parsing needs
+    the body streamed to disk; and naming an upload after its display name plus
+    the minute it arrived makes a third file replace the second.
+    Fix: client_max_body_size 2064m (2 GiB + 16 MiB of request framing — keep the
+    number equal to the app's own cap, and test that they agree); spool to a temp
+    file outside the served folder, enforce the cap while streaming, then finalise
+    with a link(2) to a 128-bit random name so an overwrite is impossible, not
+    merely unlikely; keep the display name as a label in the database; return 303
+    (never 200) so a browser refresh does not re-upload; reserve ~512 MiB so the
+    card can never fill up and take the portal down with it. Also block .apk
+    downloads with a friendly page explaining that installing apps is not needed.
 
 18. THE UNIT THAT RUNS BUT DOES NOT COME BACK AFTER A POWER CUT
     Symptom: everything works today; after a blackout the hotspot is missing.
@@ -528,9 +541,12 @@ any failure. Categories:
   network     when mode=hotspot, the AP address is really on wlan0
   space       free space >= 5 GiB (hard floor; the reserve is 12)
   owner's door  /admin answers 404 on :80; :8443 answers; the loopback :8444
-              listener answers; the recovery command is installed with the
-              right mode; and the account count is reported (how many still
-              hold a temporary password) without ever printing a secret
+              listener answers; the Community page answers behind the sign-in;
+              the recovery command is installed with the right mode; and the
+              account count is reported (how many still hold a temporary
+              password) without ever printing a secret
+  file box    drop/files and drop/tmp exist, and the count of shared files is
+              reported (a missing folder means phase 20 was skipped)
   content     collections on disk + titles indexed in library.xml, books in
               metadata.db, guides and printable PDFs
   receipt     JSON summary for the Mac: hostname, mode, ok, problems,
@@ -542,6 +558,8 @@ any failure. Categories:
       from `bash scripts/03-provision.sh <ip> --only 90-verify` (read the ✗
       column, not the total — the number of checks grows as the box does)
     □ a book dropped into the File Box is on the shelf within 60 s
+    □ the same filename uploaded three times leaves three separate entries,
+      three files on disk and an empty drop/tmp (proof the write path is fixed)
     □ one article opens inside /kiwix/ (not just the root page)
     □ one guide opens and its PDF prints
     □ services survive `sudo reboot` (cold-boot test done by a human who can
@@ -691,7 +709,11 @@ any failure. Categories:
     pi/api/ark_security.py                  scrypt hashing, sessions (digests
                                             only), CSRF, per-account throttling
     pi/api/ark_admin.py                     /admin: claim, sign-in, accounts,
-                                            audit — mounted, never on :80
+                                            audit, Community (moderation) —
+                                            mounted, never on :80
+    pi/api/ark_storage.py                   the only write path for shared files:
+                                            label vs stored name, spool, link(2),
+                                            cap + reserve, temp reconcile
     pi/api/ark_recover.py                   recovery logic behind the root-only
                                             wrapper
     pi/nginx/ark.conf                       proxy, captive endpoints, uploads

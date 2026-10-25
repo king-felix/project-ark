@@ -28,6 +28,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 import ark_db
 import ark_security as sec
+import ark_storage
 
 router = APIRouter(prefix="/admin", include_in_schema=False)
 
@@ -209,7 +210,8 @@ def shell(title: str, body: str, *, ctx: Ctx | None = None, status: int = 200,
           tagline: str = "") -> HTMLResponse:
     nav = ""
     if ctx is not None and ctx.admin is not None and not ctx.admin["must_change"]:
-        links = [("/admin", "Overview"), ("/admin/accounts", "Administrators"),
+        links = [("/admin", "Overview"), ("/admin/community", "Community"),
+                 ("/admin/accounts", "Administrators"),
                  ("/admin/password", "My password"), ("/admin/audit", "History")]
         nav = '<div class="nav">' + "".join(
             f'<a href="{esc(href)}">{esc(label)}</a>' for href, label in links
@@ -943,4 +945,282 @@ def audit_page(request: Request):
      offline its clock may drift until it next sees a time source — treat the moments as
      approximate. Passwords and session tokens never appear here.</p>"""
     return shell("History", body, ctx=ctx, tagline="Who changed what, for the record.")
+
+
+# ---------------------------------------------------------------------------
+#  community — the board and the shared files, seen from the owner's side
+# ---------------------------------------------------------------------------
+BOARD_ACTIONS = {
+    "pin": ("pinned", 1), "unpin": ("pinned", 0),
+    "resolve": ("resolved", 1), "reopen": ("resolved", 0),
+    "hide": ("hidden", 1), "restore": ("hidden", 0),
+}
+FILE_ACTIONS = {"hide": ("hidden", 1), "restore": ("hidden", 0)}
+
+
+def _switch(on: bool, name: str, label: str, hint: str) -> str:
+    checked = " checked" if on else ""
+    return f"""<label class="switch">
+      <input type="checkbox" name="{esc(name)}" value="1"{checked}>
+      <span>{esc(label)}</span>
+    </label>
+    <p class="note">{esc(hint)}</p>"""
+
+
+@router.get("/community", response_class=HTMLResponse)
+def community(request: Request):
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.tx() as conn:
+        ctx = _load_ctx(conn, request, ark_db.session_epoch(conn))
+        if (blocked := _need_session(ctx, request)) is not None:
+            return blocked
+        notes = conn.execute(
+            "SELECT id, ts, name, body, pinned, resolved, hidden FROM notes"
+            " ORDER BY id DESC LIMIT 50").fetchall()
+        files = conn.execute(
+            "SELECT id, ts, name, display, stored, size, hidden FROM files"
+            " ORDER BY id DESC LIMIT 50").fetchall()
+        board_open = ark_db.get_setting(conn, "public_board_post", "1") != "0"
+        uploads_open = ark_db.get_setting(conn, "public_uploads", "1") != "0"
+        hidden_notes = int(conn.execute(
+            "SELECT COUNT(*) FROM notes WHERE hidden = 1").fetchone()[0])
+
+    board_switch = _switch(
+        board_open, "board", "Anyone nearby can post a message",
+        "Leave this on for a shared box. Switch it off if the board is being misused: "
+        "reading still works, and nothing already written is lost.")
+    uploads_switch = _switch(
+        uploads_open, "uploads", "Anyone nearby can add a file",
+        "Leave this on for a normal box. Switch it off while you catch up: everything "
+        "already in the box stays downloadable.")
+    switches = (
+        '<form method="post" action="/admin/community/switches">\n'
+        f'    {_csrf_field(ctx.csrf)}\n'
+        f'    {board_switch}\n'
+        f'    {uploads_switch}\n'
+        '    <button class="go-btn" type="submit">Save these switches</button>\n'
+        '  </form>\n'
+        '  <p class="note">These are the only two things that decide who can write here. '
+        'There is no sign-in for readers, by design — the box is in the room with them.</p>')
+
+    note_items = "".join(_community_note_row(r, ctx.csrf) for r in notes) or (
+        '<li>Nothing has been written yet.</li>')
+    file_rows = "".join(_community_file_row(r, ctx.csrf) for r in files) or (
+        '<tr><td colspan="4">Nobody has shared a file yet.</td></tr>')
+    hidden_note = (f'<p class="note">{hidden_notes} hidden message'
+                   f'{"" if hidden_notes == 1 else "s"} — they stay in the history and can be '
+                   f'shown again at any time.</p>' if hidden_notes else "")
+
+    body = f"""
+  <h2>Who can write</h2>
+  {switches}
+  <h2>Messages (newest first, 50 shown)</h2>
+  {hidden_note}
+  <ul class="clean">{note_items}</ul>
+  <h2>Shared files (newest first, 50 shown)</h2>
+  <table class="plain"><thead><tr><th>File</th><th>Size</th><th>Added</th>
+    <th>Actions</th></tr></thead><tbody>{file_rows}</tbody></table>
+  <p class="note">Hiding or deleting a file is immediate and permanent for readers. Deleting "
+     "needs your own password because there is no way back from it.</p>"""
+    return shell("Community", body, ctx=ctx,
+                 tagline="The board and the shared files — what people wrote, and what you can do about it.")
+
+
+@router.post("/community/switches", response_class=HTMLResponse)
+def community_switches(request: Request, board: str = Form(""), uploads: str = Form(""),
+                       csrf: str = Form("")):
+    """A checkbox is ticked when the door is open. Absent means closed."""
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.tx() as conn:
+        ctx = _load_ctx(conn, request, ark_db.session_epoch(conn))
+        if (blocked := _need_session(ctx, request)) is not None:
+            return blocked
+        if (blocked := _need_csrf(ctx, csrf)) is not None:
+            return blocked
+        me = ctx.admin
+        for key, value in (("public_board_post", "1" if board else "0"),
+                           ("public_uploads", "1" if uploads else "0")):
+            ark_db.set_setting(conn, key, value)
+        ark_db.audit(conn, action="community-switches", actor_id=me["id"],
+                     actor_name=me["username"], result="ok",
+                     detail=f"posting={'on' if board else 'off'}, "
+                            f"uploads={'on' if uploads else 'off'}")
+    return _redirect("/admin/community")
+
+
+def _committed(request: Request, conn, csrf: str):
+    """Load the owner's session and check the form's token. Returns (ctx, blocked)."""
+    ctx = _load_ctx(conn, request, ark_db.session_epoch(conn))
+    if (blocked := _need_session(ctx, request)) is not None:
+        return ctx, blocked
+    if (blocked := _need_csrf(ctx, csrf)) is not None:
+        return ctx, blocked
+    return ctx, None
+
+
+@router.post("/board/{note_id}/state", response_class=HTMLResponse)
+def board_state(request: Request, note_id: int, action: str = Form(""), csrf: str = Form("")):
+    """Pin, unpin, resolve, reopen, hide or restore one message.
+
+    Nothing here deletes anything: every action has an opposite, and every
+    action leaves a line in the history. The column name comes from the fixed
+    table above, never from the request.
+    """
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.tx() as conn:
+        ctx, blocked = _committed(request, conn, csrf)
+        if blocked is not None:
+            return blocked
+        change = BOARD_ACTIONS.get(action)
+        if change is None:
+            return shell("Community", _notice(
+                "bad", "<b>Nothing was changed.</b> That is not an action this box offers."),
+                ctx=ctx, status=400)
+        if conn.execute("SELECT 1 FROM notes WHERE id = ?", (note_id,)).fetchone() is None:
+            return shell("Community", _notice(
+                "bad", "<b>Nothing was changed.</b> That message is no longer here."),
+                ctx=ctx, status=404)
+        column, value = change
+        conn.execute(f"UPDATE notes SET {column} = ? WHERE id = ?", (value, note_id))
+        ark_db.audit(conn, action=f"board-{action}", actor_id=ctx.admin["id"],
+                     actor_name=ctx.admin["username"], target=str(note_id), result="ok")
+    return _redirect("/admin/community")
+
+
+@router.post("/files/{file_id}/state", response_class=HTMLResponse)
+def file_state(request: Request, file_id: int, action: str = Form(""), csrf: str = Form("")):
+    """Hide a shared file from readers, or put it back. The file stays on the card."""
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.tx() as conn:
+        ctx, blocked = _committed(request, conn, csrf)
+        if blocked is not None:
+            return blocked
+        change = FILE_ACTIONS.get(action)
+        if change is None:
+            return shell("Community", _notice(
+                "bad", "<b>Nothing was changed.</b> That is not an action this box offers."),
+                ctx=ctx, status=400)
+        if conn.execute("SELECT 1 FROM files WHERE id = ?", (file_id,)).fetchone() is None:
+            return shell("Community", _notice(
+                "bad", "<b>Nothing was changed.</b> That file is no longer listed."),
+                ctx=ctx, status=404)
+        column, value = change
+        conn.execute(f"UPDATE files SET {column} = ? WHERE id = ?", (value, file_id))
+        ark_db.audit(conn, action=f"file-{action}", actor_id=ctx.admin["id"],
+                     actor_name=ctx.admin["username"], target=str(file_id), result="ok")
+    return _redirect("/admin/community")
+
+
+def human_size(n) -> str:
+    """The same wording the public page uses, so a figure never looks different."""
+    n = float(n or 0)
+    for unit in ("B", "kB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} TB"
+
+
+def quote_name(stored: str) -> str:
+    from urllib.parse import quote
+    return quote(stored or "", safe="")
+
+
+def _community_note_row(row, csrf: str) -> str:
+    state = []
+    if row["pinned"]:
+        state.append("pinned")
+    if row["resolved"]:
+        state.append("sorted out")
+    if row["hidden"]:
+        state.append("hidden")
+    badge = f'<span class="sub">{esc(", ".join(state))}</span>' if state else ""
+
+    def button(action: str, label: str) -> str:
+        return (f'<button class="small" type="submit" name="action" value="{esc(action)}">'
+                f'{esc(label)}</button>')
+
+    actions = [
+        button("unpin", "Unpin") if row["pinned"] else button("pin", "Pin to top"),
+        button("reopen", "Still open") if row["resolved"] else button("resolve", "Sorted out"),
+        button("restore", "Show again") if row["hidden"] else button("hide", "Hide"),
+    ]
+    form = (f'<form class="inline" method="post" action="/admin/board/{int(row["id"])}/state">'
+            f'{_csrf_field(csrf)}{"".join(actions)}</form>')
+    return (f'<li><b>{esc(row["name"])}</b> {badge}'
+            f'<span class="sub">{esc(ago(row["ts"]))}</span>'
+            f'<span class="sub" style="white-space:pre-wrap">{esc(row["body"])}</span>'
+            f'{form}</li>')
+
+
+def _community_file_row(row, csrf: str) -> str:
+    hidden = " · hidden" if row["hidden"] else ""
+    toggle = "restore" if row["hidden"] else "hide"
+    label = "Show again" if row["hidden"] else "Hide"
+    return f"""<tr>
+      <td><a href="/drop/{esc(quote_name(row['stored'] or row['name']))}">{esc(row['display'] or row['name'])}</a></td>
+      <td>{esc(human_size(row['size']))}</td>
+      <td>{esc(ago(row['ts']))}{esc(hidden)}</td>
+      <td>
+        <form class="inline" method="post" action="/admin/files/{int(row['id'])}/state">
+          {_csrf_field(csrf)}
+          <button class="small" type="submit" name="action" value="{toggle}">{esc(label)}</button>
+        </form>
+        <form class="inline" method="post" action="/admin/files/{int(row['id'])}/delete">
+          {_csrf_field(csrf)}
+          <input type="password" name="current_password" placeholder="Your password" required>
+          <button class="small danger" type="submit">Delete for ever</button>
+        </form>
+      </td>
+    </tr>"""
+
+
+@router.post("/files/{file_id}/delete", response_class=HTMLResponse)
+def file_delete(request: Request, file_id: int, current_password: str = Form(""),
+                csrf: str = Form("")):
+    """Remove a file and its link for good — the one action with no way back."""
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.tx() as conn:
+        ctx, blocked = _committed(request, conn, csrf)
+        if blocked is not None:
+            return blocked
+        me = ctx.admin
+        if not _reauth(me, current_password):
+            ark_db.audit(conn, action="file-delete", actor_id=me["id"],
+                         actor_name=me["username"], target=str(file_id),
+                         result="denied", detail="wrong current password")
+            return shell("Community", _notice(
+                "bad", "<b>Nothing was deleted.</b> Your own password did not match."),
+                ctx=ctx, status=403)
+        row = conn.execute("SELECT id, name, display, stored FROM files WHERE id = ?",
+                           (file_id,)).fetchone()
+        if row is None:
+            return shell("Community", _notice(
+                "bad", "<b>Nothing was deleted.</b> That file is no longer listed."),
+                ctx=ctx, status=404)
+        removed = _remove_from_card(row["stored"] or row["name"])
+        conn.execute("DELETE FROM files WHERE id = ?", (file_id,))
+        ark_db.audit(conn, action="file-delete", actor_id=me["id"], actor_name=me["username"],
+                     target=row["display"] or row["name"], result="ok",
+                     detail="file removed from the card" if removed else
+                            "record removed; the file was already gone")
+    return _redirect("/admin/community")
+
+
+def _remove_from_card(name: str) -> bool:
+    """Delete one file from the shared folder, and only from that folder."""
+    folder = ark_storage.drop_dir()
+    target = folder / name
+    if target.parent != folder or target.name in ("", ".", ".."):
+        return False          # never follow a name out of the folder
+    try:
+        target.unlink()
+        return True
+    except OSError:
+        return False          # already gone, or the card went read-only
 

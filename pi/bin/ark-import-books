@@ -10,9 +10,15 @@
 #    1. If a `calibredb` binary exists, use it (fast, exact).
 #    2. Otherwise drive Calibre-Web's own upload endpoint over loopback, which
 #       writes the Calibre database itself (no calibre install needed).
-#  Books are never deleted: imported files move to calibre-incoming/done.
+#  Books are never deleted. A book dropped in the incoming folder moves to
+#  calibre-incoming/done once it is in the library; a copy the File Box serves
+#  stays where it is so its download link keeps working. Either way the content
+#  fingerprint is written to calibre-incoming/.imported.json, so the same book
+#  is never added twice — even if it is dropped again under a different name.
 # =============================================================================
 import argparse
+import hashlib
+import json
 import os
 import re
 import shutil
@@ -37,6 +43,50 @@ BOOK_EXT = {
 
 def log(msg):
     print(f"[import] {msg}", flush=True)
+
+
+def _stamp():
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _sha256(path):
+    """The content fingerprint the ledger is keyed by. Empty when unreadable."""
+    digest = hashlib.sha256()
+    try:
+        with open(path, "rb") as fh:
+            for block in iter(lambda: fh.read(1024 * 1024), b""):
+                digest.update(block)
+    except OSError as exc:
+        log(f"cannot read {path}: {exc}")
+        return ""
+    return digest.hexdigest()
+
+
+def ledger_path():
+    """The record of what has already been imported, beside the done folder."""
+    return os.path.join(os.path.dirname(os.path.abspath(DONE_DIR)), ".imported.json")
+
+
+def load_ledger():
+    try:
+        with open(ledger_path(), "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}          # missing or damaged: import again rather than lose a book
+
+
+def save_ledger(ledger):
+    path = ledger_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(ledger, fh, indent=1, sort_keys=True)
+            fh.write("\n")
+        os.replace(tmp, path)
+    except OSError as exc:
+        log(f"could not write {path}: {exc}")
 
 
 def book_count():
@@ -68,20 +118,58 @@ def credentials():
     return user, password
 
 
+def _is_done(path):
+    """True when a path is inside the folder that holds already-imported books."""
+    done = os.path.abspath(DONE_DIR)
+    return os.path.abspath(path) == done or os.path.abspath(path).startswith(done + os.sep)
+
+
+def _is_book(name):
+    """A finished, visible file with a book extension — and nothing else."""
+    if name.startswith(".") or name.endswith(".part"):
+        return False
+    return os.path.splitext(name)[1].lower() in BOOK_EXT
+
+
 def candidates(paths):
+    """Every file that still needs importing, in a stable order.
+
+    Three things are deliberately skipped: the ``done`` folder (its contents
+    were imported on an earlier run, and scanning it made every pass offer the
+    same books again), half-arrived ``.part`` files, and hidden files such as
+    this importer's own ledger.
+    """
     found = []
     for path in paths:
-        if os.path.isfile(path):
-            found.append(path)
+        if _is_done(path):
             continue
-        for root, _dirs, files in os.walk(path):
+        if os.path.isfile(path):
+            if _is_book(os.path.basename(path)):
+                found.append(path)
+            continue
+        for root, dirs, files in os.walk(path):
+            dirs[:] = sorted(d for d in dirs
+                             if not d.startswith(".") and not _is_done(os.path.join(root, d)))
             for name in sorted(files):
-                if os.path.splitext(name)[1].lower() in BOOK_EXT:
+                if _is_book(name):
                     found.append(os.path.join(root, name))
     return found
 
 
+def file_box():
+    """The folder the File Box serves. Its copies are never moved away."""
+    return os.path.abspath(DROP_DIRS[0])
+
+
 def _retire(path):
+    """Move an imported book aside — unless it is a copy the File Box serves.
+
+    ``/srv/ark/drop/files`` is the folder the portal links to, so moving a file
+    out of it killed somebody's download link.  Those copies stay; the ledger is
+    what stops them being imported twice.
+    """
+    if os.path.abspath(path).startswith(file_box() + os.sep):
+        return
     try:
         os.makedirs(DONE_DIR, exist_ok=True)
         target = os.path.join(DONE_DIR, os.path.basename(path))
@@ -232,6 +320,17 @@ def main(argv):
         log("nothing new to import")
         return 0
 
+    ledger = load_ledger()
+    hashes = {path: _sha256(path) for path in files}
+    fresh = [path for path in files if not hashes[path] or hashes[path] not in ledger]
+    skipped = len(files) - len(fresh)
+    if skipped:
+        log(f"{skipped} already imported (by content) — not adding them again")
+    files = fresh
+    if not files:
+        log("nothing new to import")
+        return 0
+
     log(f"{len(files)} file(s) to import")
     if args.list:
         for path in files:
@@ -245,6 +344,19 @@ def main(argv):
                 "and use the Upload button in the browser instead")
             return 1
     after = book_count()
+
+    # Record only what really became a book. A file still sitting in the drop
+    # folder was not imported and must be offered again — except a File Box
+    # copy, which stays on purpose so the download link keeps working.
+    record = {}
+    for path in files:
+        digest = hashes.get(path)
+        kept_for_links = os.path.abspath(path).startswith(file_box() + os.sep)
+        if digest and (kept_for_links or not os.path.exists(path)):
+            record[digest] = {"name": os.path.basename(path), "at": _stamp()}
+    if record:
+        ledger.update(record)
+        save_ledger(ledger)
     log(f"library: {before} -> {after} book(s)")
     return 0
 

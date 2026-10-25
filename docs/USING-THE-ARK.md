@@ -152,13 +152,19 @@ after a dead battery. `/vault/pdf/` has everything you need for a ring binder.
 **What it is:** a whiteboard for the household. Notes stay on the box; nothing is sent anywhere.
 
 **How to use it:** type a message → **Put it on the board**. Your name is optional (blank shows
-as *Anonymous*). The newest 100 notes are shown, newest first.
+as *Anonymous*). Twenty notes fit on a page, newest first; **Older messages** / **Newer messages**
+walk back and forward, and the heading above the list counts every note there is.
 
 Good uses: *the tap in the back garden is leaking, I have spare washers* · *power cut 2–3pm
 Thursday* · *does anyone have a 13 mm socket?*
 
 Anyone on the Wi-Fi can read and post. That is the feature, and also the warning: do not put
 private things on it.
+
+**A warning that matters** stays at the top of the page, and anything already sorted out sinks
+below the questions people still have. If the owner has closed the board to new notes, the
+button is replaced by a sentence saying so, and everything already written is still readable.
+A note the owner hides disappears from this page but is not destroyed.
 
 ### 3.6 File Box — `http://ark.lan/files`
 
@@ -171,9 +177,20 @@ Phone → laptop, laptop → tablet.
 2. **Choose a file** (up to 2 GB), optionally add a short note (*“spare gasket — fits the big tap”*).
 3. **Put it in the box.** It is now listed, and anyone on the Wi-Fi can download it.
 
+Two people can each put in a file called `photo.jpg` and nothing is lost: every upload keeps its
+own place on the box, and the name you see is just a label on it. An empty upload and anything
+over 2 GB are refused with a sentence telling you which, and the box always keeps a little space
+in reserve so it can never fill its own card so completely that it stops working.
+
 **The clever part:** if the file you drop in is a book — `.epub`, `.pdf`, `.mobi`, `.azw3`,
 `.fb2`, `.djvu`, `.cbz` and friends — it is picked up within seconds and filed onto the book
-shelf automatically. No command, no second step. See section 4.
+shelf automatically. No command, no second step. The copy in the File Box stays put so the link
+you were given keeps working. See section 4.
+
+If the owner has paused sharing, the upload button is replaced by a sentence saying so, and every
+file already in the box still downloads normally. The owner can also hide a file or, in the last
+resort, remove it for good. The list shows the newest 50 files; when there are more, it says so
+and the count in the heading is the real total.
 
 ### 3.7 Is it happy? — `http://ark.lan/api/status`
 
@@ -271,12 +288,18 @@ ssh pi@ark.local 'sudo ark-import-calibre-library /srv/ark/imported-library'
   `.lit` `.pdb` `.prc` `.ibooks` `.kepub` `.html` `.htm`
 - It is added by the same engine Calibre uses, so metadata is read properly (title, author,
   series, cover) — not just the filename.
-- **Your original is never deleted.** The file is moved to `/srv/ark/calibre-incoming/done/`
-  after a successful import, and leaves the File Box list at that moment. If it is not on the
-  shelf and not in `done/`, it did not import.
+- **Your original is never deleted, and a File Box link never breaks.** A file you dropped in
+  the File Box is *copied* onto the shelf and stays in the box, so the download link you sent
+  somebody keeps working. A file you put in the staging folder `/srv/ark/calibre-incoming/` is
+  moved to `done/` once it is safely in the library. Either way the box remembers the book by its
+  *content*, so dropping the same book again under a different name does not put a second copy on
+  the shelf (the File Box may still hold two separate shared files — those are two things people
+  uploaded, and both keep their links).
 - Wrong file, or you changed your mind? Delete it in `/books/`, or re-add a corrected copy.
 - Two watchers do this: one for `/srv/ark/drop/files` (the File Box) and one for
-  `/srv/ark/calibre-incoming` (a staging folder for big batches).
+  `/srv/ark/calibre-incoming` (a staging folder for big batches). What has already been imported
+  is listed in `/srv/ark/calibre-incoming/.imported.json`; `done/` is never scanned again, so a
+  second pass cannot offer the same book twice.
 
 ---
 
@@ -395,7 +418,8 @@ sudo reboot
   household emergency, and it also means the board and the File Box are not private. There is
   exactly one sign-in on the box: the owner's door on port 8443, which changes the machine itself
   and is never served on the portal address. A visitor never sees it, and nothing a visitor does
-  asks them who they are.
+  asks them who they are. The owner can pause new notes and new uploads with one switch, and can
+  hide or remove something that should not be there — but never learns who wrote it.
 - **It does not need JavaScript** for anything that matters: search, reading, uploading and
   posting are plain HTML forms — and so is the owner's door.
 - **It is not a backup.** Everything lives on one SD card. Keep the originals on the PC, and keep
@@ -408,8 +432,9 @@ sudo reboot
 ## 10. Notes for whoever maintains it
 
 - Everything lives under `/srv/ark` — `kiwix/` (collections), `calibre-library/` (books),
-  `vault/` (manuals and PDFs), `drop/files/` (File Box), `calibre-incoming/` (staging),
-  `portal/` (front page), `logs/`.
+  `vault/` (manuals and PDFs), `drop/files/` (File Box, the only folder the web server is allowed
+  to serve), `drop/tmp/` (half-arrived uploads, never served), `calibre-incoming/` (staging, with
+  `.imported.json` and `done/`), `portal/` (front page), `logs/`.
 - The owner's door keeps its accounts in `/srv/ark/api/data/ark.db`, with the marker file
   `ark.installed` beside it (that marker is what turns a wiped database into
   "recovery-required" instead of a fresh default password). Its certificate lives under

@@ -18,8 +18,8 @@ down, and the portal address does not serve it at all.
 | `/kiwix/` | the offline library (encyclopedias, medical, repair, food, water) |
 | `/books/` | the book shelf (EPUB/PDF, read in the browser or download) |
 | `/vault/` | survival manuals + repair guides, each with a printable PDF |
-| `/board` | a message board anyone can post to |
-| `/files` | a file box anyone can drop things into |
+| `/board` | a message board anyone can post to (the owner can pin, sort out, hide) |
+| `/files` | a file box anyone can drop things into (2 GB per file, links never overwrite) |
 | `/help.html` | how it works, in plain words |
 
 Addresses: `http://ark.lan` · `http://ark.local` · `http://10.42.0.1`
@@ -116,8 +116,11 @@ management listener:
 
 The first sign-in asks for your own password (12+ characters, passphrases
 welcome) and the temporary one stops working immediately. After that you can
-add other administrators, reset or switch off their accounts, and read the
-audit history. Losing every password is recoverable from the console only:
+add other administrators, reset or switch off their accounts, read the audit
+history, and use the **Community** page — two switches that pause new notes and
+new uploads, plus pin / sorted-out / hide for messages, hide for files, and a
+delete that asks for your own password again. Losing every password is
+recoverable from the console only:
 
 ```bash
 sudo ark-admin-recover --list
@@ -177,7 +180,10 @@ so the step validates the file and, when it is unusable, installs the `calibre`
 package (`--no-install-recommends`, ~60 MB) and builds a genuine empty library
 with `calibre-debug`. Books dropped in the File Box are added by
 `ark-import-books`, which prefers `calibredb` and falls back to the library's
-own upload endpoint.
+own upload endpoint. The File Box copy stays where it is (so the download link
+somebody was given keeps working), `calibre-incoming/done` is never rescanned,
+and the ledger in `calibre-incoming/.imported.json` is keyed by sha256, so the
+same book dropped twice under two names is imported once.
 
 ### Getting books onto it
 

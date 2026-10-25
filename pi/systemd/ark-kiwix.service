@@ -17,7 +17,7 @@ ExecStartPre=/usr/local/bin/ark-kiwix-library
 # a positional argument; `--library=/path` now aborts with
 # "--library must not have an argument". The two-token form below works on both
 # 3.5.x (apt) and 3.8.x (official aarch64 build).
-ExecStart=/usr/bin/env kiwix-serve --port=8081 --urlRootLocation=/kiwix \
+ExecStart=/usr/bin/env kiwix-serve --address=127.0.0.1 --port=8081 --urlRootLocation=/kiwix \
           --threads=4 --library /srv/ark/kiwix/library.xml
 Restart=always
 RestartSec=5

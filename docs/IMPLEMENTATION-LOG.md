@@ -19,19 +19,19 @@ and what the next executable step is.
 
 | § | Area | Status |
 |---|---|---|
-| 3 | Public read-only vs administrator | **partly done** — split exists; public board/file write paths are still anonymous (they move behind the admin switch in a later stage) |
+| 3 | Public read-only vs administrator | **split done; anonymous writing is now the owner's choice** — the board and the File Box stay open by default, and an owner switch closes each one without losing anything already written (§3.4) |
 | 4 | Central accounts, bootstrap, forced change, multi-admin | **stage 2 complete and tested** |
-| 5 | Management transport, backend restriction, identities | **transport done** (8443 origin, 8444 loopback, :80 404); service-identity split and Kalibre/Kiwix route blocking **not done** |
-| 6 | File storage, upload safety, import workflow | not started (defects reproduced, see §3) |
-| 7 | Board errors and housekeeping | error page **fixed**; moderation not started |
-| 8 | Bounded search | reproduced, not fixed |
+| 5 | Management transport, backend restriction, identities | **transport done** (8443 origin, 8444 loopback, :80 404; `kiwix-serve` now loopback-only); service-identity split and Calibre/Kiwix route blocking **not done** |
+| 6 | File storage, upload safety, import workflow | **stage 3 done** — one write path, unique stored names, size cap + free-space reserve, orphan cleanup, content-keyed import ledger. Quotas per person and a quarantine/approval queue **not done** |
+| 7 | Board errors and housekeeping | **done for stage 3** — friendly errors, pagination, reversible moderation (pin / sorted out / hide) with audit lines |
+| 8 | Bounded search | **fixed** — process pool + bounded wait, deadline respected |
 | 9 | Truthful downloads/readiness/health | not started |
 | 10 | Network loss after boot | not started |
 | 11 | Backup / offline recovery kit | not started |
 | 12 | Emergency content review | not started |
 | 13 | Essentials pack, QR, accessibility, household page | not started |
-| 14 | Sequence | stage 1–2 done, stage 3 next |
-| 15 | Acceptance tests | 42 tests for stages 1–2; the rest are unwritten by construction |
+| 14 | Sequence | stages 1–3 done, stage 4 next |
+| 15 | Acceptance tests | 84 tests, all green (`pytest -q`) |
 
 ---
 
@@ -74,21 +74,80 @@ still does what the documents now say.
 
 ---
 
-## 3. Defects reproduced against the checkout (evidence, not hearsay)
+## 3. What changed in stage 3 — uploads, imports, the board, search
+
+New file: `pi/api/ark_storage.py` — the only place a file may be written, and the
+only place a display name is decided.
+
+| Rule | Why it is that way |
+|---|---|
+| The name a person sees is a **label**, never a path | `display_name()` strips directories, control characters and anything a URL or filesystem reads as structure. It never decides where the file lives, so `../../etc/passwd` arrives as `passwd`. |
+| Every upload gets its **own** place on disk | The stored name is 128 random bits plus the label, published with `os.link()`, which *refuses* to replace an existing file. Three people sharing `photo.jpg` in one minute now produce three rows and three files (was: the third overwrote the second). |
+| Nothing half-written is ever visible | Bytes land in `drop/tmp` (not served by anything), are flushed and `fsync`ed, and only then appear in `drop/files`. A refused upload leaves no residue; `reconcile_temp()` clears anything older than six hours at start-up. |
+| The cap is enforced while streaming, with a reserve | 2 GiB per file — the same number nginx allows (plus 16 MiB of request framing, `client_max_body_size 2064m`) — and the box refuses to write into its last 512 MiB, because a full card takes the whole portal down, not just one upload. An empty file is refused with a sentence a person can act on. |
+
+### 3.1 The File Box page
+
+Downloads use the stored name (`/drop/<stored>`), so the link is stable and the
+label can be anything. Hidden files disappear from the reading page but stay on
+the card; the owner's page lists the last fifty with a size and a Hide/Show
+button. Deleting a file is the only irreversible action on the box, so it asks
+for the owner's own password again and is confined to `drop/files` by a parent
+check (`_remove_from_card`).
+
+### 3.2 The book importer
+
+`ark-import-books` now keeps `.imported.json` beside `calibre-incoming/done/`,
+keyed by the **content** fingerprint (sha256):
+
+* `done/` is no longer scanned, so imported books cannot be imported again.
+* A file is skipped when its hash is already in the ledger — dropping the same
+  book again, even renamed, adds nothing.
+* A **File Box copy is never moved or deleted**: `/drop/<stored>` keeps working
+  after the book is on the shelf. Only files in `calibre-incoming/` are retired
+  to `done/`.
+* Only files that genuinely became books (or File Box copies, which stay put)
+  are written to the ledger; a failed import is offered again on the next run.
+* Cost, stated plainly: each run fingerprints every candidate file, so a large
+  File Box means a few seconds of hashing per drop. It runs `Nice=10` with idle
+  I/O and blocks nothing.
+
+### 3.3 Search
+
+`search_library()` no longer builds an executor per request. One process-wide
+pool (`SEARCH_WORKERS = 6`) is used, and the deadline is enforced with a bounded
+`future.result(timeout=…)` over the *unfinished* set — the pool is never shut
+down on the request path, so the deadline actually returns. Answers that arrive
+late are dropped instead of holding the page open (was: ≈20–30 s worst case).
+
+### 3.4 The board and its switches
+
+* Reading is paginated (`?p=`, 20 a page, newest first) and shows a total.
+* Moderation is reversible and never deletes: **pin / unpin**, **sorted out /
+  still open**, **hide / show again**. Every action writes one audit row.
+* The column name written by each action comes from a fixed table
+  (`BOARD_ACTIONS`, `FILE_ACTIONS`), never from the request.
+* Two owner switches, on the Community page: *anyone nearby can post a message*
+  and *anyone nearby can add a file*. Both default to on. Switching off stops new
+  writes with a friendly 403 and changes nothing already stored — reading,
+  downloading and the whole library keep working.
+
+## 4. Defects reproduced against the checkout (evidence, not hearsay)
 
 | Defect | Where | Evidence |
 |---|---|---|
 | `error_page()` wrapped an `HTMLResponse` inside another → `AttributeError`, HTTP 500 on an invalid board post | `main.py` (pre-fix) | `tests/test_public.py::test_invalid_board_post_returns_400_not_500` now asserts a 400; before the fix the same call raised `AttributeError: 'HTMLResponse' object has no attribute 'encode'` |
-| Upload naming collides: second upload gets `YYYYmmdd-HHMM-name`, the third **overwrites** it inside the same minute | `main.py` `files_post` | read: `stamp` has minute resolution, `tmp.replace(target)` is unconditional. Not yet fixed (stage 3) |
-| `search_library()` "12 s deadline" drains: leaving `as_completed(timeout=…)` waits for the executor context manager to join every worker, and 20 collections ÷ 6 workers × 9 s per source is far past the budget | `main.py` | read; no test yet (stage 4) |
-| nginx allows 4 GiB bodies while the API rejects at 2 GiB | `ark.conf` `client_max_body_size 4g` vs `MAX_UPLOAD` | read; alignment belongs with the storage rework |
-| `kiwix-serve` listens on `*:8081`, bypassing the proxy | live Pi `ss -ltnH` | `*:8081` observed; loopback-only change is stage 3/5 work |
-| Database connections never closed (`with db() as conn` is a transaction, not a close) | `main.py` | replaced by `ark_db.read()` / `ark_db.tx()` in this stage |
-| README says `/srv/ark/zim-pause`; the downloader reads `/etc/ark/zim-pause` | `README.md` vs `pi/bin/ark-zim-download:21` | fixed in this stage; profile name `min` → `mini` fixed too |
+| Upload naming collides: second upload gets `YYYYmmdd-HHMM-name`, the third **overwrites** it inside the same minute | `main.py` `files_post` (pre-fix) | **fixed** — `tests/test_storage.py` proves three same-name uploads keep three files; live check on 24 Oct: three `evil name.txt` uploads produced three rows, three stored names, three files |
+| `search_library()` "12 s deadline" drains: leaving `as_completed(timeout=…)` waits for the executor context manager to join every worker, and 20 collections ÷ 6 workers × 9 s per source is far past the budget | `main.py` | **fixed** — `tests/test_search.py` holds a slow source and asserts the page returns inside the budget |
+| nginx allows 4 GiB bodies while the API rejects at 2 GiB | `ark.conf` vs `MAX_UPLOAD` | **fixed** — `client_max_body_size 2064m` = 2 GiB + 16 MiB of framing; `tests/test_config.py` keeps the two numbers tied together |
+| `kiwix-serve` listens on `*:8081`, bypassing the proxy | live Pi `ss -ltnH` | **fixed in the unit** — `--address=127.0.0.1` (`pi/systemd/ark-kiwix.service`); not yet re-checked on hardware |
+| Database connections never closed (`with db() as conn` is a transaction, not a close) | `main.py` | replaced by `ark_db.read()` / `ark_db.tx()` in stage 2 |
+| README says `/srv/ark/zim-pause`; the downloader reads `/etc/ark/zim-pause` | `README.md` vs `pi/bin/ark-zim-download:21` | fixed in stage 2; profile name `min` → `mini` fixed too |
+| Importer rescanned `done/`, so an already-imported book could be added again under a new name | `pi/bin/ark-import-books` (pre-fix) | **fixed** — `tests/test_import.py` runs the importer twice and asserts one book; the ledger is keyed by content |
 
 ---
 
-## 4. Decision log
+## 5. Decision log
 
 Numbered so later stages can cite them. Change one only with a reason written
 here.
@@ -151,19 +210,67 @@ library for no user-visible gain.
 which the appliance does not install. `tests/requirements.txt` documents the
 extra packages, and the suite uses only temporary directories.
 
+**D12 — the display name is a label; the stored name is the address.** The
+person's filename is never used as a path, so no upload can escape `drop/files`
+or overwrite another. Uniqueness comes from 128 random bits *and* from `os.link`,
+which refuses an existing target — belt and braces, because "almost certainly
+unique" is not the same as "cannot collide". `/drop/<stored>` is therefore a
+permanent, unguessable link; the label can be anything.
+
+**D13 — a File Box copy is never the importer's to move.** Retiring a book out of
+`drop/files` used to kill the download link the moment the book reached the
+shelf. The importer now leaves that copy alone and records its fingerprint in
+`.imported.json` instead, so the book is not added twice and the link still works.
+Cost: the file exists twice (File Box + library). The owner can delete the File
+Box copy from the Community page — that removes the link, never the book.
+
+**D14 — moderation is reversible, and the column name never comes from the
+request.** Pin, sorted-out and hide are three booleans with an inverse action
+each; nothing is deleted and every action writes one audit row. The SQL column is
+chosen from `BOARD_ACTIONS` / `FILE_ACTIONS`, so a crafted form field cannot reach
+`execute()`. Deleting a file is the single irreversible action and costs the
+owner's own password again.
+
+**D15 — the search pool outlives the request; the deadline is a bound, not a
+promise to wait.** One process-wide `ThreadPoolExecutor` with
+`SEARCH_WORKERS = 6`; the request waits on the *unfinished* set with
+`future.result(timeout=remaining)` and returns whatever arrived. Late answers are
+dropped. Shutting the pool down per request is what made the old 12 s deadline
+take 20–30 s.
+
 ---
 
-## 5. Test evidence
+## 6. Test evidence
 
 ```
-$ .venv/bin/python -m pytest
-..........................................                               [100%]
-42 passed
+$ .venv/bin/python -m pytest -o addopts='--strict-markers' -q
+........................................................................ [ 85%]
+............                                                             [100%]
+84 passed in 13.31s
 ```
+
+(`pytest.ini` already passes `-q`, so a second `-q` hides the summary line; the
+command above is the one that prints the count.)
+
+Breakdown: `test_auth` 15 · `test_board` 15 · `test_accounts` 13 · `test_storage`
+11 · `test_import` 7 · `test_public` 7 · `test_db` 7 · `test_search` 6 ·
+`test_config` 3.
 
 Environment: macOS, Python 3.9.6, fastapi/uvicorn/httpx/pytest from
 `tests/requirements.txt`, scrypt via the `cryptography` fallback.
 Database: a fresh `tmp_path` per test; the live library is never opened.
+
+Live smoke check on the development machine (uvicorn on `127.0.0.1:8099`,
+`ARK_ROOT=/tmp/ark-smoke2`), 24 Oct 2026:
+
+```
+GET /search?q=water 200 · GET /board 200 · GET /files 200
+three uploads named "../../etc/evil name.txt", "evil name.txt", "evil name.txt"
+  → 303, 303, 303
+  → files table: 3 rows, display "evil name.txt", stored
+     1836769baabb5282-…, f72373dc8f4ddb4c-…, 9b13a4a3bb715cd7-…
+  → drop/files: 3 files · drop/tmp: empty · page lists all three
+```
 
 Cross-implementation check, run on the appliance:
 
@@ -176,18 +283,31 @@ verified through the Mac's fallback.
 
 ---
 
-## 6. Next executable step
+## 7. Next executable step
 
-Stage 3, in this order (each with a test before the code):
+Stage 3 is closed for the four defects. What it deliberately did **not** do, and
+what comes next (each with a test before the code):
 
-1. **Uploads**: unique internal IDs + safe display names; exclusive temp files
-   outside public paths; stream with a size cap enforced *before* spooling
-   (align nginx `client_max_body_size` with the app's limit); atomic finalise;
-   quota and free-space reserve; abandoned-temp reconciliation.
-2. **Imports**: exclude `done/`, stable per-file states, content hashes,
-   idempotent rescans, keep the File Box link valid after import.
-3. **Board**: pinned/resolved/hidden states, pagination, moderation routes
-   behind the new session (the auth groundwork is already in place).
+1. **Stage 4 — truthful state.** A readiness/health panel that says what is
+   actually true (each listener, each library, free space, last import, last
+   download) instead of a green dot that only means "the process is up";
+   download progress and pause/resume that report real bytes.
+2. **Stage 5 — the network after boot.** Loss of the home network once the box is
+   up (not just at start), and the hotspot taking over without a reboot.
+3. **Stage 6 — backup and the offline recovery sheet.** A backup that includes
+   `drop/files`, `api/data`, the library and `.imported.json`, plus the printed
+   card that gets a stranger from a dead box to a working one.
+4. **Stage 7 — the household layer.** Emergency content review, the essentials
+   pack, QR cards, accessibility and the household page.
+
+Left over from stage 3, on purpose (do not describe these as done):
+
+* **Per-person quotas and a quarantine/approval queue** — the cap is per file
+  (2 GiB) and the box protects its last 512 MiB, nothing is metered per device,
+  and every upload is immediately downloadable.
+* **Trash** — hide is reversible but delete is for ever; there is no middle step.
+* **Anonymous uploads are still anonymous** — the switch turns writing off, it
+  does not tell the owner *who* wrote.
 
 Definition of done for each: a failing test first, then the fix, then
 `pytest` green, then a checkpoint line here.
@@ -195,4 +315,35 @@ Definition of done for each: a failing test first, then the fix, then
 Rules that still apply: never force-push, never move `v1.0.5`, keep the public
 reading path working at every commit, do not deploy or reboot the live box
 without the owner's explicit go-ahead.
+
+---
+
+## 8. Stage 3 checkpoint — 24 Oct 2026
+
+`pytest` **84 passed** (9 files, breakdown in §6). Branch `feature/admin-hardening`,
+nothing deployed, no hardware test — this is a code-and-tests checkpoint only.
+
+* **New:** `pi/api/ark_storage.py` — the single write path (128-bit stored name,
+  `os.link` finalise, spool in `drop/tmp`, cap while streaming, 512 MiB reserve,
+  orphan-temp sweep). `tests/test_storage.py` (11 tests) is its contract.
+* **Schema v2** — `notes.pinned/resolved/hidden`, `files.stored/display/sha256/hidden`
+  (`settings` itself is v1). Old rows keep `stored` as the empty string and are
+  read through `_stored_name()`, so an upgraded box keeps serving the links
+  people already have.
+* **Owner controls** — `/admin/community`: `public_board_post` and
+  `public_uploads` switches (both default **on**), pin / sorted out / hide /
+  restore for notes, hide / restore for files, delete only after the owner types
+  their own password again. Every action writes an audit row.
+* **Bounded search** — one process-wide pool of 6, `MAX_COLLECTIONS = 12`,
+  `SEARCH_DEADLINE = 6.0 s`; `tests/test_search.py` holds a slow source and
+  asserts the page returns inside the budget.
+* **Scripts** — `65-admin.sh` proves the Community page answers only behind the
+  sign-in on `:8443`; `90-verify.sh` additionally reports the Community page and
+  the File Box folders. Both `bash -n` clean.
+* **Docs changed in the same commit** — `README.md`, `docs/ADMIN.md`,
+  `docs/USING-THE-ARK.md`, `docs/REBUILD-ME-ARK.txt`,
+  `docs/REBUILD-FROM-BACKUP.txt`, `.clinerules`.
+* **Next executable step** — stage 4 (§7.1): truthful readiness and health.
+  Still open from stage 3: per-person quotas, a quarantine step between upload
+  and download, and a trash instead of for-ever delete.
 

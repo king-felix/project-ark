@@ -114,13 +114,13 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 
 ## 8. PROJECT STATE — read this before touching anything
 
-**Last updated:** 2026-10-24 · **Read `docs/IMPLEMENTATION-LOG.md` next** (status table, decisions D1–D11, defects, test evidence, next step). This section is the digest; that file is the record.
+**Last updated:** 2026-10-24 · **Read `docs/IMPLEMENTATION-LOG.md` next** (status table, decisions D1–D15, defects, test evidence, next step). This section is the digest; that file is the record.
 
 | | |
 |---|---|
 | Released baseline | tag **`v1.0.5`** = `main` = `dd3336c` (the published release; the live Pi runs this) |
 | Current work | branch **`feature/admin-hardening`**, pushed to `origin` (never force-push, never move a tag) |
-| Deployment | **code/config only — stage 2 is NOT deployed, no hardware or browser test has been done** |
+| Deployment | **code/config only — stages 2 and 3 are NOT deployed, no hardware or browser test has been done** |
 | Owner decisions pending | rotate the GitHub password; rotate the Pi password; licence choice |
 
 ### 8.1 What exists, and what each piece owns
@@ -130,14 +130,16 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 | `pi/api/main.py` | public FastAPI app: `/api`, `/search`, `/board`, `/files`; mounts the admin router; bumps `session_epoch` at start |
 | `pi/api/ark_db.py` | one connection policy (`read()` / `tx()`, always closed), numbered migrations in one transaction, audit helper, install marker, `SCHEMA_VERSION` |
 | `pi/api/ark_security.py` | scrypt hashing, length-only policy (12…1024, reject never truncate), opaque sessions (SHA-256 digest of a 256-bit token), CSRF, per-account + per-IP throttling |
-| `pi/api/ark_admin.py` | `/admin` routes: login, forced setup, password, accounts, reset/enable/disable, audit, logout, overview |
+| `pi/api/ark_admin.py` | `/admin` routes: login, forced setup, password, accounts, reset/enable/disable, audit, logout, overview, **Community** (switches + board/file moderation) |
+| `pi/api/ark_storage.py` | the only write path for shared files: display name vs stored name, spool in `drop/tmp`, `os.link` finalise, size cap + free-space reserve, orphan-temp reconcile |
 | `pi/api/ark_recover.py` | recovery logic, reached only through the root wrapper |
 | `pi/bin/ark-tls-cert` | the box's own certificate: SANs, `--show` fingerprint, renew at 30 days, `--force` |
 | `pi/bin/ark-admin-recover` | `0700 root:root`, runs the Python as `pi` (keeps WAL owned by the service user) |
 | `pi/nginx/ark-admin.conf` | `:8443` management origin (`/admin` + stylesheet only, unknown Host rejected) and `:8444` loopback-only setup listener; blanks `X-ARK-Setup-Channel` on `:8443` |
 | `pi/nginx/ark.conf` | public `:80`; `location ^~ /admin { return 404; }` |
-| `pi/steps/65-admin.sh` | installs the above and proves each door (404 / 403 / TLS-only) |
-| `tests/` | 42 pytest tests, throwaway databases, no Pi needed |
+| `pi/steps/65-admin.sh` | installs the above and proves each door (404 / 403 / TLS-only, Community behind the sign-in) |
+| `pi/steps/90-verify.sh` | read-only health report: every page, every listener, the admin door, the File Box folders, free space |
+| `tests/` | 84 pytest tests, throwaway databases, no Pi needed |
 
 ### 8.2 Ports and who may reach them
 
@@ -146,7 +148,7 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 | `:80` | the whole public portal | anyone on Wi-Fi or LAN; **404 for `/admin`** |
 | `:8443` | `/admin` + `/assets/ark-admin.css`, TLS only | the LAN — but a sign-in is required |
 | `:8444` | `/admin` setup only, loopback-bound | only through an SSH tunnel (`ssh -N -L 8444:127.0.0.1:8444 pi@ark.local`) |
-| `:8081` `:8083` `:8085` | kiwix / calibre / API, proxied by nginx | see §8.5 known defects |
+| `:8081` `:8083` `:8085` | kiwix / calibre / API, proxied by nginx | `127.0.0.1` only — the unit binds loopback, so the proxy is the only way in |
 
 ### 8.3 State on the Pi
 
@@ -162,7 +164,7 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 ```bash
 # tests (Mac, throwaway DBs, never the live library)
 python3 -m venv .venv && .venv/bin/pip install -r tests/requirements.txt
-.venv/bin/python -m pytest -q                 # expect 42 passed
+.venv/bin/python -m pytest -q                 # expect 84 passed
 
 # deploy / verify on the Pi (only with the owner's explicit go-ahead)
 sudo bash /srv/ark/src/install-ark.sh --only 60-portal,65-admin
@@ -177,17 +179,43 @@ sudo ark-admin-recover --list                 # locked out (console only)
 
 Bootstrap account: `admin` / `ChangeMe-ARK!`, `must_change=1`, claimable **only** through the loopback listener while unclaimed. It is in public code on purpose and useless without the tunnel.
 
-### 8.5 Known open defects (reproduced, recorded, not yet fixed)
+### 8.5 Defects: what stage 3 fixed, and what is still open
 
-* Upload names collide: three same-name uploads in a minute overwrite each other (minute-resolution stamp). Fixed in stage 3 with IDs + safe display names.
-* Search "12 s" deadline drains: executor `shutdown()` still joins every worker (≈20–30 s worst case).
-* nginx allows `4g` request bodies while the API caps at 2 GiB — align them.
-* `kiwix-serve` listens on `*:8081`, so it can be reached without the proxy.
-* Public board posting and File Box uploads are **still anonymous** (stage 3 moves them behind the admin switch).
+Fixed on `feature/admin-hardening` (each one now has a test that fails without the fix):
 
-### 8.6 Not built yet (stages 3–7 of the brief)
+* Upload names collide — replaced by one write path in `pi/api/ark_storage.py`: a 128-bit random
+  stored name, `os.link` so a collision is impossible rather than unlikely, spool in
+  `/srv/ark/drop/tmp` (never served), cap enforced while streaming, 512 MiB reserve, empty-file
+  refusal, orphan-temp reconcile at start. The display name is only a label.
+* Search "12 s" deadline drained by `shutdown()` joining every worker — one process-wide pool
+  (`SEARCH_WORKERS = 6`) plus `future.result(timeout=…)` over the unfinished set only.
+* nginx `4g` vs API 2 GiB — `client_max_body_size 2064m` (2 GiB + 16 MiB framing), and
+  `tests/test_config.py` keeps the two numbers tied to `ark_storage.MAX_FILE`.
+* `kiwix-serve` on `*:8081` — the unit now binds `127.0.0.1:8081`.
+* Imports duplicated on every rescan — ledger keyed by sha256 in
+  `/srv/ark/calibre-incoming/.imported.json`, `done/` never rescanned, File Box copies never moved
+  (the download link survives).
+* No moderation, no switch — `/admin/community`: two switches, pin/sorted-out/hide for notes,
+  hide for files, delete behind a password re-auth; every action audited, hidden items stay in the
+  database, reversible except delete.
 
-Upload safety + quotas + quarantine; import idempotency (`done/` exclusion, hashes, preserved File Box links); board moderation (pin/resolve/hide, pagination); bounded search; truthful readiness + health panel; network-loss failover; backup/restore kit + offline recovery sheet; emergency content review; essentials pack, QR cards, accessibility and the household page. **Do not describe any of these as done, and never invent a control that does not exist.**
+**Still open, and they are deliberate limits, not oversights:**
+
+* Public board posting and File Box uploads are **still anonymous** — the switch turns writing
+  off, it never identifies who wrote. There are no per-person quotas, no quarantine and no trash.
+* nginx now agrees with the app on 2 GiB, but nothing tests a real 2 GiB upload over the wire.
+
+### 8.6 Not built yet (stages 4–7 of the brief)
+
+Stage 3 delivered: upload safety (unique stored names, one write path, cap + reserve, empty-file
+refusal, temp reconcile), import idempotency (sha256 ledger, `done/` exclusion, preserved File Box
+links), board moderation + the two Community switches, and bounded search.
+
+Still absent, **do not describe any of it as done**: truthful readiness + health panel and real
+download progress; network-loss failover after boot; backup/restore kit + offline recovery sheet;
+emergency content review; essentials pack, QR cards, accessibility and the household page;
+per-person quotas; quarantine/approval queue; trash; board pagination beyond the last fifty items.
+**Never invent a control that does not exist.**
 
 ### 8.7 Gotchas that have already cost time
 

@@ -89,6 +89,19 @@ case "$loop_code" in
   *)           say_bad "loopback setup listener :8444" "HTTP ${loop_code:-none}" ;;
 esac
 
+community_code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 15 \
+                   https://127.0.0.1:8443/admin/community -H 'Host: ark.lan' 2>/dev/null || true)"
+case "$community_code" in
+  200|303|403) say_ok "Community page behind the sign-in" "HTTP $community_code" ;;
+  *)           say_bad "Community page behind the sign-in" "HTTP ${community_code:-none}" ;;
+esac
+
+if [[ -d "$ARK_ROOT/drop/files" && -d "$ARK_ROOT/drop/tmp" ]]; then
+  say_ok "File Box folders" "drop/files + drop/tmp, $(find "$ARK_ROOT/drop/files" -maxdepth 1 -type f | wc -l) shared file(s)"
+else
+  say_bad "File Box folders" "missing drop/files or drop/tmp — re-run phase 20"
+fi
+
 if [[ -x /usr/local/sbin/ark-admin-recover ]]; then
   say_ok "recovery command" "installed, mode $(stat -c '%a' /usr/local/sbin/ark-admin-recover)"
 else

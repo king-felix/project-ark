@@ -30,7 +30,7 @@ ARK_ROOT = Path(os.environ.get("ARK_ROOT", "/srv/ark"))
 DB_PATH = Path(os.environ.get("ARK_DB", str(ARK_ROOT / "api" / "data" / "ark.db")))
 MARKER_PATH = Path(os.environ.get("ARK_MARKER", str(DB_PATH.parent / "ark.installed")))
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # ---------------------------------------------------------------------------
 #  migrations — append, never edit an entry that has already shipped
@@ -107,6 +107,36 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
                    key   TEXT PRIMARY KEY,
                    value TEXT NOT NULL
                )""",
+        ],
+    ),
+    (
+        2,
+        [
+            # -- the board gains three reversible states ------------------------
+            # Nothing here deletes: a hidden message can be restored, a pinned
+            # warning stays on top, and "sorted out" leaves the answer in place
+            # for the next person who has the same problem.
+            "ALTER TABLE notes ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE notes ADD COLUMN resolved INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE notes ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0",
+            # -- a shared file keeps its own place on disk ----------------------
+            # 'name' used to be both the label and the file name, which is how
+            # three uploads in one minute overwrote each other.  'stored' is the
+            # name on disk (random, unique); 'display' is only what a person
+            # reads; 'name' stays for older rows and older code.
+            "ALTER TABLE files ADD COLUMN stored TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE files ADD COLUMN display TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE files ADD COLUMN sha256 TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE files ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0",
+            "UPDATE files SET stored = name WHERE stored = ''",
+            "UPDATE files SET display = name WHERE display = ''",
+            "CREATE INDEX IF NOT EXISTS notes_order ON notes(hidden, resolved, pinned, id)",
+            "CREATE INDEX IF NOT EXISTS files_order ON files(hidden, id)",
+            # -- the owner's switches, open out of the box ---------------------
+            # A box that has never been set up must still be usable by the
+            # people standing next to it; closing the doors is a deliberate act.
+            "INSERT OR IGNORE INTO settings (key, value) VALUES ('public_board_post', '1')",
+            "INSERT OR IGNORE INTO settings (key, value) VALUES ('public_uploads', '1')",
         ],
     ),
 ]

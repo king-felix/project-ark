@@ -17,7 +17,8 @@ PORTAL="$ARK_ROOT/portal"
 API_DIR="$ARK_ROOT/api"
 
 # ---- static pages -----------------------------------------------------------
-for d in "$PORTAL" "$PORTAL/assets" "$API_DIR" "$API_DIR/data" "$ARK_ROOT/drop/files"; do
+for d in "$PORTAL" "$PORTAL/assets" "$API_DIR" "$API_DIR/data" \
+         "$ARK_ROOT/drop/files" "$ARK_ROOT/drop/tmp"; do
   ark_ensure_dir "$d" 775 "$ARK_PI_USER:$ARK_PI_GROUP"
 done
 
@@ -28,7 +29,7 @@ ark_copy "$ARK_SRC/portal/assets/ark-admin.css" "$PORTAL/assets/ark-admin.css" 6
 ark_ok "portal pages installed in $PORTAL"
 
 # ---- backend ----------------------------------------------------------------
-for f in main.py ark_db.py ark_security.py ark_admin.py ark_recover.py; do
+for f in main.py ark_db.py ark_storage.py ark_security.py ark_admin.py ark_recover.py; do
   ark_copy "$ARK_SRC/api/$f" "$API_DIR/$f" 644 "$ARK_PI_USER:$ARK_PI_GROUP"
 done
 ark_copy "$ARK_SRC/api/requirements.txt" "$API_DIR/requirements.txt" 644 "$ARK_PI_USER:$ARK_PI_GROUP"

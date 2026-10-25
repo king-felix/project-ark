@@ -51,7 +51,11 @@ def test_migrations_are_idempotent(ark):
     second = ark.db.migrate()
     assert first == second == ark.db.SCHEMA_VERSION
     with ark.db.read() as conn:
-        assert conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0] == 1
+        versions = [r[0] for r in conn.execute(
+            "SELECT version FROM schema_version ORDER BY version")]
+    # One row per version, each recorded once however many times migrate() runs.
+    assert versions == [v for v, _ in ark.db.MIGRATIONS]
+    assert versions == sorted(set(versions))
 
 
 def test_upgrade_keeps_board_and_files(ark, tmp_path):

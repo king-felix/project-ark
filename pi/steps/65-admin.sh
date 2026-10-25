@@ -61,6 +61,14 @@ case "$code" in
   *)           ark_die "https://127.0.0.1:8443/admin returned '$code'" ;;
 esac
 
+# The Community page sits behind the same sign-in, and must not appear elsewhere.
+code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 20 \
+        https://127.0.0.1:8443/admin/community -H 'Host: ark.lan' || true)"
+case "$code" in
+  200|303|403) say "$(printf '\033[1;32m✓\033[0m')" "Community page behind the sign-in" "$code" ;;
+  *)           ark_die "https://127.0.0.1:8443/admin/community returned '$code'" ;;
+esac
+
 code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 20 \
         https://127.0.0.1:8444/admin -H 'Host: localhost' || true)"
 case "$code" in

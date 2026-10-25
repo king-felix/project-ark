@@ -27,7 +27,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -36,6 +36,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 import ark_admin
 import ark_db
+import ark_storage
 
 ARK_ROOT = Path(os.environ.get("ARK_ROOT", "/srv/ark"))
 LIBRARY_XML = ARK_ROOT / "kiwix" / "library.xml"
@@ -43,14 +44,23 @@ ZIM_DIR = Path(os.environ.get("ZIM_DIR", str(ARK_ROOT / "kiwix")))
 ZIM_STATUS = ZIM_DIR / "state" / "status.json"
 CALIBRE_DB = ARK_ROOT / "calibre-library" / "metadata.db"
 VAULT_DIR = ARK_ROOT / "vault"
-DROP_DIR = ARK_ROOT / "drop" / "files"
+DROP_DIR = ark_storage.drop_dir()
 KIWIX_INTERNAL = os.environ.get("KIWIX_INTERNAL", "http://127.0.0.1:8081/kiwix")
 
-MAX_UPLOAD = 2 * 1024 * 1024 * 1024        # 2 GiB (nginx currently allows 4g: see
-                                           # docs/IMPLEMENTATION-LOG.md §3 — the two
-                                           # limits are aligned in the storage stage)
+MAX_UPLOAD = ark_storage.MAX_FILE          # the same number nginx is configured with
 MAX_NOTE = 4000
 MAX_NAME = 60
+
+# Page sizes. Small enough that a phone does not download a year of notes to
+# read the newest one, large enough that scrolling feels normal.
+BOARD_PAGE = 20
+FILES_PAGE = 50
+
+# Search is bounded in three places: how many collections are asked, how many
+# questions are in flight, and how long the page waits for answers.
+SEARCH_WORKERS = 6
+MAX_COLLECTIONS = 12
+SEARCH_DEADLINE = 6.0
 
 app = FastAPI(title="Project ARK", docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -64,11 +74,17 @@ def init_db() -> None:
     Called once per process, at import: a restart therefore never resurrects a
     default login, never resets a password, and always starts from "signed out".
     """
-    DROP_DIR.mkdir(parents=True, exist_ok=True)
+    ark_storage.ensure_dirs()
     ark_db.migrate()
     ark_admin.ensure_initialised()
     with ark_db.tx() as conn:
         ark_db.bump_session_epoch(conn)
+    # A half-written upload from a crash or a closed browser is invisible to
+    # everyone; delete the stale ones so the card does not slowly fill with them.
+    try:
+        ark_storage.reconcile_temp()
+    except OSError:
+        pass          # housekeeping must never stop the portal from starting
 
 
 init_db()
@@ -111,12 +127,10 @@ def ago(iso: str) -> str:
     return f"{int(secs // 31536000)} years ago"
 
 
-def safe_name(raw: str) -> str:
-    """Keep a file name usable on disk and safe in a URL."""
-    name = os.path.basename((raw or "").replace("\\", "/")).strip()
-    name = re.sub(r"[\x00-\x1f\x7f]", "", name)
-    name = re.sub(r"[^A-Za-z0-9._ ()\[\]-]+", "_", name).strip(" .")
-    return name[:120] or "file"
+def setting(key: str, default: str = "1") -> str:
+    """Read one of the owner's switches; a missing row means 'open'."""
+    with ark_db.read() as conn:
+        return ark_db.get_setting(conn, key, default)
 
 
 def esc(value) -> str:
@@ -338,36 +352,58 @@ def _kiwix_one(book_id: str, pattern: str) -> list[dict]:
         return _parse_feed(resp.read(3_000_000))[:4]
 
 
+def _search_pool() -> ThreadPoolExecutor:
+    """One pool for the whole process, created on first use.
+
+    Creating a pool per request meant a per-request ``shutdown()``, and that
+    joins every worker — so the 12-second deadline expired and the page then
+    waited anyway, up to several minutes with twenty collections.  Holding the
+    pool open means the wait is the only thing that can delay the page.
+    """
+    global _SEARCH_EXECUTOR
+    if _SEARCH_EXECUTOR is None:
+        _SEARCH_EXECUTOR = ThreadPoolExecutor(max_workers=SEARCH_WORKERS,
+                                              thread_name_prefix="ark-search")
+    return _SEARCH_EXECUTOR
+
+
+_SEARCH_EXECUTOR: ThreadPoolExecutor | None = None
+
+
 def search_library(pattern: str) -> list[dict]:
-    """Ask every collection at once; a slow or missing one never blocks the page."""
-    books = library_books()
+    """Ask a bounded set of collections, and never wait longer than the budget.
+
+    Whatever has arrived by the deadline is rendered; whatever has not is
+    abandoned (not joined, not waited for) and its late answer is discarded.
+    """
+    books = library_books()[:MAX_COLLECTIONS]
     if not books:
         return []
     by_id = {b["id"]: b for b in books}
     hits: list[dict] = []
     seen: set[tuple[str, str]] = set()
-    with ThreadPoolExecutor(max_workers=6) as pool:
-        jobs = {pool.submit(_kiwix_one, b["id"], pattern): b for b in books}
+    pool = _search_pool()
+    jobs = {pool.submit(_kiwix_one, b["id"], pattern): b for b in books}
+    done, pending = wait(list(jobs), timeout=SEARCH_DEADLINE)
+    for future in pending:
+        future.cancel()           # a running worker is left to finish and be ignored
+    for future in done:
+        book = jobs[future]
         try:
-            for future in as_completed(jobs, timeout=12):
-                book = jobs[future]
-                try:
-                    found = future.result()
-                except Exception:
-                    continue
-                for hit in found:
-                    # The link names the collection that owns the article; trust
-                    # that over the guess we made when we sent the question.
-                    m = re.search(r"/content/([^/]+)/", hit["link"])
-                    owner = by_id.get(m.group(1)) if m else None
-                    hit["source"] = (owner or book)["title"]
-                    key = (hit["link"], hit["title"])
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    hits.append(hit)
+            found = future.result()
         except Exception:
-            pass          # deadline reached: render whatever came back
+            continue              # one broken collection is not the page's problem
+        for hit in found:
+            # The link names the collection that owns the article; trust that
+            # over the guess we made when we sent the question.
+            m = re.search(r"/content/([^/]+)/", hit["link"])
+            owner = by_id.get(m.group(1)) if m else None
+            hit["source"] = (owner or book)["title"]
+            key = (hit["link"], hit["title"])
+            if key in seen:
+                continue
+            seen.add(key)
+            hits.append(hit)
     hits.sort(key=lambda h: (h["source"], h["title"]))
     return hits[:24]
 
@@ -498,28 +534,36 @@ def search(q: str = ""):
 #  message board
 # ---------------------------------------------------------------------------
 @app.get("/board", response_class=HTMLResponse)
-def board(ok: str = ""):
+def board(ok: str = "", p: int = 1):
+    page_no = max(1, int(p or 1))
+    offset = (page_no - 1) * BOARD_PAGE
     with ark_db.read() as conn:
+        total = int(conn.execute("SELECT COUNT(*) FROM notes WHERE hidden = 0").fetchone()[0])
         rows = conn.execute(
-            "SELECT id, ts, name, body FROM notes ORDER BY id DESC LIMIT 100"
+            "SELECT id, ts, name, body, pinned, resolved FROM notes WHERE hidden = 0"
+            " ORDER BY (CASE WHEN pinned = 1 AND resolved = 0 THEN 0 ELSE 1 END),"
+            "          resolved ASC, id DESC LIMIT ? OFFSET ?",
+            (BOARD_PAGE, offset),
         ).fetchall()
+        posting_open = ark_db.get_setting(conn, "public_board_post", "1") != "0"
+
     if rows:
-        items = "".join(
-            f'<li><b>{esc(r["name"])}</b>'
-            f'<span class="sub">{esc(ago(r["ts"]))}</span>'
-            f'<span class="sub" style="color:var(--ink);white-space:pre-wrap">{esc(r["body"])}</span></li>'
-            for r in rows
-        )
-        listing = f'<h2>What people wrote ({len(rows)})</h2><ul class="clean">{items}</ul>'
+        items = "".join(_note_item(r) for r in rows)
+        listing = f'<h2>What people wrote ({total})</h2><ol class="clean">{items}</ol>'
+        listing += _pager(page_no, offset + len(rows), total)
     else:
         listing = ('<h2>Nothing here yet</h2>'
                    '<p class="hint">Be the first: write what is broken, what was fixed, '
-                   'or who needs help. Everybody on the network can read it.</p>')
+                   'or who needs help. Everybody on the network can read it.</p>'
+                   if page_no == 1 else
+                   '<h2>That is all of it</h2>'
+                   '<p class="hint">There are no older messages. Go back to the newest.</p>'
+                   '<div class="nav"><a href="/board">Newest messages</a></div>')
 
     thanks = ('<p class="status"><span class="dot" aria-hidden="true"></span>'
               '<span><b>Saved.</b> Your message is on the board for everyone to see.</span></p>'
               if ok else "")
-    body = f"""{thanks}
+    form = f"""
   <form action="/board" method="post">
     <label for="name">Your name (or leave blank)</label>
     <input id="name" name="name" type="text" maxlength="{MAX_NAME}" placeholder="e.g. Sam" autocomplete="off">
@@ -528,14 +572,47 @@ def board(ok: str = ""):
               placeholder="The tap in the back garden is leaking. I have spare washers."></textarea>
     <button class="go-btn" type="submit">Put it on the board</button>
   </form>
-  <p class="note">Anyone on this Wi-Fi can read and post here. Keep it useful, keep it kind.</p>
+  <p class="note">Anyone on this Wi-Fi can read and post here. Keep it useful, keep it kind.</p>"""
+    if not posting_open:
+        form = ('<p class="status"><span class="dot" aria-hidden="true"></span>'
+                '<span><b>New messages are switched off.</b> The owner has paused posting for '
+                'now. You can still read everything below.</span></p>')
+
+    body = f"""{thanks}
+  {form}
   {listing}"""
     return page("Message Board", body, here="/board",
                 tagline="Notes for the next person — what broke, what got fixed, who needs a hand.")
 
 
+def _note_item(row) -> str:
+    """One message. Pinned and sorted markers are labels, not different pages."""
+    badges = ""
+    if row["pinned"]:
+        badges += '<span class="badge">Pinned</span>'
+    if row["resolved"]:
+        badges += '<span class="badge done">Sorted out</span>'
+    return (f'<li><b>{esc(row["name"])}</b>{badges}'
+            f'<span class="sub">{esc(ago(row["ts"]))}</span>'
+            f'<span class="sub" style="color:var(--ink);white-space:pre-wrap">'
+            f'{esc(row["body"])}</span></li>')
+
+
+def _pager(page_no: int, shown: int, total: int) -> str:
+    links = []
+    if page_no > 1:
+        links.append(f'<a href="/board?p={page_no - 1}">Newer messages</a>')
+    if shown < total:
+        links.append(f'<a href="/board?p={page_no + 1}">Older messages</a>')
+    return f'<div class="nav">{"".join(links)}</div>' if links else ""
+
+
 @app.post("/board", response_class=HTMLResponse)
 def board_post(name: str = Form(""), body: str = Form("")):
+    if setting("public_board_post") == "0":
+        return error_page("New messages are switched off.",
+                          "The owner has paused posting. Reading still works — nothing you "
+                          "wrote was lost, but nothing was added either.", 403)
     text = (body or "").strip()
     who = (name or "").strip() or "Anonymous"
     if len(text) < 2:
@@ -557,17 +634,26 @@ def board_post(name: str = Form(""), body: str = Form("")):
 def files(ok: str = "", err: str = ""):
     with ark_db.read() as conn:
         rows = conn.execute(
-            "SELECT id, ts, name, size, note FROM files ORDER BY id DESC LIMIT 200"
+            "SELECT id, ts, name, display, stored, size, note FROM files"
+            " WHERE hidden = 0 ORDER BY id DESC LIMIT ?", (FILES_PAGE,)
         ).fetchall()
+        total = int(conn.execute("SELECT COUNT(*) FROM files WHERE hidden = 0").fetchone()[0])
+        uploads_open = ark_db.get_setting(conn, "public_uploads", "1") != "0"
     if rows:
         items = "".join(
-            f'<li><a href="/drop/{esc(urllib.parse.quote(r["name"]))}">{esc(r["name"])}</a>'
+            f'<li><a href="/drop/{esc(urllib.parse.quote(_stored_name(r), safe=""))}">'
+            f'{esc(r["display"] or r["name"])}</a>'
             f'<span class="sub">{esc(human_size(r["size"]))} · added {esc(ago(r["ts"]))}</span>'
             + (f'<span class="sub">{esc(r["note"])}</span>' if r["note"] else "")
             + "</li>"
             for r in rows
         )
-        listing = f'<h2>Files people shared ({len(rows)})</h2><ul class="clean">{items}</ul>'
+        heading = f'Files people shared ({total})'
+        listing = f'<h2>{esc(heading)}</h2><ul class="clean">{items}</ul>'
+        if total > len(rows):
+            listing += ('<p class="note">Showing the newest '
+                        f'{len(rows)} of {total}. Older files are still here — ask the owner '
+                        'if you need one of them.</p>')
     else:
         listing = ('<h2>The box is empty</h2>'
                    '<p class="hint">Add the first file — a photo of a broken part, a recipe, a PDF '
@@ -580,7 +666,8 @@ def files(ok: str = "", err: str = ""):
     elif err:
         banner = ('<p class="status"><span class="dot" aria-hidden="true"></span>'
                   f'<span><b>Not uploaded.</b> {esc(err)}</span></p>')
-    body = f"""{banner}
+    if uploads_open:
+        form = f"""
   <form action="/files" method="post" enctype="multipart/form-data">
     <label for="file">Choose a file</label>
     <input id="file" name="file" type="file" required>
@@ -589,48 +676,47 @@ def files(ok: str = "", err: str = ""):
     <button class="go-btn" type="submit">Put it in the box</button>
   </form>
   <p class="note">Anyone on this Wi-Fi can download what you add. Do not put private things here.
-     Files up to 2 GB.</p>
+     Files up to {MAX_UPLOAD // (1024 ** 3)} GB.</p>"""
+    else:
+        form = ('<p class="status"><span class="dot" aria-hidden="true"></span>'
+                '<span><b>New uploads are switched off.</b> The owner has paused sharing for '
+                'now. Everything already in the box can still be downloaded.</span></p>')
+    body = f"""{banner}{form}
   {listing}"""
     return page("File Box", body, here="/files",
                 tagline="Swap files with everyone on the network — no account, no email.")
 
 
+def _stored_name(row) -> str:
+    """The name on disk. Older rows only have 'name', which was the disk name."""
+    return row["stored"] or row["name"]
+
+
 @app.post("/files", response_class=HTMLResponse)
-async def files_post(file: UploadFile = File(None), note: str = Form("")):
+def files_post(file: UploadFile = File(None), note: str = Form("")):
+    if setting("public_uploads") == "0":
+        return error_page("New uploads are switched off.",
+                          "The owner has paused sharing for now. Everything already in the "
+                          "box can still be downloaded. Nothing was stored.", 403)
     if file is None or not file.filename:
         return RedirectResponse("/files?err=No%20file%20was%20chosen", status_code=303)
-    name = safe_name(file.filename)
-    target = DROP_DIR / name
-    if target.exists():
-        stamp = datetime.now().strftime("%Y%m%d-%H%M")
-        target = DROP_DIR / f"{stamp}-{name}"
-    written = 0
-    tmp = target.with_suffix(target.suffix + ".part")
-    try:
-        with tmp.open("wb") as out:
-            while True:
-                chunk = await file.read(1024 * 1024)
-                if not chunk:
-                    break
-                written += len(chunk)
-                if written > MAX_UPLOAD:
-                    raise ValueError("too big")
-                out.write(chunk)
-        tmp.replace(target)
-    except ValueError:
-        tmp.unlink(missing_ok=True)
-        return RedirectResponse("/files?err=That%20file%20is%20too%20big%20(limit%202%20GB)",
-                                status_code=303)
-    except OSError:
-        tmp.unlink(missing_ok=True)
-        return RedirectResponse("/files?err=The%20box%20could%20not%20store%20it", status_code=303)
 
-    if written == 0:
-        target.unlink(missing_ok=True)
-        return RedirectResponse("/files?err=That%20file%20was%20empty", status_code=303)
+    # One write path for every upload: a hidden temp file, the cap enforced
+    # while it streams, then an atomic move that can never replace another
+    # person's file of the same name.
+    try:
+        stored = ark_storage.spool(file.file.read, file.filename)
+    except ark_storage.Refused as exc:
+        return RedirectResponse("/files?err=" + urllib.parse.quote(str(exc)), status_code=303)
+    finally:
+        file.file.close()
 
     with ark_db.tx() as conn:
-        conn.execute("INSERT INTO files (ts, name, size, note) VALUES (?, ?, ?, ?)",
-                     (now_iso(), target.name, written, (note or "").strip()[:140]))
+        conn.execute(
+            "INSERT INTO files (ts, name, stored, display, size, note, sha256)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (now_iso(), stored.display, stored.stored, stored.display, stored.size,
+             (note or "").strip()[:140], stored.sha256),
+        )
     return RedirectResponse("/files?ok=1", status_code=303)
 

@@ -16,14 +16,14 @@ API_DIR = Path(__file__).resolve().parents[1] / "pi" / "api"
 if str(API_DIR) not in sys.path:
     sys.path.insert(0, str(API_DIR))
 
-MODULES = ("main", "ark_admin", "ark_security", "ark_db")
+MODULES = ("main", "ark_admin", "ark_security", "ark_db", "ark_storage")
 
 
 @pytest.fixture()
 def ark(tmp_path, monkeypatch):
     """A fresh, isolated box: database, marker and drop directory in tmp_path."""
     root = tmp_path / "srv-ark"
-    for sub in ("api/data", "drop/files", "kiwix", "vault"):
+    for sub in ("api/data", "drop/files", "drop/tmp", "kiwix", "vault"):
         (root / sub).mkdir(parents=True)
     monkeypatch.setenv("ARK_ROOT", str(root))
     monkeypatch.setenv("ARK_DB", str(root / "api/data/ark.db"))

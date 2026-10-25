@@ -28,6 +28,7 @@ for d in \
   "$ARK_ROOT/calibre-incoming" \
   "$ARK_ROOT/drop" \
   "$ARK_ROOT/drop/files" \
+  "$ARK_ROOT/drop/tmp" \
   "$ARK_ROOT/scripts" \
   "$ARK_ROOT/backups"
 do

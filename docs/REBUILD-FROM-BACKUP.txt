@@ -118,6 +118,20 @@ DELIBERATELY NOT IN HERE
       a=$(du -B1 "$f" | cut -f1); s=$(stat -c %s "$f");
       [ "$a" -lt $(( s - s/50 )) ] && echo "SUSPECT $f"; done'
 
+  # 3e. what people put in the File Box, plus the record of what has already
+  #     been imported (the ledger is what stops a rescan re-adding every book)
+  rsync -az --rsync-path='sudo rsync' pi@ark.local:/srv/ark/drop/files/ ./drop-files/
+  rsync -az --rsync-path='sudo rsync' \
+      pi@ark.local:/srv/ark/calibre-incoming/.imported.json ./drop-files/
+
+  #     putting them back: the File Box folder must exist and belong to pi; the
+  #     stored names are random, so the portal's existing links keep working
+  ssh pi@ark.local 'sudo install -d -o pi -g pi -m 775 /srv/ark/drop/files'
+  rsync -az ./drop-files/ --exclude '.imported.json' pi@ark.local:/srv/ark/drop/files/
+  rsync -az ./drop-files/.imported.json \
+      pi@ark.local:/srv/ark/calibre-incoming/.imported.json
+  ssh pi@ark.local 'sudo chown -R pi:pi /srv/ark/drop /srv/ark/calibre-incoming'
+
 ------------------------------------------------------------------------------
 4. WHAT "GOOD" LOOKS LIKE WHEN IT IS DONE
 ------------------------------------------------------------------------------
@@ -129,6 +143,11 @@ DELIBERATELY NOT IN HERE
   · /kiwix/ lists collections, /books/ shows covers, /vault/ lists the guides
   · the home strip counts collections/books/guides and, while content is still
     arriving, shows "<n>% of <name> (x GB of y GB)"
+  · the File Box accepts a file and refuses an empty one with a readable
+    sentence; uploading the same filename three times leaves three entries and
+    three files in /srv/ark/drop/files with nothing left in /srv/ark/drop/tmp
+  · a book dropped in the File Box is on the shelf within a minute and its File
+    Box link still downloads afterwards
   · hotspot test: sudo ark-mode test 180 → join "The-Ark-Offline" → the phone
     opens the portal by itself → after 3 minutes it returns to the home Wi-Fi
 
