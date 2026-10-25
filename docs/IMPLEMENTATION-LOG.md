@@ -1056,17 +1056,38 @@ the bundle inside it was `root:root 0700`, and the page runs as `pi`.
 
 ### 16.5 Where the box stands
 
-`60-portal` was redeployed after the `/files` fix and proved live: a probe upload
-appeared, downloaded correctly (200, right bytes, right type), and was removed
-through `ark_db.tx()` + `ark_db.audit(action="file-delete")` so the audit trail
-reads like any other delete. The health and ownership fixes in §16.2/§16.3 are
-**committed but not yet on the box** — they need `--only 60-portal,95-backup`,
-which also installs the new `ark-backup`/`ark-restore` and hands over the existing
-bundle `ark-backup-20261025-093643`.
+`--only 60-portal,95-backup` ran against the live box, then `--only 90-verify`.
+What the box says, in its own words (`logs/verify-16.log`):
 
-**Still unproven:** nothing here has met a human. The ghost row is still on the
-live box (correctly, waiting for the owner to delete it through the door built
-for it), so the *"Nothing here can be opened"* sentence has never been rendered in
-a browser; and the `root:root` bundle case has only ever been reproduced with a
-`000` directory inside `tests/test_health.py`, never on the Pi.
+```
+· File Box     Nothing here can be opened: 1 record is left over from a file that has gone.
+✓ Latest copy  The newest copy was made in the last hour — 0 messages, 1 shared file, …
+· copies kept  1 in /srv/ark/backup
+✓ ARK_INSTALL_COMPLETE  (every phase succeeded)      failed: none
+```
+
+* `/files` now renders **“The box is empty — Add the first file…”** and the
+  leftover record's name appears nowhere on the page (the row is still in the
+  database, as §16.1 says it must be).
+* `95-backup` printed *“handed 1 existing copy/copies to pi so the owner page can
+  read them”*; `stat` now answers `pi:pi 700` for the bundle and `pi:pi 644` for
+  `.lock`, where both were `root:root`. **Latest copy** reads
+  `ark-backup-20261025-093643`, in `sections` and not in `blocking`.
+* The verifier's new `copy readable` line is **silent**, which is the pass: it
+  asked with `runuser -u pi -- test -r …/manifest.json` and got a yes. The same
+  test before the hand-over answered `PAGE-CANNOT-READ` — the defect reproduced
+  on the box, not only with `000` inside `tests/test_health.py`.
+* `/api/ready` answers **503**, `blocking: ["File Box"]`, until that record is
+  deleted. That is the rule and not a regression: an empty File Box is ready
+  (nothing to serve yet, `ready: true`), but a File Box that *claims* a file it
+  cannot open is not. `90-verify` renders it as a note (`content: false` → `·`)
+  beside the ready rows rather than as a failure, and the action line names the
+  one click that clears it. Nothing deletes it for the owner.
+
+**Still unproven:** the *"Nothing here can be opened"* sentence has not been read
+on a screen — the text above came from `/api/status`, not the page; nobody has
+tapped the delete that clears it and watched `/api/ready` return to 200; and the
+owner's admin account is still unclaimed, so **What is working** itself has never
+been opened. The phone walk-through (`.clinerules` §8.9 item 2) is the next human
+step.
 
