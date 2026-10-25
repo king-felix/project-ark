@@ -1680,7 +1680,8 @@ sudo bash /srv/ark/src/install-ark.sh --only 90-verify
 door was proved against a **throwaway instance** rather than by guessing a credential: a second
 API on `127.0.0.1:18099` with its own `ARK_ROOT` (`/tmp/arksmoke`), its own database, its own
 `arcade/`, the **real** `/srv/ark/romdb.sqlite` and a real **4,194,304 B** `apotris.gba`. The
-probe (`logs/arksmoke-proof-20261025.py`) signed in through the real router, opened the real
+probe (`logs/arksmoke-proof-20261025.py`, kept beside the deploy logs and **not** in git — it is a
+throwaway) signed in through the real router, opened the real
 **Games** page, posted the file as a browser does, read the answer, confirmed the words, and then
 asked the filesystem, the database and the public page. **29 checks, `SMOKE_RESULT PASS`:**
 
