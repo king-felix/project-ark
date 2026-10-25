@@ -965,9 +965,9 @@ station dump; EmulatorJS has never been played on the Pi and the live game sourc
 has never been asked for a file from the box (**the Pi still has no route to the
 internet** — the game library has to be built on the Mac and carried over); no
 2 GiB upload has crossed the proxy; and no restore has ever replaced records. The
-phone walk-through in `.clinerules` §8.9 item 2 is the next human step, and the
-owner's admin account is still unclaimed (`1 account, 1 still using a temporary
-password`).
+phone walk-through in `.clinerules` §8.9 item 2 is the next human step, and at
+that checkpoint the owner's admin account was still unclaimed (`1 account, 1
+still using a temporary password`) — claimed on 25 Oct at 14:55 UTC, §16.7.
 
 
 ## 16. File Box truth-telling, and who owns a copy — 25 Oct 2026
@@ -1086,8 +1086,176 @@ What the box says, in its own words (`logs/verify-16.log`):
 
 **Still unproven:** the *"Nothing here can be opened"* sentence has not been read
 on a screen — the text above came from `/api/status`, not the page; nobody has
-tapped the delete that clears it and watched `/api/ready` return to 200; and the
-owner's admin account is still unclaimed, so **What is working** itself has never
-been opened. The phone walk-through (`.clinerules` §8.9 item 2) is the next human
-step.
+tapped the delete that clears it and watched `/api/ready` return to 200; and
+**What is working** had never been opened at that checkpoint because the owner's
+account was still unclaimed. *Since §16.7 the account is claimed and the page
+answers 200 with the right title — but still not read by a human on a screen.*
+The phone walk-through (`.clinerules` §8.9 item 2) is the next human step, and it
+no longer needs the SSH tunnel.
+
+### 16.6 The networks the box will remember — 25 Oct 2026
+
+**First, the question that started this:** `The-Ark-Offline` is not on the air
+because the box is not in hotspot mode. It is on the home network
+(`House of Leaves-5G-1`, `192.168.1.26/24`, wifi link `home-wifi`), which is why
+anything on the same LAN reaches the portal at `http://ark.local`. The hotspot
+profile `ark-hotspot` still exists — SSID `The-Ark-Offline`, `mode=ap`,
+`ipv4.method=shared`, `autoconnect=no` — and only `ark-mode hotspot` or
+`ark-net-watch` bring it up. `autoconnect=no` is the design (`.clinerules` §8.7:
+the watchdog acts only through `ark-mode`), not a defect.
+
+**What was added.** Two networks the household also uses, `Rodclan` and
+`Rodclan-fast`, now exist as NetworkManager profiles on the box:
+`/etc/NetworkManager/system-connections/rodclan.nmconnection` and
+`rodclan-fast.nmconnection`, both `0600 root:root`, `autoconnect=yes`,
+`autoconnect-retries=0`, priorities **7** (2.4 GHz name) and **8** (5 GHz name),
+so the home router's 20/10/5 still wins whenever home is in range. They were
+written through **stdin** into a `0600` temp file and installed with
+`install -m 600 -o root -g root`, so no password ever appeared on a command line
+or in a shell history; the reload was `nmcli connection reload`. Verified by
+`nmcli … connection show` (SSID, autoconnect, priority, `key-mgmt=wpa-psk`) and
+by the stored secret's **length only** (10 characters) — the key itself was
+never printed.
+
+**Nothing was activated on purpose.** `nmcli connection up rodclan` would move
+the radio off the network the box is being tested over and could cut the SSH
+session doing the test; neither network is in range here anyway. The first real
+join is still ahead of us (recorded under *not proven* below).
+
+**The repo learned it too**, so a rebuilt card keeps them:
+`WIFI_EXTRA_PROFILES` in the gitignored `staging/wifi.env` — one
+`id|ssid|password|priority` per line — is rendered into `WIFI_PROFILES` by
+`scripts/make-firstrun.sh` through a new `__WIFI_EXTRA_PROFILES__` placeholder in
+`staging/firstrun.sh.tmpl`. The renderer refuses an extra network with an id that
+is not filename-safe, an SSID over 32 characters, a password under 8 characters,
+a non-numeric priority, an SSID already used by a home slot, or a character
+(`"`, `$`, backtick, `\`) that could not survive the double-quoted bash string it
+is substituted into. A good render was proved on this Mac: 9 850 bytes, LF only,
+`bash -n` clean, `0700`, and five `WIFI_PROFILES` lines with `rodclan-fast|…|8`
+and `rodclan|…|7` last. `docs/REBUILD-ME-ARK.txt` gains the field in the build
+order, a line in "making copies for other people", and **trap 31** — the box
+carried to a second house it had never heard of, with the no-password-on-the-
+command-line way to add one to a box that is already running.
+
+**Not proven:** neither new profile has ever been used. No join, no DHCP lease,
+no portal page from `Rodclan`. The guard's negative cases were re-run on 25 Oct
+2026 in one batch — uppercase id, duplicate SSID, short password, a `$`, and a
+missing priority each refused with their own `✗` sentence (`rc=1`), and the good
+two-network case rendered both lines with `rc=0` at `-rwx------`. That re-run is
+also what caught the placement defect in §16.8. Nothing on the Pi was restarted,
+and the hotspot profile was left exactly as it was.
+
+### 16.7 The owner's account is claimed — 25 Oct 2026, 14:55 UTC
+
+**What was done.** The first administrator (`admin`, `is_bootstrap = 1`) was
+claimed through the box's own route, not around it: the temporary password from
+`/srv/ark/api/data/bootstrap-password` was used to sign in at
+`https://ark.lan:8444/admin/login` (the loopback listener, from the Pi itself),
+which answered `303 → /admin/setup`, and `POST /admin/setup` then replaced it
+with a password the owner chose and gave to the console operator. Nothing new
+writes a password hash: `ark_admin.setup_submit()` did it, exactly as it would
+for a person with a browser and a tunnel.
+
+**Evidence, as measured.**
+
+| Step | Answer |
+|---|---|
+| `GET /admin/login` on `:8444` | 200, CSRF token issued (32 chars) |
+| `POST /admin/login` with the temporary password | **303 → /admin/setup** |
+| `GET /admin/setup` | 200 (*Choose your own password*) |
+| `POST /admin/setup` | **303 → /admin** |
+| fresh session, `POST /admin/login` with the new password | **303 → /admin** (no forced setup) |
+| `GET /admin/health` with that session | 200, *What is working — Ark administrator* |
+| `GET /admin` with that session | 200, *Overview — Ark administrator* |
+| `POST /admin/login` with the **temporary** password | **401 refused** |
+| `SELECT username, must_change, password_changed_at FROM admins` | `admin`, `must_change = 0`, `password_changed_at 2026-10-25T14:55:06+00:00` |
+| `audit_log` ids 3–6 | `sign-in ok` → `password-setup ok` (*temporary password replaced*) → `sign-in ok` → `sign-in denied` |
+
+**How the secrets travelled.** The temporary password was copied into a `0600`
+file on the Pi by a pipe (`sudo cat … | tr -d '\n'`), the new one arrived over
+SSH **stdin** into another `0600` file, and `curl` read both with
+`--data-urlencode name@file`. No password appeared in an argument list, in `ps`,
+or in a shell history, locally or on the box. Both files and every cookie jar
+and response page were deleted afterwards; the length of each was printed
+(`20` and `15` bytes) and nothing else about them was. **The password itself is
+not written in this repository** and must never be: the box stores only the
+scrypt hash.
+
+**What this changes.** `.clinerules` §8.9 item 4 said the account was unclaimed
+and that **What is working** had never been opened; the account is now claimed
+and the page has been *fetched* (200, correct title) — but still not read on a
+screen by a human. The phone walk-through is now possible without an SSH tunnel:
+`https://ark.lan:8443/admin` on the phone signs in directly. `/api/ready` is
+unchanged at **503 `blocking: ["File Box"]`** until the ghost
+`e2e-drop-test.epub` record is deleted; claiming the account does not touch it.
+
+**Deliberately left alone.** `/srv/ark/api/data/bootstrap-password` still exists
+(`0600 pi:pi`). Its value can no longer sign in — the hash it was generated
+against has been replaced — so it is inert, and it is left in place because the
+setup page and `RECOVERY-SHEET.txt` name the file. Nothing was restarted, no
+service was touched, and the hotspot profile was not involved.
+
+**Not proven by this.** No human has typed the password on a phone; the forced
+setup page was driven by `curl`, so its *look* is still unseen; the two
+administrator sessions that exist are the operator's own and expire within 30
+minutes of idleness.
+
+### 16.8 The two networks landed in the wrong place — found and fixed 25 Oct 2026
+
+**What the re-render showed.** With the terminal back, `bash scripts/make-firstrun.sh`
+was run again (the first run had been interrupted by the wedge) and the rendered
+`staging/firstrun.sh` was *read*, not just counted. Its own header read:
+
+```
+#  Placeholders: House of Leaves-5G-1 … House of Leaves perfectballoon089
+#                House of Leaves-5G-2 perfectballoon089
+rodclan-fast|Rodclan-fast|rodriguez6|8
+rodclan|Rodclan|rodriguez6|7
+#                US ssh-ed25519 …
+```
+
+`__WIFI_EXTRA_PROFILES__` had been listed **twice** in `staging/firstrun.sh.tmpl`:
+once where it belongs (the tail of the `WIFI_PROFILES` string) and once as a
+*scalar in the comment header* that lists the placeholders. A multi-line block
+substituted into a comment is no longer a comment — its middle lines become bare
+`id|ssid|psk|priority`, which bash reads as a **pipeline of commands**. On a
+fresh card that would have written two `command not found` errors into
+`/var/log/ark-firstrun.log` and booted anyway, because `firstrun.sh` runs under
+`set +e`. Harmless in effect, wrong in principle, and invisible to `bash -n`
+(syntactically valid) and to the placeholder scan (the token *was* substituted).
+
+**The fix, in two parts.**
+
+1. `staging/firstrun.sh.tmpl` no longer lists the block among the placeholders —
+   it appears exactly once, in `WIFI_PROFILES="…|5__WIFI_EXTRA_PROFILES__"`.
+   The header comment above the block already explains what it is.
+2. `scripts/make-firstrun.sh` now checks **where the block landed**, not merely
+   that it was substituted: it parses the rendered `WIFI_PROFILES` string and
+   refuses to publish unless every line has exactly four `|`-separated fields
+   (which also catches a `|` in a home SSID or password, something the builder
+   never checked and which would otherwise render a profile that authenticates
+   with a truncated key), the number of lines is exactly `3 + <extras>`, and each
+   extra line occurs **exactly once** in the whole render. Any failure exits
+   non-zero before `chmod`/`bash -n`, and names the network by id only — never
+   the password.
+
+**Evidence, as measured on the Mac.**
+
+| What | Result |
+|---|---|
+| `bash -n scripts/make-firstrun.sh` | clean |
+| re-render | *“rendered … (9781 bytes)”*, `✓ +x, LF-only, syntax OK`, `-rwx------`, 0 CR LF lines |
+| header of the render | four `#` comment lines, then the template — no bare profile lines |
+| `WIFI_PROFILES` | exactly 5 lines: `home-wifi` 20, `home-wifi-2` 10, `home-wifi-3` 5, `rodclan-fast` 8, `rodclan` 7 |
+| summary numbering | `1.` … `5.`, sequential (the earlier draft repeated `4.`) |
+| guard, negatives (§16.6 harness) | 5 × `rc=1` with the expected `✗`; `good-two` `rc=0` |
+| guard, the regression itself | token re-inserted into a copy of the template → *“the extra network 'rodclan' appears 2 times in the render, not once inside WIFI_PROFILES”*, `rc=1` |
+
+The 9781 characters are 9793 bytes because the template carries six em-dashes:
+`len(text)` counts characters, `wc -c` counts bytes. Both are correct.
+
+**Not proven.** No card has been flashed with this render, so no Pi has yet read
+either profile; the guard is render-time only (it cannot see a hand-edited
+`firstrun.sh`); and the `|`-in-a-home-password case is refused rather than
+supported — a home password containing `|` now needs a different character.
 

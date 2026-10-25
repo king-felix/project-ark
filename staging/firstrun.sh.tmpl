@@ -3,7 +3,8 @@
 #  PROJECT ARK — first-boot provisioning (runs ONCE as root, before SSH is up)
 #  Rendered by scripts/make-firstrun.sh — do not edit the rendered copy.
 #  Placeholders: __WIFI_SSID__ __WIFI_PSK__ __WIFI_SSID_2__ __WIFI_PSK_2__
-#                __WIFI_SSID_3__ __WIFI_PSK_3__ __WIFI_COUNTRY__ __SSH_PUBKEY__
+#                __WIFI_SSID_3__ __WIFI_PSK_3__
+#                __WIFI_COUNTRY__ __SSH_PUBKEY__
 # =============================================================================
 export DEBIAN_FRONTEND=noninteractive
 exec >>/var/log/ark-firstrun.log 2>&1
@@ -17,9 +18,13 @@ SSH_PUBKEY='__SSH_PUBKEY__'
 
 # Every network the Pi may join, in preference order:  id|ssid|psk|priority
 # (psk may not contain a pipe). An empty ssid disables that slot.
+# The tail of the last line is the extra-networks block from wifi.env
+# (WIFI_EXTRA_PROFILES): one line per network that is NOT the home router. It is
+# empty when none is configured, and any blank line it leaves behind is skipped
+# by the `[ -n "$nm_ssid" ]` guard below.
 WIFI_PROFILES="home-wifi|__WIFI_SSID__|__WIFI_PSK__|20
 home-wifi-2|__WIFI_SSID_2__|__WIFI_PSK_2__|10
-home-wifi-3|__WIFI_SSID_3__|__WIFI_PSK_3__|5"
+home-wifi-3|__WIFI_SSID_3__|__WIFI_PSK_3__|5__WIFI_EXTRA_PROFILES__"
 
 if [ -d /boot/firmware ]; then BOOTDIR=/boot/firmware; else BOOTDIR=/boot; fi
 IMAGER_CUSTOM=/usr/lib/raspberrypi-sys-mods/imager_custom

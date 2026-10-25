@@ -218,6 +218,10 @@ popup resolves to the portal instead of a "no internet" dead end.
                      the pi password is generated there too, into
                      staging/pi-password.txt (600) — no default password exists
                      in the repo, so every Ark gets a different one
+                     WIFI_EXTRA_PROFILES in the same file seeds networks that
+                     are NOT the home router (another house, a phone hotspot):
+                     one `id|ssid|password|priority` per line, priorities below
+                     the home slots' 20/10/5 so home still wins at home
   01  flash          assert the SD card with lib-disk-guard, then flash
   02  wait-for-pi    poll SSH until the Pi is up on the home LAN
   03  provision      rsync the repo to /srv/ark/src, then run pi/install-ark.sh
@@ -601,6 +605,33 @@ popup resolves to the portal instead of a "no internet" dead end.
     the finished folder off the box. Give the owner a printed sheet that needs
     only a phone, a card reader and a working card.
 
+31. THE SECOND HOUSE THE BOX HAD NEVER HEARD OF
+    Symptom: the box is carried to another house (or onto a phone hotspot) and
+    never appears on the network. Nothing is broken — it is a stranger there,
+    and after a while the boot guard does what it is designed to do and starts
+    broadcasting The-Ark-Offline, which looks like the fault rather than the
+    fallback.
+    Cause: only the networks in staging/wifi.env existed as profiles.
+    NetworkManager can join nothing else. (The hotspot profile being absent from
+    the air while the box sits on a home network is NOT a fault: ark-hotspot is
+    autoconnect=no on purpose, and only ark-mode / ark-net-watch bring it up.)
+    Fix: seed every network the box may ever live on, at build time, in
+    WIFI_EXTRA_PROFILES (id|ssid|password|priority, priorities below the home
+    slots so home still wins at home). On a box that is already running, add one
+    without ever putting the password on a command line or into a shell history:
+      sudo nmcli connection add type wifi ifname wlan0 con-name rodclan \
+           ssid Rodclan autoconnect yes wifi-sec.key-mgmt wpa-psk
+      sudo nmcli connection edit rodclan     # `set wifi-sec.psk` prompts, masked
+    or write the file yourself through stdin (chmod 600 root:root, then
+    `nmcli connection reload`) — never `nmcli ... wifi-sec.psk <password>`,
+    which lands in history and in `ps`.
+    The profile appears in /etc/NetworkManager/system-connections/ at 0600
+    root:root. Prove it with
+      nmcli -f 802-11-wireless.ssid,connection.autoconnect,connection.autoconnect-priority connection show rodclan
+      ls -l /etc/NetworkManager/system-connections/
+    — NOT by connecting, which moves the radio off the network you are testing
+    over and can cut your own SSH session.
+
 ================================================================================
 8. CONTENT: A CATALOGUE, NOT A LIST OF URLS
 ================================================================================
@@ -742,7 +773,10 @@ any failure. Categories:
   WAY 1 — RE-RUN THE PIPELINE (recommended)
     The repo is the blueprint. For each new Ark:
       a. copy the repo folder (or extract the tarball) to a new working dir
-      b. edit staging/wifi.env (their home Wi-Fi) — never reuse someone else's
+      b. edit staging/wifi.env (their home Wi-Fi) — never reuse someone else's.
+         If the box will also live somewhere else (a relative's house, a phone
+         hotspot), add that network in WIFI_EXTRA_PROFILES; a rebuilt card then
+         joins it with nobody touching the Pi
       c. optionally edit /etc/ark/ark.env defaults for their hotspot name,
          channel, content profile and rate limit BEFORE first provision
       d. flash a fresh card, provision, verify
