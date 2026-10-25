@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import sqlite3
 import urllib.parse
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -24,7 +25,9 @@ from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
                                RedirectResponse, Response)
 
 import ark_arcade as arc
+import ark_arcade_install
 import ark_db
+import ark_romdb as romdb
 import ark_rommeta as rommeta
 import ark_security as sec
 
@@ -36,13 +39,15 @@ SAFE_EMULATOR_SUFFIXES = {".js", ".css", ".json", ".data", ".wasm", ".txt", ".md
 # ---------------------------------------------------------------------------
 #  small things every page needs
 # ---------------------------------------------------------------------------
-def page(title: str, body: str, *, profile_link: str = "", flash: str = "") -> HTMLResponse:
+def page(title: str, body: str, *, profile_link: str = "", flash: str = "",
+         status: int = 200) -> HTMLResponse:
     template = (arc.template_dir() / "page.html").read_text(encoding="utf-8")
     return HTMLResponse(
         template.replace("{{TITLE}}", arc.esc(title))
                 .replace("{{PROFILE_LINK}}", profile_link)
                 .replace("{{FLASH}}", flash)
-                .replace("{{BODY}}", body)
+                .replace("{{BODY}}", body),
+        status_code=status,
     )
 
 
@@ -165,6 +170,7 @@ def library(request: Request) -> HTMLResponse:
         link = _profile_link(request, conn)
         player = _player(request, conn)
         named = player is not None
+        add_open = arc.uploads_open(conn)
         if named:
             games = arc.published_games(conn, int(player["id"]))
     if games:
@@ -184,6 +190,10 @@ def library(request: Request) -> HTMLResponse:
         body += ('<p class="arcade-note">You are playing as a guest. Saves stay in this '
                  'browser on this device. <a href="/arcade/player">Use a name</a> to keep '
                  'them on the box instead.</p>')
+    if add_open:
+        body += ('<p class="arcade-note">Have a game file of your own — on this phone, or on '
+                 'a card in your pocket? <a class="ark-btn" href="/arcade/add">Add a game '
+                 'you already have</a></p>')
     return page("Games", body, profile_link=link, flash=_flash(request))
 
 
@@ -372,16 +382,37 @@ def game_page(request: Request, slug: str) -> Response:
         "gameUrl": f"/arcade/g/{game['slug']}/rom",
         "pathtodata": "/arcade/emulator/",
         "gameName": game["slug"],
-        "startOnLoaded": True,
         "backgroundColor": "#000000",
         "volume": 0.5,
         "disableAutoLang": True,
     }
+    # `EJS_startOnLoaded` is deliberately NOT set.  With it on, the game starts
+    # itself the moment the page loads — and a page that starts an emulator with
+    # no tap from the person in front of it is a page the browser keeps silent:
+    # the audio stays suspended, the core never runs a single frame, and the
+    # canvas keeps its initial **white** clear.  The game was running (its save
+    # state answered, 35 KB) behind a blank white box.  With this off the player
+    # waits on its own START GAME button, the tap is the gesture the browser
+    # needs, and the picture appears.  Proved in Chromium against this same
+    # code: no tap, white; tap, the game's title screen.
     def _js(value: Any) -> str:
         return json.dumps(value).replace("</", "<\\/")
 
     boot = "\n".join(f"window.EJS_{key} = {_js(value)};" for key, value in config.items())
     aspect = system.get("aspect") or "4 / 3"
+    # The frame takes the console's shape, and its width is capped so that the
+    # height cap (70vh, in the stylesheet) cannot leave the box wider than the
+    # screen it holds — a Game Boy picture is 10:9, not the 3:2 a full-width box
+    # would give it.  The width is written here because only the page knows
+    # which console this is.
+    ratio = 1.5
+    try:
+        width, height = [float(part) for part in aspect.split("/")]
+        ratio = (width / height) if height else 1.5
+    except (TypeError, ValueError):
+        ratio = 1.5
+    frame_style = (f"aspect-ratio: {arc.esc(aspect)}; "
+                   f"max-width: min(100%, calc(70vh * {ratio:.4f}))")
     credits = (f'<p class="arcade-credits">{arc.esc(game["notices"])}</p>'
                if game["notices"] else "")
     body = f"""
@@ -391,7 +422,8 @@ def game_page(request: Request, slug: str) -> Response:
     {badge}
     {listed_html}
     {credits}
-    <div id="arcade-frame" style="aspect-ratio: {arc.esc(aspect)}">
+    <p class="arcade-note">Tap <b>START GAME</b> below when you are ready.</p>
+    <div id="arcade-frame" style="{frame_style}">
       <div id="arcade-stage" aria-label="{arc.esc(game['title'])} game player"></div>
     </div>
     <p class="arcade-note">Use the arrow keys or the on-screen pad. The game runs on this
@@ -466,6 +498,240 @@ def notices() -> Response:
         return Response("Not here", status_code=404)
     return FileResponse(target, media_type="text/plain; charset=utf-8")
 
+
+
+# ---------------------------------------------------------------------------
+#  add a game you already have — no sign-in, no name, no account
+# ---------------------------------------------------------------------------
+# The owner's page has had this door since 25 Oct 2026.  The shelf's own door is
+# open to anyone on this box's Wi-Fi, because the person holding the game file is
+# usually not the person who runs the box.  It is the same gate underneath: one
+# spool folder, one 64 MB cap, one room check, one publisher
+# (``publish_candidate()``), and a refusal changes nothing.
+#
+# A visitor may **add** a game; a visitor never *replaces* one.  The owner's page
+# still publishes revision 2 of a game the owner supplies again; here a name that
+# is already on the shelf is refused, because a stranger must not be able to
+# change the game somebody else is playing.
+ADD_LEDE = ("Pick one game file that is already on this phone or computer. This box "
+            "reads the file itself, tells you what it thinks the game is, and adds it "
+            "only when you say yes.")
+ADD_LIMIT = ("One file at a time, and no bigger than 64 MB. A file this box cannot play "
+             "is refused with the reason, and the shelf is left exactly as it was.")
+
+
+def _add_closed_body() -> str:
+    return ('<h1>Adding games is switched off</h1>'
+            '<p class="arcade-lede">Whoever looks after this box has switched off new '
+            'games for now. Everything on the shelf still plays.</p>'
+            '<p class="arcade-note"><a class="ark-btn" href="/arcade/">Back to the games</a></p>')
+
+
+def _add_problem(request: Request, message: str, *, status: int = 400) -> HTMLResponse:
+    with ark_db.read() as conn:
+        link = _profile_link(request, conn)
+    body = (f'<h1>That one was not added</h1>'
+            f'<p class="arcade-flash bad" role="alert">{arc.esc(message)}</p>'
+            f'<p class="arcade-note"><a class="ark-btn" href="/arcade/add">Try another file</a></p>'
+            f'<p class="arcade-note">Nothing on the shelf has changed. '
+            f'<a href="/arcade/">Back to the games</a></p>')
+    return page("Add a game", body, profile_link=link, status=status)
+
+
+@router.get("/arcade/add", response_class=HTMLResponse)
+def add_page(request: Request) -> HTMLResponse:
+    """The form, or a plain sentence when the owner has switched adding off."""
+    with ark_db.read() as conn:
+        link = _profile_link(request, conn)
+        open_now = arc.uploads_open(conn)
+    if not open_now:
+        return page("Add a game", _add_closed_body(), profile_link=link)
+    body = f"""
+    <h1>Add a game you already have</h1>
+    <p class="arcade-lede">{arc.esc(ADD_LEDE)}</p>
+    <form class="arcade-form" method="post" action="/arcade/add"
+          enctype="multipart/form-data">
+      <label>Pick the game file
+        <input type="file" name="file" required
+               accept=".gb,.gbc,.nes,.sfc,.smc,.gba,.md,.gen,.bin"></label>
+      <button type="submit">Look at this file</button>
+    </form>
+    <p class="arcade-note">{arc.esc(ADD_LIMIT)}</p>
+    <p class="arcade-note">You do not need a name or a password to do this, and the file
+    stays on this box. <a href="/arcade/">Back to the games</a></p>"""
+    return page("Add a game", body, profile_link=link, flash=_flash(request))
+
+
+def _add_confirm_form(request: Request, token: str, filename: str, pre: Dict[str, Any],
+                      filled: Dict[str, Any], *, problem: str = "") -> HTMLResponse:
+    """The words this box would put on the games page, before anything is added."""
+    with ark_db.read() as conn:
+        link = _profile_link(request, conn)
+    options = "".join(
+        f'<option value="{arc.esc(key)}"{" selected" if key == filled.get("system") else ""}>'
+        f'{arc.esc(info["label"])}</option>'
+        for key, info in sorted(arc.SYSTEMS.items(), key=lambda item: item[1]["label"]))
+    notice = (f'<p class="arcade-flash bad" role="alert">{arc.esc(problem)}</p>'
+              if problem else "")
+    facts = " · ".join(rommeta.game_facts(pre.get("facts") or {}, limit=6))
+    facts_line = f'<p class="arcade-facts">{arc.esc(facts)}</p>' if facts else ""
+    body = f"""
+    <h1>Does this look right?</h1>
+    {notice}
+    <p class="arcade-lede"><b>{arc.esc(pre.get("sentence") or "")}</b></p>
+    {facts_line}
+    <p class="arcade-note">The file you picked is <b>{arc.esc(filename)}</b>. Nothing has
+    been added yet — you can change any of these words first.</p>
+    <form class="arcade-form" method="post" action="/arcade/add/confirm">
+      <input type="hidden" name="token" value="{arc.esc(token)}">
+      <input type="hidden" name="filename" value="{arc.esc(filename)}">
+      <label>Name on the games page
+        <input type="text" name="title" value="{arc.esc(filled.get('title') or '')}"
+               maxlength="120" required></label>
+      <label>Which console
+        <select name="system" required>{options}</select></label>
+      <label>One line under the name
+        <input type="text" name="description" value="{arc.esc(filled.get('description') or '')}"
+               maxlength="300"></label>
+      <label>Who made it
+        <input type="text" name="author" value="{arc.esc(filled.get('author') or '')}"
+               maxlength="80"></label>
+      <label>Year
+        <input type="text" name="release" value="{arc.esc(filled.get('release') or '')}"
+               maxlength="40"></label>
+      <label>What its licence says (shown on the game's page)
+        <input type="text" name="license_text" value="{arc.esc(filled.get('license') or '')}"
+               maxlength="80"></label>
+      <button type="submit">Add this game</button>
+    </form>
+    <form method="post" action="/arcade/add/discard">
+      <input type="hidden" name="token" value="{arc.esc(token)}">
+      <button type="submit" class="arcade-danger">Throw it away</button>
+    </form>
+    <p class="arcade-note">Adding a game copies it onto this box and shows it on the games
+    page. Nothing else on the card is touched.</p>"""
+    return page("Add a game", body, profile_link=link)
+
+
+@router.post("/arcade/add", response_class=HTMLResponse)
+def add_upload(request: Request, file: UploadFile = File(...)) -> Response:
+    """Take one file a visitor picked, and say what this box makes of it.
+
+    A plain ``def`` on purpose: Starlette runs it in its thread pool, so a 64 MB
+    read cannot stall every other page on the box.  The bytes go to the arcade's
+    own temp folder under a name this box chose — never into ``games/`` — and the
+    file only becomes a game when the person in front of the screen confirms the
+    words on the next page.
+    """
+    with ark_db.read() as conn:
+        link = _profile_link(request, conn)
+        if not arc.uploads_open(conn):
+            return page("Add a game", _add_closed_body(), profile_link=link, status=403)
+    shown = str(file.filename or "").replace("\\", "/").rsplit("/", 1)[-1].strip()[:120]
+    try:
+        ark_arcade_install.sweep_temp()      # a file nobody confirmed does not wait for ever
+        spooled = ark_arcade_install.spool_upload(file.file, filename=shown)
+    except ark_arcade_install.InstallRefused as exc:
+        return _add_problem(request, str(exc))
+    except OSError:
+        return _add_problem(request, "This box could not save that file. Nothing was added.")
+    pre = rommeta.prefill(spooled, filename=shown)
+    if not pre.get("playable"):
+        # A file whose kind this box cannot play is refused before anybody is
+        # asked to fill in a form: it could only ever break the shelf.
+        ark_arcade_install.discard_upload(spooled)
+        with ark_db.tx() as conn:
+            ark_db.audit(conn, action="arcade-add", actor_name="a visitor",
+                         target=shown or spooled.name, result="failed",
+                         detail="not a kind of game this box can play")
+        return _add_problem(request, "This box cannot play that kind of file — there is no "
+                                     "game inside it from a console this box knows.")
+    with ark_db.read() as conn:
+        twin = romdb.game_by_identity(conn, pre.get("ident") or {})
+    if twin:
+        ark_arcade_install.discard_upload(spooled)
+        return _add_problem(request, f'That game is already on the shelf as '
+                                     f'"{twin["title"]}", so there is nothing to add.',
+                            status=200)
+    with ark_db.tx() as conn:
+        ark_db.audit(conn, action="arcade-add", actor_name="a visitor",
+                     target=shown or spooled.name, result="ok",
+                     detail="looked at, not added yet")
+    filled = rommeta.apply({}, pre)
+    return _add_confirm_form(request, spooled.name, shown or spooled.name, pre, filled)
+
+
+@router.post("/arcade/add/confirm", response_class=HTMLResponse)
+def add_confirm(request: Request, token: str = Form(""), filename: str = Form(""),
+                title: str = Form(""), system: str = Form(""),
+                description: str = Form(""), author: str = Form(""),
+                release: str = Form(""), license_text: str = Form("")) -> Response:
+    """Publish the waiting file through the one gate, under the words confirmed."""
+    with ark_db.read() as conn:
+        if not arc.uploads_open(conn):
+            return page("Add a game", _add_closed_body(), status=403)
+        spooled = ark_arcade_install.upload_path(token)
+        if spooled is None:
+            return _add_problem(request, "That file is no longer waiting — pick it again "
+                                         "(a file left unconfirmed does not stay for ever).",
+                                status=404)
+        label = str(filename or spooled.name)[:120]
+        pre = rommeta.prefill(spooled, filename=label)
+        wanted = (arc.safe_slug(title) or arc.safe_slug(str(pre.get("title") or ""))
+                  or arc.safe_slug(Path(label).stem))
+        existing = arc.game_by_slug(conn, wanted) if wanted else None
+    if existing:
+        filled = rommeta.apply({"title": title, "system": system,
+                                "description": description, "author": author,
+                                "release": release, "license": license_text}, pre)
+        return _add_confirm_form(
+            request, token, label, pre, filled,
+            problem=(f'There is already a game called "{existing["title"]}" on this shelf. '
+                     f'Choose another name for this one.'))
+    facts = {"slug": "", "title": title, "system": system, "license_text": license_text,
+             "release": release, "author": author, "description": description,
+             "filename": label}
+    try:
+        with ark_db.tx() as conn:
+            result = ark_arcade_install.import_owner_file(conn, spooled, **facts)
+    except ark_arcade_install.InstallRefused as exc:
+        ark_arcade_install.discard_upload(spooled)
+        with ark_db.tx() as conn:
+            ark_db.audit(conn, action="arcade-add", actor_name="a visitor",
+                         target=label, result="failed", detail=str(exc)[:300])
+        return _add_problem(request, f"That one was not added: {exc}")
+    except (OSError, sqlite3.DatabaseError):
+        ark_arcade_install.discard_upload(spooled)
+        with ark_db.tx() as conn:
+            ark_db.audit(conn, action="arcade-add", actor_name="a visitor",
+                         target=label, result="failed",
+                         detail="the box could not keep the file")
+        return _add_problem(request, "This box could not keep that file. Nothing was added.",
+                            status=500)
+    ark_arcade_install.discard_upload(spooled)
+    with ark_db.tx() as conn:
+        ark_db.audit(conn, action="arcade-add", actor_name="a visitor",
+                     target=result.get("slug") or title, result="ok",
+                     detail=(f"added revision {result['revision']}" if result.get("installed")
+                             else str(result.get("reason") or "already here")))
+    named = title.strip() or str(result.get("slug") or "")
+    said = (f'"{named}" is on the shelf now. Tap it to play.' if result.get("installed")
+            else f'"{named}" is already on the shelf.')
+    return _back(f'/arcade/g/{result["slug"]}', ok=said)
+
+
+@router.post("/arcade/add/discard")
+def add_discard(request: Request, token: str = Form("")) -> RedirectResponse:
+    """Throw away a file nobody decided about. Nothing was ever published."""
+    spooled = ark_arcade_install.upload_path(token)
+    removed = ark_arcade_install.discard_upload(spooled)
+    with ark_db.tx() as conn:
+        ark_db.audit(conn, action="arcade-add", actor_name="a visitor",
+                     target=(spooled.name if spooled else token[:40]),
+                     result="ok" if removed else "failed",
+                     detail=("thrown away before it was added" if removed
+                             else "that file was already gone"))
+    return _back("/arcade/add", ok="That file was thrown away. Nothing was added.")
 
 
 # ---------------------------------------------------------------------------

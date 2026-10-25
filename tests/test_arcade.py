@@ -552,14 +552,35 @@ def test_the_player_is_sized_on_a_frame_the_emulator_cannot_overwrite(public):
 
     Sizing the stage inline therefore accomplishes nothing — it is erased as
     the player starts — so the shape of the screen is set on a frame around it,
-    and the console decides that shape.
+    and the console decides that shape.  The width is capped from the same shape
+    so the height cap cannot leave a Game Boy picture in a 3:2 letterbox.
     """
     _game(public.ark)
     page = public.client.get("/arcade/g/stars")
-    assert '<div id="arcade-frame" style="aspect-ratio: 10 / 9">' in page.text, \
-        "a Game Boy screen is nearly square"
+    assert 'aspect-ratio: 10 / 9' in page.text, "a Game Boy screen is nearly square"
+    assert 'max-width: min(100%, calc(70vh * 1.1111))' in page.text, \
+        "the box must be no wider than the screen it holds"
     assert '<div id="arcade-stage" aria-label=' in page.text, \
         "the stage carries no inline style the player would erase"
+
+
+def test_the_game_waits_for_a_real_tap_before_it_starts(public):
+    """A page must not start an emulator by itself (found on 25 Oct 2026).
+
+    ``EJS_startOnLoaded`` starts the core the instant the page loads, with no
+    gesture from the person in front of it.  A browser keeps a page silent until
+    it is touched: the audio stayed suspended, the core never ran a frame, and
+    the canvas kept its initial **white** clear — a blank white box that looked
+    exactly like "the player is broken", while ``getState()`` happily answered
+    35 KB and every URL returned 200.  With the page waiting on the player's own
+    START GAME button, the tap is the gesture, and the picture appears.
+    """
+    _game(public.ark)
+    page = public.client.get("/arcade/g/stars")
+    assert "EJS_startOnLoaded" not in page.text, \
+        "the game must not start itself: the browser blocks it and the screen stays white"
+    assert "START GAME" in page.text, "the page must say what to tap"
+    assert "/arcade/emulator/loader.js" in page.text
 
 
 # ---------------------------------------------------------------------------

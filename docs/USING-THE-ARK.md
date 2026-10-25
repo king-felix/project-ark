@@ -224,9 +224,12 @@ and the count in the heading is the real total.
 
 ### 3.7 Games — `http://ark.lan/arcade/`
 
-Tap **Games** on the front page, then tap a game. It starts in the browser; there is
-nothing to install and no account. The arrow keys work, and on a phone an on-screen pad
-appears. Everything runs on the box, so a dead internet changes nothing.
+Tap **Games** on the front page, then tap a game. It opens with one big **START GAME**
+button: give it a tap and the picture appears. (The tap is not decoration — a phone
+will not start a game until it has been touched, and without one the game runs with a
+blank white screen, which is exactly how it looked before 25 Oct 2026.) The arrow keys
+work, and on a phone an on-screen pad appears. Everything runs on the box, so a dead
+internet changes nothing.
 
 About two dozen small games come with the box (Game Boy, Game Boy Color, Game Boy
 Advance and NES). More are added by whoever looks after the box — from the private
@@ -236,6 +239,21 @@ carelessly named file still appears with the right title, year and maker. The Fi
 for documents, not games. Each game's card says what it is and who made it, and the licence
 the source states is shown on the card and in the notes beside the shelf — it is a
 label, not a restriction this box applies.
+
+**A game of your own.** If you have a game file on your phone or on a card in your
+pocket, tap **Add a game** (at the top of any games page, or the button under the shelf).
+You do not need a name, a password or anybody's permission: choose the file, tap **Look
+at this file**, and the box says what it thinks the game is — *“This looks like "Pocket
+Quest" (Game Boy).”* — with the title, console, year and maker already filled in. Check
+the words, change anything you like, then tap **Add this game**. It appears on the shelf
+straight away and you can play it. **Throw it away** changes nothing.
+
+What this box will not do: it will not add a file it cannot play, and it will not let a
+game of yours take the place of a game that is already there — if you give it a name that
+is already on the shelf it asks you to choose another one. Giving it the same game twice
+answers *“that game is already on the shelf”* instead of adding a second copy. One file at
+a time, and no bigger than 64 MB. Whoever looks after the box can switch this door off;
+when it is off the page says so and every game still plays.
 
 **Saves.** Playing as a guest, your save stays in that one browser on that one device —
 clearing the browser's data removes it. If you want a save to follow you to another

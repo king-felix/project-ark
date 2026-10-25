@@ -363,6 +363,16 @@ def players_open(conn: sqlite3.Connection) -> bool:
     return (ark_db.get_setting(conn, "arcade_players", "1") or "1") != "0"
 
 
+def uploads_open(conn: sqlite3.Connection) -> bool:
+    """May anyone on this box's Wi-Fi add a game of their own?
+
+    Absent means **open**, exactly like the File Box and the message board: a
+    fresh box must be usable without anybody signing in first.  The owner's
+    Games page can close it, and closing it never takes a game off the shelf.
+    """
+    return (ark_db.get_setting(conn, "public_arcade_upload", "1") or "1") != "0"
+
+
 def new_player_save_dir(player_id: int, game_id: int) -> Path:
     path = saves_root() / str(int(player_id)) / str(int(game_id))
     path.mkdir(parents=True, exist_ok=True, mode=0o700)

@@ -316,6 +316,41 @@ def test_every_console_has_a_screen_shape():
 
 
 # ---------------------------------------------------------------------------
+#  the door a game file arrives through
+# ---------------------------------------------------------------------------
+def test_a_game_a_visitor_picks_has_a_door_of_its_own_on_both_origins():
+    """One exact path takes a 64 MB body; every other path under /arcade/ does not.
+
+    A save is at most 16 MiB, so ``/arcade/`` keeps its 20m on the public portal.
+    A game file needs MAX_DOWNLOAD plus multipart framing, and that needs naming
+    on the origin the file is actually uploaded through — the public portal and
+    the secure player origin both serve the same page.
+    """
+    import ark_arcade_install
+
+    cap = ark_arcade_install.MAX_DOWNLOAD
+    assert cap == 64 * 1024 * 1024, "the arcade's own cap is what nginx must allow for"
+    wanted = "68m"     # 64 MB + multipart framing
+
+    for name in ("ark.conf", "ark-players.conf"):
+        text = (REPO / "pi" / "nginx" / name).read_text(encoding="utf-8")
+        door = re.search(r"location\s*=\s*/arcade/add\s*\{(.*?)\n\s*\}", text, re.S)
+        assert door, f"{name} has no exact-match door for /arcade/add"
+        body = door.group(1)
+        assert f"client_max_body_size {wanted};" in body, (name, body)
+        assert "proxy_request_buffering off;" in body, (
+            f"{name} must stream the body, or a phone waits for all 64 MB first")
+
+
+def test_the_save_door_did_not_grow_to_a_game_size():
+    """The public /arcade/ prefix stays small: a save is 16 MiB, never a game."""
+    text = (REPO / "pi" / "nginx" / "ark.conf").read_text(encoding="utf-8")
+    prefix = re.search(r"location /arcade/ \{(.*?)\n\s*\}", text, re.S)
+    assert prefix, "the public shelf location is missing"
+    assert "client_max_body_size 20m;" in prefix.group(1), prefix.group(1)
+
+
+# ---------------------------------------------------------------------------
 #  the library catalogue must be built where the bundles live
 # ---------------------------------------------------------------------------
 def test_the_library_catalogue_is_built_beside_the_bundles_it_describes():

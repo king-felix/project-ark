@@ -1386,6 +1386,7 @@ def arcade_page(request: Request):
         games = ark_arcade.all_games(conn)
         candidates = ark_arcade_install.candidate_rows(conn)
         names_open = ark_arcade.players_open(conn)
+        add_open = ark_arcade.uploads_open(conn)
         auto = (ark_db.get_setting(conn, "arcade_auto_install", "0") or "0") == "1"
         last = ark_arcade.last_job(conn)
 
@@ -1413,6 +1414,11 @@ def arcade_page(request: Request):
         names_open, "players", "Anyone can use a name to keep saves",
         "A name is only for games: it cannot sign in to this area or change the box. "
         "Leave it on unless names are being misused; guests can always play without one.")
+    add_switch = _switch(
+        add_open, "public_add", "Anyone can add a game of their own",
+        "Leave this on so a visitor can put a game file of their own on the shelf from the "
+        "games page, without signing in. A visitor can only add a game, never replace one: "
+        "a name already on the shelf is refused. Switch it off and the shelf keeps playing.")
     auto_switch = _switch(
         auto, "auto", "Add newly found games without asking me",
         "Leave this off to see each suggestion first. Even when it is on, a game is only "
@@ -1447,6 +1453,7 @@ def arcade_page(request: Request):
   <form method="post" action="/admin/arcade/switches">
     {_csrf_field(ctx.csrf)}
     {names_switch}
+    {add_switch}
     {auto_switch}
     <button class="go-btn" type="submit">Save these switches</button>
   </form>
@@ -1632,7 +1639,7 @@ def arcade_upload_discard(request: Request, token: str = Form(""), csrf: str = F
 
 @router.post("/arcade/switches", response_class=HTMLResponse)
 def arcade_switches(request: Request, players: str = Form(""), auto: str = Form(""),
-                    csrf: str = Form("")):
+                    public_add: str = Form(""), csrf: str = Form("")):
     if (blocked := _gate_tls(request)) is not None:
         return blocked
     with ark_db.tx() as conn:
@@ -1642,9 +1649,11 @@ def arcade_switches(request: Request, players: str = Form(""), auto: str = Form(
         me = ctx.admin
         ark_db.set_setting(conn, "arcade_players", "1" if players else "0")
         ark_db.set_setting(conn, "arcade_auto_install", "1" if auto else "0")
+        ark_db.set_setting(conn, "public_arcade_upload", "1" if public_add else "0")
         ark_db.audit(conn, action="arcade-switches", actor_id=me["id"],
                      actor_name=me["username"], result="ok",
                      detail=f"player names={'on' if players else 'off'}, "
+                            f"anyone may add a game={'on' if public_add else 'off'}, "
                             f"auto install={'on' if auto else 'off'}")
     return _redirect("/admin/arcade")
 

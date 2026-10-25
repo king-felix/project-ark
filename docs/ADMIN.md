@@ -20,7 +20,8 @@ application code; see the "Tested / not tested" section at the end.
 | See what actually works, and why it does not | no — the front page shows one plain sentence | yes (§8) |
 | Play the games; keep saves in this browser | yes | yes |
 | Use a name for game saves; export/import them | yes, on the separate player origin (`:8445`) | yes |
-| Hide/show a game, allow player names, allow automatic additions | no | yes (§10) |
+| Add a game of your own to the shelf | yes — `http://ark.lan/arcade/add`, no sign-in (§10) | yes |
+| Hide/show a game, allow player names, allow automatic additions, allow anyone to add a game | no | yes (§10) |
 | Change the box's settings | no | only the Community and Games switches so far (§7, §10) |
 | Keep a copy of the records, or put one back | no | yes, from the box's own console (§9) |
 
@@ -396,9 +397,19 @@ sets it only on `:8445`.
   sign-ins, and an already-signed-in browser can no longer read or write a save;
   guests can still play, and every save stays on the box for when the switch is
   turned back on;
+* **Anyone can add a game of their own** — on by default, and it is the door at
+  `http://ark.lan/arcade/add`. Off means the games page answers *“Adding games is
+  switched off”* and refuses a body; every game already on the shelf keeps playing.
+  A visitor who uses it can add a game and can never replace one.
 * **Add newly found games without asking me** — off by default. Even when on,
   the same allowlist, size, SHA-256 and file-shape checks apply; the licence is
   recorded beside the game and never used to refuse it.
+
+**A game waits for one tap.** A game page opens on the player's own **START GAME**
+button rather than starting by itself. That is deliberate: a browser keeps a page
+silent until it is touched, so a page that started the game on its own left the
+core running with no picture — a blank white box — while every URL still answered
+200. The tap is the gesture that lets the picture through.
 
 **Where the games come from.** The curated community catalogue (`hh3.gbdev.io`)
 plus the three repositories it points at, one per family of consoles: Game Boy and
@@ -425,7 +436,17 @@ with no words at all is allowed, and so is one whose language nobody recorded �
 most homebrew entries say nothing about it. The licence text is stored and shown
 on the game's card, and never refuses anything.
 
-**Putting a game of your own on the shelf — the page.** On **Games**
+**Putting a game of your own on the shelf — the games page, with no sign-in.** This is the
+door anybody on the box's Wi-Fi can use: `http://ark.lan/arcade/add` (linked as **Add a
+game** from every games page). It takes one file, says what the box made of it, and adds it
+only when the person taps **Add this game** — the same gate, the same waiting folder and the
+same publisher as your own page. It is open because the person holding a game file is
+usually not the person who runs the box. **A visitor may add a game and may never replace
+one**: a title that is already on the shelf is refused with a request to choose another
+name, and the same bytes under another name are named instead of added. The switch below
+closes this door without touching a single game that is already there.
+
+**Putting a game of your own on the shelf — the owner's page.** On **Games**
 (`https://ark.lan:8443/admin/arcade`) there is **A game you already have**. Choose the
 file in the browser, press **Look at this file**, and it is copied to the arcade's own
 waiting folder under a name the box
@@ -601,11 +622,14 @@ Stated plainly, because a missing control is better than a fake one:
   player password cannot be recovered; the person makes a new name, and the old
   saves remain on the box under the old one.
 * Arcade: **no drop folder.** A game you supply yourself goes on through **Add a
-  game you already have** on the Games page (§10) or with one console command —
-  the File Box does not feed the shelf, a zip is not unpacked, there is no cover
-  art, there is no delete button for a game (hiding it is reversible and deletes
+  game you already have** — on the games page itself, with no sign-in (a visitor can add
+  a game and never replace one, §10), on the owner's Games page, or with one console
+  command — the File Box does not feed the shelf, a zip is not unpacked, there is no
+  cover art, there is no delete button for a game (hiding it is reversible and deletes
   nothing), and a new revision leaves the previous file on the card until someone
-  removes it.
+  removes it. There is **no per-person quota** on the public door: anyone on the Wi-Fi can
+  add games one 64 MB file at a time until the box keeps its own reserve, so
+  **Anyone can add a game of their own** on the Games page is the way to close it.
 * Emergency content review (first aid, water, electrical) is still pending.
 
 The audit history, the account rules above, the transport boundary, the

@@ -220,19 +220,31 @@ no network call — an absent catalogue is simply "nobody has listed this file",
 file name is used instead. The console spelling and its own list of titles are recorded as
 provenance beside the game, and nothing is ever refused for what the catalogue says.
 
-**Two ways to add a game, and both run the same gate.** On the owner's **Games** page
-(`https://ark.lan:8443/admin/arcade`) there is **A game you already have**: pick the
-file, press **Look at this file**, and the next screen says what the box recognised it as
-and shows the words it would put on the card — *Add this game* publishes it, *Throw it
-away* deletes the waiting copy. Nothing is published on the strength of a form alone. A
-game the owner supplies goes through the same
+**Three ways to add a game, and all of them run the same gate.** Anybody on the box's own
+Wi-Fi can add one from the games page — `http://ark.lan/arcade/add`, linked as **Add a
+game**, with no name, no account and no sign-in. The owner can do the same on **Games**
+(`https://ark.lan:8443/admin/arcade`) under **A game you already have**, or from the console
+with `ark-arcade --import`. On the games page the visitor picks the file, presses **Look at
+this file**, and the next screen says what the box recognised it as and shows the words it
+would put on the card — *Add this game* publishes it, *Throw it away* deletes the waiting
+copy. A visitor may **add** a game and may never **replace** one: a name already on the
+shelf is refused, and the owner's own page is the only door that publishes a second revision
+of a game it is given again. The owner's switch **Anyone can add a game of their own** closes
+that public door, leaving every game playing. Nothing is published on the strength of a form
+alone. A game supplied this way goes through the same
 gate as a fetched one: bare ROM, its own fingerprints recorded (SHA-1, MD5, CRC-32 and
 SHA-256), the file checked to be shaped like the console it claims (a Game Boy file by its
 header and checksum, a NES file by its magic bytes, any other console by its extension and a
 non-empty, sane size), temp-written then published, and the shelf left untouched if anything
 fails. Giving it the same file again answers *"already on the shelf"*; the same game under a
-second name is refused with the name it already has; a changed file under the same name
-becomes revision 2. `docs/ADMIN.md` §10 walks through both ways.
+second name is refused with the name it already has; on the owner's own page a changed file
+under the same name becomes revision 2 (the public door never replaces anything).
+`docs/ADMIN.md` §10 walks through all three doors.
+
+A game page opens on the player's own **START GAME** button: one tap, and the picture
+appears. It is not decoration — a browser keeps a page silent until it is touched, so a page
+that started the game by itself left the core running with no picture at all (a blank white
+box, while every URL answered 200). The tap is what lets the picture through.
 
 The weekly `ark-arcade-discover.timer` records what the curated community
 catalogues offer. Installation is off unless the owner switches it on in

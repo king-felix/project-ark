@@ -10,8 +10,8 @@ and what the next executable step is.
 | Branch | `feature/admin-hardening` (nothing force-pushed; no release tag moved) |
 | Platform used for work | macOS 26.x, Python 3.9.6 (LibreSSL), venv in `.venv/` |
 | Appliance target | Raspberry Pi 4B, Raspberry Pi OS Lite, Python 3.13.5, nginx 1.22 |
-| Deployment status | **deployed on the box 25 Oct 2026** — stages 2–6, ARK Arcade, the 25 Oct hardening, R3's book door and the owner-import fix are live; `90-verify` green, `/api/ready` 200, database at layout **v4** (§15, §18.4). Rollback: `/root/ark-snapshot-20261025-092106`; the owner-import redeploy changed no schema and took its own copy at `/root/ark-db-before-owner-import.db` |
-| Hardware tests | **scripted proofs only** — the installer, the verifier, the doors, a bundle, `/api/ready`, the arcade origin and `ark-arcade --import` have all answered on the Pi. **No human has used it on a phone yet**, no game has been played by a person, no 2 GiB upload has crossed the proxy, and the watchdog has never seen a real radio event |
+| Deployment status | **deployed on the box 25 Oct 2026** — stages 2–6, ARK Arcade, the 25 Oct hardening, R3's book door, the owner-import fix and the name-from-the-bytes work are live; database at layout **v5**, `90-verify` green, `/api/ready` 200 (§15, §18.4, §19, §20). Rollback: `/root/ark-snapshot-20261025-092106`; the later deploys took their own copies at `/root/ark-db-before-owner-import.db` and `/root/ark-db-before-v5.db` |
+| Hardware tests | **scripted proofs only** — the installer, the verifier, the doors, a bundle, `/api/ready`, the arcade origin and `ark-arcade --import` have all answered on the Pi, and a headless Chromium on the Mac has drawn three of the shelf's games from the box's own files (§18.2, §20.2). **No human has used it on a phone yet**, no 2 GiB upload has crossed the proxy, and the watchdog has never seen a real radio event |
 | Requirements matrix | `docs/REQUIREMENTS-MATRIX.md` — R1–R8/A–D, each status with the test that proves it and the sentences still missing |
 
 ---
@@ -33,7 +33,7 @@ and what the next executable step is.
 | 13 | Essentials pack, QR, accessibility, household page | not started |
 | — | ARK Arcade | **delivered and tested** — public shelf, guest play, optional named-player saves on the TLS `:8445` origin, owner **Games** page, licence/allowlist/hash gate, weekly discovery, and saves carried by a backup (§12); since 25 Oct a game can also be named from the file itself against an offline catalogue, and added from the owner's page (§19) |
 | 14 | Sequence | stages 1–6, ARK Arcade, R3 and the name-from-contents work (§19) **deployed 25 Oct 2026** (§15, and §19 for the v4 → v5 deploy); the phone walk-through is the next human step; stage 7 after it |
-| 15 | Acceptance tests | **286 tests**, all green (`pytest -q`); the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md` |
+| 15 | Acceptance tests | **298 tests**, all green (`pytest -q`); the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md` |
 
 ---
 
@@ -1710,3 +1710,108 @@ version seeded an empty database without `ark_admin.ensure_initialised()` (`no s
 sign-in that had failed, because `urllib` silently follows a 303 and a followed redirect looks like
 a 200. A probe of an admin door has to ask for the redirect and assert on it.
 
+
+---
+
+## 20. The white screen was a page starting a game nobody had touched — 25 Oct 2026
+
+The owner reported, a second time, that a game opened in the browser and showed **nothing but a
+white box** in the player. Every previous check had said the player was fine: the page answered
+200, every asset answered 200, `90-verify` was green, and `EJS_emulator.gameManager.getState()`
+returned a real 35,056-byte save state. All of that was true and none of it was the picture.
+
+### 20.1 What was actually happening
+
+A **headless Chromium on the Mac, driving the real page over the network**, asked the emulator
+two questions instead of asking HTTP:
+
+| Question | Before the fix |
+|---|---|
+| does the state change while the page is simply open? | **no** — the save state was byte-identical after 4 s (hash `3885702006` twice) |
+| does it change after the page is touched? | **yes** — a click on the player changed it every time |
+
+So the core was *loaded* and *not running*. The canvas held its initial WebGL clear, which is
+**white** — and that is the white box: not a broken player, not a missing file, not a missing
+core.
+
+The cause is one line of our own page: `EJS_startOnLoaded: true`. It starts the emulator the
+instant the page loads, with no gesture from the person in front of it. A browser keeps a page
+that has not been touched **silent** (that is the autoplay rule the console had been warning
+about all along: *“The AudioContext was not allowed to start”*), the core's audio-driven main
+loop never ticks, and the picture never arrives. Loading the page by tapping a link on the
+previous page does **not** count: activation belongs to the document that was touched, and the
+new document starts with none. That is why the same file played in one test and stayed white in
+a phone's browser.
+
+
+### 20.2 The fix, and how it was proved
+
+* `EJS_startOnLoaded` is **gone**, with a comment saying why and what it looked like. EmulatorJS
+  then shows its own **START GAME** button; the tap is the gesture, the audio is allowed, the
+  loop runs, the picture appears. The page also says, in one line, *“Tap **START GAME** below
+  when you are ready.”*
+* The frame now takes the console's **real shape** and is width-capped from it
+  (`max-width: min(100%, calc(70vh * ratio))`), because `aspect-ratio` plus a height cap was
+  leaving a Game Boy picture in a 3:2 letterbox with black bands at each side.
+
+Proved in Chromium against the shipped code, on a throwaway instance of this same API with a
+real `2048gb.gb`:
+
+| | |
+|---|---|
+| before the tap | black frame, blue **START GAME** button, no canvas, `started: false` |
+| after one tap on the button | `started: true`, canvas **622 × 560** (10:9), the 2048 title screen drawn, and the save state changes between two readings |
+| the same on a phone-sized viewport (420 × 900) with a NES game added through the new public door | canvas **382 × 358** (16:15), the *Cyber Coaster* title screen drawn |
+
+The picture was read back as an image, not inferred: `/tmp/local-playing.png` and
+`/tmp/nes-playing.png` are screenshots of the real pages. Guards:
+`test_arcade.py::test_the_game_waits_for_a_real_tap_before_it_starts` (the page must not contain
+`EJS_startOnLoaded` and must say what to tap) and
+`test_arcade.py::test_the_player_is_sized_on_a_frame_the_emulator_cannot_overwrite`.
+
+**The lesson, again, one layer down:** last time it was “the box had no height”; this time it was
+“the box had no gesture”. Both looked identical from `curl`. When a page does not work and every
+URL is 200, ask the page — and ask it for something only a running emulator can answer.
+
+
+
+### 20.3 A game you already have — now from the games page, for anyone
+
+The owner asked for the upload door to be visible in the interface and open to people who have
+not signed in. `http://ark.lan/arcade/add`, linked as **Add a game** from every games page and as
+a button under the shelf:
+
+| Piece | What it does |
+|---|---|
+| `GET /arcade/add` | the form, in plain words; or *“Adding games is switched off”* when the owner has closed it |
+| `POST /arcade/add` | spools the file to `arcade/tmp` under a name the box chose (`spool_upload`, the same 64 MB cap and reserve as every other door), reads it, and shows **what the box made of it** — or refuses it before anybody types anything |
+| `POST /arcade/add/confirm` | publishes through `ark_arcade_install.import_owner_file()` → `publish_candidate()`, the one gate, under the words the person confirmed; then sends them to the game |
+| `POST /arcade/add/discard` | throws the waiting copy away; nothing was ever published |
+
+**A visitor may add, and may never replace.** The owner's page can publish revision 2 of a file
+it is given again; this door cannot, because a stranger must not be able to change the game
+somebody else is playing. A title that resolves to a slug already on the shelf keeps the waiting
+file and asks for another name; the same bytes under another name are named, not added twice.
+
+Audit rows are `arcade-add`, actor *“a visitor”*, so the owner's history shows what came in this
+way. The setting is **`public_arcade_upload`**, absent means **open** (a fresh box must be usable
+without signing in), and the owner's Games page carries the switch **Anyone can add a game of
+their own**. nginx gives that one exact path 68 MB (64 MB + framing) and streams the body on both
+the public portal and the `:8445` player origin; every other path under `/arcade/` keeps its 20 MB
+save limit.
+
+Proved in Chromium on a phone-sized viewport against the real page: pick `cybercoaster.nes` →
+*“Nobody has listed this file; the name on it is all this box has.”* with title `cybercoaster` and
+console `nes` already filled in → **Add this game** → redirected to the game's own page with
+*“cybercoaster” is on the shelf now* → exactly one file on the shelf, `arcade/tmp` empty → and the
+game then **played** (screenshot above).
+
+**Tests: 286 → 298.** New `tests/test_arcade_add.py` (9), one new player test in
+`tests/test_arcade.py`, and two in `tests/test_config.py` tying the 68 MB door to `MAX_DOWNLOAD`
+and keeping `/arcade/` at 20 MB.
+
+**Still not proved, and said out loud:** no *person* has yet added a game from their own phone to
+the **live** shelf (the proofs above are a browser on the Mac against a local instance of this
+API), no 64 MB file has crossed the real proxy, there is **no per-person quota** on this door (the
+owner's switch is the control), and the `:8445` copy of the page has only been proved in tests, not
+through TLS on the box.
