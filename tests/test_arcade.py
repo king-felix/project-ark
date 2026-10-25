@@ -168,6 +168,25 @@ def test_a_save_round_trip_and_a_stale_page_is_refused(public):
     assert public.client.get(url, cookies=cookies).status_code == 404
 
 
+def test_a_save_that_is_too_large_is_refused_before_it_is_written(public):
+    import ark_arcade as arc
+    game_id = _game(public.ark)
+    token, csrf = _register(public.client, "Ada")
+    cookies = {"ark_player": token}
+    url = f"/arcade/api/saves/{game_id}/state/1"
+
+    too_big = public.client.put(url, content=b"x" * (arc.MAX_SAVE + 1),
+                                cookies=cookies,
+                                headers={"x-ark-csrf": csrf, "x-ark-revision": "0"})
+    assert too_big.status_code == 413
+    assert "16 MB" in too_big.json()["error"]
+
+    # Nothing was published, and nothing is left waiting in the save folder.
+    assert public.client.get(url, cookies=cookies).status_code == 404
+    saves = public.ark.root / "arcade" / "saves"
+    assert not [p for p in saves.rglob("*") if p.is_file()]
+
+
 def test_a_save_without_the_page_token_is_refused(public):
     game_id = _game(public.ark)
     token, _ = _register(public.client, "Ada")
@@ -175,6 +194,143 @@ def test_a_save_without_the_page_token_is_refused(public):
                                  content=b"not from the page",
                                  headers={"x-ark-csrf": "wrong"}, cookies={"ark_player": token})
     assert response.status_code == 403
+
+
+def test_a_player_can_keep_two_choices_for_each_game(public):
+    game_id = _game(public.ark)
+    token, csrf = _register(public.client, "Ada")
+    cookies = {"ark_player": token}
+    url = f"/arcade/api/prefs/{game_id}"
+
+    fresh = public.client.get(url, cookies=cookies)
+    assert fresh.status_code == 200, fresh.text
+    assert fresh.json()["prefs"]["autosave"] is False
+    assert fresh.json()["prefs"]["favourite"] is False
+
+    wanted = {"x-ark-csrf": csrf, "content-type": "application/json"}
+    kept = public.client.put(url, json={"autosave": True, "favourite": True},
+                             headers=wanted, cookies=cookies)
+    assert kept.status_code == 200, kept.text
+    assert kept.json()["prefs"]["autosave"] is True
+    assert kept.json()["prefs"]["favourite"] is True
+
+    again = public.client.get(url, cookies=cookies)
+    assert again.json()["prefs"]["autosave"] is True
+    assert again.json()["prefs"]["favourite"] is True
+
+    # A page that did not come from this shelf may not change them.
+    invented = public.client.put(url, json={"autosave": False},
+                                 headers={"x-ark-csrf": "wrong"}, cookies=cookies)
+    assert invented.status_code == 403
+    assert public.client.get(url, cookies=cookies).json()["prefs"]["autosave"] is True
+
+
+def test_a_pending_save_choice_is_per_name_and_per_game(public):
+    stars = _game(public.ark)
+    blocks = _game(public.ark, slug="blocks")
+    token, csrf = _register(public.client, "Ada")
+    other, other_csrf = _register(public.client, "Grace")
+    headers = {"x-ark-csrf": csrf}
+
+    assert public.client.put(f"/arcade/api/prefs/{stars}", json={"autosave": True},
+                             headers=headers, cookies={"ark_player": token}).status_code == 200
+    mine = public.client.get(f"/arcade/api/prefs/{stars}", cookies={"ark_player": token}).json()
+    assert mine["prefs"]["autosave"] is True
+    assert public.client.get(f"/arcade/api/prefs/{blocks}",
+                             cookies={"ark_player": token}).json()["prefs"]["autosave"] is False
+    theirs = public.client.get(f"/arcade/api/prefs/{stars}",
+                               cookies={"ark_player": other}).json()
+    assert theirs["prefs"]["autosave"] is False
+    assert public.client.put(f"/arcade/api/prefs/{stars}", json={"autosave": False},
+                             headers={"x-ark-csrf": other_csrf},
+                             cookies={"ark_player": other}).status_code == 200
+    assert public.client.get(f"/arcade/api/prefs/{stars}",
+                             cookies={"ark_player": token}).json()["prefs"]["autosave"] is True
+
+
+def test_a_guest_cannot_keep_choices_and_a_hidden_game_has_none(public):
+    game_id = _game(public.ark)
+    assert public.client.get(f"/arcade/api/prefs/{game_id}").status_code == 401
+    assert public.client.put(f"/arcade/api/prefs/{game_id}", json={"autosave": True},
+                             headers={"x-ark-csrf": "x"}).status_code == 401
+    token, csrf = _register(public.client, "Ada")
+    with public.ark.db.tx() as conn:
+        conn.execute("UPDATE games SET hidden = 1 WHERE id = ?", (game_id,))
+    response = public.client.put(f"/arcade/api/prefs/{game_id}", json={"autosave": True},
+                                 headers={"x-ark-csrf": csrf}, cookies={"ark_player": token})
+    assert response.status_code == 404
+    assert public.client.get(f"/arcade/api/prefs/{game_id}", cookies={"ark_player": token}).status_code == 404
+
+
+def test_the_choices_are_in_the_page_and_keep_the_game_at_the_top(public):
+    stars = _game(public.ark)
+    blocks = _game(public.ark, slug="blocks")
+    token, csrf = _register(public.client, "Ada")
+    cookies = {"ark_player": token}
+
+    page = public.client.get("/arcade/g/stars", cookies=cookies)
+    assert page.status_code == 200
+    assert "How you like this game" in page.text
+    assert f'action="/arcade/player/prefs/{stars}"' in page.text
+    assert "last_played" not in page.text
+
+    kept = public.client.post(f"/arcade/player/prefs/{stars}",
+                              data={"csrf": csrf, "favourite": "1", "autosave": "1",
+                                    "next": "/arcade/g/stars"},
+                              cookies=cookies, follow_redirects=False)
+    assert kept.status_code == 303
+    assert kept.headers["location"].startswith("/arcade/g/stars")
+    again = public.client.get("/arcade/g/stars", cookies=cookies)
+    assert "checked" in again.text
+
+    shelf = public.client.get("/arcade/", cookies=cookies)
+    assert shelf.status_code == 200
+    assert shelf.text.index("/arcade/g/stars") < shelf.text.index("/arcade/g/blocks")
+    assert "Kept at the top" in shelf.text
+
+
+def test_choosing_one_thing_keeps_the_other_and_opening_a_game_is_not_a_choice(public):
+    game_id = _game(public.ark)
+    token, csrf = _register(public.client, "Ada")
+    cookies = {"ark_player": token}
+    url = f"/arcade/api/prefs/{game_id}"
+    headers = {"x-ark-csrf": csrf}
+
+    assert public.client.put(url, json={"autosave": True},
+                             headers=headers, cookies=cookies).status_code == 200
+
+    # Opening the game records that it was played.  It must not flip either
+    # switch, and the page must not show the timestamp as a third choice.
+    page = public.client.get("/arcade/g/stars", cookies=cookies)
+    assert page.status_code == 200
+    first = public.client.get(url, cookies=cookies).json()["prefs"]
+    assert first["autosave"] is True
+    assert first["favourite"] is False
+    assert first["last_played"]
+
+    # A request that names only the favourite keeps the stored autosave and
+    # the visit time: a missing choice is not "off".
+    assert public.client.put(url, json={"favourite": True},
+                             headers=headers, cookies=cookies).status_code == 200
+    second = public.client.get(url, cookies=cookies).json()["prefs"]
+    assert second["autosave"] is True
+    assert second["favourite"] is True
+    assert second["last_played"] == first["last_played"]
+
+
+def test_the_page_shows_the_switch_that_is_actually_stored(public):
+    game_id = _game(public.ark)
+    token, csrf = _register(public.client, "Ada")
+    cookies = {"ark_player": token}
+    assert public.client.put(f"/arcade/api/prefs/{game_id}",
+                             json={"autosave": True, "favourite": True},
+                             headers={"x-ark-csrf": csrf}, cookies=cookies).status_code == 200
+    page = public.client.get("/arcade/g/stars", cookies=cookies)
+    assert page.status_code == 200
+    autosave = re.search(r'name="autosave" value="1"([^>]*)>', page.text)
+    favourite = re.search(r'name="favourite" value="1"([^>]*)>', page.text)
+    assert autosave and "checked" in autosave.group(1)
+    assert favourite and "checked" in favourite.group(1)
 
 
 def test_one_players_save_is_invisible_to_another(public):

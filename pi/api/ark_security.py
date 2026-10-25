@@ -22,12 +22,12 @@ import secrets
 import sqlite3
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 # ---------------------------------------------------------------------------
 #  constants
 # ---------------------------------------------------------------------------
 BOOTSTRAP_USERNAME = "admin"
-BOOTSTRAP_PASSWORD = "ChangeMe-ARK!"
 
 PASSWORD_MIN = 12
 # A bounded maximum, documented in the UI: we reject rather than truncate, so a
@@ -55,6 +55,12 @@ BACKOFF_BASE = 60
 BACKOFF_MAX = 15 * 60
 
 TEMP_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"
+
+#: Checked with the same work as a real password when no account matches, so an
+#: unknown name cannot be told apart from a wrong password by how long the answer
+#: took.  It is a real scrypt hash of a password nothing uses; it never verifies.
+DUMMY_HASH = ("scrypt$32768$8$1$wq3HpqmJ7QV6QgmWazNNOQ==$"
+              "v4YLpPOvRnriMND+92BQSHvlHbAZeb5T8O/Jh8mE4RE=")
 
 # Cached lazily: None = not looked for yet, False = unavailable, else the class.
 _FALLBACK_SCRYPT = None
@@ -145,6 +151,61 @@ def needs_rehash(stored: str) -> bool:
     return parts[1:4] != [str(SCRYPT_N), str(SCRYPT_R), str(SCRYPT_P)]
 
 
+def bootstrap_password_path() -> Path:
+    """Where the one-time password for the first sign-in lives.
+
+    A fixed, documented file beats a password printed in the source tree that
+    nobody ever changes: the owner reads it once, over the console, and changes
+    it through the private setup door.  ``ARK_BOOTSTRAP_PASSWORD`` exists for the
+    tests (and for an owner who wants to set it before first boot).
+    """
+    override = os.environ.get("ARK_BOOTSTRAP_FILE", "").strip()
+    if override:
+        return Path(override)
+    root = os.environ.get("ARK_ROOT", "/srv/ark")
+    return Path(root) / "api" / "data" / "bootstrap-password"
+
+
+def bootstrap_password(*, create: bool = True) -> str:
+    """The first-run password: the environment's, the file's, or a fresh one.
+
+    A random 20-character password is generated once, written 0600, and never
+    put in git.  Reading is idempotent; two booting processes cannot overwrite
+    each other because creation is ``O_EXCL`` and the loser reads the winner's
+    file.  When ``create`` is false and nothing exists yet, the empty string is
+    returned (the policy check must not have the side effect of creating one).
+    """
+    fixed = os.environ.get("ARK_BOOTSTRAP_PASSWORD", "")
+    if fixed:
+        return fixed
+    path = bootstrap_password_path()
+
+    def _read() -> str:
+        try:
+            value = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
+        return value if len(value) >= PASSWORD_MIN else ""
+
+    value = _read()
+    if value or not create:
+        return value
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return _read()                      # another process won the race
+    except OSError:
+        return ""                           # no writable place: claim stays closed
+    try:
+        value = generate_temp_password()
+        os.write(fd, (value + "\n").encode("utf-8"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    return value
+
+
 def check_new_password(password: str, *, username: str = "",
                        current_hash: str = "") -> None:
     """The documented policy: length only, no composition zoo.
@@ -161,8 +222,9 @@ def check_new_password(password: str, *, username: str = "",
     if len(password) < PASSWORD_MIN:
         raise PolicyError(f"Please use at least {PASSWORD_MIN} characters. "
                           "A short sentence is easy to remember and hard to guess.")
-    if password == BOOTSTRAP_PASSWORD:
-        raise PolicyError("That is the temporary password everyone knows. "
+    current = bootstrap_password(create=False)
+    if current and hmac.compare_digest(password, current):
+        raise PolicyError("That is the temporary password for the first sign-in. "
                           "Please choose your own.")
     if username and password.casefold() == username.casefold():
         raise PolicyError("The password must not be the same as the username.")

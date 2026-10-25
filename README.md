@@ -135,7 +135,8 @@ management listener:
   ```bash
   ssh -N -L 8444:127.0.0.1:8444 pi@ark.local
   # then open https://localhost:8444/admin
-  # user: admin    temporary password: ChangeMe-ARK!
+  # user: admin
+  # temporary password: ssh pi@ark.local 'cat /srv/ark/api/data/bootstrap-password'
   ```
 
 The first sign-in asks for your own password (12+ characters, passphrases
@@ -164,12 +165,15 @@ SHA-256 fingerprint). The same certificate serves the player's secure origin
 with the browser before you trust it — see `docs/ADMIN.md` for the exact steps,
 the session rules and what is deliberately *not* in this release yet.
 
-Tests (no Pi needed, throwaway databases only; the current suite is 174 tests):
+Tests (no Pi needed, throwaway databases only; the current suite is 231 tests):
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r tests/requirements.txt
 .venv/bin/python -m pytest
 ```
+
+The per-requirement verdict — what is done, what is only partial, and the test
+that proves each row — is `docs/REQUIREMENTS-MATRIX.md`.
 
 ---
 

@@ -259,6 +259,156 @@ def test_a_named_players_save_is_backed_up_and_put_back(tmp_path):
     assert (put_back.parent.stat().st_mode & 0o777) == 0o700
 
 
+def test_a_forced_restore_replaces_a_stale_game_save(tmp_path):
+    """Restored records and leftover bytes must not disagree for ever.
+
+    A forced restore puts back the database that names these saves.  Keeping an
+    older file under the same name would make the player's next save answer 409
+    (SaveConflict) without anything being wrong with the game.
+    """
+    root, dest = tmp_path / "ark", tmp_path / "backups"
+    make_box(root, game_saves={"7/3/state-01.state": b"the save in the backup"}).close()
+    assert backup(root, dest).returncode == 0
+    bundle = only_bundle(dest)
+
+    occupied = tmp_path / "occupied"
+    make_box(occupied, note="A newer message", installed=True,
+             game_saves={"7/3/state-01.state": b"a stale save from before"}).close()
+    save = occupied / "arcade/saves/7/3/state-01.state"
+    assert save.read_bytes() == b"a stale save from before"
+
+    done = restore(bundle, occupied, "--force")
+    assert done.returncode == 0, done.stderr
+    assert save.read_bytes() == b"the save in the backup"
+    assert (save.stat().st_mode & 0o777) == 0o600
+
+
+def test_a_restore_pauses_every_writer_before_touching_the_database(tmp_path):
+    """The live web service holds the old database; it must be stopped first.
+
+    Replacing a SQLite file under a running process and deleting its WAL is how a
+    restore silently loses the rows still in that WAL.  A stand-in ``systemctl``
+    records the order, so this proves stop-before-write and start-afterwards.
+    """
+    root, dest = tmp_path / "ark", tmp_path / "backups"
+    make_box(root).close()
+    assert backup(root, dest).returncode == 0
+    bundle = only_bundle(dest)
+
+    fake = tmp_path / "fakebin"
+    fake.mkdir()
+    log = tmp_path / "systemctl.log"
+    script = fake / "systemctl"
+    script.write_text(
+        "#!/bin/sh\n"
+        f'echo "$@" >> "{log}"\n'
+        'if [ "$1" = "is-active" ]; then\n'
+        '  case "$2" in ark-api.service) echo active; exit 0;; esac\n'
+        "  echo inactive; exit 3\n"
+        "fi\n"
+        "exit 0\n", encoding="utf-8")
+    script.chmod(0o755)
+
+    target = tmp_path / "rebuilt"
+    (target / "api/data").mkdir(parents=True)
+    done = run(RESTORE, "--from", bundle, root=target,
+               extra_env={"PATH": f"{fake}:/usr/bin:/bin:/usr/sbin:/sbin"})
+    assert done.returncode == 0, done.stderr
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert "stop ark-api.service" in calls, calls
+    assert "start ark-api.service" in calls, calls
+    assert calls.index("stop ark-api.service") < calls.index("start ark-api.service")
+    assert "Paused ark-api.service" in done.stdout
+    assert "again" in done.stdout.lower()
+
+
+def test_a_restore_that_fails_after_pausing_still_starts_the_box_again(tmp_path):
+    """The ``finally`` is the promise: a failed restore may not leave it dark."""
+    root, dest = tmp_path / "ark", tmp_path / "backups"
+    make_box(root).close()
+    assert backup(root, dest).returncode == 0
+    bundle = only_bundle(dest)
+
+    fake = tmp_path / "fakebin"
+    fake.mkdir()
+    log = tmp_path / "systemctl.log"
+    script = fake / "systemctl"
+    script.write_text(
+        "#!/bin/sh\n"
+        f'echo "$@" >> "{log}"\n'
+        'if [ "$1" = "is-active" ]; then\n'
+        '  case "$2" in ark-api.service) echo active; exit 0;; esac\n'
+        "  echo inactive; exit 3\n"
+        "fi\n"
+        "exit 0\n", encoding="utf-8")
+    script.chmod(0o755)
+
+    # A box that cannot receive the shared file: `drop` is a file, not a folder.
+    target = tmp_path / "rebuilt"
+    (target / "api/data").mkdir(parents=True)
+    (target / "drop").write_text("not a folder", encoding="utf-8")
+
+    done = run(RESTORE, "--from", bundle, root=target,
+               extra_env={"PATH": f"{fake}:/usr/bin:/bin:/usr/sbin:/sbin"})
+    assert done.returncode != 0
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert "stop ark-api.service" in calls, calls
+    assert "start ark-api.service" in calls, calls
+    assert "Started ark-api.service again." in done.stdout
+
+
+def test_no_service_is_available_for_a_card_in_a_reader(tmp_path):
+    root, dest = tmp_path / "ark", tmp_path / "backups"
+    make_box(root).close()
+    assert backup(root, dest).returncode == 0
+    bundle = only_bundle(dest)
+
+    fake = tmp_path / "fakebin"
+    fake.mkdir()
+    log = tmp_path / "systemctl.log"
+    script = fake / "systemctl"
+    script.write_text("#!/bin/sh\n" f'echo "$@" >> "{log}"\n'
+                      'echo active\nexit 0\n', encoding="utf-8")
+    script.chmod(0o755)
+
+    target = tmp_path / "rebuilt"
+    (target / "api/data").mkdir(parents=True)
+    done = run(RESTORE, "--from", bundle, "--no-service", root=target,
+               extra_env={"PATH": f"{fake}:/usr/bin:/bin:/usr/sbin:/sbin"})
+    assert done.returncode == 0, done.stderr
+    assert "no-service" in done.stdout
+    assert not log.exists() or "stop" not in log.read_text()
+
+
+def test_a_writer_that_will_not_stop_aborts_before_any_change(tmp_path):
+    """A restore may not proceed on a box it could not make quiet."""
+    root, dest = tmp_path / "ark", tmp_path / "backups"
+    make_box(root).close()
+    assert backup(root, dest).returncode == 0
+    bundle = only_bundle(dest)
+
+    fake = tmp_path / "fakebin"
+    fake.mkdir()
+    script = fake / "systemctl"
+    script.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "is-active" ]; then\n'
+        '  case "$2" in ark-api.service) echo active; exit 0;; esac\n'
+        "  echo inactive; exit 3\n"
+        "fi\n"
+        'if [ "$1" = "stop" ]; then echo "Access denied" >&2; exit 1; fi\n'
+        "exit 0\n", encoding="utf-8")
+    script.chmod(0o755)
+
+    target = tmp_path / "rebuilt"
+    (target / "api/data").mkdir(parents=True)
+    done = run(RESTORE, "--from", bundle, root=target,
+               extra_env={"PATH": f"{fake}:/usr/bin:/bin:/usr/sbin:/sbin"})
+    assert done.returncode == 1
+    assert "nothing was changed" in (done.stdout + done.stderr).lower()
+    assert not (target / "api/data/ark.db").exists()
+
+
 def test_a_box_that_already_has_records_is_not_overwritten_without_force(tmp_path):
     root, dest = tmp_path / "ark", tmp_path / "backups"
     make_box(root).close()

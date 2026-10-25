@@ -57,26 +57,30 @@ else
   ark_die "/admin is reachable on the plain-HTTP portal"
 fi
 
-code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 20 \
-        https://127.0.0.1:8443/admin -H 'Host: ark.lan' || true)"
+# TLS liveness and an expected unauthenticated answer are two different facts.
+# /admin must send a stranger to the sign-in (303) or refuse (401/403); a 200
+# here would mean the management pages are readable without signing in.
+code="$(ark_http_code https://127.0.0.1:8443/admin -k -H 'Host: ark.lan')"
 case "$code" in
-  200|303|403) say "$(printf '\033[1;32m✓\033[0m')" "management listener :8443 answers" "$code" ;;
+  303|401|403) say "$(printf '\033[1;32m✓\033[0m')" "management listener :8443 answers, sign-in required" "$code" ;;
+  200)         ark_die "https://127.0.0.1:8443/admin returned 200 without a sign-in" ;;
   *)           ark_die "https://127.0.0.1:8443/admin returned '$code'" ;;
 esac
 
 # The Community page sits behind the same sign-in, and must not appear elsewhere.
-code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 20 \
-        https://127.0.0.1:8443/admin/community -H 'Host: ark.lan' || true)"
+code="$(ark_http_code https://127.0.0.1:8443/admin/community -k -H 'Host: ark.lan')"
 case "$code" in
-  200|303|403) say "$(printf '\033[1;32m✓\033[0m')" "Community page behind the sign-in" "$code" ;;
+  303|401|403) say "$(printf '\033[1;32m✓\033[0m')" "Community page behind the sign-in" "$code" ;;
+  200)         ark_die "https://127.0.0.1:8443/admin/community returned 200 without a sign-in" ;;
   *)           ark_die "https://127.0.0.1:8443/admin/community returned '$code'" ;;
 esac
 
-code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 20 \
-        https://127.0.0.1:8444/admin -H 'Host: localhost' || true)"
+# The loopback setup listener is reached before an account exists, so its
+# sign-in page (200) is the expected unauthenticated answer.
+code="$(ark_http_code https://127.0.0.1:8444/admin -k -H 'Host: localhost')"
 case "$code" in
-  200|303|403) say "$(printf '\033[1;32m✓\033[0m')" "loopback setup listener :8444 answers" "$code" ;;
-  *)           ark_die "https://127.0.0.1:8444/admin returned '$code'" ;;
+  200|303|401|403) say "$(printf '\033[1;32m✓\033[0m')" "loopback setup listener :8444 answers" "$code" ;;
+  *)               ark_die "https://127.0.0.1:8444/admin returned '$code'" ;;
 esac
 
 # The management origin must not serve the library or shared files.
@@ -90,29 +94,33 @@ for path in /kiwix/ /books/ /drop/ /vault/ /; do
   fi
 done
 
-# The listener is HTTPS-only: plain HTTP on 8443 must fail.
-if curl -s -o /dev/null --max-time 5 http://127.0.0.1:8443/admin 2>/dev/null; then
-  ark_die "port 8443 answered plain HTTP — it must be TLS only"
+# The listener is HTTPS-only.  A completed 400/497 is nginx doing its job; a
+# completed 200 is a management page sent in clear text and must stop the
+# install.  curl exits zero for both, which is the defect this check removes.
+plain_code="$(ark_http_code http://127.0.0.1:8443/admin)"
+plain_verdict="$(ark_plain_http_verdict "$plain_code")"
+if ! ark_plain_http_is_rejected "$plain_code"; then
+  ark_die "port 8443 answered plain HTTP with $plain_code ($plain_verdict) — it must be TLS only"
 fi
-say "$(printf '\033[1;32m✓\033[0m')" "port 8443 refuses plain HTTP" "closed"
+say "$(printf '\033[1;32m✓\033[0m')" "port 8443 refuses plain HTTP" "$plain_verdict"
 
 # ---- the player's origin ----------------------------------------------------
-code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 20 \
-        https://127.0.0.1:8445/arcade/player -H 'Host: ark.lan' || true)"
+code="$(ark_http_code https://127.0.0.1:8445/arcade/player -k -H 'Host: ark.lan')"
 case "$code" in
   200) say "$(printf '\033[1;32m✓\033[0m')" "player origin :8445 answers" "$code" ;;
   *)   ark_die "https://127.0.0.1:8445/arcade/player returned '$code'" ;;
 esac
 
-code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 10 \
-        https://127.0.0.1:8445/admin -H 'Host: ark.lan' || true)"
+code="$(ark_http_code https://127.0.0.1:8445/admin -k -H 'Host: ark.lan')"
 [[ "$code" == "404" ]] || ark_die "the player origin served /admin with HTTP $code"
 say "$(printf '\033[1;32m✓\033[0m')" "player origin hides /admin" "$code"
 
-if curl -s -o /dev/null --max-time 5 http://127.0.0.1:8445/arcade/ 2>/dev/null; then
-  ark_die "port 8445 answered plain HTTP — it must be TLS only"
+plain_code="$(ark_http_code http://127.0.0.1:8445/arcade/)"
+plain_verdict="$(ark_plain_http_verdict "$plain_code")"
+if ! ark_plain_http_is_rejected "$plain_code"; then
+  ark_die "port 8445 answered plain HTTP with $plain_code ($plain_verdict) — it must be TLS only"
 fi
-say "$(printf '\033[1;32m✓\033[0m')" "port 8445 refuses plain HTTP" "closed"
+say "$(printf '\033[1;32m✓\033[0m')" "port 8445 refuses plain HTTP" "$plain_verdict"
 
 # The public portal must send a named player to the secure origin, and a header
 # invented by a visitor must not make the public proxy pretend to be it.

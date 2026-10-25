@@ -877,7 +877,7 @@ any failure. Categories:
                                             box without --force (stage 6)
     pi/RECOVERY-SHEET.txt                   the printed page for a dead card,
                                             plain words, also /recovery.txt
-    tests/                                  174 pytest tests, throwaway DBs
+    tests/                                  231 pytest tests, throwaway DBs
     pi/systemd/*.service|*.path             the enable-and--now contract
     pi/portal/{index.html,help.html,assets} the dark, no-JS, 44 px UI
     pi/kiwix/catalog.tsv                    ~25 bundles in 3 tiers

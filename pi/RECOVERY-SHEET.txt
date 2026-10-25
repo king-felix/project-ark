@@ -56,6 +56,7 @@ RESTORE-ME.txt that repeats the steps.
          sudo ark-restore --list
          sudo ark-restore --from /srv/ark/backup/ark-backup-<date>-<time>
 
+     It stops the pages that write while it works, and starts them again after.
   4. Read what it says.  If it says the box already holds records, it has
      stopped rather than replace them.  Only if those records really are
      the ones you are willing to lose, add --force to the same line.

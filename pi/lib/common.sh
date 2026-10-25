@@ -100,12 +100,34 @@ ark_service_up() { # <unit> [timeout-seconds]
 ark_service_stop() { systemctl stop "$1" >/dev/null 2>&1 || true; }
 
 # ---- http / disk ------------------------------------------------------------
-ark_http_code() {
-  local c
+ark_http_code() { # <url> [extra curl arguments...]
+  local url=$1 c
+  shift || true
   # curl prints 000 itself when it cannot connect; without the || true the old
   # "|| echo 000" appended a second one ("000000") and confused callers.
-  c="$(curl -s -o /dev/null -m 8 -w '%{http_code}' "$1" 2>/dev/null)" || true
+  c="$(curl -s -o /dev/null -m 8 -w '%{http_code}' "$@" "$url" 2>/dev/null)" || true
   printf '%s' "${c:-000}"
+}
+
+# A plain-HTTP request to an SSL listener is *rejected* by nginx (400, or 497
+# for "plain HTTP sent to HTTPS port") or the connection does not complete
+# (000).  A completed HTTP response of any other kind means something served
+# the management interface over plaintext, which is a failure even when curl
+# itself exits zero.  This is deliberately a pure verdict so the installer can
+# be tested without a Pi, and so no future probe drifts back to "curl exited 0".
+ark_plain_http_verdict() { # <status-code>  -> "rejected <code>" | "no-response" | "served <code>"
+  case "${1:-000}" in
+    400|497) printf 'rejected %s' "$1" ;;
+    000)     printf 'no-response' ;;
+    *)       printf 'served %s' "$1" ;;
+  esac
+}
+
+ark_plain_http_is_rejected() { # <status-code>  (0 = safe, 1 = something answered)
+  case "${1:-000}" in
+    400|497|000) return 0 ;;
+    *)           return 1 ;;
+  esac
 }
 
 ark_wait_http() { # <url> <timeout-s> <accepted-codes...>

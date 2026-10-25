@@ -30,7 +30,7 @@ ARK_ROOT = Path(os.environ.get("ARK_ROOT", "/srv/ark"))
 DB_PATH = Path(os.environ.get("ARK_DB", str(ARK_ROOT / "api" / "data" / "ark.db")))
 MARKER_PATH = Path(os.environ.get("ARK_MARKER", str(DB_PATH.parent / "ark.installed")))
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # ---------------------------------------------------------------------------
 #  migrations — append, never edit an entry that has already shipped
@@ -268,6 +268,48 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             # Box.  Closing them is a deliberate act by the owner.
             "INSERT OR IGNORE INTO settings (key, value) VALUES ('arcade_players', '1')",
             "INSERT OR IGNORE INTO settings (key, value) VALUES ('arcade_auto_install', '0')",
+        ],
+    ),
+    (
+        4,
+        [
+            # -- why a game may be here, in words the owner can check -----------
+            # A licence name is not evidence that the file may be copied.  The
+            # language is part of eligibility too: the household reads English,
+            # and a Japanese-only game must not arrive silently.  Both facts are
+            # recorded beside the game rather than inferred at render time.
+            "ALTER TABLE games ADD COLUMN language TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE games ADD COLUMN language_evidence TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE games ADD COLUMN rights_evidence TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE games ADD COLUMN provenance TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE games ADD COLUMN release TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE games ADD COLUMN notices TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE acquisition_candidates ADD COLUMN language TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE acquisition_candidates ADD COLUMN language_evidence TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE acquisition_candidates ADD COLUMN rights_evidence TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE acquisition_candidates ADD COLUMN provenance TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE acquisition_candidates ADD COLUMN release TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE acquisition_candidates ADD COLUMN notices TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE game_revisions ADD COLUMN release TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE game_revisions ADD COLUMN provenance TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE game_revisions ADD COLUMN notices TEXT NOT NULL DEFAULT ''",
+            # -- a player's choices belong to the pair, not to one browser ------
+            # These are preferences, not saves: they survive signing in on
+            # another device and are cheap enough to write on every toggle.
+            """CREATE TABLE IF NOT EXISTS player_game_prefs (
+                   player_id  INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+                   game_id    INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+                   autosave   INTEGER NOT NULL DEFAULT 0,
+                   favourite  INTEGER NOT NULL DEFAULT 0,
+                   last_played TEXT NOT NULL DEFAULT '',
+                   updated_at TEXT NOT NULL,
+                   PRIMARY KEY (player_id, game_id)
+               )""",
+            "CREATE INDEX IF NOT EXISTS prefs_favourite ON player_game_prefs(player_id, favourite, updated_at)",
+            # Existing rows keep their exact behaviour: unknown language, and a
+            # licence that was recorded but never proved, read as 'needs review'.
+            "UPDATE acquisition_candidates SET status = 'review' "
+            " WHERE status = 'pending' AND (language = '' OR rights_evidence = '')",
         ],
     ),
 ]

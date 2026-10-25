@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from helpers import (BIG_PASSWORD, LAN, SETUP, add_admin, admin_cookie,
                      claim_box, csrf_of, get, post, sign_in)
 
@@ -94,7 +96,7 @@ def test_temporary_password_cannot_be_reused(client):
                 {"new_password": "ChangeMe-ARK!", "confirm": "ChangeMe-ARK!", "csrf": csrf},
                 headers=SETUP, cookie=f"ark_admin={cookie}")
     assert page.status_code == 400
-    assert "everyone knows" in page.text
+    assert "temporary password" in page.text
 
 
 def test_mismatched_confirmation_is_rejected(client):
@@ -124,6 +126,17 @@ def test_setup_changes_password_and_revokes_the_old_session(ark, client):
     fresh = admin_cookie(done)
     assert fresh and fresh != cookie
     assert get(client, "/admin", cookie=f"ark_admin={fresh}").status_code == 200
+
+
+def test_a_complete_lan_sign_in_reaches_a_protected_page(client, ark):
+    """TLS liveness is not authorization: the whole form flow must work on LAN."""
+    cookie = claim_box(client, password=BIG_PASSWORD)
+    landing = sign_in(client, "admin", BIG_PASSWORD, headers=LAN)
+    assert landing.status == 303 and landing.cookie
+    page = get(client, "/admin/accounts", headers=LAN,
+               cookie=f"ark_admin={landing.cookie}")
+    assert page.status_code == 200
+    assert "Administrators" in page.text
 
 
 def test_setup_cannot_overwrite_a_completed_password(ark):
@@ -170,6 +183,60 @@ def test_post_without_csrf_changes_nothing(ark, client):
     assert "expired" in made.text.lower()
     with ark.db.read() as conn:
         assert conn.execute("SELECT COUNT(*) FROM admins").fetchone()[0] == 1
+
+
+def test_first_run_password_is_random_private_and_stable(tmp_path, monkeypatch):
+    """No well-known password may exist on a box an owner actually boots.
+
+    With no override, the first-run password is generated once, written 0600,
+    and read back untouched afterwards.  (``ARK_BOOTSTRAP_PASSWORD`` is only the
+    tests' and an expert owner's shortcut.)
+    """
+    monkeypatch.delenv("ARK_BOOTSTRAP_PASSWORD", raising=False)
+    target = tmp_path / "bootstrap-password"
+    monkeypatch.setenv("ARK_BOOTSTRAP_FILE", str(target))
+
+    import ark_security as sec
+
+    first = sec.bootstrap_password()
+    assert len(first) >= sec.PASSWORD_MIN
+    assert first != "ChangeMe-ARK!"
+    assert target.read_text().strip() == first
+    assert target.stat().st_mode & 0o777 == 0o600
+    # Reading again must not rotate it under the owner's feet.
+    assert sec.bootstrap_password() == first
+    # And it cannot be chosen as the permanent password.
+    try:
+        sec.check_new_password(first, username="admin")
+    except sec.PolicyError as exc:
+        assert "temporary" in str(exc)
+    else:                                        # pragma: no cover
+        raise AssertionError("the first-run password was accepted as permanent")
+
+
+def test_no_first_run_password_is_invented_by_a_policy_check(tmp_path, monkeypatch):
+    """Checking a candidate password must not create the file as a side effect."""
+    monkeypatch.delenv("ARK_BOOTSTRAP_PASSWORD", raising=False)
+    target = tmp_path / "not-yet" / "bootstrap-password"
+    monkeypatch.setenv("ARK_BOOTSTRAP_FILE", str(target))
+
+    import ark_security as sec
+
+    assert sec.bootstrap_password(create=False) == ""
+    assert not target.exists()
+
+
+def test_the_api_never_trusts_a_forwarded_address():
+    """uvicorn rewrites the peer from X-Forwarded-For unless told not to.
+
+    Every door in ark_admin (sign-in, the private setup channel, throttling)
+    decides on the peer address.  If a local caller could make uvicorn replace
+    it with a header, a stranger on the LAN could claim to be 127.0.0.1 simply
+    by reaching a local proxy path.  The unit must disable that rewrite.
+    """
+    unit = (Path(__file__).resolve().parents[1] / "pi" / "systemd" / "ark-api.service").read_text()
+    assert "--no-proxy-headers" in unit
+    assert "--host 127.0.0.1" in unit
 
 
 def test_forged_forwarding_headers_do_not_claim_the_box(ark):

@@ -44,9 +44,21 @@ for needed in "$ARK_SRC/arcade/templates/page.html" \
               "$ARK_SRC/arcade/static/notices.txt" \
               "$ARK_SRC/arcade/catalog/seed.json" \
               "$ARK_SRC/arcade/emulatorjs/loader.js" \
-              "$ARK_SRC/arcade/emulatorjs/emulator.min.js"; do
+              "$ARK_SRC/arcade/emulatorjs/emulator.min.js" \
+              "$ARK_SRC/arcade/emulatorjs/compression/extractzip.js" \
+              "$ARK_SRC/arcade/emulatorjs/compression/extract7z.js" \
+              "$ARK_SRC/arcade/emulatorjs/compression/libunrar.js" \
+              "$ARK_SRC/arcade/emulatorjs/compression/libunrar.wasm"; do
   [[ -f "$needed" ]] || ark_die "ARK Arcade is missing $needed — the source tree was not copied in full"
 done
+# The player loads those four files at run time, and a missing or altered one only
+# shows up on a phone with no internet.  Prove every vendored byte before serving.
+EMU="$ARK_SRC/arcade/emulatorjs"
+[[ -f "$EMU/SHA256SUMS" ]] || ark_die "the player's checksum list is missing: $EMU/SHA256SUMS"
+if ! (cd "$EMU" && sha256sum --quiet -c SHA256SUMS); then
+  ark_die "the player's files do not match SHA256SUMS — re-copy the source tree, do not serve it"
+fi
+ark_ok "vendored player and its add-ons match SHA256SUMS"
 ark_copy "$ARK_SRC/bin/ark-arcade" /usr/local/sbin/ark-arcade 755 root:root
 chmod +x /usr/local/sbin/ark-arcade
 ark_ok "ARK Arcade files present; shelf keeper installed in /usr/local/sbin"

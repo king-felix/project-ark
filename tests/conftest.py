@@ -30,6 +30,9 @@ def ark(tmp_path, monkeypatch):
     monkeypatch.setenv("ARK_DB", str(root / "api/data/ark.db"))
     monkeypatch.setenv("ARK_MARKER", str(root / "api/data/ark.installed"))
     monkeypatch.setenv("ARK_TRUSTED_PROXIES", "testclient,127.0.0.1,::1")
+    # A known first-run password keeps the older tests readable; the production
+    # default is a random one written 0600, proved in tests/test_auth.py.
+    monkeypatch.setenv("ARK_BOOTSTRAP_PASSWORD", "ChangeMe-ARK!")
     monkeypatch.setenv("KIWIX_INTERNAL", "http://127.0.0.1:9/kiwix")   # nothing listens
     monkeypatch.setenv("CALIBRE_INTERNAL", "http://127.0.0.1:9")       # ditto
     for name in MODULES:

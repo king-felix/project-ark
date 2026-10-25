@@ -182,5 +182,63 @@ def test_reconcile_removes_only_abandoned_temp_files(ark):
 
 def test_the_temp_folder_is_never_served_by_the_web_server():
     conf = (Path(__file__).resolve().parents[1] / "pi" / "nginx" / "ark.conf").read_text()
-    assert "alias /srv/ark/drop/files/" in conf
+    # The File Box is proxied, never aliased: nginx cannot ask the database which
+    # files the owner has hidden, and an alias would serve them all.
+    assert "alias /srv/ark/drop/files/" not in conf
+    assert "location ^~ /drop/" in conf
     assert "drop/tmp" not in conf
+
+
+# ---------------------------------------------------------------------------
+#  the download route — one gate, the database
+# ---------------------------------------------------------------------------
+def test_a_visible_file_downloads_and_a_hidden_one_does_not(public):
+    ark = public.ark
+    public.client.post("/files", files={"file": ("gasket.jpg", b"photo bytes", "image/jpeg")},
+                       follow_redirects=False)
+    row = _rows(ark)[0]
+    link = "/drop/" + urllib.parse.quote(row["stored"])
+
+    shown = public.client.get(link)
+    assert shown.status_code == 200
+    assert shown.content == b"photo bytes"
+    assert "gasket.jpg" in shown.headers["content-disposition"]
+    assert shown.headers["content-disposition"].startswith("attachment;")
+    assert shown.headers["x-content-type-options"] == "nosniff"
+
+    with ark.db.tx() as conn:
+        conn.execute("UPDATE files SET hidden = 1 WHERE id = ?", (row["id"],))
+    assert public.client.get(link).status_code == 404
+
+
+def test_a_file_on_disk_without_a_visible_row_is_not_reachable(public):
+    """The old alias served anything in the folder, including a hand-dropped file."""
+    ark = public.ark
+    stray = ark.root / "drop" / "files" / "not-in-the-list.txt"
+    stray.write_bytes(b"private")
+    assert public.client.get("/drop/not-in-the-list.txt").status_code == 404
+
+
+def test_a_path_that_tries_to_climb_out_is_refused(public):
+    ark = public.ark
+    outside = ark.root / "outside.txt"
+    outside.write_bytes(b"not for you")
+    for path in ("/drop/..%2Foutside.txt", "/drop/%2e%2e%2Foutside.txt",
+                 "/drop/..%5Coutside.txt", "/drop/%2Fetc%2Fpasswd"):
+        assert public.client.get(path).status_code == 404, path
+
+
+def test_the_download_header_cannot_carry_a_newline(public):
+    ark = public.ark
+    public.client.post("/files", files={"file": ("note.txt", b"hello", "text/plain")},
+                       follow_redirects=False)
+    row = _rows(ark)[0]
+    with ark.db.tx() as conn:
+        conn.execute("UPDATE files SET display = ? WHERE id = ?",
+                     ("bad\r\nX-Evil: yes.txt", row["id"]))
+    answer = public.client.get("/drop/" + urllib.parse.quote(row["stored"]))
+    assert answer.status_code == 200
+    header = answer.headers["content-disposition"]
+    assert "\r" not in header and "\n" not in header
+    # The real name is present only percent-encoded, so it cannot start a header.
+    assert "%0D%0A" in header

@@ -139,9 +139,12 @@ def _game_card(game: Dict[str, Any]) -> str:
         facts.append(game["author"])
     if game["license"]:
         facts.append(game["license"])
+    star = ('<p class="arcade-favourite">Kept at the top</p>'
+            if game.get("pref_favourite") else "")
     return f"""
     <li class="arcade-card">
       <h2><a href="/arcade/g/{arc.esc(game['slug'])}">{arc.esc(game['title'])}</a></h2>
+      {star}
       <p>{arc.esc(game['description'] or 'Ready to play.')}</p>
       <p class="arcade-facts">{arc.esc(' · '.join(facts))}</p>
       <div class="arcade-play"><a href="/arcade/g/{arc.esc(game['slug'])}">Tap here to play</a></div>
@@ -154,7 +157,10 @@ def library(request: Request) -> HTMLResponse:
     with ark_db.read() as conn:
         games = arc.published_games(conn)
         link = _profile_link(request, conn)
-        named = _player(request, conn) is not None
+        player = _player(request, conn)
+        named = player is not None
+        if named:
+            games = arc.published_games(conn, int(player["id"]))
     if games:
         body = (f"<h1>Games</h1>"
                 f"<p class=\"arcade-lede\">Tap a game and it starts here in this browser. "
@@ -187,8 +193,29 @@ def _wrong_csrf() -> JSONResponse:
 # ---------------------------------------------------------------------------
 #  one game
 # ---------------------------------------------------------------------------
+def _prefs_panel(game: Dict[str, Any], prefs: Dict[str, Any], csrf: str) -> str:
+    """Two choices, as a plain form — no JavaScript needed to keep them."""
+    def checked(value: bool) -> str:
+        return " checked" if value else ""
+
+    return f"""
+    <section class="arcade-prefs">
+      <h2>How you like this game</h2>
+      <form method="post" action="/arcade/player/prefs/{int(game['id'])}">
+        <input type="hidden" name="csrf" value="{arc.esc(csrf)}">
+        <input type="hidden" name="next" value="/arcade/g/{arc.esc(game['slug'])}">
+        <label><input type="checkbox" name="favourite" value="1"{checked(prefs['favourite'])}>
+          Keep this game at the top of the shelf</label>
+        <label><input type="checkbox" name="autosave" value="1"{checked(prefs['autosave'])}>
+          Save my game for me as I play, and start from that save next time</label>
+        <button type="submit">Keep my choices</button>
+      </form>
+    </section>"""
+
+
 def _save_panel(game: Dict[str, Any], player: Optional[Dict[str, Any]],
-                rows: Dict[int, Dict[str, Any]], csrf: str) -> str:
+                rows: Dict[int, Dict[str, Any]], csrf: str,
+                prefs: Optional[Dict[str, Any]] = None) -> str:
     if not player:
         return ('<p class="arcade-note">Playing as a guest: the player keeps a save in this '
                 'browser. Sign in with a name to keep a save on the box and find it on '
@@ -209,7 +236,8 @@ def _save_panel(game: Dict[str, Any], player: Optional[Dict[str, Any]],
           </td>
         </tr>""")
     cfg = json.dumps({"gameId": int(game["id"]), "csrf": csrf,
-                      "base": f"/arcade/api/saves/{int(game['id'])}/state/"}).replace("</", "<\\/")
+                      "base": f"/arcade/api/saves/{int(game['id'])}/state/",
+                      "autosave": bool((prefs or {}).get("autosave"))}).replace("</", "<\\/")
     return f"""
     <section class="arcade-saves" id="arcade-savebox">
       <h2>Saves for {arc.esc(player['display_name'] or player['username'])}</h2>
@@ -267,6 +295,31 @@ def _save_script(cfg_json: str) -> str:
       say('The save did not go through. Try again.', true);
     }
   });
+  if (cfg.autosave) {
+    var autoRevision = 0;
+    async function autoSave() {
+      if (!ready()) { return; }
+      var state = window.EJS_emulator.gameManager.getState();
+      if (!state || !state.length) { return; }
+      var put = await fetch(cfg.base + '0', {
+        method: 'PUT', credentials: 'same-origin',
+        headers: {'X-ARK-CSRF': cfg.csrf, 'X-ARK-Revision': String(autoRevision),
+                  'Content-Type': 'application/octet-stream'},
+        body: new Blob([state])
+      });
+      var data = await put.json().catch(function () { return {}; });
+      if (put.ok) { autoRevision = Number(data.revision) || autoRevision + 1; }
+    }
+    async function autoLoad() {
+      if (!ready()) { setTimeout(autoLoad, 1500); return; }
+      var got = await fetch(cfg.base + '0', {credentials: 'same-origin'}).catch(function () { return null; });
+      if (!got || !got.ok) { return; }
+      autoRevision = Number(got.headers.get('X-ARK-Revision')) || 0;
+      window.EJS_emulator.gameManager.loadState(new Uint8Array(await got.arrayBuffer()));
+    }
+    setTimeout(autoLoad, 3000);
+    setInterval(autoSave, 60000);
+  }
 })();
 """.replace("__CFG__", cfg_json)
 
@@ -284,10 +337,12 @@ def game_page(request: Request, slug: str) -> Response:
         player = _player(request, conn)
         rows = {}
         csrf = ""
+        prefs = None
         if player:
             csrf = player["csrf"]
             rows = {int(r["slot"]): r for r in arc.saves_for(conn, int(player["id"]), int(game["id"]))
                     if r["kind"] == "state"}
+            prefs = arc.player_prefs_set(conn, int(player["id"]), int(game["id"]), played=True)
         link = _profile_link(request, conn)
     system = arc.SYSTEMS.get(game["system"], {})
     facts = [system.get("label", game["system"])]
@@ -317,7 +372,8 @@ def game_page(request: Request, slug: str) -> Response:
     <div id="arcade-stage" aria-label="{arc.esc(game['title'])} game player"></div>
     <p class="arcade-note">Use the arrow keys or the on-screen pad. The game runs on this
     box; nothing is downloaded while you play. <a href="/arcade/static/notices.txt">About the games</a></p>
-    {_save_panel(game, player, rows, csrf)}
+    {_prefs_panel(game, prefs, csrf) if prefs else ''}
+    {_save_panel(game, player, rows, csrf, prefs)}
     <script>{boot}</script>
     <script src="/arcade/emulator/loader.js"></script>"""
     return page(game["title"], body, profile_link=link, flash=_flash(request))
@@ -512,6 +568,29 @@ def player_sign_out(request: Request, csrf: str = Form("")) -> RedirectResponse:
     return response
 
 
+@router.post("/arcade/player/prefs/{game_id}")
+def player_prefs_save(request: Request, game_id: int, csrf: str = Form(""),
+                      autosave: str = Form(""), favourite: str = Form(""),
+                      next: str = Form("/arcade/")) -> RedirectResponse:
+    if not _player_origin(request):
+        return _to_secure(request)
+    with ark_db.read() as conn:
+        player = _player(request, conn)
+        if not player:
+            return _back(next, err="Sign in with your name first.")
+        if not sec.csrf_ok(player["csrf"], csrf):
+            return _back(next, err="That request did not come from this page.")
+        try:
+            arc.player_prefs_set(
+                conn, int(player["id"]), int(game_id),
+                autosave=autosave not in ("", "0", "off", "false"),
+                favourite=favourite not in ("", "0", "off", "false"),
+            )
+        except arc.SaveRefused as exc:
+            return _back("/arcade/", err=str(exc))
+    return _back(next, ok="Your choices were kept.")
+
+
 @router.post("/arcade/player/saves/{save_id}/delete")
 def player_delete_save(request: Request, save_id: int, csrf: str = Form("")) -> RedirectResponse:
     if not _player_origin(request):
@@ -576,6 +655,7 @@ def api_save_get(request: Request, game_id: int, kind: str, slot: int) -> Respon
     return Response(row["data"], media_type="application/octet-stream",
                     headers={"Content-Disposition": f'attachment; filename="{row["filename"]}"',
                              "Cache-Control": "no-store",
+                             "X-ARK-Revision": str(int(row["revision"])),
                              "X-Content-Type-Options": "nosniff"})
 
 
@@ -625,6 +705,50 @@ def api_save_delete(request: Request, save_id: int) -> JSONResponse:
             return JSONResponse({"ok": False, "error": "That save was not there."}, status_code=404)
     return JSONResponse({"ok": True})
 
+
+
+@router.get("/arcade/api/prefs/{game_id}")
+def api_prefs_get(request: Request, game_id: int) -> JSONResponse:
+    with ark_db.read() as conn:
+        player = _player(request, conn)
+        if not player:
+            return _unauthorised()
+        game = arc.game_by_id(conn, int(game_id))
+        if not game or not game["published"] or game["hidden"]:
+            return JSONResponse({"ok": False, "error": "That game is not on the shelf."},
+                                status_code=404)
+        prefs = arc.player_prefs_get(conn, int(player["id"]), int(game_id))
+    return JSONResponse({"ok": True, "prefs": prefs})
+
+
+@router.put("/arcade/api/prefs/{game_id}")
+async def api_prefs_put(request: Request, game_id: int) -> JSONResponse:
+    with ark_db.read() as conn:
+        player = _player(request, conn)
+        if not player:
+            return _unauthorised()
+        if not sec.csrf_ok(player["csrf"], request.headers.get("x-ark-csrf", "")):
+            return _wrong_csrf()
+        try:
+            wanted = await request.json()
+        except (ValueError, UnicodeDecodeError):
+            return JSONResponse({"ok": False, "error": "That page sent something this box did not understand."},
+                                status_code=400)
+        if not isinstance(wanted, dict):
+            return JSONResponse({"ok": False, "error": "That page sent something this box did not understand."},
+                                status_code=400)
+        choices = {}
+        for key in ("autosave", "favourite"):
+            if key in wanted:
+                if not isinstance(wanted[key], bool):
+                    return JSONResponse({"ok": False, "error": "That choice was not yes or no."},
+                                        status_code=400)
+                choices[key] = wanted[key]
+        try:
+            prefs = arc.player_prefs_set(conn, int(player["id"]), int(game_id), **choices)
+        except arc.SaveRefused as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=404)
+    return JSONResponse({"ok": True, "prefs": prefs})
 
 
 @router.post("/arcade/player/import.zip")

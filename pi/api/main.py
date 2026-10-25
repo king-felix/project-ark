@@ -24,6 +24,7 @@ cannot travel over plain HTTP even by accident.
 from __future__ import annotations
 
 import html
+import mimetypes
 import re
 import sqlite3
 import urllib.error
@@ -32,9 +33,11 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone
+from pathlib import Path
 
-from fastapi import FastAPI, Form, UploadFile, File
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi import FastAPI, Form, Response, UploadFile, File
+from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
+                               RedirectResponse)
 
 import ark_admin
 import ark_arcade
@@ -665,6 +668,52 @@ def files(ok: str = "", err: str = ""):
 def _stored_name(row) -> str:
     """The name on disk. Older rows only have 'name', which was the disk name."""
     return row["stored"] or row["name"]
+
+
+def _download_header(display: str) -> str:
+    """A Content-Disposition value that cannot carry a newline into the wire.
+
+    The display name is whatever a reader typed, so it is user input.  The
+    ASCII fallback is deliberately dull; the real name travels RFC 5987-encoded.
+    """
+    plain = "".join(ch if 32 <= ord(ch) < 127 and ch not in '\\";' else "_"
+                    for ch in (display or ""))[:120].strip() or "download"
+    return ("attachment; filename=\"" + plain + "\"; filename*=UTF-8''"
+            + urllib.parse.quote(display or "download", safe=""))
+
+
+@app.get("/drop/{name}")
+def drop_download(name: str) -> Response:
+    """Serve a shared file only while its row says it is visible.
+
+    nginx used to alias this folder directly, which meant a file the owner had
+    hidden (or one whose row never existed) was still one guessed URL away.
+    The database is now the gate: no visible row, no bytes.
+    """
+    bare = (name or "").strip()
+    if (not bare or bare != Path(bare).name or "/" in bare or "\\" in bare
+            or "\x00" in bare or bare in (".", "..")):
+        return Response("Not here", status_code=404)
+    with ark_db.read() as conn:
+        row = conn.execute(
+            "SELECT * FROM files WHERE hidden = 0 AND (stored = ? OR (stored = '' AND name = ?))"
+            " ORDER BY id DESC LIMIT 1", (bare, bare)).fetchone()
+    if row is None:
+        return Response("Not here", status_code=404)
+    folder = ark_storage.drop_dir()
+    try:
+        target = (folder / bare).resolve()
+        target.relative_to(folder.resolve())
+    except (OSError, ValueError):
+        return Response("Not here", status_code=404)
+    if not target.is_file():
+        return Response("Not here", status_code=404)
+    display = str(row["display"] or row["name"] or bare)
+    media = mimetypes.guess_type(display)[0] or "application/octet-stream"
+    return FileResponse(target, media_type=media,
+                        headers={"Content-Disposition": _download_header(display),
+                                 "Cache-Control": "public, max-age=3600",
+                                 "X-Content-Type-Options": "nosniff"})
 
 
 @app.post("/files", response_class=HTMLResponse)

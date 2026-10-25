@@ -90,7 +90,8 @@ DELIBERATELY NOT IN HERE
   # 1g. claim the owner's door — through the tunnel, on the Mac, once
   ssh -N -L 8444:127.0.0.1:8444 pi@ark.local
   #    leave that running, open https://localhost:8444/admin
-  #    user: admin    temporary password: ChangeMe-ARK!
+  #    user: admin
+  #    temporary password: cat /srv/ark/api/data/bootstrap-password
   #    (the box then asks for your own password; docs/ADMIN.md section 2)
 
   Content then fills itself in: the downloader walks the queue smallest-first

@@ -44,10 +44,17 @@ unclaimed a second listener on `127.0.0.1:8444` is the only way in.
 3. Your browser will warn about the certificate (it is the box's own — see §5).
    Check the fingerprint first (§5), then continue.
 
-4. Sign in with the temporary account:
+4. Find the temporary password on the box (it is generated at first start;
+   there is no password printed in this repository):
+
+   ```bash
+   ssh pi@ark.local 'cat /srv/ark/api/data/bootstrap-password'
+   ```
+
+   Then sign in:
 
    * user: `admin`
-   * password: `ChangeMe-ARK!`
+   * password: the line that command printed
 
 5. The box immediately asks for your own password. At least 12 characters; a
    short sentence is ideal; up to 1024 characters are kept in full (nothing is
@@ -157,7 +164,7 @@ interface or the hotspot.
 
 If the database is gone but the marker file
 `/srv/ark/api/data/ark.installed` survives, the box treats itself as
-*recovery-required* and will **not** recreate `admin` / `ChangeMe-ARK!`. Use the
+*recovery-required* and will **not** recreate the bootstrap account. Use the
 command above.
 
 
@@ -288,7 +295,9 @@ file copy — the live database is in WAL mode), `files/` (the shared files
 themselves), `arcade-saves/` (named players' game saves, `0600` in `0700`
 folders), `calibre-incoming/.imported.json` (the "already imported" list),
 `manifest.json` (a sha256 and a size for every file) and `RESTORE-ME.txt` (the
-same instructions, inside the folder, in case this page is not to hand).
+same instructions, inside the folder, in case this page is not to hand). Shared
+files may be stored compressed inside the bundle; `--verify` proves them and a
+restore puts back the original bytes.
 
 **What it deliberately leaves out:** the offline library, the book shelf and the
 game files themselves — they are content and are fetched or imported again — the
@@ -301,15 +310,19 @@ looks like a finished backup; and `--verify` reads every byte back against the
 manifest, because a backup nobody has verified is a hope.
 
 **What a restore will not do.** It refuses a damaged folder before touching
-anything. It refuses an occupied box (messages, shared files, accounts, player
-names or game saves already there) unless you add `--force`, and says so. It
-never replaces a shared file that is already on the box — a restore only adds
+anything. Before it writes, it pauses every writer on the box (the web service
+and the book importer) and restarts what it stopped even if the restore fails;
+`--no-service` is for a card mounted in another computer's reader, where there is
+nothing to pause. It refuses an occupied box (messages, shared files, accounts,
+player names or game saves already there) unless you add `--force`, and says so.
+It never replaces a shared file that is already on the box — a restore only adds
 what is missing, so `ark_storage.spool()` stays the only writer of a new file.
-A game save already on the box is likewise kept rather than replaced, and a
-missing one is added `0600` in `0700` folders. If the book shelf is empty it
-leaves the import list beside it as `.imported.json.from-backup`, because a list
-of "already imported" books with no books would hide every book from the
-importer for ever. `--dry-run` says what it would do and writes nothing.
+A game save already on the box is likewise kept rather than replaced unless the
+restore is forced, and a missing one is added `0600` in `0700` folders. If the
+book shelf is empty it leaves the import list beside it as
+`.imported.json.from-backup`, because a list of "already imported" books with no
+books would hide every book from the importer for ever. `--dry-run` says what it
+would do and writes nothing.
 
 **A copy on the box is not survival insurance.** If the card dies, a folder on
 that card dies with it. Copy `/srv/ark/backup/ark-backup-*` to a USB stick or a
@@ -370,6 +383,21 @@ is published until its SHA-256 and its console header agree. The first shelf is
 were fetched; a changed upstream file is refused rather than silently updated.
 Collections and the game files themselves are content and are fetched again;
 named players' saves are state and are included in a backup.
+
+**A game has to be in English, or have no words at all.** The language and the
+evidence for it are recorded beside each game and each suggestion. A suggestion
+with no stated language, no evidence, a conflict in the source or a language
+other than English is held as *review* with that reason shown on the Games page;
+it is not installed. A wordless game is allowed. A game file you supply yourself
+goes through the same questions (`sudo ark-arcade --import <file>` asks for title,
+console, licence, language and evidence) — ownership of the file does not skip
+the proof that it may be copied.
+
+**A player's choices belong to the name.** A named player's favourite games sort
+first on their shelf; autosave, favourite and last-played are stored with the name
+and follow it to another device. They are preferences, not saves: a guest sees
+A–Z and writes nothing, and no player's choice can hide a game the owner left on
+the shelf.
 
 **Saves and copies.** A guest's save lives in that browser (EmulatorJS local
 storage). A named player gets three server slots per game, stored under
@@ -448,7 +476,7 @@ Community controls and the readiness page are complete and tested.
 
 ## 12. Tested / not tested
 
-**Tested** — 174 automated tests, disposable databases, `pytest`:
+**Tested** — 231 automated tests, disposable databases, `pytest` (the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md`):
 
 * bootstrap account exists once; a wiped database becomes recovery-required
   instead of re-creating the default; the marker lives outside the database;
@@ -558,11 +586,11 @@ Community controls and the readiness page are complete and tested.
   of the weekly discovery timer on a real network has also not been observed.
 
 To install and verify this branch on the Pi, **copy the database aside first** —
-`60-portal` restarts the backend and runs every migration through schema v3 in
+`60-portal` restarts the backend and runs every migration through schema v4 in
 place, and there is no downgrade path:
 
 ```bash
-sudo sqlite3 /srv/ark/api/data/ark.db ".backup '/root/ark-db-before-v3.db'"
+sudo sqlite3 /srv/ark/api/data/ark.db ".backup '/root/ark-db-before-v4.db'"
 sudo bash /srv/ark/src/install-ark.sh --only 20-storage,30-calibre,60-portal,65-admin,70-network,95-backup
 sudo bash /srv/ark/src/install-ark.sh --only 90-verify
 ```

@@ -256,11 +256,31 @@ def _row(row: sqlite3.Row) -> Dict[str, Any]:
     return {k: row[k] for k in row.keys()}
 
 
-def published_games(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
+def published_games(conn: sqlite3.Connection,
+                    player_id: Optional[int] = None) -> List[Dict[str, Any]]:
+    """The shelf.  A named player sees their favourites first; guests see A–Z.
+
+    The ordering is a preference, never a filter: hiding is the owner's decision
+    and no player's choice can take a game off the shelf.
+    """
+    if player_id is None:
+        rows = conn.execute(
+            "SELECT * FROM games WHERE published = 1 AND hidden = 0 ORDER BY title COLLATE NOCASE"
+        ).fetchall()
+        return [_row(r) for r in rows]
     rows = conn.execute(
-        "SELECT * FROM games WHERE published = 1 AND hidden = 0 ORDER BY title COLLATE NOCASE"
+        "SELECT g.*, p.favourite AS pref_favourite FROM games g "
+        "LEFT JOIN player_game_prefs p ON p.game_id = g.id AND p.player_id = ? "
+        "WHERE g.published = 1 AND g.hidden = 0 "
+        "ORDER BY COALESCE(p.favourite, 0) DESC, g.title COLLATE NOCASE",
+        (int(player_id),),
     ).fetchall()
-    return [_row(r) for r in rows]
+    out = []
+    for row in rows:
+        game = _row(row)
+        game["pref_favourite"] = bool(game.pop("pref_favourite", 0))
+        out.append(game)
+    return out
 
 
 def all_games(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
@@ -395,7 +415,10 @@ def player_authenticate(conn: sqlite3.Connection, username: str, password: str,
     if wait > 0:
         time.sleep(min(wait, 2.0))   # never turn a person into a hanging request
     row = conn.execute("SELECT * FROM players WHERE username = ?", (name,)).fetchone()
-    ok = bool(row and row["enabled"] and sec.verify_password(password, row["pass_hash"] or ""))
+    # Same work for an unknown name as for a real one (see sec.DUMMY_HASH).
+    candidate = row["pass_hash"] if row is not None else sec.DUMMY_HASH
+    valid = sec.verify_password(password, candidate or sec.DUMMY_HASH)
+    ok = bool(row and row["enabled"] and valid)
     with ark_db.tx(conn):
         conn.execute(
             "INSERT INTO arcade_login_attempts (ts, source, target, ok) VALUES (?, ?, ?, ?)",
@@ -518,6 +541,76 @@ def saves_for(conn: sqlite3.Connection, player_id: int,
     sql += " ORDER BY g.title COLLATE NOCASE, s.kind, s.slot"
     rows = conn.execute(sql, args).fetchall()
     return [_row(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+#  a player's choices about a game — preferences, not saves
+# ---------------------------------------------------------------------------
+PREFS_DEFAULT: Dict[str, Any] = {
+    "autosave": False, "favourite": False, "last_played": "",
+}
+
+
+def player_prefs_get(conn: sqlite3.Connection, player_id: int,
+                     game_id: int) -> Dict[str, Any]:
+    """What this name chose for this game; defaults when nothing was chosen."""
+    row = conn.execute(
+        "SELECT autosave, favourite, last_played FROM player_game_prefs "
+        "WHERE player_id = ? AND game_id = ?",
+        (int(player_id), int(game_id)),
+    ).fetchone()
+    if not row:
+        return dict(PREFS_DEFAULT)
+    return {"autosave": bool(row["autosave"]), "favourite": bool(row["favourite"]),
+            "last_played": row["last_played"] or ""}
+
+
+def player_prefs_set(conn: sqlite3.Connection, player_id: int, game_id: int, *,
+                     autosave: Optional[bool] = None, favourite: Optional[bool] = None,
+                     played: bool = False) -> Dict[str, Any]:
+    """Change only the choices given; a missing one keeps its stored value.
+
+    ``played`` stamps the time instead of rewriting what the player chose, so
+    opening a game never quietly flips a switch.  The row is created only once
+    something is actually chosen or the game is opened.
+    """
+    game = game_by_id(conn, int(game_id))
+    if not game or not game["published"] or game["hidden"]:
+        raise SaveRefused("That game is not on the shelf.")
+    current = player_prefs_get(conn, player_id, game_id)
+    if autosave is None:
+        autosave = current["autosave"]
+    if favourite is None:
+        favourite = current["favourite"]
+    stamp = now_iso()
+    last_played = stamp if played else current["last_played"]
+    with ark_db.tx(conn):
+        conn.execute(
+            "INSERT INTO player_game_prefs (player_id, game_id, autosave, favourite, "
+            "last_played, updated_at) VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(player_id, game_id) DO UPDATE SET "
+            "  autosave = excluded.autosave, favourite = excluded.favourite, "
+            "  last_played = excluded.last_played, updated_at = excluded.updated_at",
+            (int(player_id), int(game["id"]), int(bool(autosave)), int(bool(favourite)),
+             last_played, stamp),
+        )
+    return {"autosave": bool(autosave), "favourite": bool(favourite),
+            "last_played": last_played}
+
+
+def player_prefs_all(conn: sqlite3.Connection, player_id: int) -> Dict[int, Dict[str, Any]]:
+    """Every choice this name has made, keyed by game, for one page render."""
+    try:
+        rows = conn.execute(
+            "SELECT game_id, autosave, favourite, last_played FROM player_game_prefs "
+            "WHERE player_id = ?", (int(player_id),)
+        ).fetchall()
+    except sqlite3.DatabaseError:
+        return {}
+    return {int(r["game_id"]): {"autosave": bool(r["autosave"]),
+                                "favourite": bool(r["favourite"]),
+                                "last_played": r["last_played"] or ""}
+            for r in rows}
 
 
 def _check_game(conn: sqlite3.Connection, game_id: int) -> Dict[str, Any]:

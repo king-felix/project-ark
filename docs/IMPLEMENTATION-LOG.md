@@ -12,6 +12,7 @@ and what the next executable step is.
 | Appliance target | Raspberry Pi 4B, Raspberry Pi OS Lite, Python 3.13.5, nginx 1.22 |
 | Deployment status | **not deployed** — code, config and tests only |
 | Hardware tests | **none performed** (no browser/phone in this environment) |
+| Requirements matrix | `docs/REQUIREMENTS-MATRIX.md` — R1–R8/A–D, each status with the test that proves it and the sentences still missing |
 
 ---
 
@@ -32,7 +33,7 @@ and what the next executable step is.
 | 13 | Essentials pack, QR, accessibility, household page | not started |
 | — | ARK Arcade | **delivered and tested** — public shelf, guest play, optional named-player saves on the TLS `:8445` origin, owner **Games** page, licence/allowlist/hash gate, weekly discovery, and saves carried by a backup (§12) |
 | 14 | Sequence | stages 1–6 and ARK Arcade done; deploy + hardware walk-through outstanding; stage 7 next |
-| 15 | Acceptance tests | 174 tests, all green (`pytest -q`) |
+| 15 | Acceptance tests | 231 tests, all green (`pytest -q`); the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md` |
 
 ---
 
@@ -660,8 +661,9 @@ new work after the deploy walk-through (`.clinerules` §8.9).
 At this checkpoint: `pytest` **144 passed** (12 files: `tests/test_backup.py` was
 the new 13, `tests/test_health.py` grew from 16 to 19). Branch
 `feature/admin-hardening`, nothing deployed, no hardware test: the same
-code-and-tests checkpoint as stages 3, 4 and 5. The current tip is **174 passed**
-after ARK Arcade; §6 is the current test evidence.
+code-and-tests checkpoint as stages 3, 4 and 5. The suite stood at **174 passed**
+after ARK Arcade; it is **231** now (§1), and `docs/REQUIREMENTS-MATRIX.md` is the
+per-requirement verdict.
 
 **The gap.** Everything the box cannot rebuild — messages, shared files, accounts,
 the two switches, the list that stops a re-dropped book being imported twice —
@@ -746,7 +748,8 @@ and walk through it on a phone (`.clinerules` §8.9).
 ## 12. ARK Arcade checkpoint — 24 Oct 2026
 
 **Delivered on `feature/admin-hardening`, not deployed.** `pytest` **174 passed**
-(14 files). The shelf is public and password-free; a name exists only to keep
+at this checkpoint (14 files; **231** now — §1). The shelf is public and
+password-free; a name exists only to keep
 game saves and is not an administrator account. Nothing has been played in a real
 browser or fetched from the live source on the Pi.
 
@@ -812,5 +815,34 @@ first run.
 
 **Next executable step** — deploy the branch on the Pi and walk the paragraph
 above (`.clinerules` §8.9); stage 7 (household layer) remains unstarted.
+
+---
+
+## 13. Hardening + documentation checkpoint — 25 Oct 2026
+
+**Committed on `feature/admin-hardening`, not deployed.** `pytest` **231 passed**
+(15 test files). This checkpoint records the code that was finished after §12 and
+the documentation pass that followed it. No migration or feature in this section
+has run on the Pi.
+
+| Area | What changed |
+|---|---|
+| First sign-in | The public `ChangeMe-ARK!` literal is gone. `ark_security.bootstrap_password()` generates a 20-character password once into `/srv/ark/api/data/bootstrap-password` (`0600`, `O_EXCL`, fsync) and returns it idempotently. `ARK_BOOTSTRAP_PASSWORD` remains only as the test/automation hook. The setup page names the file. A wiped database plus a surviving `ark.installed` marker still becomes `recovery-required` |
+| Sign-in timing | Administrator and player sign-in verify against `DUMMY_HASH` when the name does not exist, so an unknown name costs the same scrypt work as a real one. Password policy is unchanged: 12…1024 characters, rejected not truncated |
+| Schema v4 | `SCHEMA_VERSION = 4`. Adds `player_game_prefs` (`autosave`, `favourite`, `last_played`) and the evidence columns `language`, `language_evidence`, `rights_evidence`, `provenance`, `release`, `notices` on games/candidates/revisions. Existing candidates with no language or no rights evidence become `review` once. Old rows keep reading through defaults |
+| Arcade eligibility | `language_facts()`, `rights_facts()` and `review_reason()` are one gate: English or wordless with evidence; an unrecorded language, a conflict or missing evidence is held for review with a plain reason. Owner-supplied files go through `owner_candidate()`/`import_owner_file()` and the same proof; ownership is not permission |
+| Arcade player choices | `published_games(conn, player_id)` puts favourites first for a named player and A–Z for a guest. Preferences follow the name across devices; they never hide a game and guests write nothing |
+| Restore | `ark-restore` quiesces every writer, restarts what it stopped in `finally`, supports `--no-service` for a reader-mounted card, and uses `replace=True` only under `--force` for records and named-player saves. It still never replaces an existing shared file |
+| Backup | Manifest format 1 remains the definition; shared files may be compressed in the bundle and are proved/restored byte-for-byte. Vendor/emulator payload handling is explicit, not a path guess |
+| TLS proof | `tests/test_tls_probe.py` drives `ark_plain_http_verdict` against real sockets and a real TLS listener, and asserts the installer uses the verdict rather than `curl`'s exit status |
+| Docs | `README.md`, `docs/ADMIN.md`, `docs/USING-THE-ARK.md`, `docs/REBUILD-ME-ARK.txt`, `docs/REBUILD-FROM-BACKUP.txt`, `docs/REQUIREMENTS-MATRIX.md`, `pi/RECOVERY-SHEET.txt` and `.clinerules` now describe the bootstrap-password file, schema v4, language/review gate, player preferences, restore quiesce and the pending deploy |
+
+**Still pending — say it plainly.** Nothing here has met the Pi: no v4 migration,
+no generated bootstrap password read on the box, no restore with systemd, no
+arcade language/review decision against the live catalogue, no player preference
+kept on a phone. Before release: copy the database aside with SQLite `.backup`,
+deploy with `--only 20-storage,30-calibre,60-portal,65-admin,70-network,95-backup`,
+run `--only 90-verify`, then complete the phone walk-through in `.clinerules`
+§8.9.
 
 

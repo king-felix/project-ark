@@ -88,7 +88,11 @@ def ensure_initialised() -> str:
             n_admins = _admin_count(conn)
         else:
             try:
-                initial = sec.hash_password(sec.BOOTSTRAP_PASSWORD)
+                initial = sec.bootstrap_password()
+                if not initial:
+                    raise sec.CryptUnavailable(
+                        "no writable place for the first-run password")
+                initial = sec.hash_password(initial)
             except sec.CryptUnavailable as exc:
                 # Public reading must not die because this Python cannot hash
                 # passwords; the administrator area reports it instead.
@@ -274,6 +278,11 @@ def _gate_setup(request: Request, conn: sqlite3.Connection) -> Response | None:
     """The box's first claim is only possible through the loopback listener."""
     if not bootstrap_unclaimed(conn) or setup_channel(request):
         return None
+    temporary = sec.bootstrap_password(create=False)
+    if temporary:
+        where = (f"<b>{esc(temporary)}</b>")
+    else:
+        where = (f"the one written in <code>{esc(str(sec.bootstrap_password_path()))}</code>")
     return shell("Finish setup over a direct connection", f"""
   <p class="status"><span class="dot" aria-hidden="true"></span><span><b>This box has not been
      claimed yet.</b> To stop the first stranger on the Wi-Fi becoming its administrator, the
@@ -282,7 +291,7 @@ def _gate_setup(request: Request, conn: sqlite3.Connection) -> Response | None:
   <p class="hint">Run this, then open the address below in the same computer's browser:</p>
   <pre class="code">{esc(SETUP_HINT)}</pre>
   <p class="note">Sign in as <b>{esc(sec.BOOTSTRAP_USERNAME)}</b> with the temporary password
-     <b>{esc(sec.BOOTSTRAP_PASSWORD)}</b>. You will be asked to choose your own password
+     {where}. You will be asked to choose your own password
      immediately — that temporary one stops working straight away.</p>""", status=403)
 
 
@@ -395,8 +404,12 @@ def login_submit(request: Request, username: str = Form(""), password: str = For
 
         name = sec.normalise_username(username)
         row = conn.execute("SELECT * FROM admins WHERE username = ?", (name,)).fetchone()
-        good = bool(row) and bool(row["enabled"]) and sec.verify_password(password,
-                                                                         row["pass_hash"])
+        # Always do the expensive check, even for a name that does not exist and
+        # for a disabled account.  Short-circuiting here would let an attacker
+        # discover administrator names by timing the answer.
+        candidate = row["pass_hash"] if row is not None else sec.DUMMY_HASH
+        valid = sec.verify_password(password, candidate or sec.DUMMY_HASH)
+        good = bool(row) and bool(row["enabled"]) and valid
         if not good:
             sec.record_login(conn, name, source, ok=False)
             ark_db.audit(conn, action="sign-in", actor_name=name, result="denied",

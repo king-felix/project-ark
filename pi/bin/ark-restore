@@ -20,7 +20,17 @@ The order of the checks is the whole design:
 
 This is the one deliberate exception to "a backup only reads": putting records
 back means writing them.  It writes only what the manifest lists, only inside the
-box, and only where nothing of the same name already lives.
+box, and only where nothing of the same name already lives — except a named
+player's save when ``--force`` replaces the records it belongs to, because bytes
+from the old database and a row from the restored one would otherwise disagree
+forever (``SaveConflict``).
+
+**Nothing else may be writing while this runs.**  The web service keeps its own
+handle on the old database, and a copied-in database plus a stale WAL is how a
+restore looks successful and then loses rows.  Every unit that writes the
+records is therefore stopped first and started again afterwards, including on
+failure.  ``--no-service`` is for a card mounted on another machine, where there
+is no service to stop.
 """
 
 from __future__ import annotations
@@ -29,6 +39,7 @@ import argparse
 import os
 import pwd
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -77,6 +88,75 @@ def occupancy(paths: dict) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+#  keeping the writers quiet
+# ---------------------------------------------------------------------------
+#: Every unit that can hold the database or write it.  Timers and the path unit
+#: come first so they cannot start a job between the stops and the copy.
+WRITERS = ("ark-book-import.path", "ark-book-import.service",
+           "ark-arcade-discover.timer", "ark-arcade-discover.service",
+           "ark-zim-downloader.service", "ark-api.service")
+
+
+def _systemctl(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["systemctl", *args], capture_output=True, text=True,
+                          timeout=30)
+
+
+def quiesce(dry: bool) -> tuple[list[str], str | None]:
+    """Stop every writer that is running.  Returns (stopped, problem).
+
+    Only units this call actually stopped are returned, so a failed stop can put
+    back exactly what it took down.  A box without systemd (a card in a reader on
+    another computer) is not a failure: there is nothing running to coordinate.
+    """
+    if not shutil.which("systemctl"):
+        say("(No service manager on this machine, so there is nothing to pause.)")
+        return [], None
+    running = []
+    for unit in WRITERS:
+        try:
+            state = _systemctl("is-active", unit).stdout.strip()
+        except (OSError, subprocess.SubprocessError) as exc:
+            return [], f"could not ask about {unit}: {exc}"
+        if state == "active":
+            running.append(unit)
+    if not running:
+        return [], None
+    if dry:
+        say("Would pause: " + ", ".join(running))
+        return [], None
+    for unit in running:
+        try:
+            done = _systemctl("stop", unit)
+        except (OSError, subprocess.SubprocessError) as exc:
+            resume(running)
+            return [], f"could not pause {unit}: {exc}"
+        if done.returncode != 0:
+            resume(running)
+            detail = (done.stderr or done.stdout or "").strip()
+            return [], (f"could not pause {unit} — nothing was changed"
+                        + (f" ({detail})" if detail else ""))
+        say(f"Paused {unit} so nothing else writes the records.")
+    return running, None
+
+
+def resume(units: list[str]) -> None:
+    """Start again exactly what was stopped — even when the restore failed."""
+    for unit in units:
+        try:
+            done = _systemctl("start", unit)
+        except (OSError, subprocess.SubprocessError) as exc:
+            say(f"Could not start {unit} again: {exc}")
+            continue
+        if done.returncode != 0:
+            detail = (done.stderr or done.stdout or "").strip()
+            say(f"Could not start {unit} again"
+                + (f": {detail}" if detail else "") + " — start it by hand.")
+        else:
+            say(f"Started {unit} again.")
+
+
+# ---------------------------------------------------------------------------
 #  putting things back
 # ---------------------------------------------------------------------------
 def put_database(source: Path, target: Path, dry: bool) -> dict:
@@ -111,14 +191,25 @@ def put_file(source: Path, target: Path, dry: bool) -> dict:
     return {"what": "file", "action": "put back", "path": str(target)}
 
 
-def put_private_file(source: Path, target: Path, dry: bool) -> dict:
-    """Add a missing game save.  It belongs to one name, so it stays 0600."""
+def put_private_file(source: Path, target: Path, dry: bool,
+                     replace: bool = False) -> dict:
+    """Put a named player's save back.  It belongs to one name, so it stays 0600.
+
+    ``replace`` is true only for a forced restore, where the database being put
+    back names these exact saves: keeping an older file whose bytes disagree with
+    the restored row would create a permanent conflict on the player's next save.
+    A file that already matches is left alone.
+    """
     if target.exists():
         if bundle_tools.sha256_file(target) == bundle_tools.sha256_file(source):
             return {"what": "game save", "action": "already here", "path": str(target)}
-        return {"what": "game save", "action": "kept the one already here", "path": str(target)}
+        if not replace:
+            return {"what": "game save", "action": "kept the one already here",
+                    "path": str(target)}
     if dry:
-        return {"what": "game save", "action": "would add", "path": str(target)}
+        return {"what": "game save",
+                "action": "would replace" if target.exists() else "would add",
+                "path": str(target)}
     target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     for folder in (target.parent, target.parent.parent):
         try:
@@ -154,7 +245,7 @@ def put_ledger(source: Path, paths: dict, dry: bool, mode: str) -> dict:
 #  the run
 # ---------------------------------------------------------------------------
 def restore(bundle_path: Path, *, force: bool, dry: bool, no_files: bool,
-            ledger_mode: str, keep_owner: bool) -> int:
+            ledger_mode: str, keep_owner: bool, no_service: bool = False) -> int:
     paths = bundle_tools.box_paths()
     data, problems = bundle_tools.verify_bundle(bundle_path)
     if problems or data is None:
@@ -175,42 +266,55 @@ def restore(bundle_path: Path, *, force: bool, dry: bool, no_files: bool,
     if why and force:
         say(f"This box {why}; replacing it because you said --force.")
 
-    results = []
-    for entry in data["entries"]:
-        to = entry.get("to")
-        if not to:
-            continue                                    # RESTORE-ME.txt and friends
-        target = inside_or_none(paths["root"], to)
-        if target is None:
-            return stop(f"the manifest wants to write outside the box: {to!r} — refused")
-        source = bundle_path / entry["path"]
-        if entry["path"] == "database/ark.db":
-            results.append(put_database(source, target, dry))
-        elif entry["path"].startswith("calibre-incoming/"):
-            results.append(put_ledger(source, paths, dry,
-                                      "no" if no_files else ledger_mode))
-        elif entry["path"].startswith("arcade-saves/"):
-            if not no_files:
-                results.append(put_private_file(source, target, dry))
-        elif not no_files:
-            results.append(put_file(source, target, dry))
+    paused: list[str] = []
+    if not no_service:
+        paused, problem = quiesce(dry)
+        if problem:
+            return stop(problem)
+    elif not dry:
+        say("Leaving the services alone because you said --no-service.")
 
-    if not dry and not keep_owner:
-        owner = None
-        try:
-            account = pwd.getpwnam(os.environ.get("ARK_PI_USER", "pi"))
-            owner = (account.pw_uid, account.pw_gid)
-        except KeyError:
-            say("(There is no 'pi' account on this machine, so file ownership was"
-                " left as it is.)")
-        if owner is not None:
-            for result in results:
-                path = Path(result["path"])
-                if path.exists():
-                    try:
-                        os.chown(path, owner[0], owner[1])
-                    except OSError:
-                        pass            # a read-only card is not a restore failure
+    results = []
+    try:
+        for entry in data["entries"]:
+            to = entry.get("to")
+            if not to:
+                continue                                # RESTORE-ME.txt and friends
+            target = inside_or_none(paths["root"], to)
+            if target is None:
+                return stop(f"the manifest wants to write outside the box: {to!r} — refused")
+            source = bundle_path / entry["path"]
+            if entry["path"] == "database/ark.db":
+                results.append(put_database(source, target, dry))
+            elif entry["path"].startswith("calibre-incoming/"):
+                results.append(put_ledger(source, paths, dry,
+                                          "no" if no_files else ledger_mode))
+            elif entry["path"].startswith("arcade-saves/"):
+                if not no_files:
+                    results.append(put_private_file(source, target, dry,
+                                                    replace=force))
+            elif not no_files:
+                results.append(put_file(source, target, dry))
+
+        if not dry and not keep_owner:
+            owner = None
+            try:
+                account = pwd.getpwnam(os.environ.get("ARK_PI_USER", "pi"))
+                owner = (account.pw_uid, account.pw_gid)
+            except KeyError:
+                say("(There is no 'pi' account on this machine, so file ownership was"
+                    " left as it is.)")
+            if owner is not None:
+                for result in results:
+                    path = Path(result["path"])
+                    if path.exists():
+                        try:
+                            os.chown(path, owner[0], owner[1])
+                        except OSError:
+                            pass        # a read-only card is not a restore failure
+    finally:
+        if paused:
+            resume(paused)
 
     say("")
     for result in results:
@@ -219,8 +323,9 @@ def restore(bundle_path: Path, *, force: bool, dry: bool, no_files: bool,
         say("\nNothing was written (--dry-run).")
         return 0
     say("")
-    say("Done.  The records are in place; restart the box (or just its web service)"
-        " so it reads them.")
+    say("Done.  The records are in place"
+        + (" and everything paused for the copy has been started again."
+           if paused else "."))
     if ledger_mode == "auto" and not no_files:
         beside = paths["ledger"].with_name(paths["ledger"].name + ".from-backup")
         if beside.exists():
@@ -277,6 +382,8 @@ def main(argv=None) -> int:
                         help="put the import list back (auto: only beside a real shelf)")
     parser.add_argument("--keep-owner", action="store_true",
                         help="do not change file ownership to the box's user")
+    parser.add_argument("--no-service", action="store_true",
+                        help="do not pause/start the box's services (a card in a reader)")
     args = parser.parse_args(argv)
 
     paths = bundle_tools.box_paths()
@@ -288,7 +395,7 @@ def main(argv=None) -> int:
                     "(`ark-restore --list` shows what is there)")
     return restore(Path(args.source), force=args.force, dry=args.dry_run,
                    no_files=args.no_files, ledger_mode=args.ledger,
-                   keep_owner=args.keep_owner)
+                   keep_owner=args.keep_owner, no_service=args.no_service)
 
 
 if __name__ == "__main__":

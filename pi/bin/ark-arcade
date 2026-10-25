@@ -10,7 +10,9 @@ tool is deliberately the only thing besides the web app that writes into
 * ``--auto`` lets a discovery run install a few only when the owner switched
   automatic installing on (``arcade_auto_install = 1``);
 * ``--install N`` installs one suggestion the owner allowed;
-* ``--refuse N`` puts one away without deleting anything.
+* ``--refuse N`` puts one away without deleting anything;
+* ``--import FILE`` adds a game the owner supplied, with the owner's own
+  evidence for its licence, rights and language — the same gate as a download.
 
 Every download is checked against the licence, the source allowlist, the size
 cap, its SHA-256 and the shape of the console it claims to be.  A failure leaves
@@ -59,6 +61,24 @@ def main(argv=None) -> int:
     parser.add_argument("--install", type=int, metavar="ID", help="install one suggestion")
     parser.add_argument("--refuse", type=int, metavar="ID", help="put one suggestion away")
     parser.add_argument("--allow", type=int, metavar="ID", help="bring a refused suggestion back")
+    parser.add_argument("--import", dest="import_file", metavar="FILE",
+                        help="add a game file the owner supplied (with the evidence below)")
+    parser.add_argument("--slug", help="with --import: the short name for the game")
+    parser.add_argument("--title", help="with --import: the name a reader sees")
+    parser.add_argument("--system", help="with --import: gb, gbc, nes, snes, gba or genesis")
+    parser.add_argument("--license", dest="license_text",
+                        help="with --import: the licence that allows copying")
+    parser.add_argument("--license-evidence",
+                        help="with --import: where the licence is stated, in words")
+    parser.add_argument("--rights-evidence",
+                        help="with --import: why this box may keep a copy, in words")
+    parser.add_argument("--language", help="with --import: en, or wordless")
+    parser.add_argument("--language-evidence",
+                        help="with --import: where the language is stated, in words")
+    parser.add_argument("--release", help="with --import: the release date or version")
+    parser.add_argument("--notices", help="with --import: credits to show beside the game")
+    parser.add_argument("--author", help="with --import: who made it")
+    parser.add_argument("--homepage", help="with --import: the maker's own page")
     parser.add_argument("--list", action="store_true", help="list suggestions")
     parser.add_argument("--status", action="store_true", help="what is on the shelf")
     parser.add_argument("--dry-run", action="store_true", help="say what would happen, change nothing")
@@ -66,7 +86,7 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     if not any((args.seed, args.discover, args.install, args.refuse, args.allow,
-                args.list, args.status)):
+                args.list, args.status, args.import_file)):
         parser.print_help()
         return 2
 
@@ -132,6 +152,37 @@ def main(argv=None) -> int:
                     result = install.install_approved(conn, args.install)
                     _say(json.dumps(result) if args.json
                          else (f'Installed {result["slug"]} (revision {result["revision"]})'
+                               if result.get("installed")
+                               else f'{result["slug"]} was already on the shelf'))
+            except (install.InstallRefused, OSError) as exc:
+                _say("Not done: " + str(exc))
+                code = 1
+
+        if args.import_file:
+            try:
+                facts = {
+                    "slug": args.slug or "",
+                    "title": args.title or "",
+                    "system": args.system or "",
+                    "license_text": args.license_text or "",
+                    "license_evidence": args.license_evidence or "",
+                    "rights_evidence": args.rights_evidence or "",
+                    "language": args.language or "",
+                    "language_evidence": args.language_evidence or "",
+                    "release": args.release or "",
+                    "notices": args.notices or "",
+                    "author": args.author or "",
+                    "homepage": args.homepage or "",
+                }
+                source = Path(args.import_file).expanduser()
+                if args.dry_run:
+                    candidate = install.owner_candidate(source, **facts)
+                    _say(f'Would add {candidate["title"]} ({candidate["system"]}) '
+                         f'as {candidate["entry_id"]}.')
+                else:
+                    result = install.import_owner_file(conn, source, **facts)
+                    _say(json.dumps(result) if args.json
+                         else (f'Added {result["slug"]} (revision {result["revision"]})'
                                if result.get("installed")
                                else f'{result["slug"]} was already on the shelf'))
             except (install.InstallRefused, OSError) as exc:

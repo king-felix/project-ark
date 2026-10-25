@@ -14,8 +14,14 @@ Environment=KIWIX_INTERNAL=http://127.0.0.1:8081/kiwix
 Environment=ARK_ARCADE_SRC=/srv/ark/src/arcade
 Environment=ARK_ARCADE_DATA=/srv/ark/arcade
 Environment=PYTHONUNBUFFERED=1
+# The API listens on loopback, so uvicorn's default trusted-proxy behaviour
+# would believe any X-Forwarded-For sent by a local caller and rewrite the peer
+# address.  Sign-in, throttling and the private setup door all decide on the peer
+# address, so that rewrite must never happen.  nginx's X-Real-IP is read
+# separately, in ark_admin.client_source(), and only because the peer is local.
 ExecStart=/srv/ark/venv/bin/python -m uvicorn main:app \
           --host 127.0.0.1 --port 8085 --workers 1 \
+          --no-proxy-headers \
           --log-level warning --no-server-header
 Restart=always
 RestartSec=3
