@@ -3,13 +3,21 @@ PROJECT ARK — REBUILD FROM THESE BACKUPS
 This folder is everything needed to produce another Ark. Source tag: v1.0.5
 (2026-10-24). Section 5 regenerates it after any change.
 
+Read this before trusting an old copy: the tag above is exactly what is inside
+these files. Anything committed after v1.0.5 — the account and bootstrap work,
+the new shared-file path and the import ledger, and the readiness pages
+("What is working" and /api/ready) — is NOT in a folder built from that tag.
+Regenerate with section 5 before handing a folder to anyone, and check the
+date line at the top of REBUILD-ME-ARK.txt against the code you expect: it is
+revised whenever the box changes shape.
+
 (A copy lives in the repo as docs/REBUILD-FROM-BACKUP.txt so it travels with
 the code; this is the one to keep next to the backup files.)
 
 WHAT IS IN THE FOLDER
   Project-ARK-v1.0.5-src.tar.gz    the repo exactly as tagged (small, plain files)
   Project-ARK-v1.0.5.git.bundle    same repo WITH full history — clone-able
-  REBUILD-ME-ARK.txt               the blueprint: build order, 26 traps, gate
+  REBUILD-ME-ARK.txt               the blueprint: build order, 27 traps, gate
   USING-THE-ARK.md                 the plain-English guide for whoever uses it
   README.md                        repo front page / architecture summary
   Project-Ark_bootstrap_architect_deepseek.txt   the original design brief

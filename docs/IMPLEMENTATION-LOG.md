@@ -452,6 +452,12 @@ network-loss failover, any backup/restore screen. `/api/ready` is not on the
 reader's path, so it cannot slow the portal down; it has not been measured under
 a load the way search was.
 
+Also never seen: the amber/red dot in any browser, the probes against a real
+`kiwix-serve` or Calibre-Web, and a real download's measured rate. The
+`.clinerules` §8.9 list is a checklist, not decoration. And the backup folder in
+`~/Downloads/Project-Ark` is still built from `v1.0.5`, so it holds none of
+stages 2–4 — `docs/REBUILD-FROM-BACKUP.txt` now says so at the top.
+
 **Next executable step** — stage 5 (§7.1): the network after boot. Before any
 release: deploy stages 2–4 and walk through them on a phone (§8.9 of
 `.clinerules`).

@@ -36,7 +36,7 @@ Keep a copy on a phone or taped inside the lid.
 
 **Building another one, or handing this to someone else?** Start with
 [`docs/REBUILD-ME-ARK.txt`](docs/REBUILD-ME-ARK.txt): the complete blueprint,
-the build order, the 26 traps that cost the most time, and the verification gate.
+the build order, the 27 traps that cost the most time, and the verification gate.
 It is written so an assistant with no memory of this project can rebuild the box
 from an empty card.
 
@@ -252,7 +252,7 @@ The receipt is machine-readable so the Mac never has to guess.
 
 Most of this repo was written by **Cline**, an AI coding agent, working on a
 real Pi 4B over several days — one page at a time, with every claim checked
-against the running box before it went in. The 26 traps in
+against the running box before it went in. The 27 traps in
 [`docs/REBUILD-ME-ARK.txt`](docs/REBUILD-ME-ARK.txt) are all scars from things
 that actually broke here: a mirror that froze at 66,881 bytes, a downloader that
 wrote full-size files full of holes, a Calibre database that answered 500 for
