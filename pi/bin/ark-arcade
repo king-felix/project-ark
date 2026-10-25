@@ -92,6 +92,8 @@ def main(argv=None) -> int:
                         help="with --import: where the language is stated, in words")
     parser.add_argument("--release", help="with --import: the release date or version")
     parser.add_argument("--notices", help="with --import: credits to show beside the game")
+    parser.add_argument("--description",
+                        help="with --import: one line shown on the game's page")
     parser.add_argument("--author", help="with --import: who made it")
     parser.add_argument("--homepage", help="with --import: the maker's own page")
     parser.add_argument("--list", action="store_true", help="list suggestions")
@@ -188,6 +190,7 @@ def main(argv=None) -> int:
                     "notices": args.notices or "",
                     "author": args.author or "",
                     "homepage": args.homepage or "",
+                    "description": args.description or "",
                 }
                 source = Path(args.import_file).expanduser()
                 if args.dry_run:

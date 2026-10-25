@@ -132,11 +132,12 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 | Stage 3 | shipped in **`a1e5efa`**: `ark_storage.py`, schema v2, board moderation + Community page, sha256 import ledger, bounded search, docs, 84 tests |
 | Stage 4 | shipped in **`58d504b`**: `ark_health.py` (one place decides readiness, with reasons), `/api/ready` (200/503), `/admin/health` ("What is working"), `/api/health` demoted to liveness, measured download progress; tests in `tests/test_health.py` (13) — **97 tests total** |
 | Stage 5 | `ark-net-watch` + `ark-net-watch.timer` (network-loss failover after boot), `ark-mode` pins (`home`/`hotspot` pin, `auto` unpins), phase `70-network` installs/enables/proves it, `90-verify` checks the timer + pin + last decision; measured storage breakdown on **What is working** and in `/api/status`; `tests/test_network.py` (28) + 3 in `tests/test_health.py` — **128 tests total** |
-| Stage 6 | `ark-backup` + `ark-restore` + `ark_bundle.py` (one dated bundle: records via SQLite `.backup`, shared files, import list, sha256 manifest; `.partial` → rename; verify-before-restore; never overwrites a shared file), `pi/RECOVERY-SHEET.txt` (also `docs/RECOVERY-SHEET.txt`, `/srv/ark/RECOVERY-SHEET.txt`, `http://ark.lan/recovery.txt`), phase `95-backup`, **Latest copy** row in `ark_health`/`/api/status` + `90-verify` report; `tests/test_backup.py` (13 at that checkpoint; 14 at the tip, after the arcade save case) + 3 in `tests/test_health.py` — **144 tests at that checkpoint, 174 at the ARK Arcade checkpoint, 262 now** |
-| ARK Arcade | `pi/arcade/` (EmulatorJS 4.2.3 vendored, seed list, styles/templates), `ark_arcade.py`, `ark_arcade_install.py`, `ark_arcade_web.py`, schema v3 tables plus **v4** (`player_game_prefs`, language/rights/provenance/notices evidence on games and candidates), `pi/bin/ark-arcade`, `ark-arcade-discover.timer`, `:8445` player origin, owner **Games** page; named players' saves travel in a backup, favourites/autosave/last-played travel with the name; `tests/test_arcade.py` (25) + `tests/test_arcade_install.py` (32) + 1 in `tests/test_backup.py` — **174 at the first checkpoint; 262 now** |
+| Stage 6 | `ark-backup` + `ark-restore` + `ark_bundle.py` (one dated bundle: records via SQLite `.backup`, shared files, import list, sha256 manifest; `.partial` → rename; verify-before-restore; never overwrites a shared file), `pi/RECOVERY-SHEET.txt` (also `docs/RECOVERY-SHEET.txt`, `/srv/ark/RECOVERY-SHEET.txt`, `http://ark.lan/recovery.txt`), phase `95-backup`, **Latest copy** row in `ark_health`/`/api/status` + `90-verify` report; `tests/test_backup.py` (13 at that checkpoint; 14 at the tip, after the arcade save case) + 3 in `tests/test_health.py` — **144 tests at that checkpoint, 174 at the ARK Arcade checkpoint, 267 now** |
+| ARK Arcade | `pi/arcade/` (EmulatorJS 4.2.3 vendored, seed list, styles/templates), `ark_arcade.py`, `ark_arcade_install.py`, `ark_arcade_web.py`, schema v3 tables plus **v4** (`player_game_prefs`, language/rights/provenance/notices evidence on games and candidates), `pi/bin/ark-arcade`, `ark-arcade-discover.timer`, `:8445` player origin, owner **Games** page; named players' saves travel in a backup, favourites/autosave/last-played travel with the name; `tests/test_arcade.py` (26) + `tests/test_arcade_install.py` (35) + 1 in `tests/test_backup.py` — **174 at the first checkpoint; 267 now** |
 | 25 Oct hardening | Bootstrap password is generated into `/srv/ark/api/data/bootstrap-password` (0600) instead of a public literal (`ARK_BOOTSTRAP_PASSWORD` is only the test hook); sign-in and recovery do constant work for an unknown name; restore quiesces every writer and can restore a card in a reader with `--no-service`; owner-file arcade import is proved for shape and language (a licence is recorded, never required); schema v4 preferences; `test_tls_probe.py` keeps the installer's plain-HTTP verdict honest and both TLS-probe helpers come from `pi/lib/common.sh`. **252 tests** |
 | Broadcast by default (25 Oct, later) | **A licence is information, not a door** (owner's decision): `license_problem()` returns "" always, `rights_facts()` never refuses, `language_facts()` refuses only a language the source *records* as non-English (or a source that contradicts itself). **Per-console repositories**: GB/GBC → `gbdev/database`, GBA → `gbadev-org/games`, NES → `nesdev-org/homebrew-db`; SNES/Genesis have no entries (hand-carried). `entry_to_candidate` names a game from its extension when a search answer omits `platform`. `ark-mode boot` + `BOOT_MODE` in `/etc/ark/ark.env` (**`hotspot`** shipped) + `ark-mode boot --dry-run` (no root, no radio). `ark-arcade --seed --from-dir` installs the pinned shelf from carried files. The shelf is **23 curated games** with recorded SHA-256, deployed and serving. **252 tests** |
-| Player & search (25 Oct, last) | Two **silent** defects, both found by asking the box *what a browser sees* (a headless Chromium probe over `http://ark.local`), never by `curl` — every URL answered 200 and `90-verify` was green. **The player**: `#arcade-stage` had no height, so EmulatorJS's `height:100%` canvas collapsed and the game ran invisibly (`getState()` = 35,056 B behind a black box); the shape now comes from `#arcade-frame` + `SYSTEMS[*]["aspect"]` because **EmulatorJS overwrites its own element's `style`**; `localization/en-US.json` is vendored; every file route (`/arcade/g/<slug>/rom`, `/arcade/emulator/*`, `/arcade/static/*`, `/arcade/notices.txt`, `/drop/<name>`) answers **`HEAD` as well as `GET`** because the player asks for a size before downloading. **The library**: `ark-kiwix-library` built `library.xml` in `/tmp` and moved it, so **every path read `/srv/ark/srv/ark/kiwix/…`** and search answered `<error>Content not found</error>` for every handle although `/kiwix/` served every book; it is built **beside the ZIMs** now. The handle a collection answers to is the **ZIM's file name stem** (`…_en_all_2026-10`) — never the `id` (a UUID) and never `name` (which drops the date suffix); the endpoint is `/kiwix/search`, not `/search`. Proved on the box: 25 items for one query, 24 links on the portal page, and both a Game Boy and a Game Boy Advance game drawn in the browser. **262 tests** |
+| Player & search (25 Oct, last) | Two **silent** defects, both found by asking the box *what a browser sees* (a headless Chromium probe over `http://ark.local`), never by `curl` — every URL answered 200 and `90-verify` was green. **The player**: `#arcade-stage` had no height, so EmulatorJS's `height:100%` canvas collapsed and the game ran invisibly (`getState()` = 35,056 B behind a black box); the shape now comes from `#arcade-frame` + `SYSTEMS[*]["aspect"]` because **EmulatorJS overwrites its own element's `style`**; `localization/en-US.json` is vendored; every file route (`/arcade/g/<slug>/rom`, `/arcade/emulator/*`, `/arcade/static/*`, `/arcade/notices.txt`, `/drop/<name>`) answers **`HEAD` as well as `GET`** because the player asks for a size before downloading. **The library**: `ark-kiwix-library` built `library.xml` in `/tmp` and moved it, so **every path read `/srv/ark/srv/ark/kiwix/…`** and search answered `<error>Content not found</error>` for every handle although `/kiwix/` served every book; it is built **beside the ZIMs** now. The handle a collection answers to is the **ZIM's file name stem** (`…_en_all_2026-10`) — never the `id` (a UUID) and never `name` (which drops the date suffix); the endpoint is `/kiwix/search`, not `/search`. Proved on the box: 25 items for one query, 24 links on the portal page, and both a Game Boy and a Game Boy Advance game drawn in the browser. **267 tests** |
+| Owner import (25 Oct, last) | `ark-arcade --import` was run **on the box for the first time** and it lied: an owner-supplied candidate carried no SHA-256, so `publish_candidate()`'s *"already on the shelf, unchanged"* branch could never fire and **every re-import of an identical ROM became a new revision with a second file on the card** (`stars.gb` → `stars-r2.gb`). `owner_candidate()` records the fingerprint now and `ark_arcade.game_by_sha()` refuses the same bytes under a second name with the name it already has; a genuinely different file under the same `--slug` is still revision 2. `--import` also gained `--description` (the one line a reader sees — every hand-added game said *"Ready to play."*), and `--notices` is **rendered** under the title now, escaped; it had been stored and never shown. `docs/ADMIN.md` no longer says `sudo ark-arcade` (the services run as `pi`; root-written rows are the same fault as the root-made bundle of §16.3). **267 tests.** Still **no drop folder, no upload button, no zip, no cover art** — one console command is the way in |
 | Deployment | **deployed on the box, 25 Oct 2026** — `--only 20-storage,30-calibre,60-portal,65-admin,70-network,95-backup` then `90-verify`, both `ARK_INSTALL_COMPLETE`; first bundle `ark-backup-20261025-093643` verified whole. Then `--only 60-portal,95-backup` for §16.2/§16.3 (the owner page counting openable files, the `root:root` bundle handed to `pi`). `/api/ready` answers **503 `blocking: ["File Box"]`** while the ghost `e2e-drop-test.epub` record is on the box — deleting it on **Community → Shared files** returns 200; it answered 200 before that record was found to be unopenable. A **human phone walk-through has NOT been done** (§8.9 item 2), the Pi has **no internet** so the game library must be carried over, and no 2 GiB upload has crossed the proxy |
 | Release | stages 2–6 and ARK Arcade are **unreleased**; the next tag comes only after the phone walk-through in §8.9 |
 | Owner decisions pending | rotate the GitHub password; rotate the Pi password; licence choice |
@@ -168,7 +169,7 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 | `pi/nginx/ark.conf` | public `:80`; `location ^~ /admin { return 404; }` |
 | `pi/steps/65-admin.sh` | installs the above and proves each door (404 / 403 / TLS-only, Community and Games behind the sign-in, `:8445` player origin) |
 | `pi/steps/90-verify.sh` | read-only health report: every page, every listener, the admin door, the game shelf and player origin, the File Box folders, free space, the network timer + pin + last watchdog decision, the backup tools + newest copy and its age (soft) + the recovery sheet |
-| `tests/` | 262 pytest tests, throwaway paths and databases, no Pi needed |
+| `tests/` | 267 pytest tests, throwaway paths and databases, no Pi needed |
 
 ### 8.2 Ports and who may reach them
 
@@ -209,7 +210,7 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 ```bash
 # tests (Mac, throwaway DBs, never the live library)
 python3 -m venv .venv && .venv/bin/pip install -r tests/requirements.txt
-.venv/bin/python -m pytest -o addopts='--strict-markers' -q    # prints "262 passed"
+.venv/bin/python -m pytest -o addopts='--strict-markers' -q    # prints "267 passed"
 # `pytest.ini` already passes -q, so a second -q hides the summary line
 
 # the honest answer, on the box or from the Mac
@@ -333,8 +334,8 @@ Which test proves which fix (useful when a future change breaks one):
 | empty vs broken vs ready per section, a full card, measured progress, `/api/ready` 503, liveness-only `/api/health`, the owner page, the storage breakdown, a missing or stale copy, a copy the pages cannot open, a File Box row whose file has gone, an unreadable folder | `tests/test_health.py` (24) |
 | the 14-case decision table, a fake `nmcli`/`iw` observer, pins, back-off, the timer/unit files, wiring to `ark-mode` | `tests/test_network.py` (28) |
 | a bundle round trip, a damaged copy refused, `.partial` swept, rotation, `--force` on an occupied box, a shared file never replaced, a path escape refused, a named player's save carried, the sheet's plain words, a root-made bundle handed to the box (and not `chown`ed when run as `pi`) | `tests/test_backup.py` (17) |
-| guest vs named saves, origin header, hidden game, export/import, owner Games page, hide/show, suggestions | `tests/test_arcade.py` (25) |
-| licence recorded not refused, language table (English / wordless / unrecorded), a GBA entry fetched from its own repository, per-console allowlist, redirect, archive, file shape, seed, a carried shelf installed from a folder, discovery, auto-install switch | `tests/test_arcade_install.py` (32) |
+| guest vs named saves, origin header, hidden game, export/import, owner Games page, hide/show, suggestions | `tests/test_arcade.py` (26) |
+| licence recorded not refused, language table (English / wordless / unrecorded), a GBA entry fetched from its own repository, per-console allowlist, redirect, archive, file shape, seed, a carried shelf installed from a folder, discovery, auto-install switch | `tests/test_arcade_install.py` (35) |
 
 ### 8.6 Delivered and not built yet
 
@@ -362,8 +363,8 @@ restore that replaces records yet: §8.10.
 ARK Arcade delivered after stage 6: the public shelf `http://ark.lan/arcade/`, a vendored
 EmulatorJS player, optional named-player saves on the separate `:8445` TLS origin, the owner
 **Games** page, schema v3 tables, `ark-arcade-discover.timer`, and named players' saves carried by
-`ark-backup`/`ark-restore`. Tests: `tests/test_arcade.py` (25), `tests/test_arcade_install.py`
-(32), and one backup save case. **Deployed 25 Oct 2026 (§8.12a)**; since 25 Oct the shelf
+`ark-backup`/`ark-restore`. Tests: `tests/test_arcade.py` (26), `tests/test_arcade_install.py`
+(35), and one backup save case. **Deployed 25 Oct 2026 (§8.12a)**; since 25 Oct the shelf
 holds **23 curated games** (10 GB, 6 GBC, 6 GBA, 1 NES), fetched from the per-console
 catalogues and served — but **unplayed on the box**: no game has been played there yet (§8.11).
 
@@ -391,7 +392,7 @@ Two page-size facts, so nobody documents them wrongly again:
 * **`ark_admin` needs `ensure_initialised()`** (the real app does it at import); a bare router mount on an empty directory raises `no such table: admins`.
 * **macOS Python 3.9 links LibreSSL**, so stdlib `hashlib.scrypt` is absent — `cryptography` is the fallback. The Pi vector pinned in `tests/test_db.py` proves the two agree.
 * Reading must survive a broken admin store: the `CRYPTO_ERROR` path keeps the public portal up.
-* **`pytest -q` twice prints no summary.** `pytest.ini` already passes `-q`, so `-q -q` shows dots and no "262 passed" line; use `-o addopts='--strict-markers' -q` when the count is the evidence.
+* **`pytest -q` twice prints no summary.** `pytest.ini` already passes `-q`, so `-q -q` shows dots and no "267 passed" line; use `-o addopts='--strict-markers' -q` when the count is the evidence.
 * **macOS has no `timeout` command** (`zsh: command not found: timeout`, coreutils not installed). Bound a command with `gtimeout` if present, or start it in the background with a log file and poll — do not build a chain that depends on `timeout`.
 * **`git push` from a non-interactive session can hang on an SSH prompt.** Use `GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o BatchMode=yes -o ConnectTimeout=20'`; a failed push then reports instead of waiting for a passphrase.
 * **SQLite `ADD COLUMN` cannot add `NOT NULL` without a `DEFAULT`.** Schema v2 relies on `DEFAULT ''` / `DEFAULT 0`; that is why an upgraded box has `files.stored = ''` for old rows and every read goes through `_stored_name()`. A new query that reads `stored` directly will produce empty download links on an upgraded card.
@@ -426,6 +427,9 @@ Two page-size facts, so nobody documents them wrongly again:
 * **`ark.lan` is not a name a Mac can look up.** It resolves only while the box is broadcasting (its own dnsmasq answers every name) or on a network whose DNS knows it; `.local` is the only special-use name mDNS answers. So the owner's door is `https://ark.local:8443/admin` on a home LAN and `https://ark.lan:8443/admin` from a phone on the hotspot. `https://<lan-ip>:8443` sends no SNI, hits the management listener's default server and is refused on purpose — that is not a broken door, and the certificate already covers both names.
 * **`boot --dry-run` is how a cold boot is proved without rebooting.** `ark-mode boot --dry-run` prints the decision from `BOOT_MODE` and touches nothing (it does not even need root). `BOOT_MODE=hotspot` is the shipped default and it *pins*, so the watchdog will not walk the box back onto a router nobody asked for; `ark-mode auto` releases it. Never "prove" the boot path by switching the radio under an SSH session.
 
+* **An owner-supplied game carries its own fingerprint now; do not remove it.** `owner_candidate()` records `arc.sha256_file(source)`, which is what lets `publish_candidate()` answer *"already on the shelf, unchanged"* and what lets `ark_arcade.game_by_sha()` refuse the same bytes under a second name. Without it the dedup branch is dead code for owner files — that defect put `stars-r2.gb` on the card for a file that had not changed. `--dry-run` computes it too, so a dry run reads the whole file (≤ 64 MB) and proves the path, the extension, the size and the language — **not** the console header, which is only checked inside `publish_candidate()`.
+* **`ark-arcade` is run as `pi`, never with `sudo`.** `/usr/local/sbin` is not on `pi`'s `PATH` (that is why `docs/ADMIN.md` shows the full path), and it does not need root: `/srv/ark/arcade/games` and `/srv/ark/api/data` are `pi:pi`, and both services that also write them run as `pi`. A root-run import leaves root-owned game files and root-written rows — the same fault as the root-made backup bundle the owner page could not read (`copies_unreadable()`). There is **no drop folder and no upload button**: the File Box does not feed the shelf, a zip is not unpacked, and nothing watches a game folder.
+* **An owner's words reach the game page, so escape them.** `--description` is the line under the title (it used to be *"Ready to play."* for every hand-added game) and `--notices` is the credits line under the facts — both rendered through `arc.esc()`, because a person typed them. `notices` was stored for a month without ever being shown; if a field like it is added to the shelf, render it or stop offering the flag.
 * **`ark_db.tx(conn)` is nested-aware now; do not open a second writer around it.** The shelf publishes a save row and a file together, so `tx()` accepts a connection the caller already holds and turns into a no-op when that connection is in a transaction. Before this, `with ark_db.tx() as conn: ... arcade_save(...)` opened a second `BEGIN IMMEDIATE` and deadlocked with `database is locked`. The `tx(conn)` call shape still works; `tx(immediate=False)` still works.
 * **The arcade's app files and the card's data are two different folders.** `src_root()` (`ARK_ARCADE_SRC`, `/srv/ark/src/arcade`) holds templates, CSS, seed list and the vendored player; `data_root()` (`ARK_ARCADE_DATA`, `<ARK_ROOT>/arcade`) holds `games/`, `saves/` and `tmp/`. Binding one to the other puts the player in the writable data folder or the saves in a read-only source tree.
 * **`X-ARK-Player-Origin` is a trust boundary, not a hint.** `:8445` sets it to `1`; the public `:80` location sets it to empty, because nginx would otherwise pass a visitor's invented header through. `ark_arcade_web._player_origin()` is the only reader; a new route that returns a save or sets a player cookie must call it, or it will do so through the public portal.
@@ -517,6 +521,11 @@ with `--import`), and the first real cold boot into broadcast mode has not happe
   404 + 400 on plain HTTP); `70-network.sh`'s timer branch ran (`ark-net-watch.timer`
   `enabled`+`active`); `95-backup.sh` ran; `90-verify.sh`'s readiness, timer/pin,
   game/player and backup blocks all ran.
+* `ark-arcade --import` ran on the box for the first time (25 Oct, §18.4): a carried
+  Game Boy file went on as a new game, served its ROM and drew its page — and giving
+  the same file a third time exposed the missing fingerprint (revision 2 of an
+  unchanged file). Fixed, tested, and the test rows and files were removed; the
+  shelf is back to 23 games and `/api/ready` answers 200.
 * The probes have now met a real `kiwix-serve` and a real Calibre-Web and got
   answers from both (`/api/ready` 200, `ready 7 / total 8`, `blocking: []`).
   They have still never seen one **refuse**.
@@ -551,7 +560,7 @@ there (`ark-backup-20261025-093643`) and `--verify` read every fingerprint back,
 and `ark-restore --dry-run` refused the occupied box without touching it. Still
 unproven: no restore has ever replaced records, and `/recovery.txt` has never
 been opened in a browser. At this checkpoint `pytest` was **144 passed**
-(12 files); it stood at **174** after ARK Arcade and is **262** now. Detail and
+(12 files); it stood at **174** after ARK Arcade and is **267** now. Detail and
 the honest gaps: `docs/IMPLEMENTATION-LOG.md` §11 and §15; the per-requirement
 verdict is `docs/REQUIREMENTS-MATRIX.md`.
 
@@ -599,7 +608,7 @@ Game Boy and a Game Boy Advance game from the box's own files, with real save st
 (§18.2), so the serving path is proved and only the hands are missing. **The live source
 has never been asked for a file from the box** (the Pi has no route to the internet).
 `pytest` **174 passed** at that checkpoint (14 files);
-**262** now. Detail: `docs/IMPLEMENTATION-LOG.md` §12, §15, §17 and §18.
+**267** now. Detail: `docs/IMPLEMENTATION-LOG.md` §12, §15, §17 and §18.
 
 | Piece | What it owns |
 |---|---|
@@ -637,7 +646,10 @@ deletes nothing; there is no game-delete button on purpose.
 
 **Deliberate gaps, say them out loud:** no player password recovery, no
 per-player quota, no save trash, no owner reset/delete for a player name, no
-"check now" button (the weekly timer is the only check), **no catalogue entries at
+"check now" button (the weekly timer is the only check), **no drop folder and no
+upload step for a game you supply yourself** (it goes on with one console command,
+`/usr/local/sbin/ark-arcade --import …`, run as `pi`; a zip is not unpacked, there
+is no cover art and no delete button), **no catalogue entries at
 all for SNES or Genesis** (a game for those consoles must be hand-carried with
 `--import`), and **no game has ever been played on the Pi** — the shelf is deployed
 and its files are proved, but EmulatorJS has not run on that hardware. Before release: deploy the
@@ -648,7 +660,7 @@ a name, save/export/import, and watch the first weekly run.
 ### 8.12 25 OCT HARDENING — delivered, **deployed 25 Oct 2026**
 
 Code, tests and docs are committed on `feature/admin-hardening`; `pytest` is
-**262 passed** (15 files). **The whole branch is deployed on the box** (25 Oct
+**267 passed** (15 files). **The whole branch is deployed on the box** (25 Oct
 2026) and `90-verify` finished green — see §8.12a. What that does *not* mean: no
 human has walked the phone walk-through, the v4 migration has run once (on the
 live database) and never on a card that already held v4 rows, and the

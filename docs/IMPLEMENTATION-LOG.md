@@ -1514,3 +1514,52 @@ browser on the Mac and the box's own answers. No save has been written to a play
 through the new frame, the phone walk-through in §8.9 is still the gate before a tag, and
 no game has been played **on** the Pi (the emulator runs in the reader's browser; the Pi
 only serves bytes).
+
+### 18.4 Giving the box a game of your own — the shelf duplicated it — 25 Oct 2026
+
+Asking *"can I drop a ROM in myself?"* was answered by doing it on the box for the first
+time (`ark-arcade --import` had only ever met the test suite). The copy went on, appeared
+on `/arcade/` and played — and giving the **same file** a third time produced
+`Added zz-import-test (revision 2)` instead of *"already on the shelf, unchanged"*.
+
+**The defect.** A candidate from the catalogue carries the SHA-256 the source stated, and
+`publish_candidate()` skips work when the shelf's own game already has that fingerprint.
+`owner_candidate()` never set one, so `candidate.get("sha256")` was `None`, the dedup
+branch could never fire for an owner-supplied file, and **every re-import of an identical
+ROM became a new revision with a second copy left on the card** (`stars.gb` → `stars-r2.gb`).
+A person copying files twice, or re-running their own command, would have grown the shelf
+without ever being told.
+
+**The fix.** `owner_candidate()` records `arc.sha256_file(source)`; `ark_arcade.game_by_sha()`
+finds another game with the same bytes under a different name, and `publish_candidate()`
+refuses it with the name it already has (*"That game is already on the shelf as "Stars"."*).
+Three behaviours, three tests: identical file + same slug ⇒ `installed False`,
+*"already on the shelf, unchanged"*, one file on disk, revision 1; same bytes + another slug
+⇒ refused, one game, no second file; different bytes + same slug ⇒ revision 2 (a real
+update still works).
+
+**Two small things that make a hand-added game look like the rest of the shelf.** `--import`
+had no way to write the one line a reader sees, so every owner-supplied game said *"Ready to
+play."*; `--description` now does, and `--notices` (credits) is rendered under the title —
+it was stored but never shown. Both are escaped (`arc.esc`), proved by
+`test_arcade.py::test_what_a_person_wrote_about_a_game_reaches_the_page_as_text` with a `<b>`
+payload in the credits.
+
+**Also corrected:** `docs/ADMIN.md` told the owner to run `sudo ark-arcade --import`. The
+web service and the weekly check run as `pi`, and `/srv/ark/arcade/games` is `pi:pi`; a
+root-run import leaves root-owned game files and root-written rows in a database `pi` has
+to keep writing — the same class of fault as the root-made backup bundle that the owner
+page could not read (§16.3). Every command shown is now `/usr/local/sbin/ark-arcade …`,
+run as `pi` (that directory is not on `pi`'s `PATH`, which is the only reason for the full
+path).
+
+| What | Result |
+|---|---|
+| `pytest` on the Mac | **267 passed** (was 262) |
+| the test that fails without the fix | `test_the_same_file_given_twice_is_not_put_on_the_shelf_twice` |
+| proven on the box | `--dry-run` → *"Would add Import test (gb) as zz-import-test."*; real run → `Added zz-import-test (revision 1)`; the file served, the page drawn, then the test rows and files removed and the shelf back to 23 games, `/api/ready` 200 |
+
+**What this does not add: a drop folder.** There is still no `drop/games` watched by a
+unit, no upload button on the **Games** page, no zip handling and no cover art
+(`docs/REQUIREMENTS-MATRIX.md` R7). A game the owner supplies goes on with one console
+command, and the shelf tells the truth about a file it already has.

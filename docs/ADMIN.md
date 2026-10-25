@@ -420,9 +420,51 @@ source *says* is in another language, or a source that contradicts itself, is he
 as *review* with that reason shown on the Games page; it is not installed. A game
 with no words at all is allowed, and so is one whose language nobody recorded —
 most homebrew entries say nothing about it. The licence text is stored and shown
-on the game's card, and never refuses anything. A game file you supply yourself
-goes through the same checks (`sudo ark-arcade --import <file>` asks for title,
-console, language and, if you have it, the licence).
+on the game's card, and never refuses anything.
+
+**Putting a game of your own on the shelf.** Copy the file onto the box (a stick,
+or `scp` into `/home/pi`), then run this on the console. It runs as `pi` and
+needs no `sudo` — `/usr/local/sbin` is simply not on `pi`'s `PATH`, which is why
+the full path is spelled out:
+
+```bash
+/usr/local/sbin/ark-arcade --import /home/pi/games/cave-diver.gb \
+  --slug cave-diver --title "Cave Diver" --system gb \
+  --author "Who made it" --license "CC0 1.0" \
+  --description "A small game about climbing." \
+  --notices "Thanks to everyone who tested it."
+```
+
+The first four are the whole requirement: the file, a short name (letters, digits
+and dashes — it is the game's address on the box), the name a reader sees, and
+the kind of machine. Everything after them is provenance: it is shown under the
+title on the game's page and **nothing is refused** for what it says. The file
+must be a bare ROM, not a zip:
+
+| `--system` | what it plays | the file must end in |
+|---|---|---|
+| `gb` / `gbc` | Game Boy / Game Boy Color | `.gb` / `.gbc` |
+| `nes` | Nintendo NES | `.nes` |
+| `snes` | Super Nintendo | `.sfc` or `.smc` |
+| `gba` | Game Boy Advance | `.gba` |
+| `genesis` | Sega Genesis | `.md`, `.gen` or `.bin` |
+
+The copy is made under a temporary name first, its SHA-256 is recorded, a Game
+Boy or NES file has its own header and checksum checked, and only then does it
+appear on `http://ark.lan/arcade/` for everybody. A failure changes nothing.
+`--dry-run` says what would happen and writes nothing.
+
+**What it says if you give it the same file twice.** The identical file again
+answers *"already on the shelf, unchanged"*; the same game under a second name is
+refused with the name it already has; a **different** file under the **same**
+`--slug` is kept as revision 2 and becomes the one that plays. Nothing is deleted
+on your behalf, and the old revision's file stays on the card.
+
+**Why not `sudo`.** The web service and the weekly check both run as `pi`, and
+`/srv/ark/arcade/games` belongs to `pi`. Running the shelf keeper as root leaves
+root-owned files and root-written rows in a database the service has to keep
+writing — the same kind of fault that once made the owner page report no backup
+copy while one was sitting there.
 
 **A player's choices belong to the name.** A named player's favourite games sort
 first on their shelf; autosave, favourite and last-played are stored with the name
@@ -440,15 +482,16 @@ overwrite a newer save — the API refuses it with a plain sentence and asks for
 reload. Restoring a backup adds a missing save and never replaces one already on
 the box.
 
-**Commands** (console only):
+**Commands** (console only; they run as `pi` and need no `sudo`):
 
 ```bash
-sudo ark-arcade --status
-sudo ark-arcade --seed
-sudo ark-arcade --discover --auto
-sudo ark-arcade --list
-sudo ark-arcade --install <id>
-sudo ark-arcade --refuse <id>
+/usr/local/sbin/ark-arcade --status
+/usr/local/sbin/ark-arcade --import <file> --slug <name> --title "<name>" --system gb
+/usr/local/sbin/ark-arcade --seed
+/usr/local/sbin/ark-arcade --discover --auto
+/usr/local/sbin/ark-arcade --list
+/usr/local/sbin/ark-arcade --install <id>
+/usr/local/sbin/ark-arcade --refuse <id>
 ```
 
 `ark-arcade-discover.timer` runs 15 minutes after boot and then weekly; the
@@ -503,6 +546,11 @@ Stated plainly, because a missing control is better than a fake one:
   button on the owner's page — the weekly timer does the check. A forgotten
   player password cannot be recovered; the person makes a new name, and the old
   saves remain on the box under the old one.
+* Arcade: **there is no drop folder and no upload button.** A game you supply
+  yourself goes on with one console command (§10) — the File Box does not feed
+  the shelf, a zip is not unpacked, there is no cover art, there is no delete
+  button for a game (hiding it is reversible and deletes nothing), and a new
+  revision leaves the previous file on the card until someone removes it.
 * Emergency content review (first aid, water, electrical) is still pending.
 
 The audit history, the account rules above, the transport boundary, the
@@ -512,7 +560,7 @@ Community controls and the readiness page are complete and tested.
 
 ## 12. Tested / not tested
 
-**Tested** — 248 automated tests, disposable databases, `pytest` (the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md`):
+**Tested** — 267 automated tests, disposable databases, `pytest` (the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md`):
 
 * bootstrap account exists once; a wiped database becomes recovery-required
   instead of re-creating the default; the marker lives outside the database;

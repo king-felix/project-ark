@@ -21,6 +21,7 @@
 .arcade-card p { margin: 0; color: #bdbdbd; font-size: 0.94rem; line-height: 1.4; }
 .arcade-card .arcade-facts { color: #8f8f8f; font-size: 0.84rem; }
 .arcade-facts { color: #8f8f8f; font-size: 0.9rem; }
+.arcade-credits { color: #a9a9a9; font-size: 0.9rem; line-height: 1.45; margin: 0 0 0.9rem; }
 .arcade-card .arcade-play { margin-top: auto; }
 .arcade-empty { border: 1px dashed #3a3a3a; border-radius: 0.8rem; padding: 1.2rem;
   color: #cfcfcf; }

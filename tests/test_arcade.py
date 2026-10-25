@@ -25,7 +25,8 @@ PASSWORD = "correct horse battery staple 42"
 SECOND_PASSWORD = "a much better passphrase 7"
 
 
-def _game(ark, slug: str = "stars", *, hidden: int = 0, published: int = 1) -> int:
+def _game(ark, slug: str = "stars", *, hidden: int = 0, published: int = 1,
+          description: str = "A test game.", notices: str = "") -> int:
     data = ("game bytes for " + slug).encode()
     games = ark.root / "arcade" / "games"
     games.mkdir(parents=True, exist_ok=True)
@@ -33,10 +34,11 @@ def _game(ark, slug: str = "stars", *, hidden: int = 0, published: int = 1) -> i
     with ark.db.tx() as conn:
         cur = conn.execute(
             "INSERT INTO games (slug, title, system, core, filename, size, sha256, revision, "
-            "license, license_evidence, author, description, provider, entry_id, installed_at, "
-            "updated_at, published, hidden) VALUES (?, ?, 'gb', 'gambatte', ?, ?, ?, 1, "
-            "'MIT', 'test entry: license MIT', 'Test Maker', 'A test game.', 'test', ?, ?, ?, ?, ?)",
-            (slug, slug.title(), f"{slug}.gb", len(data), hashlib.sha256(data).hexdigest(), slug,
+            "license, license_evidence, author, description, notices, provider, entry_id, "
+            "installed_at, updated_at, published, hidden) VALUES (?, ?, 'gb', 'gambatte', ?, ?, ?, 1, "
+            "'MIT', 'test entry: license MIT', 'Test Maker', ?, ?, 'test', ?, ?, ?, ?, ?)",
+            (slug, slug.title(), f"{slug}.gb", len(data), hashlib.sha256(data).hexdigest(),
+             description, notices, slug,
              "2026-10-24T00:00:00Z", "2026-10-24T00:00:00Z", published, hidden),
         )
         return int(cur.lastrowid)
@@ -93,6 +95,16 @@ def test_the_game_page_is_entirely_local_and_has_no_guest_save_panel(public):
     assert "http://" not in page.text and "https://" not in page.text
     assert "Playing as a guest" in page.text
     assert "/admin" not in page.text
+
+
+def test_what_a_person_wrote_about_a_game_reaches_the_page_as_text(public):
+    """The line and the credits an owner typed are shown — escaped, never markup."""
+    _game(public.ark, notices="Made by <b>the neighbours</b> in 2026")
+    page = public.client.get("/arcade/g/stars")
+    assert page.status_code == 200
+    assert "A test game." in page.text
+    assert "Made by &lt;b&gt;the neighbours&lt;/b&gt; in 2026" in page.text
+    assert "<b>the neighbours</b>" not in page.text
 
 
 def test_the_player_and_its_files_come_from_this_box(public):

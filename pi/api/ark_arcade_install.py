@@ -616,6 +616,11 @@ def publish_candidate(conn: sqlite3.Connection, candidate: Dict[str, Any],
     existing = arc.game_by_slug(conn, slug)
     if existing and existing["sha256"] == candidate.get("sha256") and candidate.get("sha256"):
         return {"slug": slug, "installed": False, "reason": "already on the shelf, unchanged"}
+    twin = arc.game_by_sha(conn, candidate.get("sha256") or "", slug)
+    if twin:
+        # The same bytes under another name is the same game, not a second one.
+        raise InstallRefused(
+            f'That game is already on the shelf as "{twin["title"]}".')
 
     arc.ensure_dirs()
     _ensure_room(int(candidate.get("size") or 0), arc.temp_root())
@@ -746,6 +751,9 @@ def owner_candidate(source: Path, *, slug: str, title: str, system: str,
         "core": arc.SYSTEMS[system]["core"],
         "filename": source.name,
         "size": size,
+        # The fingerprint is what lets the shelf say "you already gave me this
+        # one" instead of adding revision 2 of an identical file.
+        "sha256": arc.sha256_file(source),
         "download_url": "",
         "license": license_text[:80],
         "license_evidence": str(license_evidence or "").strip()[:300],

@@ -297,6 +297,22 @@ def game_by_slug(conn: sqlite3.Connection, slug: str) -> Optional[Dict[str, Any]
     return _row(row) if row else None
 
 
+def game_by_sha(conn: sqlite3.Connection, digest: str,
+                not_slug: str = "") -> Optional[Dict[str, Any]]:
+    """The game already on the shelf with these exact bytes, if there is one.
+
+    Two files with one fingerprint are one game.  A copy that arrives again —
+    carried twice on a stick, or dropped in under a second name — must not
+    become a second entry (or a second revision) on the shelf.
+    """
+    if not digest:
+        return None
+    row = conn.execute(
+        "SELECT * FROM games WHERE sha256 = ? AND slug != ? ORDER BY id LIMIT 1",
+        (digest, not_slug)).fetchone()
+    return _row(row) if row else None
+
+
 def game_by_id(conn: sqlite3.Connection, game_id: int) -> Optional[Dict[str, Any]]:
     row = conn.execute("SELECT * FROM games WHERE id = ?", (game_id,)).fetchone()
     return _row(row) if row else None

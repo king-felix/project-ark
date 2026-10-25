@@ -207,7 +207,9 @@ not a durable background system.
 | A candidate is temp-written, fsynced, hashed, then `os.replace`d | `publish_candidate` | publish tests |
 | Writes file + rows in one transaction; unlinks the new file if the DB refuses | `publish_candidate`, `ark_db.tx(conn)` | transaction test |
 | Leaves the shelf exactly as it was on failure | publish tests | `test_arcade_install.py` |
-| Owner import copies a local file with recorded origin, never trusts a browser path | `import_owner_file()`, `_copy_to_temp()`, `OWNER_PROVIDER` | owner-import tests |
+| Owner import copies a local file with recorded origin, never trusts a browser path | `import_owner_file()`, `_copy_to_temp()`, `OWNER_PROVIDER` | `test_arcade_install.py::test_an_owner_file_goes_through_the_same_gate_and_is_marked_owner_supplied` |
+| A file given twice is not put on the shelf twice: the same file says "unchanged", the same game under another name is refused with the name it already has, new bytes under the same name are revision 2 | `game_by_sha()`, `owner_candidate()` (records the file's own SHA-256) | `test_arcade_install.py::test_the_same_file_given_twice_is_not_put_on_the_shelf_twice`; `test_arcade_install.py::test_the_same_game_under_a_second_name_is_refused_with_the_name_it_has`; `test_arcade_install.py::test_a_changed_file_under_the_same_name_is_still_a_new_revision` |
+| What the owner typed about a game (`--description`, `--notices`) reaches the game's page as text | `ark-arcade --import`, the game page | `test_arcade.py::test_what_a_person_wrote_about_a_game_reaches_the_page_as_text`; `test_arcade_install.py::test_a_game_the_owner_describes_carries_its_words_onto_the_shelf` |
 | A full card is refused before a byte is written | `_ensure_room()`, `InstallRefused` | full-card refusal test |
 | A mid-copy `ENOSPC` cleans up the temp file | `_copy_to_temp` | mid-copy test |
 | Auto-install only when the owner's switch is on | `arcade_auto_install` setting | `test_arcade_install.py::test_automatic_installing_is_off_unless_the_owner_says_yes` |
@@ -226,6 +228,7 @@ still refused, and `"no-text"` is no longer mistaken for a language called `no`.
 | A populated shelf: target titles and a size budget actually reached | **done** — 23 seeded games (10 GB, 6 GBC, 6 GBA, 1 NES), installed on the box on 25 Oct 2026 and served over `/arcade/`; measured 46.8 MB |
 | Compatibility/boot check before publication | **absent** — a file that is the right shape can still fail to boot |
 | Archive handling (zip/7z) for owner imports | **absent** — the install path accepts a bare ROM file |
+| A place to drop a game file, or a button on the owner's page that adds one | **absent** — one console command (`/usr/local/sbin/ark-arcade --import …`, run as `pi`); the File Box does not feed the shelf, and no watch unit looks at a game folder |
 | External source verification against official hashes/schemas | **absent** — the live source has never been asked for a file from the box |
 | Thumbnails: permission recorded, image fetched or uploaded by the owner, served locally | **absent** — no thumbnail column, route or UI |
 | A source-specific rate limit and on-disk metadata cache | **absent** |

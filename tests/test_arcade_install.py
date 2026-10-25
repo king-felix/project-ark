@@ -412,3 +412,79 @@ def test_the_first_shelf_dry_run_touches_nothing(ark):
         assert conn.execute("SELECT COUNT(*) FROM games").fetchone()[0] == 0
     games = ark.root / "arcade" / "games"
     assert not games.exists() or not any(games.iterdir())
+
+
+def test_a_game_the_owner_describes_carries_its_words_onto_the_shelf(ark, tmp_path):
+    """The one line and the credits reach the shelf row the game page reads."""
+    import ark_arcade_install as install
+    source = _owner_source(tmp_path)
+    facts = _owner_facts(source)
+    facts.update({"description": "A quiet game about climbing.",
+                  "notices": "Made at a kitchen table, 2026."})
+    with ark.db.tx() as conn:
+        install.import_owner_file(conn, source, **facts)
+    with ark.db.read() as conn:
+        game = conn.execute("SELECT * FROM games WHERE slug = 'stars'").fetchone()
+    assert game["description"] == "A quiet game about climbing."
+    assert game["notices"] == "Made at a kitchen table, 2026."
+
+
+def test_the_same_file_given_twice_is_not_put_on_the_shelf_twice(ark, tmp_path):
+    """Dropping one copy in again says so — it does not become revision 2.
+
+    An owner-supplied file used to carry no fingerprint, so the shelf could not
+    tell "this is the game I already have" from "this is a new version of it":
+    every re-import of an identical file added a revision and left a second
+    copy on the card.
+    """
+    import ark_arcade_install as install
+    source = _owner_source(tmp_path)
+    with ark.db.tx() as conn:
+        first = install.import_owner_file(conn, source, **_owner_facts(source))
+    with ark.db.tx() as conn:
+        again = install.import_owner_file(conn, source, **_owner_facts(source))
+    assert first["installed"] is True
+    assert again["installed"] is False
+    assert "unchanged" in again["reason"]
+    games = sorted(p.name for p in (ark.root / "arcade" / "games").iterdir())
+    assert games == ["stars.gb"], games
+    with ark.db.read() as conn:
+        assert [r["revision"] for r in conn.execute("SELECT revision FROM games")] == [1]
+
+
+def test_the_same_game_under_a_second_name_is_refused_with_the_name_it_has(ark, tmp_path):
+    """Same bytes, different slug: one game, and the answer says which one."""
+    import ark_arcade_install as install
+    source = _owner_source(tmp_path)
+    with ark.db.tx() as conn:
+        install.import_owner_file(conn, source, **_owner_facts(source))
+    twin = tmp_path / "copy.gb"
+    twin.write_bytes(source.read_bytes())
+    facts = _owner_facts(twin)
+    facts.update({"slug": "stars-again", "title": "Stars Again"})
+    with ark.db.tx() as conn:
+        with pytest.raises(install.InstallRefused) as refused:
+            install.import_owner_file(conn, twin, **facts)
+    assert '"Stars"' in str(refused.value)
+    with ark.db.read() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM games").fetchone()[0] == 1
+    games = sorted(p.name for p in (ark.root / "arcade" / "games").iterdir())
+    assert games == ["stars.gb"], games
+
+
+def test_a_changed_file_under_the_same_name_is_still_a_new_revision(ark, tmp_path):
+    """A real update keeps working: different bytes, same name, revision 2."""
+    import ark_arcade_install as install
+    source = _owner_source(tmp_path)
+    with ark.db.tx() as conn:
+        install.import_owner_file(conn, source, **_owner_facts(source))
+    changed = tmp_path / "stars.gb"
+    data = bytearray(_gb_rom())
+    data[0x14F] = 0x01 if data[0x14F] == 0 else 0x00   # inside the game, outside its header
+    changed.write_bytes(bytes(data))
+    with ark.db.tx() as conn:
+        result = install.import_owner_file(conn, changed, **_owner_facts(changed))
+    assert result["installed"] is True
+    assert result["revision"] == 2
+    with ark.db.read() as conn:
+        assert conn.execute("SELECT revision FROM games").fetchone()[0] == 2

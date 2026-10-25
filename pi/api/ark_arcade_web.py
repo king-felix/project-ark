@@ -366,10 +366,13 @@ def game_page(request: Request, slug: str) -> Response:
 
     boot = "\n".join(f"window.EJS_{key} = {_js(value)};" for key, value in config.items())
     aspect = system.get("aspect") or "4 / 3"
+    credits = (f'<p class="arcade-credits">{arc.esc(game["notices"])}</p>'
+               if game["notices"] else "")
     body = f"""
     <h1>{arc.esc(game['title'])}</h1>
     <p class="arcade-lede">{arc.esc(game['description'] or 'Ready to play.')}</p>
     <p class="arcade-facts">{arc.esc(' · '.join(facts))}</p>
+    {credits}
     <div id="arcade-frame" style="aspect-ratio: {arc.esc(aspect)}">
       <div id="arcade-stage" aria-label="{arc.esc(game['title'])} game player"></div>
     </div>
