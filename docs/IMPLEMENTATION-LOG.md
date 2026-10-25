@@ -1826,7 +1826,33 @@ again in Chromium: `apotris.gba` renamed to *Apotris Deluxe* → `/arcade/g/apot
 file `apotris-deluxe.gba`, nothing waiting.
 
 **Still not proved, and said out loud:** no *person* has yet added a game from their own phone to
-the **live** shelf (the proofs above are a browser on the Mac against a local instance of this
-API), no 64 MB file has crossed the real proxy, there is **no per-person quota** on this door (the
-owner's switch is the control), and the `:8445` copy of the page has only been proved in tests, not
-through TLS on the box.
+the **live** shelf (the accepting proofs are a browser on the Mac against a local instance of this
+API, plus a live refusal by fingerprint — §20.4), no **64 MB** file has crossed the real proxy,
+there is **no per-person quota** on this door (the owner's switch is the control), and the `:8445`
+copy of the page was only read through TLS on the box, never driven with a file.
+
+### 20.4 Deployed on the box, 25 Oct 2026, and what the box said
+
+Database aside first (`sudo sqlite3 … ".backup '/root/ark-db-before-addgame.db'"`, 233,472 B —
+the schema does not change here, but `60-portal` restarts `ark-api`, so the copy is cheap and the
+rule is the rule). Then `scripts/03-provision.sh ark.local --only 60-portal,65-admin` →
+**`ARK_INSTALL_COMPLETE`**, all doors proved; then `--only 90-verify` → green, including the new
+line **`✓ add a game (no sign-in) HTTP 200`** and *“everything a visitor touches is working”*.
+
+| Check, on the live box | Answer |
+|---|---|
+| `http://ark.local/arcade/add` | **200**, and the games page carries the **Add a game** link in its nav and its button under the shelf |
+| `https://ark.local:8445/arcade/add` (SNI, via `ark_tls_code`) | **200** |
+| a real **4,194,304 B** `.gba` posted through the public proxy | spooled to `arcade/tmp/upload-<32hex>.gba` `0600`, the box answered *“This looks like "Apotris" (Game Boy Advance).”* |
+| confirm it under its own name | **200**, *“There is already a game called "Apotris" on this shelf. Choose another name for this one.”* — the waiting copy kept so a new name can be given |
+| confirm it under a **new** name | **400**, *“That one was not added: That game is already on the shelf as "Apotris".”* — refused by fingerprint, the waiting copy discarded |
+| the shelf afterwards | **23** games, **23** files, `arcade/tmp` empty; audit `arcade-add / a visitor / failed / That game is already on the shelf as "Apotris".` |
+| `/api/ready` | **200**, `ready 8 / of 8`, `blocking: []` |
+| the player, a headless Chromium over `http://ark.local` at 420 × 900 | no `EJS_startOnLoaded` in the page; **before** the tap no state at all; **after** one tap on START GAME the state changes between readings, canvas **364 × 327** for `2048gb` and **364 × 242** for `apotris`, and the screenshots show the 2048 title screen and the Apotris title screen |
+
+**Nothing was added to the live shelf**, so the 23 curated games are exactly as they were. What
+this deploy therefore does **not** prove: a real new game arriving on the live shelf from a
+visitor's phone (the accepting path is proved locally and in Chromium, and refused-by-fingerprint
+is proved live), a **64 MB** file through the proxy (4 MB is what crossed), and a human's thumb.
+Those are the remaining gaps, and they are the same three the owner's walk-through covers.
+
