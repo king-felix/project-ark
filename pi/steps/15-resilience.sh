@@ -158,6 +158,29 @@ else
   ark_ok "the next boot checks the card (one line, $(wc -w < "$CMDLINE") words)"
 fi
 
+# ---- ...and that check belongs to ONE boot ---------------------------------
+# Left in place, `fsck.mode=force` makes *every* boot afterwards wait for a full
+# check of a card that was already checked: minutes of a box that looks dead, on
+# every reboot for ever.  `ark-fsck-once` takes the two options back off the line
+# on the boot that used them, refuses to write anything that is not still exactly
+# one line (a newline there stops the Pi dead, with no console to see it), and does
+# nothing at all on any other boot.
+#
+# It is installed and enabled here and deliberately **not started**: the check it
+# withdraws belongs to the *next* boot, which has not happened yet.  Starting it now
+# would quietly cancel the very check this phase has just arranged.
+ark_copy "$ARK_SRC/bin/ark-fsck-once" /usr/local/sbin/ark-fsck-once 755 root:root
+ark_install_unit ark-fsck-once.service
+systemctl enable ark-fsck-once.service >/dev/null 2>&1 \
+  || ark_die "cannot enable ark-fsck-once.service (the forced check would never be withdrawn)"
+if [[ -n "$CMDLINE" ]]; then
+  if /usr/local/sbin/ark-fsck-once --cmdline "$CMDLINE" --dry-run; then
+    ark_ok "the forced check is withdrawn by the boot that used it (proved; nothing changed)"
+  else
+    ark_warn "ark-fsck-once could not read $CMDLINE — the check will stay on the line (nothing was changed)"
+  fi
+fi
+
 # ---- every long-running service comes back by itself ------------------------
 # `Restart=always` with no start limit: a service that dies because the power
 # blipped is restarted three seconds later, however many times it takes.  The

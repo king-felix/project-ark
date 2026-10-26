@@ -1,8 +1,10 @@
 [Unit]
 Description=Project ARK — Offline Library engine (kiwix-serve)
 Documentation=http://ark.lan/help
-After=network-online.target
-Wants=network-online.target
+# Loopback only, reached through nginx, so it waits for the card and not for a
+# router: a box with no internet is a supported state, not a slow boot.
+After=local-fs.target
+Wants=local-fs.target
 # Nothing to serve until at least one bundle has been fetched; the downloader
 # starts this unit as soon as the first file lands.
 ConditionPathExistsGlob=/srv/ark/kiwix/*.zim

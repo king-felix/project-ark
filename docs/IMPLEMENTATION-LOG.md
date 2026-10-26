@@ -34,8 +34,10 @@ and what the next executable step is.
 | — | ARK Arcade | **delivered and tested** — public shelf, guest play, optional named-player saves on the TLS `:8445` origin, owner **Games** page, licence/allowlist/hash gate, weekly discovery, and saves carried by a backup (§12); since 25 Oct a game can also be named from the file itself against an offline catalogue, and added from the owner's page (§19) |
 | — | Ask the Ark — a helper on the card | **delivered and tested** — `http://ark.lan/ask` answers from a model file on the card, the engine listens on `127.0.0.1:8089`, the page of facts is built from what is really here, one answer at a time, and **a box with no model is a supported state** that says so in one sentence (§25). No model has ever been on the box |
 | — | A power cut | **delivered and tested** — phase `15-resilience`: `ark-self-heal` runs before the portal and once a day, fixing a clock in the past, a half-written small file, a database SQLite cannot open and the temp files a cut leaves behind; plus `fake-hwclock`, tmpfs `/tmp`, a 15 s write-behind, a forced filesystem check, a volatile journal, a 15 s hardware watchdog and `Restart=always` on every long-running unit (§26). **It has never met a real power cut** |
-| 14 | Sequence | stages 1–7, ARK Arcade, R3, the name-from-contents work (§19), the helper (§25) and the power-cut repair (§26) are **code + test**; **everything except phases `15-resilience` and `58-ai` is deployed 25 Oct / 26 Oct 2026** (§15, §19, §20, §24) — the phone walk-through is the next human step, and neither of those two phases has been run on the box |
-| 15 | Acceptance tests | **467 tests, 2 skipped, 23 files** (`467 passed, 2 skipped`; the two skips are QR cross-checks needing `qrcode`/`opencv-python-headless`), all green (`pytest -o addopts='--strict-markers' -q`); the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md` |
+| — | A save survives a cut | **delivered and tested** — every database connection writes `synchronous=FULL`, and a save's bytes are content-addressed (`saves/<player>/<game>/blobs/<slot>-<sha256>.bin`, staged as `.save-*.part`, fsynced, renamed, the folder fsynced) so a record can never name bytes that are gone; schema **v6** is additive. A row written before the change is still read, and retired when a new save replaces it (§27) |
+| — | A boot that does not wait for the internet | **delivered and tested** — the three loopback services wait for `local-fs.target` and nothing else, and a half-written upload waits on the **card** (`client_body_temp_path`, `TMPDIR=/srv/ark/tmp`) instead of in the 256 MB tmpfs; the forced card check is withdrawn by the one boot that used it (`ark-fsck-once`), and `90-verify` prints it (§28). **Never run on the box** |
+| 14 | Sequence | stages 1–7, ARK Arcade, R3, the name-from-contents work (§19), the helper (§25), the power-cut repair (§26), durable saves (§27) and the boot/upload work (§28) are **code + test**; **everything except phases `15-resilience` and `58-ai` is deployed 25 Oct / 26 Oct 2026** (§15, §19, §20, §24) — the phone walk-through is the next human step; neither of those two phases has been run on the box, and neither has anything in §27–§28 |
+| 15 | Acceptance tests | **504 tests, 2 skipped, 24 files** (`504 passed, 2 skipped`; the two skips are QR cross-checks needing `qrcode`/`opencv-python-headless`), all green (`pytest -o addopts='--strict-markers' -q`); the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md` |
 
 ---
 
@@ -2352,4 +2354,137 @@ and read `/srv/ark/logs/self-heal.json`, then carry a model with `ark-ai-model-f
 `/ask` one question from a phone. None of that has ever run there — no power cut, no reboot with
 the phase, no model on the card.
 
+
+## 27. A confirmed save is on the card, and a save is never overwritten — 26 Oct 2026
+
+Recorded after the commit (`e0b20f1`), which arrived with tests but without a line here. Two
+faults a power cut could reach, and both were found by reading the code a cut would land in
+rather than by watching a box die.
+
+**Synchronous writes.** `ark_db.connect()` left SQLite at its default `synchronous=NORMAL`,
+which reports a commit as soon as the bytes are in the kernel's cache — so a note that was
+posted, or a save that was confirmed, could be gone after a cut with nothing in any log saying
+so. `ark_self_heal.harden()` had already set `FULL`, but only on the repair's own handles, never
+on the connection the API writes the records through. The pragma is per-connection, so it is
+set **on the connection** now, and a test reads it back from the connection the app really uses
+and fails if any module weakens it.
+
+**Saves.** A save used to be one file per slot, overwritten in place, so a cut between "file
+written" and "row committed" left a row naming bytes that were no longer there — and the reader
+then refused a save that had worked a moment before. A save's bytes are content-addressed now:
+`saves/<player>/<game>/blobs/<slot>-<sha256>.bin`, staged in the save's **own** folder as
+`.save-*.part` (`mkstemp`, so a leftover can never be mistaken for a save), fsynced, renamed,
+and the folder fsynced — then the row is pointed at them with a compare-and-set on `revision`,
+and only after that commit is the file it replaced removed. A cut at any point leaves either the
+old record describing the old bytes or the new record describing the new bytes. Nothing a person
+sees changes: the name a page shows is still `state-01.state`, a carried-away zip still holds
+`saves/<game>/state-01.state`, and rows written before the change (`blob = ''`) are still read
+from the old slot file and retired only when a new save replaces them.
+
+Schema **v6** is additive: `player_saves.blob TEXT NOT NULL DEFAULT ''`. The live card is at
+**v5**, so this migration has never run on it.
+
+**Guards.** `tests/test_durability.py` (15): the pragma read back from the app's own connection,
+no module allowed to weaken it, a commit visible to a connection that was not there when it was
+written, the cut between bytes and record (both copies on the card, the last good save still
+read), a replaced save forgotten only after the record moved, an identical save twice, an
+abandoned blob cleared only once old, a record whose bytes are gone answering *nothing* rather
+than a lie, a row naming a path outside its folder refused, an old-layout save read and then
+retired, staged-beside-itself plus a fsynced folder, a failed write leaving nothing that looks
+like a save, and the export carrying the bytes the records name. `tests/test_arcade.py` asserts
+the blob layout. **482 passed, 2 skipped** at that commit.
+
+**Unproven, as ever:** no cut, no card, no phone. A *real* `synchronous=FULL` write has never been
+watched landing on that SD card, and the compare-and-set has only ever met a test's two
+connections.
+
+---
+
+
+## 28. A boot that does not wait for the internet, and a 2 GiB upload that waits on the card — 26 Oct 2026
+
+Two promises were true in the paperwork and false in the machine: *"works with the internet
+unplugged"* and *"a 2 GiB File Box"*. Neither was a missing feature. Both were small, quiet
+things a phase had made untrue a layer underneath.
+
+| Piece | What it does |
+|---|---|
+| `pi/systemd/ark-api.service`, `ark-kiwix.service`, `ark-calibre.service` | `After=`/`Wants=` **`local-fs.target`**, and no `network-online.target` at all. The API listens on loopback and every visitor arrives through nginx; kiwix and calibre are loopback-only behind `/kiwix` and `/books`. Waiting for "the internet is up" held the whole portal behind NetworkManager's check — about a minute on a home network, and the full timeout on a box whose entire point is working without one |
+| `pi/nginx/ark.conf`, `ark-admin.conf`, `ark-players.conf` | `client_body_temp_path /srv/ark/tmp/nginx 1 2;` — nginx buffers a request body **to disk** before a byte reaches the backend, and since phase `15-resilience` `/tmp` is a **256 MB tmpfs**. A 2 GiB upload parked there would fail at 256 MB with "no space left", or take the box down with it |
+| `pi/systemd/ark-api.service` | `Environment=TMPDIR=/srv/ark/tmp` and `ReadWritePaths=… /srv/ark/tmp` — Starlette buffers an upload in a `SpooledTemporaryFile` and rolls over to a real temp file after 1 MB, and the unit has `PrivateTmp=yes`, so its `/tmp` is that same 256 MB of RAM. `TMPDIR` is the only knob |
+| `pi/steps/20-storage.sh`, `60-portal.sh`, `65-admin.sh` | `$ARK_ROOT/tmp` is created (`775`, the `pi` account) in **all three** phases: 20 because it belongs to the tree, 60 and 65 because `--only 60-portal` or `--only 65-admin` may be the first phase to run on a box installed before the folder existed — and nginx refuses to start with a missing `client_body_temp_path` parent, so the folder has to exist **before** `nginx -t` |
+| `pi/bin/ark-fsck-once` | `--dry-run`, `--quiet`, `--cmdline F`, `--help`. It removes `fsck.mode=force` and `fsck.repair=yes` from the boot line and **refuses to write anything that is not still exactly one line** and is not the old line minus those two words — a newline in `cmdline.txt` stops the Pi dead with nothing on the screen |
+| `pi/systemd/ark-fsck-once.service` | `Type=oneshot`, `RemainAfterExit=yes`, `User=root`, `After=local-fs.target`, `Before=ark-self-heal.service` — the check has already run by then, so the line is withdrawn before the repair pass reads the card. Enabled **for ever**, on purpose |
+| `pi/steps/15-resilience.sh` | installs the tool, installs and **enables** the unit, and deliberately **does not start it**: the check it withdraws belongs to the *next* boot, which has not happened yet, and starting it now would quietly cancel the very check the phase had just arranged. Then it proves the tool against the real `cmdline.txt` with `--dry-run` (nothing changed) |
+| `pi/steps/90-verify.sh` | a **card check** line: *the forced check has been taken back off the boot line* (green), *the next boot checks the card; the boot after that will not* (soft — a box that has not rebooted since the phase is **waiting**, not broken), or *not installed — run phase `15-resilience`*. `ark_status.json` gains `"card_check": withdrawn\|waiting\|absent` |
+
+**Why the check is withdrawn at all.** `fsck.mode=force` on the kernel command line is what
+makes the *first* boot after a cut check a card that may have been mid-write. Left there it makes
+**every** boot afterwards wait for a full check of a card that was already checked: minutes of a
+box that looks dead, on every reboot, for ever — on a box whose recovery story is "pull the plug,
+plug it back in". The check belongs to one boot; `ark-fsck-once` is the hand that takes it back,
+and it is idempotent: a boot with nothing to withdraw says so and changes nothing.
+
+
+**Three repairs the same work needed in `pi/api/ark_self_heal.py`.** The phase's own promises
+were partly untrue too, and the daily pass is the one place where "true at boot" and "true at
+04:17" are different things:
+
+* **A writer on the database.** The boot pass runs before `ark-api` exists; the 04:17 pass runs
+  while the box is serving pages. A pass that hardened or snapshotted a database another process
+  held was writing under a live writer — so `writer_busy()` (a 0.2 s write-lock attempt) now
+  answers `in use` for a sound database that is held (*"it was only checked — nothing on it was
+  changed"*) and `busy` for a broken one (*"nothing was changed — … run the pass again when the
+  box is quiet"*, and it is what a person must look at). Repair happens at boot; a daily look is
+  a diagnosis.
+* **A dry run wrote.** `heal_sqlite()` tested `dry_run` *after* the healthy branch, so a
+  `--dry-run` on a healthy database still changed its journal mode and **took a copy of it** —
+  and the phase runs `--dry-run` to prove the tool, where a proof that alters the card is not a
+  proof. The dry run is now the first thing after `quick_check`, and it writes nothing at all: no
+  copy, no mode change, no sweep.
+* **A clock that believed a file from the future.** A cut leaves the clock in the past, and the
+  newest mtime is then the best evidence of the time. A file stamped *years* ahead is not
+  evidence — it is evidence that the clock was already wrong when that file was written — so
+  `clock_too_far()` (`CLOCK_MAX_AHEAD = 400 days`) leaves the clock alone and says so through
+  `problems`, where a person can see it. Following it would put the certificate and every
+  "3 hours ago" on the box out by years.
+
+**Guards.** `tests/test_self_heal.py` (66 now) adds
+`test_a_dry_run_writes_nothing_at_all`,
+`test_a_dry_run_on_a_broken_database_reports_and_restores_nothing`,
+`test_a_real_writer_stops_the_pass_touching_its_database`,
+`test_a_broken_database_the_box_is_writing_to_is_left_where_it_is`,
+`test_the_pass_reports_a_database_it_could_not_repair_because_it_was_in_use`,
+`test_a_file_from_the_far_future_is_not_trusted_with_the_clock`, seven for the new tool:
+`test_the_forced_check_is_withdrawn_from_the_boot_line_once`,
+`test_a_later_boot_has_nothing_to_withdraw_and_changes_nothing`,
+`test_a_cmdline_that_is_already_two_lines_is_left_alone`,
+`test_a_line_that_would_lose_root_is_never_written`, `test_a_dry_run_withdraws_nothing`,
+`test_the_unit_runs_the_withdrawal_on_the_boot_that_used_the_check`,
+`test_the_phase_installs_the_withdrawal_and_does_not_run_it_now` — and one for the gate
+itself, `test_the_verifier_reports_the_forced_check_without_failing_a_box_that_waiting`
+(the receipt carries `card_check`, and *waiting* is a soft line, never a fault).
+`tests/test_config.py` (30 now) adds
+`test_nothing_a_visitor_waits_for_waits_for_the_internet` (the three units, comment lines stripped
+before the search — an explanatory comment must not pass for a dependency),
+`test_only_the_fetching_units_wait_for_the_internet` (a unit that really fetches keeps
+`network-online.target`: `ark-zim-downloader`, `ark-arcade-discover`),
+`test_a_body_on_its_way_to_disk_waits_on_the_card` (all three vhosts, the folder, and the
+`levels`), and `test_the_app_spills_an_upload_onto_the_card_too` (`TMPDIR` **and** it inside
+`ReadWritePaths`). **504 passed, 2 skipped, 24 files.** `bash -n` on the six shell files and
+`python3 -m py_compile` on the module.
+
+**Unproven, and it is the same list as always:** none of this has run on the box. No reboot has
+been taken with `ark-fsck-once` installed, so no `cmdline.txt` has been rewritten by it and no
+second boot has been seen *not* checking the card; `/srv/ark/tmp/nginx` has never been created by
+a real nginx, and no upload has crossed either `/srv/ark/tmp` path at size; and no 2 GiB body has
+crossed the proxy (the largest ever seen is 64 MiB, §22.2). One deliberate limit: nginx's own
+temp files from an interrupted request live in `tmp/nginx/<a>/<b>/` and the repair pass does not
+sweep them — its `sweep()` rules are one folder deep by design, and a recursive delete inside the
+one tool that must never lose anything is not a trade worth making for a few megabytes.
+
+**The lesson worth keeping:** *a promise about a size or a boot is a property of the folder and
+the unit, not of the code path.* `client_max_body_size 2064m` and "works offline" were both
+written down and both true of the app — and a 256 MB tmpfs and a `Wants=network-online.target`
+made them false a layer underneath.
 

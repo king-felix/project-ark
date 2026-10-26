@@ -258,12 +258,17 @@ popup resolves to the portal instead of a "no internet" dead end.
                   /usr/local/sbin/ark-self-heal (--dry-run|--json|--quiet),
                   ark-self-heal.service (Before=ark-api.service) and .timer
                   (04:17 ±20 m, Persistent), fake-hwclock, a 15-second
-                  write-behind window, /tmp and /var/log/tmp on tmpfs,
+                  write-behind window, /tmp and /var/tmp on tmpfs,
                   fsck.mode=force in cmdline.txt **only if the result is still
-                  one line**, `nofail` on /etc/fstab, the hardware watchdog.
+                  one line**, `nofail` on /etc/fstab, the hardware watchdog,
+                  and /usr/local/sbin/ark-fsck-once + ark-fsck-once.service,
+                  which takes that forced check back off the boot line on the
+                  one boot that used it (enabled, deliberately NOT started here
+                  — starting it would cancel the check the phase just arranged).
                   Proof: `ark-self-heal --dry-run` prints what it would do and
-                  changes nothing, the timer is enabled+active, and cmdline.txt
-                  has not gained a second line.
+                  changes nothing, `ark-fsck-once --dry-run` prints the line it
+                  would write and changes nothing, the timer is enabled+active,
+                  and cmdline.txt has not gained a second line.
   20  storage     /srv/ark tree, ark.env, mode file, permissions, disk headroom
                   warning. Proof: tree + free space.
   30  calibre     calibre-web install, empty library created pi:pi 775, drop
@@ -486,16 +491,28 @@ popup resolves to the portal instead of a "no internet" dead end.
     (never 200) so a browser refresh does not re-upload; reserve ~512 MiB so the
     card can never fill up and take the portal down with it. Also block .apk
     downloads with a friendly page explaining that installing apps is not needed.
+    And the folder the body waits in must not be RAM: nginx buffers a request body
+    to disk before the backend sees a byte (`client_body_temp_path /srv/ark/tmp/nginx`)
+    and the app spills its own copy after 1 MB (`TMPDIR=/srv/ark/tmp`, inside
+    `ReadWritePaths`), because /tmp is a 256 MB tmpfs on this box — a 2 GiB upload
+    parked there fails at 256 MB with "no space left", or takes the box with it.
+    Both of those folders must exist before `nginx -t` runs.
 
 18. THE UNIT THAT RUNS BUT DOES NOT COME BACK AFTER A POWER CUT
-    Symptom: everything works today; after a blackout the hotspot is missing.
+    Symptom: everything works today; after a blackout the hotspot is missing —
+    or the portal takes a full minute to answer on a box with nothing plugged in.
     Cause: `systemctl start` with no `enable`, or a unit that depends on a
     network that is not up yet.
-    Fix: enable AND --now for every unit; After=network-online.target +
-    Wants=network-online.target for anything that touches the network; a boot
-    guard unit that raises the hotspot if the home Wi-Fi did not appear within
-    HOME_WIFI_TIMEOUT (default 75 s). The verify gate must assert
-    `is-enabled` AND `is-active` — checking only one is how this bug ships.
+    Fix: enable AND --now for every unit; a boot guard unit that raises the
+    hotspot if the home Wi-Fi did not appear within HOME_WIFI_TIMEOUT (default
+    75 s). The verify gate must assert `is-enabled` AND `is-active` — checking
+    only one is how this bug ships.
+    And `network-online.target` belongs ONLY on a unit that really fetches
+    something (the magazine queue, the weekly game check). A unit that merely
+    listens on 127.0.0.1 and is reached through nginx must order after
+    `local-fs.target` and nothing else: waiting for "the internet is up" held
+    the portal behind NetworkManager for about a minute on a home network and
+    for its whole timeout on the box that exists to work without one.
 
 19. A PATH UNIT THAT IGNORES FILES ALREADY THERE
     Symptom: dropping a book does nothing; dropping a second book works.

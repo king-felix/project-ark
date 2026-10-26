@@ -17,6 +17,8 @@ import hashlib
 import re
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[1]
 NGINX = (REPO / "pi" / "nginx" / "ark.conf").read_text(encoding="utf-8")
 KIWIX = (REPO / "pi" / "systemd" / "ark-kiwix.service").read_text(encoding="utf-8")
@@ -487,4 +489,88 @@ def test_the_answer_stream_is_not_held_back_by_the_proxy():
         "an answer may take a minute; the default 60 s would cut it off")
     assert "X-Accel-Buffering" in MAIN_APP, (
         "the stream route must ask any other proxy not to buffer it")
+
+
+# ---------------------------------------------------------------------------
+#  a box must not wait for an internet it is built to live without
+# ---------------------------------------------------------------------------
+SYSTEMD = REPO / "pi" / "systemd"
+
+
+def read_unit(name: str) -> str:
+    return (SYSTEMD / name).read_text(encoding="utf-8")
+
+
+def unit_settings(name: str) -> str:
+    """A unit's real settings — a comment saying what we no longer wait for is not one."""
+    return "\n".join(line for line in read_unit(name).splitlines()
+                     if line.strip() and not line.lstrip().startswith(("#", ";")))
+
+
+@pytest.mark.parametrize("unit", ["ark-api.service", "ark-kiwix.service",
+                                  "ark-calibre.service"])
+def test_nothing_a_visitor_waits_for_waits_for_the_internet(unit):
+    """``network-online.target`` means NetworkManager says the internet is up.
+
+    On a home network that is about a minute of a box that looks dead; on a box with
+    no router at all — which is what this is for — it is the full timeout before the
+    portal even starts.  All three of these listen on loopback and are reached through
+    nginx, so they must wait for the card, not for a router.  `ark-net-watch` decides
+    the network afterwards, and the downloader is the only unit that really needs it
+    (nothing is ordered after it).
+    """
+    settings = unit_settings(unit)
+    assert "network-online.target" not in settings, (
+        "%s waits for the internet before it serves the card" % unit)
+    assert "local-fs.target" in settings, "%s must still wait for the card" % unit
+
+
+def test_only_the_fetching_units_wait_for_the_internet():
+    """Fetching needs a network; serving pages must not be behind that wait."""
+    fetching = ("ark-zim-downloader.service", "ark-arcade-discover.service")
+    for name in fetching:
+        assert "network-online.target" in unit_settings(name), (
+            "%s downloads: it really does need the network up" % name)
+    for path in sorted(SYSTEMD.glob("*.service")):
+        if path.name in fetching:
+            continue
+        assert "network-online.target" not in unit_settings(path.name), (
+            "%s would hold the boot behind a router" % path.name)
+
+
+# ---------------------------------------------------------------------------
+#  a half-written upload waits on the card, never in the ram disk
+# ---------------------------------------------------------------------------
+CARD_TEMP = "client_body_temp_path /srv/ark/tmp/nginx 1 2;"
+
+
+@pytest.mark.parametrize("conf", ["ark.conf", "ark-admin.conf", "ark-players.conf"])
+def test_a_body_on_its_way_to_disk_waits_on_the_card(conf):
+    """Phase 15-resilience makes /tmp a 256 MB tmpfs and nginx buffers bodies first.
+
+    So the default (a compiled-in path, and on a distribution build often somewhere
+    under /tmp) would park a 2 GiB File Box upload in RAM: it would die at 256 MB with
+    "no space left", or take the box down while it tried.  Every listener that accepts
+    an upload names the card explicitly, and the API's TMPDIR — where Starlette spills
+    an upload after its first megabyte — points at the same folder.
+    """
+    text = (REPO / "pi" / "nginx" / conf).read_text(encoding="utf-8")
+    assert CARD_TEMP in text, "%s does not name the card for a buffered body" % conf
+    assert "client_body_temp_path /tmp" not in text
+    assert "client_body_temp_path /var/tmp" not in text
+
+
+def test_the_app_spills_an_upload_onto_the_card_too():
+    """Starlette rolls over to a real temp file after 1 MB, in the unit's TMPDIR."""
+    unit = read_unit("ark-api.service")
+    assert "Environment=TMPDIR=/srv/ark/tmp" in unit, (
+        "an upload would spill into /tmp, which is 256 MB of RAM since phase 15")
+    assert "/srv/ark/tmp" in next(line for line in unit.splitlines()
+                                  if line.startswith("ReadWritePaths=")), (
+        "the folder the unit must write to has to be in its writable list")
+    # ...and both phases that touch nginx make the folder before `nginx -t` runs, so
+    # `--only 60-portal` / `--only 65-admin` cannot leave the proxy refusing to start.
+    for phase in ("20-storage.sh", "60-portal.sh", "65-admin.sh"):
+        text = (REPO / "pi" / "steps" / phase).read_text(encoding="utf-8")
+        assert "ARK_ROOT/tmp" in text, "%s never makes the folder nginx needs" % phase
 

@@ -162,6 +162,12 @@ else
 fi
 
 # ---- nginx ------------------------------------------------------------------
+#  The vhosts park a half-written request body on the card (`client_body_temp_path
+#  /srv/ark/tmp/nginx`), and nginx refuses to start if the parent is missing — so it is
+#  made here as well as in phase 20-storage, because `--only 60-portal` must be able to
+#  run on a box installed before this folder existed.  nginx itself creates (and owns)
+#  the `nginx/` subfolder on start, as the user its workers run as.
+ark_ensure_dir "$ARK_ROOT/tmp" 775 "$ARK_PI_USER:$ARK_PI_GROUP"
 NGINX_SITE=/etc/nginx/sites-available/ark
 ark_copy "$ARK_SRC/nginx/ark.conf" "$NGINX_SITE" 644 root:root
 ln -sfn "$NGINX_SITE" /etc/nginx/sites-enabled/ark

@@ -1,0 +1,29 @@
+[Unit]
+Description=Project ARK — take the forced card check back off the boot line
+Documentation=http://ark.lan/help
+# The forced check belongs to ONE boot: the first one after a power cut.  Left in
+# place it makes every boot afterwards wait for a full check of a card that was
+# already checked — minutes of a box that looks dead — so it is withdrawn on the
+# boot that used it.  This runs after that boot's own check (local-fs.target) and
+# before the repair pass, and does nothing at all when there is nothing to withdraw.
+#
+# It is enabled for ever, on purpose: the line comes back only when a person asks
+# for it (phase 15-resilience writes it again), and a one-shot that removed itself
+# would leave the next cut with no check to run.
+After=local-fs.target
+Before=ark-self-heal.service
+ConditionPathIsDirectory=/srv/ark
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=root
+ExecStart=/usr/local/sbin/ark-fsck-once --quiet
+# It edits one small file; a minute is already generous.
+TimeoutStartSec=60
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ark-fsck-once
+
+[Install]
+WantedBy=multi-user.target

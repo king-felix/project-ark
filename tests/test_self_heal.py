@@ -804,3 +804,293 @@ def test_no_shell_file_ends_a_command_with_a_doubled_quote():
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             assert not line.rstrip().endswith(')""'), "%s:%d" % (path.name, number)
 
+
+
+# ---------------------------------------------------------------------------
+#  two passes, two jobs: prove nothing, and never repair under a writer
+# ---------------------------------------------------------------------------
+def make_plain_database(path: Path) -> None:
+    """A database in the default journal, so a journal-mode change is visible."""
+    conn = sqlite3.connect(str(path))
+    conn.execute("CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT NOT NULL);")
+    conn.execute("INSERT INTO notes (body) VALUES ('one');")
+    conn.commit()
+    conn.close()
+
+
+def test_a_dry_run_writes_nothing_at_all(tmp_path):
+    """``--dry-run`` is the phase's own proof, so it may not change the card.
+
+    It used to.  A sound database was *hardened* (switched to WAL) and copied before
+    the dry-run flag was ever read, so ``15-resilience.sh`` proving itself wrote to
+    every database on the box — a proof that alters the thing it is proving.
+    """
+    root = make_box(tmp_path)
+    db = root / "api/data/ark.db"
+    make_plain_database(db)
+    before = sorted(str(p.relative_to(root)) for p in root.rglob("*"))
+
+    state, said = heal.heal_sqlite(db, dry_run=True)
+
+    assert (state, said) == ("fine", "")
+    assert not (root / "api/data/ark.db.good.bak").exists(), "a dry run keeps no copy"
+    assert sorted(str(p.relative_to(root)) for p in root.rglob("*")) == before
+    conn = sqlite3.connect(str(db))
+    assert conn.execute("PRAGMA journal_mode;").fetchone()[0] == "delete"
+    conn.close()
+
+
+def test_a_dry_run_on_a_broken_database_reports_and_restores_nothing(tmp_path):
+    root = make_box(tmp_path)
+    db = root / "api/data/ark.db"
+    make_database(db)
+    make_database(Path(str(db) + ".good.bak"))
+    db.write_bytes(b"broken")
+
+    state, said = heal.heal_sqlite(db, dry_run=True)
+
+    assert state == "would", said
+    assert db.read_bytes() == b"broken"
+    assert "good copy" in said
+
+
+def test_a_real_writer_stops_the_pass_touching_its_database(tmp_path):
+    """The daily look runs while the box serves pages, so it must not repair.
+
+    The test is the lock, not a process list: ``BEGIN IMMEDIATE`` is what every writer
+    on this box takes, and a second one is refused at once — which is exactly the
+    state ``ark-api`` is in for the few milliseconds a save or a note is committed.
+    """
+    root = make_box(tmp_path)
+    db = root / "api/data/ark.db"
+    make_database(db)
+    holder = sqlite3.connect(str(db), isolation_level=None)
+    holder.execute("BEGIN IMMEDIATE;")
+    try:
+        assert heal.writer_busy(db) is True
+        assert heal.snapshot(db) is False, "no copy is taken of a moving target"
+        state, said = heal.heal_sqlite(db)
+        assert state == "in use", said
+        assert "only checked" in said
+        assert not (root / "api/data/ark.db.good.bak").exists()
+    finally:
+        holder.execute("ROLLBACK;")
+        holder.close()
+    assert heal.writer_busy(db) is False, "an idle database is not 'in use'"
+
+
+def test_a_broken_database_the_box_is_writing_to_is_left_where_it_is(tmp_path):
+    root = make_box(tmp_path)
+    db = root / "api/data/ark.db"
+    make_database(db)
+    make_database(Path(str(db) + ".good.bak"))
+    db.write_bytes(b"broken")
+
+    state, said = heal.heal_sqlite(db, in_use=True)
+
+    assert state == "busy", said
+    assert "nothing was changed" in said
+    assert db.read_bytes() == b"broken", "a copy is never put back under a live writer"
+
+
+def test_the_pass_reports_a_database_it_could_not_repair_because_it_was_in_use(tmp_path):
+    root = make_box(tmp_path)
+    db = root / "api/data/ark.db"
+    make_database(db)
+    db.write_bytes(b"broken")
+
+    report = heal.run(root, current=time.time() + 1, setter=lambda stamp: True,
+                      in_use=True)
+
+    assert report["ok"] is False
+    assert any("writing to it" in said for said in report["problems"]), report["problems"]
+    assert db.read_bytes() == b"broken"
+    assert any("Still to look at" in line for line in heal.summary(report))
+
+
+# ---------------------------------------------------------------------------
+#  a clock, and evidence that must not be followed
+# ---------------------------------------------------------------------------
+def test_a_file_from_the_far_future_is_not_trusted_with_the_clock(tmp_path):
+    """A stamp years ahead is not evidence of the time: it is a wrong clock talking.
+
+    Following it would put the certificate and every age on every page years out, and
+    only a person can set the date on this box — so the pass leaves the clock alone and
+    says so, in the one list a human reads.
+    """
+    root = make_box(tmp_path)
+    somewhere = touch(root / "drop/files/book.epub")
+    remote = time.time() + heal.CLOCK_MAX_AHEAD + 86400
+    os.utime(str(somewhere), (remote, remote))
+    set_calls = []
+
+    said = heal.fix_clock(root, setter=lambda stamp: set_calls.append(stamp) or True)
+
+    assert set_calls == [], "the clock must not follow a stamp years in the future"
+    assert "left exactly as it is" in said
+    assert "a person has to set the date" in said
+
+    report = heal.run(root, current=time.time(), setter=lambda stamp: set_calls.append(stamp))
+    assert set_calls == []
+    assert any("a person has to set the date" in text for text in report["problems"])
+    assert report["ok"] is False
+    assert sum("Still to look at" in line for line in heal.summary(report)) == 1
+
+
+# ---------------------------------------------------------------------------
+#  one boot checks the card; the boot after that must not pay for it again
+# ---------------------------------------------------------------------------
+FSCK_TOOL = REPO / "pi" / "bin" / "ark-fsck-once"
+FSCK_UNIT = REPO / "pi" / "systemd" / "ark-fsck-once.service"
+
+#  What `15-resilience.sh` reads on a Raspberry Pi, one line, as the firmware writes it.
+BOOT_LINE = ("console=serial0,115200 console=tty1 root=PARTUUID=6c586e13-02 "
+             "rootfstype=ext4 fsck.repair=yes fsck.mode=force "
+             "rootwait quiet splash plymouth.ignore-serial-consoles panic=10")
+
+
+def run_fsck_once(root: Path, *args: str, cmdline: Path) -> subprocess.CompletedProcess:
+    env = dict(os.environ, ARK_ROOT=str(root))
+    return subprocess.run([str(FSCK_TOOL), "--cmdline", str(cmdline)] + list(args),
+                          capture_output=True, text=True, env=env, timeout=60)
+
+
+def make_cmdline(tmp_path: Path, line: str = BOOT_LINE) -> Path:
+    file = tmp_path / "cmdline.txt"
+    file.write_text(line + "\n", encoding="utf-8")
+    return file
+
+
+def test_the_forced_check_is_withdrawn_from_the_boot_line_once(tmp_path):
+    """The first boot after a cut checks the card; every later boot must not.
+
+    ``fsck.mode=force`` left on the line makes every reboot wait for a full check of a
+    card that was already checked — minutes of a box that looks dead, for ever.  So the
+    boot that used the check takes the two options back off, and everything else on the
+    line is proved to be there afterwards.
+    """
+    root = make_box(tmp_path)
+    cmdline = make_cmdline(tmp_path)
+
+    result = run_fsck_once(root, cmdline=cmdline)
+
+    assert result.returncode == 0, result.stderr
+    after = cmdline.read_text(encoding="utf-8")
+    assert after.endswith("\n") and after.count("\n") == 1, "cmdline.txt must stay ONE line"
+    words_after = after.split()
+    assert words_after == [w for w in BOOT_LINE.split()
+                           if w not in ("fsck.mode=force", "fsck.repair=yes")], \
+        "nothing but the two options may change"
+    assert set(BOOT_LINE.split()) - set(words_after) == {"fsck.mode=force", "fsck.repair=yes"}
+    # The old line is kept, so a person can put the check back by hand.
+    assert (tmp_path / "cmdline.txt.ark-with-check").read_text(encoding="utf-8").strip() \
+        == BOOT_LINE
+    log = (root / "logs" / "fsck-once.log").read_text(encoding="utf-8")
+    assert "withdrew" in log
+
+
+def test_a_later_boot_has_nothing_to_withdraw_and_changes_nothing(tmp_path):
+    """The unit is enabled for ever, so most boots it must be a no-op."""
+    root = make_box(tmp_path)
+    cmdline = make_cmdline(tmp_path)
+    assert run_fsck_once(root, cmdline=cmdline).returncode == 0
+    settled = cmdline.read_bytes()
+
+    for _ in range(2):
+        result = run_fsck_once(root, cmdline=cmdline)
+        assert result.returncode == 0, result.stderr
+        assert "nothing to withdraw" in result.stdout
+        assert cmdline.read_bytes() == settled
+
+
+def test_a_cmdline_that_is_already_two_lines_is_left_alone(tmp_path):
+    """A newline in cmdline.txt stops the Pi dead, and there is no console to see it."""
+    root = make_box(tmp_path)
+    cmdline = tmp_path / "cmdline.txt"
+    cmdline.write_text("root=/dev/mmcblk0p2 fsck.mode=force\nconsole=tty1\n", encoding="utf-8")
+    before = cmdline.read_bytes()
+
+    result = run_fsck_once(root, cmdline=cmdline)
+
+    assert result.returncode == 1
+    assert "more than one line" in result.stderr
+    assert cmdline.read_bytes() == before, "a refused run writes nothing at all"
+
+
+def test_a_line_that_would_lose_root_is_never_written(tmp_path):
+    """A boot that lost ``root=`` is a box that cannot come back."""
+    root = make_box(tmp_path)
+    cmdline = make_cmdline(tmp_path, "console=tty1 fsck.mode=force quiet")
+    before = cmdline.read_bytes()
+
+    result = run_fsck_once(root, cmdline=cmdline)
+
+    assert result.returncode == 1
+    assert "root=" in result.stderr
+    assert cmdline.read_bytes() == before
+
+
+def test_a_dry_run_withdraws_nothing(tmp_path):
+    """Phase 15 proves the tool on the real line; a proof may not change the box."""
+    root = make_box(tmp_path)
+    cmdline = make_cmdline(tmp_path)
+    before = cmdline.read_bytes()
+
+    result = run_fsck_once(root, "--dry-run", cmdline=cmdline)
+
+    assert result.returncode == 0, result.stderr
+    assert "Would withdraw" in result.stdout
+    assert cmdline.read_bytes() == before
+    assert not (tmp_path / "cmdline.txt.ark-with-check").exists(), "a dry run keeps no copy"
+
+
+def test_the_unit_runs_the_withdrawal_on_the_boot_that_used_the_check():
+    unit = FSCK_UNIT.read_text(encoding="utf-8")
+    assert "ExecStart=/usr/local/sbin/ark-fsck-once --quiet" in unit
+    assert "Before=ark-self-heal.service" in unit, "repair runs after the check, not before"
+    assert "After=local-fs.target" in unit, "the check has to have happened first"
+    assert "Type=oneshot" in unit
+    assert "WantedBy=multi-user.target" in unit
+    assert os.access(str(FSCK_TOOL), os.X_OK), "the tool has to be executable"
+
+
+def test_the_phase_installs_the_withdrawal_and_does_not_run_it_now():
+    """Enabled, never started: starting it would cancel the check it is arranging."""
+    text = PHASE.read_text(encoding="utf-8")
+    assert "bin/ark-fsck-once\" /usr/local/sbin/ark-fsck-once" in text
+    assert "ark_install_unit ark-fsck-once.service" in text
+    assert "systemctl enable ark-fsck-once.service" in text
+    assert "enable --now ark-fsck-once" not in text
+    assert "systemctl start ark-fsck-once" not in text
+    assert "ark-fsck-once --cmdline \"$CMDLINE\" --dry-run" in text, \
+        "the phase proves the tool on the real line, changing nothing"
+    for line in text.splitlines():
+        if "ark-fsck-once --cmdline" in line:
+            assert "--dry-run" in line, \
+                "the phase must not withdraw the check it has just arranged: %s" % line.strip()
+
+
+
+# ---------------------------------------------------------------------------
+#  the card check, as the gate reports it
+# ---------------------------------------------------------------------------
+def test_the_verifier_reports_the_forced_check_without_failing_a_box_that_waiting():
+    """A box that has not rebooted since the phase is *waiting*, not broken.
+
+    The check belongs to one boot, so "the line still carries it" is a fact about
+    the calendar rather than a fault — and the verifier is the release gate, so a
+    soft line here and a hard line there are different verdicts.  What may never
+    happen is the verifier staying quiet: the receipt the Mac reads has to carry
+    the answer too, or nobody learns that every reboot will check the whole card.
+    """
+    text = VERIFY.read_text(encoding="utf-8")
+
+    assert "card_check=" in text, "the gate records the answer it printed"
+    assert "ark-fsck-once.service" in text, "the tool that withdraws it is what it asks about"
+    assert "fsck.mode=force" in text, "the line itself is the evidence"
+    assert 'say_soft "card check"' in text, "waiting is not a failure"
+    assert 'say_bad "card check"' not in text, "a box that has not rebooted is not broken"
+    assert '"card_check":' in text, "the Mac reads the receipt, not the console"
+    for word in ("withdrawn", "waiting", "absent"):
+        assert word in text, "a state nobody can name is a state nobody can read: %s" % word
+

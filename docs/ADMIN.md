@@ -556,6 +556,15 @@ the shelf.
 **Saves and copies.** A guest's save lives in that browser (EmulatorJS local
 storage). A named player gets three server slots per game, stored under
 `/srv/ark/arcade/saves/<player>/<game>/` with `0700` folders and `0600` files.
+The bytes themselves live in a `blobs/` folder beside the slots, one immutable
+file per **content**, named after it (`state-01-<sha256>.bin`), and the record in
+the database names that file. Nothing on the card is ever overwritten: a save
+that was written but not recorded is a file no row names (cleared away once it is
+six hours old), and a recorded save whose file has gone reads as *not there*
+instead of handing back somebody else's — a folder that answers for a row it does
+not have is not a save. A save recorded before this layout (`blob = ''`) is still
+read from its old slot name and retired on the next write, so a card upgraded to
+**schema v6** keeps every save it had.
 The player page exports every save as one zip and puts one back; an imported zip
 may only contain `saves/<game>/<state-NN.state|battery.srm>`, the game must be on
 the shelf, and every path that climbs is skipped. A stale browser tab cannot
@@ -814,10 +823,15 @@ re-run of the phase is what proves them:
   a few seconds of writes instead of thirty. `vm.swappiness = 10`, because swapping
   to a card wears it out.
 * `/tmp` and `/var/tmp` on **tmpfs** — a throwaway folder in memory has nothing
-  half-written to leave behind.
+  half-written to leave behind. The one exception is an upload **on its way into the
+  File Box**: a 2 GiB file cannot wait in 256 MB of memory, so the place a
+  half-written upload waits is `/srv/ark/tmp` on the card (see §13.1).
 * `fsck.mode=force fsck.repair=yes panic=10` on the kernel command line — the next
   boot checks the card instead of trusting a flag nobody verified. The phase checks
-  that the command line is still **one line** and refuses otherwise.
+  that the command line is still **one line** and refuses otherwise. **The check is
+  taken back off the line by the boot that used it** (`ark-fsck-once`), so it is a
+  check of the first boot after the phase, not a minute added to every boot for
+  ever — §13.1.
 * A **volatile journal** (`Storage=volatile`) — a corrupt journal is the one thing
   that can stop journald at boot; the two logs that matter (`self-heal.log`,
   `net-watch.log`) are plain files on the card.
@@ -827,7 +841,10 @@ re-run of the phase is what proves them:
   `ark-calibre`, `ark-zim-downloader` and `ark-ai` — the start limit is what
   usually stops this working: systemd gives up after five restarts in ten seconds.
 * WAL + `synchronous=FULL` + `quick_check` on Calibre's two databases, which
-  otherwise default to a sync mode a cut can lose.
+  otherwise default to a sync mode a cut can lose. The box's own database
+  (`ark.db`) writes `synchronous=FULL` on **every** connection for the same reason:
+  a note that was posted, or a save a player confirmed, is not reported as saved
+  until the bytes are on the card.
 
 ### What it deliberately does not do
 
@@ -845,6 +862,91 @@ re-run of the phase is what proves them:
 
 `docs/HUMAN-TEST-LIST.md` §15 is the walk-through: pull the plug, wait, and check
 that everything above really happened.
+
+### 13.1 The one forced card check, and a boot that does not wait for the internet
+
+Two things a cut-repair makes possible are also two things a repair can get wrong
+quietly. Both are settled here so nobody has to work them out from a boot log.
+
+**The forced check belongs to one boot.** Phase `15-resilience` puts
+`fsck.mode=force` on the boot line so that the first boot after a cut checks a card
+that may have been mid-write. Left there it would make *every* boot afterwards wait
+for a full check of a card that was already checked — minutes of a box that looks
+dead, on every reboot, for ever. `ark-fsck-once` is the program that takes the
+words back off the line, and it runs once, early, **before** the repair pass:
+
+```bash
+cat /boot/firmware/cmdline.txt          # is fsck.mode=force still on the line?
+systemctl is-enabled ark-fsck-once.service
+systemctl status ark-fsck-once.service --no-pager   # what the last boot did
+```
+
+What the verifier prints — *the card check* line in `90-verify`, and
+`"card_check"` in `/srv/ark/ark_status.json`:
+
+| It says | What it means |
+|---|---|
+| *the forced check has been taken back off the boot line* | the boot that used it has happened; every later boot is fast |
+| *the next boot checks the card; the boot after that will not* | **waiting**, not broken — the phase has run and the box has not rebooted yet |
+| *not installed — run phase 15-resilience* | the tool is missing, so the forced check would stay on every boot for ever |
+
+The unit is `enabled` and is **never started by the phase**: starting it during the
+install would withdraw the check the phase had just arranged, before any boot used
+it. It writes nothing at all if the line is already clean, and it refuses to write a
+line that is not still exactly one line and the old line minus those two words.
+
+**Nothing a visitor waits for waits for the internet.** The portal, the game shelf
+and the book shelf are served through one web server, and the three programs behind
+it listen on the box itself (`127.0.0.1`). They now wait for the **card** to be
+mounted (`local-fs.target`) and for nothing else. Before this they waited for
+NetworkManager to declare an internet connection — about a minute on a home network,
+and the full timeout on a box whose whole purpose is working without one, which is
+exactly the box people unplug to test. The two units that really do fetch something
+(the magazine queue and the weekly game check) still wait for a connection, because
+that is what they are for.
+
+If a box still takes about a minute to answer after a reboot, look at these three
+lines and not at the portal:
+
+```bash
+systemctl show -p After ark-api.service ark-kiwix.service ark-calibre.service
+systemctl list-units --state=failed --no-pager
+journalctl -b -u nginx -u ark-api -n 40 --no-pager
+```
+
+The same idea covers a big upload — see §13.2.
+
+### 13.2 Where a 2 GiB upload waits on its way in
+
+A half-written request is kept on the **card** (`/srv/ark/tmp`), not in memory,
+because `/tmp` is a 256 MB tmpfs since phase 15 and a 2 GiB file does not fit in it.
+Two things use that folder: the web server, which parks a request body on disk
+before a byte reaches the box's own program (`client_body_temp_path
+/srv/ark/tmp/nginx` in all three listeners), and the program itself, which rolls an
+upload over to a real temp file after the first megabyte (`TMPDIR=/srv/ark/tmp`,
+inside its own unit's writable paths). The folder is created by phase 20 and again
+by phases 60 and 65, because a re-run of one phase on an older card must not leave
+the web server unable to start.
+
+It serves nothing — nothing in the web server's configuration points a URL at it —
+and it is **not** swept by the repair pass. The names that appear in it belong to
+two other programs: the web server numbers its parked request bodies inside its own
+`nginx/` subfolder, and the program's copy is a temporary file made by its language's
+standard library — on Linux, where the card's filesystem allows it, one with **no
+name at all** (a file with no directory entry to sweep), and otherwise a name that is
+removed the moment the request ends. A sweep that reached into a folder of numbered
+files could not tell a request still in flight from a leftover, and this is the one
+tool on the box that must never be able to lose anything. So after a hard cut it may
+hold a few megabytes of a request that was cut off, and it is the owner's to clear if
+it ever grows:
+
+```bash
+du -sh /srv/ark/tmp /srv/ark/tmp/nginx 2>/dev/null
+sudo find /srv/ark/tmp -type f -mtime +1 -print   # look first
+```
+
+**Never point either one back at `/tmp`.** An upload would fail at 256 MB — and it
+would fail at the *end*, after the whole file had already crossed the network.
 
 ---
 
@@ -921,7 +1023,7 @@ Community controls and the readiness page are complete and tested.
 
 ## 15. Tested / not tested
 
-**Tested** — 467 automated tests, disposable databases, `pytest` (the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md`):
+**Tested** — 503 automated tests, disposable databases, `pytest` (the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md`):
 
 * bootstrap account exists once; a wiped database becomes recovery-required
   instead of re-creating the default; the marker lives outside the database;
@@ -1009,7 +1111,24 @@ Community controls and the readiness page are complete and tested.
   manifest that points outside the box is refused; a dry run writes nothing; the
   recovery sheet needs no words looked up, and **Latest copy** on the readiness
   page says *not ready* only when there is no copy or it is over a week old —
-  without ever blocking a reader.
+  without ever blocking a reader;
+* a save survives a cut: the database reports a commit only once the bytes are on
+  the card, a save's bytes are named by their own fingerprint and never overwritten,
+  a cut between the bytes and the record leaves both the old save and the new one
+  readable, a record whose bytes are gone answers *nothing* rather than a lie, and a
+  save written before this change is still read;
+* the repair pass: a dry run writes nothing at all — not a journal mode, not a copy,
+  not a report line — a database another process is writing to is diagnosed and
+  never replaced, a file stamped years in the future is not trusted with the clock,
+  and a repair is counted as a repair while only what is left for a person is a
+  fault;
+* one forced card check: the boot line loses `fsck.mode=force` exactly once, a later
+  boot has nothing to withdraw and writes nothing, a line that is already two lines or
+  would lose `root` is refused, and the phase enables the unit without ever starting
+  it;
+* nothing a visitor waits for waits for the internet (the portal, the library and the
+  shelf units), a half-written upload waits on the card in all three listeners, and
+  the app is told to spill an upload there too.
 
 **Not tested** — no hardware or browser access in this environment:
 
@@ -1046,11 +1165,11 @@ Community controls and the readiness page are complete and tested.
   of the weekly discovery timer on a real network has also not been observed.
 
 To install and verify this branch on the Pi, **copy the database aside first** —
-`60-portal` restarts the backend and runs every migration through schema v4 in
+`60-portal` restarts the backend and runs every migration through **schema v6** in
 place, and there is no downgrade path:
 
 ```bash
-sudo sqlite3 /srv/ark/api/data/ark.db ".backup '/root/ark-db-before-v4.db'"
+sudo sqlite3 /srv/ark/api/data/ark.db ".backup '/root/ark-db-before-v6.db'"
 sudo bash /srv/ark/src/install-ark.sh --only 20-storage,30-calibre,60-portal,65-admin,70-network,95-backup
 sudo bash /srv/ark/src/install-ark.sh --only 90-verify
 ```

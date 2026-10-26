@@ -34,6 +34,10 @@ ark_ok "installed /usr/local/sbin/ark-tls-cert and ark-admin-recover (root only)
 ARK_SRC="$ARK_SRC" /usr/local/sbin/ark-tls-cert | sed 's/^/   /'
 
 # ---- nginx ------------------------------------------------------------------
+#  Both listeners park a half-written body on the card (`client_body_temp_path
+#  /srv/ark/tmp/nginx`), so the parent has to exist before `nginx -t` runs: `--only
+#  65-admin` may be the first phase on a box installed before that folder existed.
+ark_ensure_dir "$ARK_ROOT/tmp" 775 "$ARK_PI_USER:$ARK_PI_GROUP"
 ark_copy "$ARK_SRC/nginx/ark-admin.conf" "$ADMIN_SITE" 644 root:root
 ln -sfn "$ADMIN_SITE" /etc/nginx/sites-enabled/ark-admin
 ark_copy "$ARK_SRC/nginx/ark-players.conf" "$PLAYER_SITE" 644 root:root

@@ -29,6 +29,20 @@ and it never touches a file it does not recognise.  A row and its file can
 disagree on purpose (``ark-restore --no-files``), and "tidy up" is how data loss
 gets dressed as maintenance.
 
+The pass runs twice a day and the two runs are **not the same job**:
+
+* **at boot**, before ``ark-api`` exists, nothing is writing and the pass repairs
+  what the cut broke, keeping a good copy of every database on the way through;
+* **once a day at 04:17**, while the box is serving pages, a writer may be mid-commit,
+  so a database that another process holds is only *looked at* (``writer_busy``) —
+  it is never replaced and its journal mode is never changed under it.  A cut is
+  repaired at the next boot; a daily look is a diagnosis, and turning it into a
+  repair under a live writer is how one damaged file becomes two.
+
+A dry run (``--dry-run``) writes **nothing at all**: no copy, no journal-mode change,
+no sweep.  The phase runs it to prove the tool, and a proof that alters the card is
+not a proof.
+
 ``run()`` is the whole pass and answers a report a page or a verifier can print.
 ``ark-self-heal`` is the command line around it; ``ark-self-heal.service`` runs it
 once at boot, before anything else looks at the card.
@@ -61,6 +75,18 @@ CLOCK_SLACK = 120.0
 
 #: How old an accepted database copy has to be before a fresh one is taken.
 GOOD_COPY_HOURS = 24
+
+#: The furthest ahead of its own clock the card may push it.  A file stamped years
+#: in the future is not evidence of the time: it is evidence that the clock was
+#: wrong *when that file was written*.  Following it would put the certificate and
+#: every age on the box out by years, and only a person can set that right — so past
+#: this bound the clock is left alone and the evidence is reported.
+CLOCK_MAX_AHEAD = 400 * 86400.0
+
+#: How long to wait for a database's write lock before calling it "in use".  A box
+#: that is serving pages holds that lock for milliseconds; anything slower than this
+#: and the pass stops trying to repair it and only looks.
+BUSY_TIMEOUT = 0.2
 
 
 def ark_root() -> Path:
@@ -158,6 +184,18 @@ def clock_is_behind(current: float, newest: float,
     return bool(newest) and newest > (current + slack)
 
 
+def clock_too_far(current: float, newest: float,
+                  limit: float = CLOCK_MAX_AHEAD) -> bool:
+    """Is the evidence so far ahead that it cannot be trusted at all?
+
+    A cut leaves the clock in the past by hours or days, and the newest file on the
+    card is then the best guess at the time.  A file stamped *years* ahead is a
+    different thing: it was written while the clock was already wrong, so it is not
+    evidence — following it would break the certificate and every age on every page.
+    """
+    return bool(newest) and newest > (current + limit)
+
+
 def _set_time(stamp: float) -> bool:
     """Set the system clock.  Root only; a failure is reported, never raised."""
     try:
@@ -171,18 +209,32 @@ def _set_time(stamp: float) -> bool:
 
 def fix_clock(root: Optional[Path] = None, *, current: Optional[float] = None,
               dry_run: bool = False,
-              setter: Optional[Callable[[float], bool]] = None) -> str:
+              setter: Optional[Callable[[float], bool]] = None,
+              problems: Optional[List[str]] = None) -> str:
     """Put the clock forward to what the card says, and remember it for next boot.
 
     Returns one plain sentence.  Never raises: a box that cannot set its own clock
     still serves every page, it just says the times are not to be trusted.
+
+    ``problems`` is the list the pass reports what a person has to look at through.
+    Only one thing here can land in it: evidence so far ahead that the clock must not
+    follow it (``clock_too_far``).  Every other outcome is the box fixing itself.
     """
     when = now() if current is None else float(current)
     newest, where = newest_evidence(root)
+    told = time.strftime("%Y-%m-%d %H:%M", time.localtime(when))
+    if newest and clock_too_far(when, newest):
+        said = ("Something on the card is stamped %s (%s) but the clock says %s.  It "
+                "was written while the clock was already wrong, so the clock was left "
+                "exactly as it is — a person has to set the date on this box."
+                % (time.strftime("%Y-%m-%d %H:%M", time.localtime(newest)), where,
+                   told))
+        if problems is not None:
+            problems.append(said)
+        return said
     if not clock_is_behind(when, newest):
         return "The clock agrees with the card."
     said = time.strftime("%Y-%m-%d %H:%M", time.localtime(newest))
-    told = time.strftime("%Y-%m-%d %H:%M", time.localtime(when))
     if dry_run:
         return ("The clock says %s but %s says %s — it would be put forward."
                 % (told, where, said))
@@ -398,6 +450,45 @@ def quick_check(path: Any) -> Tuple[bool, str]:
             pass
 
 
+def writer_busy(path: Any) -> bool:
+    """Is something writing this database right now?  Never raises.
+
+    A repair pass runs twice: at boot, before the portal exists (nothing is writing,
+    so a copy may be kept and a broken file may be put back), and once a day at 04:17
+    while the box is serving pages (a writer may be mid-commit).  The two are not the
+    same job.  Replacing a database under a live writer, or switching its journal mode
+    out from under it, is how a repair turns one damaged file into two.
+
+    The test is the lock itself, not a guess from a process list: begin an immediate
+    transaction and roll it back.  SQLite refuses at once when another connection
+    holds the write lock — and ``BEGIN IMMEDIATE`` is the same lock every writer on
+    this box takes, so an idle database answers instantly.
+    """
+    target = Path(path)
+    if not target.is_file():
+        return False
+    try:
+        conn = sqlite3.connect(str(target), timeout=BUSY_TIMEOUT, isolation_level=None)
+    except sqlite3.Error:
+        return False
+    try:
+        conn.execute("BEGIN IMMEDIATE;")
+    except sqlite3.OperationalError:
+        return True
+    except sqlite3.Error:                     # pragma: no cover - odd driver answer
+        return False
+    try:
+        conn.execute("ROLLBACK;")
+    except sqlite3.Error:                     # pragma: no cover - read-only file
+        pass
+    finally:
+        try:
+            conn.close()
+        except sqlite3.Error:                 # pragma: no cover - already closed
+            pass
+    return False
+
+
 def harden(path: Any) -> str:
     """Make a healthy database survive the next cut: WAL, and fsync every commit.
 
@@ -441,6 +532,12 @@ def snapshot(path: Any, *, hours: float = GOOD_COPY_HOURS,
             return False
     except OSError:
         pass
+    # A copy taken while another process is mid-write is a copy of a moving target;
+    # ``backup()`` would keep restarting and could still catch a torn page from a
+    # writer that never finishes.  The boot pass has the database to itself, and that
+    # is when this copy is taken.
+    if writer_busy(target):
+        return False
     tmp = Path(str(target) + ".good.tmp")
     try:
         if tmp.exists():
@@ -484,19 +581,40 @@ def _copy_over(source: Path, target: Path) -> bool:
         return False
 
 
-def heal_sqlite(path: Any, *, dry_run: bool = False) -> Tuple[str, str]:
+def heal_sqlite(path: Any, *, dry_run: bool = False,
+                in_use: Optional[bool] = None) -> Tuple[str, str]:
     """Check one database, keep a good copy of it, and put one back if it is broken.
 
     Answers ``(state, sentence)`` with ``state`` one of ``fine``, ``absent``,
-    ``restored``, ``left`` or ``would``.  A database with no good copy is **left
-    exactly where it is** and reported: replacing it would empty the box, and the
-    owner has ``ark-restore`` and a bundle for that decision.
+    ``in use``, ``restored``, ``busy``, ``left`` or ``would``.  A database with no
+    good copy is **left exactly where it is** and reported: replacing it would empty
+    the box, and the owner has ``ark-restore`` and a bundle for that decision.
+
+    Three rules, and each one is here because of a way this can go wrong:
+
+    * **a dry run writes nothing** — no journal-mode change, no copy.  The phase runs
+      ``--dry-run`` to prove itself, and a proof that alters the card is not a proof.
+    * **a database somebody is writing is only looked at** (``writer_busy``): the
+      daily pass runs while the portal is serving pages, and a repair must never
+      replace or re-mode a file another process holds.  ``in_use`` lets a test say so
+      without arranging a real lock.
+    * **the boot pass is the one that repairs**, because nothing is writing yet.
     """
     target = Path(path)
     if not target.is_file():
         return "absent", ""
     ok, answer = quick_check(target)
+    if dry_run:
+        if ok:
+            return "fine", ""
+        return "would", "%s cannot be read (%s); a good copy would be put back." % (
+            target.name, answer)
+    busy = bool(in_use) if in_use is not None else writer_busy(target)
     if ok:
+        if busy:
+            return ("in use",
+                    "%s is being written right now, so it was only checked — nothing "
+                    "on it was changed." % target.name)
         note = harden(target)
         taken = snapshot(target)
         if note:
@@ -504,9 +622,11 @@ def heal_sqlite(path: Any, *, dry_run: bool = False) -> Tuple[str, str]:
         if taken:
             return "fine", "%s is sound; a good copy of it was kept." % target.name
         return "fine", ""
-    if dry_run:
-        return "would", "%s cannot be read (%s); a good copy would be put back." % (
-            target.name, answer)
+    if busy:
+        return ("busy",
+                "%s cannot be read (%s) and the box is writing to it, so nothing was "
+                "changed — stop the pages and run the pass again when the box is "
+                "quiet." % (target.name, answer))
     for candidate in (Path(str(target) + ".good.bak"),
                       Path(str(target) + ark_atomic.BACKUP_SUFFIX)):
         if not candidate.is_file():
@@ -672,7 +792,8 @@ def heal_library(root: Optional[Path] = None, *, dry_run: bool = False,
 def run(root: Optional[Path] = None, *, dry_run: bool = False,
         current: Optional[float] = None,
         setter: Optional[Callable[[float], bool]] = None,
-        builder: str = "") -> Dict[str, Any]:
+        builder: str = "",
+        in_use: Optional[bool] = None) -> Dict[str, Any]:
     """Do the whole repair pass and answer a report a page or a verifier can print.
 
     Order matters, and it is the order a power cut needs: the clock first (every age
@@ -696,7 +817,8 @@ def run(root: Optional[Path] = None, *, dry_run: bool = False,
         "problems": [],
     }
 
-    report["clock"] = fix_clock(base, current=when, dry_run=dry_run, setter=setter)
+    report["clock"] = fix_clock(base, current=when, dry_run=dry_run, setter=setter,
+                                problems=report["problems"])
 
     # Every age below is judged by the clock the box now believes.  After a cut the
     # clock is in the past, and a file written before the cut then looks like it came
@@ -725,16 +847,18 @@ def run(root: Optional[Path] = None, *, dry_run: bool = False,
         report["healed"] += 1
 
     for path in sql_targets(base):
-        state, said = heal_sqlite(path, dry_run=dry_run)
-        if state in ("restored", "left", "would") or said:
+        state, said = heal_sqlite(path, dry_run=dry_run, in_use=in_use)
+        if state in ("restored", "left", "busy", "would", "in use") or said:
             report["databases"].append({"file": str(path.relative_to(base)),
                                         "state": state, "said": said})
         if state == "restored":
             report["healed"] += 1
-        if state == "left":
-            # A copy was put back, so that is a repair, not a problem to look at —
-            # its sentence is still printed.  Only a database that is *still*
-            # unreadable needs a human, and only the owner may replace it.
+        if state in ("left", "busy"):
+            # A copy was put back, so that is a repair, not a problem to look at — its
+            # sentence is still printed.  What needs a human is a database that is
+            # *still* unreadable (only the owner may replace it) or one that is broken
+            # while the box is writing to it (nothing was touched, and it has to be
+            # looked at again when the box is quiet).
             report["problems"].append(said)
 
     for path in catalogue_targets(base):
@@ -777,7 +901,7 @@ def summary(report: Dict[str, Any]) -> List[str]:
             lines.append(said)
 
     if report.get("clock"):
-        lines.append(report["clock"])
+        add(report["clock"])
     for item in report.get("json") or []:
         add(item.get("said"))
     add((report.get("state") or {}).get("said"))

@@ -1,8 +1,8 @@
 # Project ARK — requirements matrix
 
-**Date:** 25 October 2026  
+**Date:** 26 October 2026  
 **Branch:** `feature/admin-hardening`  
-**Suite:** `467 passed, 2 skipped` (23 files; `python -m pytest -o addopts='--strict-markers' -q`, Mac, throwaway databases) — the two skips are QR cross-checks that need `qrcode` / `opencv-python-headless` on the machine  
+**Suite:** `504 passed, 2 skipped` (24 files; `python -m pytest -o addopts='--strict-markers' -q`, Mac, throwaway databases) — the two skips are QR cross-checks that need `qrcode` / `opencv-python-headless` on the machine  
 **Hardware:** **deployed 25 Oct 2026** — `90-verify` green, `/api/ready` 200, the doors, the book
 route rules, a bundle and the arcade origin all answered on the Pi (`docs/IMPLEMENTATION-LOG.md`
 §15), `ark-arcade --import` answered honestly three times on the box (§18.4), and the name-from-the-
@@ -280,7 +280,9 @@ control before a request body is ingested.
 | Aggregate caps/quotas for File Box, games and saves | — | **absent** |
 | A cross-process lock so two installs cannot both pass the check | no shared lock | **absent** |
 | A concurrency test (two writers, one card) | — | **absent** |
-| Retention/cleanup and a configurable temp location | fixed paths, startup sweep only | **partial** |
+| A request body waits **on the card**, not in the 256 MB tmpfs | `client_body_temp_path /srv/ark/tmp/nginx` (all three vhosts), `TMPDIR=/srv/ark/tmp` in `ark-api.service` | `test_config.py::test_a_body_on_its_way_to_disk_waits_on_the_card`; `test_config.py::test_the_app_spills_an_upload_onto_the_card_too` |
+| The folder a body waits in exists before nginx is asked to start | `20-storage.sh`, `60-portal.sh`, `65-admin.sh` (`$ARK_ROOT/tmp`, `775`, the `pi` account) | `test_config.py::test_a_body_on_its_way_to_disk_waits_on_the_card` |
+| Retention/cleanup of half-arrived bodies | `drop/tmp` and `arcade/tmp` swept by pattern and age; **`/srv/ark/tmp` deliberately not swept** | `test_self_heal.py::test_old_temp_files_are_swept_and_fresh_ones_are_left` |
 
 **The honest sentence:** no single upload or install can silently fill the card. Two of them
 at the same time, on different paths, still can — each sees enough room and each takes it.
@@ -550,12 +552,28 @@ was not already broken.**
 | The boot pass runs before the portal and the daily pass is armed | `ark-self-heal.service` / `.timer`, phase `15-resilience` | `::test_the_phase_is_installed_before_anything_that_serves_a_page`; `::test_the_phase_enables_both_units_and_proves_itself` |
 | The phase sets the things that make a cut cheap, and can never leave the box unbootable | `15-resilience.sh` (`fstab`/`cmdline.txt` edits, one-line guard) | `::test_the_phase_sets_the_things_that_make_a_cut_cheap`; `::test_the_phase_can_never_leave_the_box_unbootable` |
 | The verifier reads the record the pass leaves, keeps the receipt from before, and never fails on an absent pass | `90-verify.sh` | `::test_the_verifier_reads_the_record_the_boot_pass_leaves_behind`; `::test_the_verifier_keeps_the_receipt_from_before` |
+| The forced check belongs to **one** boot, and is taken back off the boot line by that boot | `pi/bin/ark-fsck-once`, `pi/systemd/ark-fsck-once.service` | `::test_the_forced_check_is_withdrawn_from_the_boot_line_once`; `::test_a_later_boot_has_nothing_to_withdraw_and_changes_nothing`; `::test_a_dry_run_withdraws_nothing` |
+| The withdrawal can never make the box unbootable: two lines, a lost `root=`, or anything not the old line minus two words is refused | `ark-fsck-once` guard | `::test_a_cmdline_that_is_already_two_lines_is_left_alone`; `::test_a_line_that_would_lose_root_is_never_written` |
+| The phase arranges the withdrawal, enables it, and deliberately does not start it | `15-resilience.sh`, `ark-fsck-once.service` | `::test_the_unit_runs_the_withdrawal_on_the_boot_that_used_the_check`; `::test_the_phase_installs_the_withdrawal_and_does_not_run_it_now` |
+| The gate reports the check as withdrawn / waiting / absent, and a box that has not rebooted is **waiting**, not broken | `90-verify.sh`, `"card_check"` in the receipt | `::test_the_verifier_reports_the_forced_check_without_failing_a_box_that_waiting` |
+| A dry run writes nothing at all — no journal mode, no copy, no sweep | `heal_sqlite()` (`dry_run` first) | `::test_a_dry_run_writes_nothing_at_all`; `::test_a_dry_run_on_a_broken_database_reports_and_restores_nothing` |
+| A pass that meets a live writer diagnoses and never repairs under it | `writer_busy()` | `::test_a_real_writer_stops_the_pass_touching_its_database`; `::test_a_broken_database_the_box_is_writing_to_is_left_where_it_is`; `::test_the_pass_reports_a_database_it_could_not_repair_because_it_was_in_use` |
+| A file stamped **years** ahead is not trusted with the clock | `clock_too_far()`, `CLOCK_MAX_AHEAD` | `::test_a_file_from_the_far_future_is_not_trusted_with_the_clock` |
+| A confirmed commit is on the card, and no module may weaken the connection the box writes with | `ark_db.connect()` (`synchronous=FULL`) | `test_durability.py::test_every_connection_writes_fully_synced`; `::test_no_module_weakens_the_connection_the_box_writes_with`; `::test_a_commit_the_box_confirmed_is_readable_from_a_connection_that_was_not_there` |
+| A save a person confirmed is whole before any record names it, and a cut between bytes and row leaves the last good save readable | save layer (`blobs/<slot>-<sha256>.bin`, `.save-*.part`, fsync + folder fsync) | `test_durability.py::test_a_save_is_staged_beside_itself_and_its_folder_is_synced`; `::test_a_write_that_fails_leaves_nothing_that_looks_like_a_save`; `::test_a_save_that_could_not_be_recorded_leaves_the_last_one_readable`; `::test_the_save_a_new_one_replaces_is_forgotten_only_after_the_record_moved` |
+| A record whose bytes have gone answers nothing rather than a lie, and cannot name a file outside its own folder | save layer | `test_durability.py::test_a_record_whose_bytes_have_gone_answers_nothing_rather_than_a_lie`; `::test_a_record_cannot_name_a_file_outside_its_own_folder` |
+| Nothing a visitor waits for waits for the internet; a unit that really fetches still does | `ark-api.service`, `ark-kiwix.service`, `ark-calibre.service` (`After=local-fs.target`) vs `ark-zim-downloader`, `ark-arcade-discover` | `test_config.py::test_nothing_a_visitor_waits_for_waits_for_the_internet`; `::test_only_the_fetching_units_wait_for_the_internet` |
 
 **Not proved, and must be said out loud:** the phase has not been run on the box, no
 reboot has been taken with it installed, `fsck.mode=force` has never checked that card,
-the hardware watchdog has never reset anything, and **no power cut has been simulated on
-hardware** — every test drives a throwaway folder tree on the Mac. `docs/HUMAN-TEST-LIST.md`
-§15 is the walk-through: pull the plug, wait, and read `logs/self-heal.json`.
+`ark-fsck-once` has never withdrawn a line from a real `/boot/firmware/cmdline.txt`, the
+hardware watchdog has never reset anything, and **no power cut has been simulated on
+hardware** — every test drives a throwaway folder tree on the Mac. The durable commit
+(`synchronous=FULL`) and the blob-per-save layout are proved against real SQLite files
+and a real folder, not against a plug being pulled mid-write.
+`docs/HUMAN-TEST-LIST.md` **§15** is the cut-the-power walk-through (pull the plug, wait,
+read `logs/self-heal.json`, then confirm the forced check is gone and the second boot is
+fast) and **§16** is the boot with nothing to connect to.
 
 ---
 

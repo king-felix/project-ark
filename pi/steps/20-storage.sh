@@ -7,6 +7,10 @@ ark_require_root
 ark_step "PHASE 2/7 — storage layout"
 
 # ---- directory tree --------------------------------------------------------
+#  `tmp/` is the one place a half-written upload is allowed to wait: the API's TMPDIR
+#  and nginx's client_body_temp_path both point here (see ark-api.service and the three
+#  vhosts), because /tmp is a 256 MB tmpfs since phase 15-resilience and a 2 GiB File Box
+#  upload parked in RAM is an upload that fails.  Nothing serves this folder.
 for d in \
   "$ARK_ROOT" \
   "$ARK_ROOT/logs" \
@@ -29,6 +33,7 @@ for d in \
   "$ARK_ROOT/drop" \
   "$ARK_ROOT/drop/files" \
   "$ARK_ROOT/drop/tmp" \
+  "$ARK_ROOT/tmp" \
   "$ARK_ROOT/scripts" \
   "$ARK_ROOT/backups"
 do

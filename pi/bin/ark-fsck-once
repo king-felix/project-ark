@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+# =============================================================================
+#  ark-fsck-once — take the forced filesystem check back off the boot line.
+#
+#    ark-fsck-once              withdraw the forced check (what the boot unit runs)
+#    ark-fsck-once --dry-run    say what it would do, change nothing
+#    ark-fsck-once --quiet      only speak when something was done
+#    ark-fsck-once --cmdline F  read that file instead of the Pi's own
+#
+#  Why this exists: `fsck.mode=force fsck.repair=yes` on the kernel command line
+#  is what makes the *first* boot after a power cut check a card that might have
+#  been mid-write.  Left there, it makes every boot afterwards wait for a full
+#  check of a card that was already checked — minutes of a box that looks dead,
+#  on every reboot, for ever.  The check belongs to one boot; this is the hand
+#  that takes it back, and `ark-fsck-once.service` runs it on that boot.
+#
+#  Two rules, and they are the reason this is a program and not a line of sed:
+#
+#    * the file must still be ONE line afterwards.  A newline in cmdline.txt stops
+#      the Pi dead with nothing on the screen, and there is no console here to see
+#      it.  If the answer is not one line, nothing is written at all.
+#    * only the two options are removed — every other word of the kernel's
+#      arguments is compared before and after, and a mismatch means nothing is
+#      written.  (A boot that lost `root=` is a box that cannot come back.)
+#
+#  Running it when there is nothing to withdraw is normal and does nothing: the
+#  unit is enabled for ever, so most boots it simply says so.
+# =============================================================================
+set -Eeuo pipefail
+
+ARK_ROOT="${ARK_ROOT:-/srv/ark}"
+OPTIONS=(fsck.mode=force fsck.repair=yes)
+CMDLINE=""
+DRY_RUN=0
+QUIET=0
+
+say()  { [[ "$QUIET" == "1" ]] || printf '%s\n' "$*"; }
+warn() { printf 'ark-fsck-once: %s\n' "$*" >&2; }
+die()  { printf 'ark-fsck-once: %s\n' "$*" >&2; exit 1; }
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run) DRY_RUN=1 ;;
+    --quiet)   QUIET=1 ;;
+    --cmdline) [[ $# -ge 2 ]] || die "--cmdline needs a file"; CMDLINE="$2"; shift ;;
+    -h|--help) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) die "unknown option: $1 (try --help)" ;;
+  esac
+  shift
+done
+
+# ---- which file -------------------------------------------------------------
+if [[ -z "$CMDLINE" ]]; then
+  for c in /boot/firmware/cmdline.txt /boot/cmdline.txt; do
+    [[ -f "$c" ]] && { CMDLINE="$c"; break; }
+  done
+fi
+[[ -n "$CMDLINE" ]] || die "no kernel command line file found"
+[[ -f "$CMDLINE" ]] || die "not a file: $CMDLINE"
+
+note() {                       # a line in the log, never a failure
+  local log="$ARK_ROOT/logs/fsck-once.log"
+  [[ -d "$(dirname -- "$log")" ]] || return 0
+  printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >>"$log" 2>/dev/null || true
+}
+
+# ---- what is there ----------------------------------------------------------
+line="$(cat -- "$CMDLINE")"
+if [[ "$(printf '%s\n' "$line" | wc -l)" -ne 1 ]]; then
+  # Already more than one line: a box in this state does not boot, and this tool
+  # is not the place to guess which line was meant.  Change nothing.
+  note "refused: $CMDLINE already has more than one line"
+  die "$CMDLINE has more than one line already — change nothing, read it by hand"
+fi
+
+read -r -a words <<<"$line"
+kept=()
+removed=()
+for w in "${words[@]}"; do
+  drop=0
+  for opt in "${OPTIONS[@]}"; do
+    [[ "$w" == "$opt" ]] && drop=1
+  done
+  if [[ "$drop" == "1" ]]; then removed+=("$w"); else kept+=("$w"); fi
+done
+
+if [[ "${#removed[@]}" -eq 0 ]]; then
+  say "$(basename -- "$CMDLINE") carries no forced check — nothing to withdraw."
+  note "nothing to withdraw"
+  exit 0
+fi
+
+# ---- the new line, proved before it replaces anything -----------------------
+new_line="${kept[*]}"
+[[ -n "$new_line" ]] || die "the new line would be empty — change nothing"
+[[ "$new_line" == *"root="* ]] \
+  || die "the new line would lose root= — change nothing"
+for opt in "${OPTIONS[@]}"; do
+  if [[ " $new_line " == *" $opt "* ]]; then
+    die "the new line still carries $opt — change nothing"
+  fi
+done
+[[ "${#kept[@]}" -eq $(( ${#words[@]} - ${#removed[@]} )) ]] \
+  || die "the new line is not the old one minus the check — change nothing"
+
+say_removed="${removed[*]}"
+
+if [[ "$DRY_RUN" == "1" ]]; then
+  say "Would withdraw ${say_removed} from $(basename -- "$CMDLINE"); nothing has been changed."
+  exit 0
+fi
+
+# ---- write it -----------------------------------------------------------------
+dir="$(dirname -- "$CMDLINE")"
+tmp="$(mktemp "$dir/.cmdline-XXXXXX")" || die "cannot write beside $CMDLINE"
+trap 'rm -f -- "$tmp"' EXIT
+printf '%s\n' "$new_line" >"$tmp"
+[[ "$(wc -l <"$tmp")" -eq 1 ]] || die "the new line is not one line — change nothing"
+cp -a -- "$CMDLINE" "$CMDLINE.ark-with-check" 2>/dev/null || true
+mv -f -- "$tmp" "$CMDLINE" || die "cannot replace $CMDLINE"
+trap - EXIT
+
+after="$(cat -- "$CMDLINE")"
+[[ "$after" == "$new_line" ]] || die "$CMDLINE did not take the new line — read it by hand"
+[[ "$(printf '%s\n' "$after" | wc -l)" -eq 1 ]] || die "$CMDLINE is not one line — read it by hand"
+
+note "withdrew $say_removed from $CMDLINE (a copy of the old line: $CMDLINE.ark-with-check)"
+say "Withdrew ${say_removed} from $(basename -- "$CMDLINE"): this boot checked the card, the next one will not check it again."

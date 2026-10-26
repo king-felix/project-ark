@@ -101,6 +101,20 @@ print("%s|%s|%s" % (r.get("when") or "an unreadable time",
   fi
 fi
 
+# The forced filesystem check belongs to ONE boot.  Whether the line still carries it
+# is a fact worth printing, not a fault: a box that has not rebooted since the phase
+# is *waiting* for the boot that will use (and withdraw) the check.
+card_check="waiting"
+if ! systemctl is-enabled --quiet ark-fsck-once.service 2>/dev/null; then
+  card_check="absent"
+  say_soft "card check" "not installed — run phase 15-resilience (the forced check stays on every boot)"
+elif grep -qs 'fsck.mode=force' /boot/firmware/cmdline.txt /boot/cmdline.txt 2>/dev/null; then
+  say_soft "card check" "the next boot checks the card; the boot after that will not"
+else
+  card_check="withdrawn"
+  say_ok "card check" "the forced check has been taken back off the boot line"
+fi
+
 # ---- pages a person actually taps -------------------------------------------
 check_page() { # <path> <what> [codes]
   local path=$1 what=$2 want=${3:-"200 302"} code
@@ -476,6 +490,7 @@ cat > "$tmp" <<JSON
   "backup": {"copies": ${backup_copies:-0}, "newest": "$backup_newest", "made": "$backup_made"},
   "self_heal": {"when": "${self_heal_when}", "repaired": ${self_heal_fixed:-null},
                 "left_to_look_at": ${self_heal_left:-null}},
+  "card_check": "${card_check}",
   "addresses": ["http://ark.lan", "http://ark.local", "http://${HOTSPOT_ADDRESS:-10.42.0.1}"]
 }
 JSON

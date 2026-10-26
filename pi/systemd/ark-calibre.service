@@ -1,8 +1,10 @@
 [Unit]
 Description=Project ARK — Book Library engine (Calibre-Web)
 Documentation=http://ark.lan/book-help
-After=network-online.target
-Wants=network-online.target
+# Loopback only, behind nginx, and readable with the internet unplugged: the card is
+# what it waits for.
+After=local-fs.target
+Wants=local-fs.target
 
 [Service]
 Type=simple

@@ -363,7 +363,8 @@ you trust, and note what `/api/ready` says now.
    the power as the page loads. That is the harshest realistic moment — a small file is being
    rewritten and a database transaction is open.
 2. Plug it back in and wait. **Do not press anything.** It will take longer than usual: the
-   next boot checks the card (`fsck.mode=force`), so a minute or two is normal.
+   next boot checks the card (`fsck.mode=force`), so a minute or two is normal. That check is
+   taken back off the boot line by the boot that used it — step 7 is what proves that.
 3. On a phone, open `http://ark.local`. The portal must appear. Then `/api/ready` must answer
    **200**, or 503 naming a part that needs a look.
 4. Over SSH:
@@ -384,18 +385,74 @@ you trust, and note what `/api/ready` says now.
    before the cut.
 6. Do it a second time, and this time pull the plug **while a file is uploading** from a
    phone. After the reboot `/files` must not offer a half-file, and `/srv/ark/drop/tmp` must
-   contain nothing (or only something newer than six hours).
-7. Leave it a day, then read `logs/self-heal.log` again: the 04:17 pass must have run and
+   contain nothing (or only something newer than six hours). Look in `/srv/ark/tmp` as well:
+   that is where a half-written *request* waits on its way in (the File Box's own temp folder is
+   `drop/tmp`, one step further along). Anything left there is the web server's own file from
+   the interrupted request — it serves nothing, the repair pass deliberately does not reach into
+   the web server's numbered files, and `sudo du -sh /srv/ark/tmp` says whether it matters.
+7. Read what the boot did about the forced check, then reboot once more and time it:
+
+   ```bash
+   cat /boot/firmware/cmdline.txt                 # fsck.mode=force must be GONE
+   systemctl status ark-fsck-once.service --no-pager   # "Withdrew fsck.mode=force …"
+   cat /srv/ark/ark_status.json | python3 -m json.tool | grep -A3 card_check
+   sudo systemctl reboot                          # the second boot must be fast
+   ```
+
+   **You should see:** the words gone from the boot line after the first boot, and a second
+   boot that is noticeably quicker than the one after the cut. If `fsck.mode=force` is still
+   there, every reboot from now on checks the whole card — run
+   `sudo systemctl start ark-fsck-once` once, then look again.
+8. Leave it a day, then read `logs/self-heal.log` again: the 04:17 pass must have run and
    repaired nothing.
 
-**Write down:** how long the box took to come back, what the pass repaired (verbatim), and
-anything that a person would have noticed as broken afterwards. If a `problems` line ever
-mentions a database you had not touched, stop — that is the one case where the repair tool
-should have left everything exactly where it was, and the recovery sheet comes out.
+**Write down:** how long the box took to come back (and how long the second boot took), what
+the pass repaired (verbatim), and anything that a person would have noticed as broken
+afterwards. If a `problems` line ever mentions a database you had not touched, stop — that is
+the one case where the repair tool should have left everything exactly where it was, and the
+recovery sheet comes out.
 
-**What this proves that nothing else can:** `fsck.mode=force` really runs, `fake-hwclock`
-really keeps the time, tmpfs really has nothing to sweep, the watchdog unit really still runs
-after a cut, and a half-written upload never becomes a file.
+**What this proves that nothing else can:** `fsck.mode=force` really runs and really goes away
+again, `fake-hwclock` really keeps the time, tmpfs really has nothing to sweep, the watchdog
+unit really still runs after a cut, and a half-written upload never becomes a file.
+
+---
+
+## 16. Boot it with nothing to connect to (15 minutes)
+
+**Why it is unproven:** the portal, the library and the shelf now wait for the card to be
+mounted and for nothing else. That was a change to when three units start, and no box has
+been rebooted with the network unplugged since — which is the one boot the change exists for.
+
+**Before you start:** nothing to prepare. This test is *supposed* to be boring.
+
+1. Unplug the network cable, or switch off the router the box normally joins. Leave the
+   hotspot alone: three minutes after the boot the network watchdog may start broadcasting,
+   which is correct and is not what this test is about.
+2. `sudo systemctl reboot` and start a timer.
+3. **Without touching anything**, open `http://ark.local` on a phone on the home network — or
+   `http://ark.lan` if the box has come up as its own access point. Time how long it takes to
+   answer.
+4. Over SSH, check the three units that used to wait for the internet:
+
+   ```bash
+   systemctl show -p After ark-api.service ark-kiwix.service ark-calibre.service
+   systemctl list-units --state=failed --no-pager
+   curl -s -o /dev/null -w '%{http_code}\n' http://ark.local/api/ready
+   curl -s -o /dev/null -w '%{http_code}\n' http://ark.local/arcade/
+   ```
+
+   **You should see:** no `network-online.target` or `NetworkManager-wait-online` in those
+   `After=` lines, no failed unit, and 200 from both addresses. The two units that *do* fetch
+   something (the magazine queue and the weekly game check) are allowed to wait; they are not
+   part of this.
+
+5. Read a page and play a game without the internet, then plug the network back in and confirm
+   nothing restarts and nothing is lost.
+
+**Write down if not:** the whole `After=` line of the unit that was slow, and
+`journalctl -b -u <that unit> -n 40`. A box that takes about a minute is usually still waiting
+for a connection it does not need.
 
 ---
 

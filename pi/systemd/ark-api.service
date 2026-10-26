@@ -1,8 +1,14 @@
 [Unit]
 Description=Project ARK — portal backend (status, search, board, file box)
 Documentation=http://ark.lan/help
-After=network-online.target
-Wants=network-online.target
+# The card first, and NOT the network: this service listens on loopback and every
+# visitor arrives through nginx, so it must be up whether the box is broadcasting,
+# on a router, or on nothing at all.  Waiting for `network-online.target` here was
+# the whole portal held back by NetworkManager's "the internet is up" check — about
+# a minute on a home network, and the full timeout on a box whose point is working
+# without one.  `ark-net-watch` decides the network afterwards, in its own time.
+After=local-fs.target
+Wants=local-fs.target
 
 [Service]
 Type=simple
@@ -14,6 +20,12 @@ Environment=KIWIX_INTERNAL=http://127.0.0.1:8081/kiwix
 Environment=ARK_ARCADE_SRC=/srv/ark/src/arcade
 Environment=ARK_ARCADE_DATA=/srv/ark/arcade
 Environment=PYTHONUNBUFFERED=1
+# A body on its way to disk waits on the CARD.  Starlette buffers an upload in a
+# SpooledTemporaryFile and rolls over to a real temp file after 1 MB, and this unit has
+# PrivateTmp=yes — so the default /tmp is 256 MB of RAM (phase 15-resilience makes it a
+# tmpfs) that a 2 GiB File Box upload would fill at 256 MB and then fail, on a box whose
+# whole promise is a 2 GiB File Box.  TMPDIR is the only knob; keep it on the card.
+Environment=TMPDIR=/srv/ark/tmp
 # The API listens on loopback, so uvicorn's default trusted-proxy behaviour
 # would believe any X-Forwarded-For sent by a local caller and rewrite the peer
 # address.  Sign-in, throttling and the private setup door all decide on the peer
@@ -34,7 +46,7 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=full
 ProtectHome=read-only
-ReadWritePaths=/srv/ark/api/data /srv/ark/drop /srv/ark/arcade
+ReadWritePaths=/srv/ark/api/data /srv/ark/drop /srv/ark/arcade /srv/ark/tmp
 
 [Install]
 WantedBy=multi-user.target
