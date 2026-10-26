@@ -1119,6 +1119,7 @@ def community(request: Request):
             " ORDER BY id DESC LIMIT 50").fetchall()
         board_open = ark_db.get_setting(conn, "public_board_post", "1") != "0"
         uploads_open = ark_db.get_setting(conn, "public_uploads", "1") != "0"
+        ask_open = ark_db.get_setting(conn, "public_ask", "1") != "0"
         hidden_notes = int(conn.execute(
             "SELECT COUNT(*) FROM notes WHERE hidden = 1").fetchone()[0])
 
@@ -1130,15 +1131,22 @@ def community(request: Request):
         uploads_open, "uploads", "Anyone nearby can add a file",
         "Leave this on for a normal box. Switch it off while you catch up: everything "
         "already in the box stays downloadable.")
+    ask_switch = _switch(
+        ask_open, "ask", "Anyone nearby can ask the helper a question",
+        "Leave this on for a normal box. The helper answers only from what is on this "
+        "card and never keeps what anybody asked; switching it off leaves every other "
+        "page exactly as it is.")
     switches = (
         '<form method="post" action="/admin/community/switches">\n'
         f'    {_csrf_field(ctx.csrf)}\n'
         f'    {board_switch}\n'
         f'    {uploads_switch}\n'
+        f'    {ask_switch}\n'
         '    <button class="go-btn" type="submit">Save these switches</button>\n'
         '  </form>\n'
-        '  <p class="note">These are the only two things that decide who can write here. '
-        'There is no sign-in for readers, by design — the box is in the room with them.</p>')
+        '  <p class="note">These are the three things that decide what a visitor can do '
+        'here. There is no sign-in for readers, by design — the box is in the room with '
+        'them.</p>')
 
     note_items = "".join(_community_note_row(r, ctx.csrf) for r in notes) or (
         '<li>Nothing has been written yet.</li>')
@@ -1165,7 +1173,7 @@ def community(request: Request):
 
 @router.post("/community/switches", response_class=HTMLResponse)
 def community_switches(request: Request, board: str = Form(""), uploads: str = Form(""),
-                       csrf: str = Form("")):
+                       ask: str = Form(""), csrf: str = Form("")):
     """A checkbox is ticked when the door is open. Absent means closed."""
     if (blocked := _gate_tls(request)) is not None:
         return blocked
@@ -1177,12 +1185,14 @@ def community_switches(request: Request, board: str = Form(""), uploads: str = F
             return blocked
         me = ctx.admin
         for key, value in (("public_board_post", "1" if board else "0"),
-                           ("public_uploads", "1" if uploads else "0")):
+                           ("public_uploads", "1" if uploads else "0"),
+                           ("public_ask", "1" if ask else "0")):
             ark_db.set_setting(conn, key, value)
         ark_db.audit(conn, action="community-switches", actor_id=me["id"],
                      actor_name=me["username"], result="ok",
                      detail=f"posting={'on' if board else 'off'}, "
-                            f"uploads={'on' if uploads else 'off'}")
+                            f"uploads={'on' if uploads else 'off'}, "
+                            f"helper={'on' if ask else 'off'}")
     return _redirect("/admin/community")
 
 

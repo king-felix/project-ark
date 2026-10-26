@@ -19,7 +19,7 @@ export ARK_SRC
 source "$ARK_SRC/lib/common.sh"
 ark_require_root
 
-ALL_STEPS=(10-base 20-storage 30-calibre 40-vault 50-kiwix 60-portal 65-admin 70-network 95-backup 90-verify)
+ALL_STEPS=(10-base 15-resilience 20-storage 30-calibre 40-vault 50-kiwix 58-ai 60-portal 65-admin 70-network 95-backup 90-verify)
 ONLY="" ; SKIP="" ; FROM=""
 LOG="$ARK_LOG_DIR/install.log"
 DONE_FILE="$ARK_LOG_DIR/install.done"

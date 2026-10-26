@@ -282,3 +282,18 @@ def test_the_watchdog_keeps_its_own_record_of_decisions():
     assert "net-watch.log" in text
     assert "net-watch.state" in text
     assert "set -Eeuo pipefail" in text
+
+
+def test_the_watchdog_writes_its_counters_in_one_move():
+    """A cut mid-write used to leave half a counter file, and ``ark-self-heal``
+    then had to set it aside — losing counters the watchdog had earned.  Written to
+    a dot-temp file and renamed, the file is either the old one or the new one."""
+    text = WATCH.read_text(encoding="utf-8")
+    start = text.index("write_state()")
+    body = text[start:text.index("\n}", start) + 2]
+
+    assert 'tmp="$dir/.net-watch.state.tmp"' in body, "a dot-temp name, never the real one"
+    assert '>"$tmp"' in body, "the bytes go to the temp file"
+    assert 'mv -f "$tmp" "$STATE"' in body, "and are published by one rename"
+    assert '>"$STATE"' not in body, "nothing writes the real file in place"
+

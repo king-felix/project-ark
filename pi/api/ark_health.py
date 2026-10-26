@@ -749,8 +749,36 @@ def backup_section() -> dict:
         f"The newest copy was made {_ago(newest['age_hours'])}{holds}.", "", **facts)
 
 
+def ask_section() -> dict:
+    """The helper that answers a question in a person's own words.
+
+    **Never blocking.**  A box whose helper is not fitted is still a whole box —
+    every library, book, guide and game works without it — so this row exists to
+    keep the owner's page honest, never to make a working box look broken.  The
+    three states are the three the page tells a reader about, in the same words.
+    """
+    import ark_ai
+    facts = ark_ai.status()
+    kept = {"engine": facts["engine"], "model": facts["model"],
+            "model_bytes": facts["model_bytes"], "answering": facts["answering"]}
+    sentence, _hint = ark_ai.NOT_READY["engine"]
+    if not facts["engine"]:
+        return _section("ask", "Ask the Ark", False, f"{sentence}.", ark_ai.advice(), **kept)
+    if not facts["model"]:
+        sentence, _hint = ark_ai.NOT_READY["model"]
+        return _section("ask", "Ask the Ark", False, f"{sentence}.", ark_ai.advice(), **kept)
+    if not facts["answering"]:
+        sentence, _hint = ark_ai.NOT_READY["silent"]
+        return _section("ask", "Ask the Ark", False, f"{sentence}.", ark_ai.advice(), **kept)
+    return _section(
+        "ask", "Ask the Ark", True,
+        f"Questions are answered on this box — {human_size(facts['model_bytes'])} of words, "
+        "no internet needed.", "", **kept)
+
+
 SECTIONS = (library_section, books_section, manuals_section, messages_section,
-            files_section, storage_section, backup_section, downloads_section)
+            files_section, storage_section, backup_section, downloads_section,
+            ask_section)
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+# =============================================================================
+#  ark-ai-model-fetch — put the helper's words on the card
+#
+#  The model is one file.  It is fetchable on a box that still has internet, or
+#  copyable from a stick on a box that does not — the second is the normal case
+#  for a box that is already in the house, because by then the internet is gone.
+#
+#    --status              is there a model, how big, which one, is it whole
+#    --list                every model on the card, newest first
+#    --url URL             fetch one (default: a small one that fits a Pi 4)
+#    --from FILE           copy one that is already on a stick or a disk
+#    --name NAME           the name to keep it under (default: from the URL/file)
+#    --sha256 HEX          refuse a file whose fingerprint is not this
+#
+#  A half-arrived file is named .part and is invisible to the helper, so the box
+#  never tries to answer from something that is still arriving.  Only a finished
+#  file is renamed into place.
+# =============================================================================
+set -Eeuo pipefail
+
+AI_DIR="${ARK_AI_DIR:-${ARK_ROOT:-/srv/ark}/ai}"
+MODELS="${ARK_AI_MODELS:-$AI_DIR/models}"
+
+# The one this repo expects a household box to carry: small enough to answer in
+# about the time a person will wait on a Pi 4, and good enough to be useful in
+# plain English.  Any `.gguf` model works; this is a default, not a requirement.
+DEFAULT_URL="https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf"
+
+say() { printf '%s\n' "$*"; }
+die() { printf 'Not done: %s\n' "$*" >&2; exit 1; }
+
+# GNU coreutils on the Pi, BSD on the Mac this is developed on.  Without the second
+# form every size would print as "0 kB" and every date as nothing, which reads like
+# a file that is not really there.
+file_size()  { stat -c %s "$1" 2>/dev/null || stat -f %z "$1"; }
+file_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; }
+file_when() {
+  local w
+  w="$(stat -c %y "$1" 2>/dev/null)" && { printf '%s\n' "${w%%.*}"; return 0; }
+  stat -f '%Sm' -t '%Y-%m-%d %H:%M:%S' "$1"
+}
+
+usage() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; }
+
+size_words() {
+  local n=${1:-0}
+  if (( n >= 1073741824 )); then awk -v b="$n" 'BEGIN{printf "%.1f GB", b/1073741824}'
+  elif (( n >= 1048576 )); then awk -v b="$n" 'BEGIN{printf "%.0f MB", b/1048576}'
+  else awk -v b="$n" 'BEGIN{printf "%.0f kB", b/1024}'; fi
+}
+
+models() {
+  local m
+  shopt -s nullglob
+  for m in "$MODELS"/*.gguf; do printf '%s\n' "$m"; done
+  shopt -u nullglob
+}
+
+# Whoever owns the folder owns the model: `sudo ark-ai-model-fetch` would otherwise
+# leave a root-owned file that the service (which runs as pi) cannot open.  Root
+# only, and never fatal — a model that arrived is a model that arrived.
+give_to_folder_owner() {
+  local target=$1
+  [[ $EUID -eq 0 ]] || return 0
+  chown --reference="$MODELS" "$target" 2>/dev/null || true    # a chown is not worth failing over
+}
+
+sha_of() { sha256sum "$1" | awk '{print $1}'; }
+
+newest_model() {   # prints the newest *.gguf, or nothing at all
+  local m best="" newest=-1 t
+  shopt -s nullglob
+  for m in "$MODELS"/*.gguf; do
+    t="$(file_mtime "$m" || printf '0')"
+    if [[ "$t" -gt "$newest" ]]; then newest=$t; best=$m; fi
+  done
+  shopt -u nullglob
+  printf '%s\n' "$best"
+}
+
+status() {
+  local newest list
+  list="$(models)"
+  if [[ -z "$list" ]]; then
+    say "No model on the card yet ($MODELS is empty)."
+    say "On a box with internet:  sudo ark-ai-model-fetch"
+    say "On a box without one:    sudo ark-ai-model-fetch --from /media/stick/model.gguf"
+    return 1
+  fi
+  newest="$(newest_model)"
+  say "The helper will answer from $(basename "$newest") — $(size_words "$(file_size "$newest")")"
+  say "fingerprint $(sha_of "$newest")"
+  local n; n="$(printf '%s\n' "$list" | wc -l)"
+  (( n > 1 )) && say "(there are $n on the card; the newest is used)"
+  return 0
+}
+
+list_models() {
+  local all=("$MODELS"/*.gguf)
+  #  `nullglob` is set by caller-independent means: if nothing matches, the pattern
+  #  itself would otherwise be treated as a file name.  Bash 3.2 has no mapfile,
+  #  which is why this is an array expansion and not a `while read` over a pipe.
+  [[ -e "${all[0]}" ]] || { say "No model on the card ($MODELS)."; return 1; }
+  ls -t -- "${all[@]}" | while read -r m; do
+    printf '  %-52s %10s  %s\n' "$(basename "$m")" "$(size_words "$(file_size "$m")")" \
+      "$(file_when "$m")"
+  done
+}
+
+finish() { # <part file> <final name> [sha256]
+  local part=$1 name=$2 want=${3:-} got got_l want_l
+  [[ -s "$part" ]] || { rm -f "$part"; die "the file arrived empty — nothing was kept"; }
+  got="$(sha_of "$part")"
+  #  Lower-case both sides without `${var,,}`: bash 3.2 (the Mac) has no case
+  #  conversion, and the same script has to be provable there and on the Pi.
+  got_l="$(printf '%s' "$got" | tr '[:upper:]' '[:lower:]')"
+  want_l="$(printf '%s' "$want" | tr '[:upper:]' '[:lower:]')"
+  if [[ -n "$want" && "$got_l" != "$want_l" ]]; then
+    rm -f "$part"
+    die "that file is not the one asked for (fingerprint $got, wanted $want_l) — nothing was kept"
+  fi
+  chmod 644 "$part"
+  mv -f "$part" "$MODELS/$name"
+  give_to_folder_owner "$MODELS/$name"
+  sync
+  say "Kept $name — $(size_words "$(file_size "$MODELS/$name")"), fingerprint $got"
+  say "The helper picks it up by itself if it was waiting for one; if it was already"
+  say "answering from another model, restart it:  sudo systemctl restart ark-ai"
+}
+
+# ---------------------------------------------------------------------------
+url=""; from=""; name=""; want=""; action=0
+while (( $# )); do
+  case "$1" in
+    --status) action=1; shift ;;
+    --list)   action=2; shift ;;
+    --url)    url=${2:?--url needs an address}; shift 2 ;;
+    --from)   from=${2:?--from needs a file}; shift 2 ;;
+    --name)   name=${2:?--name needs a name}; shift 2 ;;
+    --sha256) want=${2:?--sha256 needs a fingerprint}; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "I do not understand '$1' (try --help)" ;;
+  esac
+done
+
+mkdir -p "$MODELS" || die "cannot make $MODELS"
+
+if (( action == 1 )); then status; exit $?; fi
+if (( action == 2 )); then list_models; exit $?; fi
+
+if [[ -n "$from" ]]; then
+  [[ -f "$from" ]] || die "there is no file at $from"
+  [[ "$from" == *.gguf ]] || say "! that file is not named .gguf — copying it anyway, but the helper only looks for *.gguf"
+  name="${name:-$(basename "$from")}"
+  part="$MODELS/.$name.part"
+  say "Copying $from …"
+  cp -f "$from" "$part"
+  finish "$part" "$name" "$want"
+  exit 0
+fi
+
+[[ -n "$url" ]] || url="$DEFAULT_URL"
+name="${name:-$(basename "${url%%\?*}")}"
+[[ "$name" == *.gguf ]] || name="$name.gguf"
+part="$MODELS/.$name.part"
+say "Fetching $url"
+say "(a few hundred megabytes; it can be stopped with Ctrl-C and started again)"
+if ! curl -fL --retry 3 --retry-delay 2 -C - -o "$part" "$url"; then
+  say "! the download did not finish — the part file is kept, so running this again continues it"
+  exit 1
+fi
+finish "$part" "$name" "$want"

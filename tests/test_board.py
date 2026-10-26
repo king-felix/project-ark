@@ -143,6 +143,37 @@ def test_the_owner_can_close_anonymous_uploading(public):
 
 
 # ---------------------------------------------------------------------------
+#  the helper's switch (the same three checkboxes, one page)
+# ---------------------------------------------------------------------------
+def test_the_owner_can_close_the_helper_without_closing_anything_else(public, ark):
+    cookie = claim_box(public.client, password=BIG_PASSWORD)
+    _page, csrf = _community(public.client, cookie)
+    closed = post(public.client, "/admin/community/switches",
+                  {"csrf": csrf, "board": "1", "uploads": "1"}, headers=LAN,
+                  cookie=f"ark_admin={cookie}")
+    assert closed.status_code == 303
+
+    page = public.client.get("/ask")
+    assert page.status_code == 403
+    assert "switched off" in page.text.lower()
+    assert "questions other people ask" not in page.text.lower()
+    with ark.db.read() as conn:
+        assert ark.db.get_setting(conn, "public_ask", "1") == "0"
+        # ...and nothing else moved
+        assert ark.db.get_setting(conn, "public_board_post", "1") == "1"
+        assert ark.db.get_setting(conn, "public_uploads", "1") == "1"
+
+    _note(public.client, "the board is still open")
+    opened = post(public.client, "/admin/community/switches",
+                  {"csrf": csrf, "board": "1", "uploads": "1", "ask": "1"},
+                  headers=LAN, cookie=f"ark_admin={cookie}")
+    assert opened.status_code == 303
+    again = public.client.get("/ask")
+    assert again.status_code == 200
+    assert "questions other people ask" in again.text.lower()
+
+
+# ---------------------------------------------------------------------------
 #  the door itself
 # ---------------------------------------------------------------------------
 def test_moderation_without_a_session_is_refused(client, ark):

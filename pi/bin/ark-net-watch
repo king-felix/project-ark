@@ -155,9 +155,18 @@ read_state() {
 }
 
 write_state() { # <lost-streak> <home-streak> <block-until>
-  mkdir -p "$(dirname "$STATE")" 2>/dev/null || true
+  local dir tmp
+  dir="$(dirname "$STATE")"
+  mkdir -p "$dir" 2>/dev/null || true
+  #  Written to a temp file and moved into place: a cut during this line used to
+  #  leave half a counter file, which ark-self-heal would then find and set aside.
+  #  The rename either happened or did not.  The leading dot keeps the temp name out
+  #  of the way, and the self-heal sweeper knows to clear a stale one.
+  tmp="$dir/.net-watch.state.tmp"
   printf 'lost_streak=%s\nhome_streak=%s\nhome_block_until=%s\nupdated=%s\n' \
-    "$1" "$2" "$3" "$(date -Is)" >"$STATE" 2>/dev/null || true
+    "$1" "$2" "$3" "$(date -Is)" >"$tmp" 2>/dev/null || return 0
+  sync 2>/dev/null || true
+  mv -f "$tmp" "$STATE" 2>/dev/null || true
 }
 
 observe() {

@@ -58,8 +58,11 @@ Doors on the box (once built):
   /cards                three cards for the wall, drawn in the page (no image, no
                         internet): the box's own Wi-Fi name, the home-network name,
                         the number that always works
-  /essentials.zip       the pack to carry away — our manuals, the cards and the
-                        recovery sheet in one file; 404 until somebody makes one
+  /essentials.zip       the pack to carry away — our manuals and guides, the
+                        quick card and the recovery sheet in one file, with a
+                        front page and a fingerprint list; 404 until somebody
+                        makes one. The three wall cards are NOT in it: they
+                        print from /cards
   /help.html            how it works, in plain words
   /status.json          machine-readable health (also mirrored in the portal)
 
@@ -251,6 +254,16 @@ popup resolves to the portal instead of a "no internet" dead end.
   On the Pi (pi/steps/NN-name.sh, sourced by pi/lib/common.sh):
   10  base        apt update/upgrade, packages, timezone, hostname, `pi` user,
                   venv for the API, /etc/ark skeleton. Proof: versions printed.
+  15  resilience  the power-cut repair: `ark_self_heal.py` + `ark_atomic.py`,
+                  /usr/local/sbin/ark-self-heal (--dry-run|--json|--quiet),
+                  ark-self-heal.service (Before=ark-api.service) and .timer
+                  (04:17 ±20 m, Persistent), fake-hwclock, a 15-second
+                  write-behind window, /tmp and /var/log/tmp on tmpfs,
+                  fsck.mode=force in cmdline.txt **only if the result is still
+                  one line**, `nofail` on /etc/fstab, the hardware watchdog.
+                  Proof: `ark-self-heal --dry-run` prints what it would do and
+                  changes nothing, the timer is enabled+active, and cmdline.txt
+                  has not gained a second line.
   20  storage     /srv/ark tree, ark.env, mode file, permissions, disk headroom
                   warning. Proof: tree + free space.
   30  calibre     calibre-web install, empty library created pi:pi 775, drop
@@ -264,6 +277,14 @@ popup resolves to the portal instead of a "no internet" dead end.
                   queue), ark-kiwix-library (/kiwix path + library.xml),
                   ark-zim-download (flock, resume, size guard, rate limit),
                   systemd unit. Proof: :8081/kiwix/ answers, queue written.
+  58  ai          the helper: `ark_ai.py`, `/usr/local/sbin/ark-ai-serve`,
+                  `ark-ai-model-fetch`, `ark-build-ai-brief`, ark-ai.service on
+                  127.0.0.1:8089 (**enabled, and inactive when no model is on the
+                  card** — a supported state), the brief built as `pi`, and the
+                  engine carried in the source tree if one is there.
+                  Proof: `/ask` answers one honest sentence about having no
+                  brain yet, `ark-build-ai-brief --dry-run` counts what is here,
+                  and `/api/ready` still answers because `ask` never blocks.
   60  portal      static portal, API venv, systemd unit, nginx site, captive
                   endpoints, print styles, help page, the arcade modules/player,
                   the offline game-name catalogue reader, the first game shelf
@@ -728,9 +749,13 @@ any failure. Categories:
   services    is-enabled AND is-active (or waiting/activating for the guard),
               for nginx, ark-api, ark-zim-downloader, ark-boot-guard,
               ark-net-watch.timer, ark-book-import.path, ark-arcade-discover.timer,
-              ssh, NetworkManager, avahi-daemon, and
+              ark-self-heal.timer, ssh, NetworkManager, avahi-daemon, and
               ark-kiwix (soft when no bundles have arrived yet — an empty
-              library is a normal state, not a bug)
+              library is a normal state, not a bug).  ark-ai.service is its own
+              case: not enabled is soft, enabled+inactive with nothing on the
+              card is soft ("waiting for an engine and words"), and enabled but
+              inactive **when an engine and a brief are both present** is a
+              failure
   pages       HTTP codes for /, /help.html, /assets/ark.css, /search?q=water,
               /board, /files, /arcade/, /arcade/static/ark-arcade.css,
               /arcade/emulator/loader.js, /api/status, /vault/,
@@ -745,6 +770,15 @@ any failure. Categories:
               the card yet) is soft — a box still filling up is not a fault.
               Content present but not serviceable is a failure.
   network     when mode=hotspot, the AP address is really on wlan0
+  self-heal   the last power-cut pass, read from /srv/ark/logs/self-heal.json:
+              *no pass recorded yet* is soft (a box that has not rebooted since
+              the phase was installed), a non-empty `problems` is a failure, and
+              repairs it made are reported as healed, not as faults
+  the helper  /ask must be 200 **with the page's own sentence** in the body, or
+              403 saying it was switched off (soft); a page that answers but is
+              not the helper's page is a failure, and so is a fitted engine that
+              is not running.  200 with "not fitted on this box" is soft — a box
+              with no model is a working box
   space       free space >= 5 GiB (hard floor; the reserve is 12)
   owner's door  /admin answers 404 on :80; :8443 answers; the loopback :8444
               listener answers; the Community and Games pages answer behind
@@ -760,7 +794,10 @@ any failure. Categories:
               metadata.db, guides and printable PDFs
   receipt     JSON summary for the Mac: hostname, mode, ok, problems, ready,
               collections{files,gib,indexed}, books, guides{pages,pdfs},
-              arcade{games,players,saves,player_origin}, free_gib, addresses
+              arcade{games,players,saves,player_origin}, game_names{rows},
+              household{answered,topics,due,missing_pages,pack}, free_gib,
+              free_pct_used, backup{copies,newest,made},
+              self_heal{when,repaired,left_to_look_at}, addresses
 
   Definition of done:
     □ zero ✗, and the closing line "everything a visitor touches is working",
@@ -898,7 +935,7 @@ any failure. Categories:
 14. APPENDIX — THE REFERENCE IMPLEMENTATION (what "done" looks like)
 ================================================================================
 
-  Mac side                                  ~1,100 lines of bash
+  Mac side                                  ~950 lines of bash
     scripts/01-flash.sh                     assert card → flash → verify
     scripts/02-wait-for-pi.sh               poll SSH, report first contact
     scripts/03-provision.sh                 rsync repo, run phases, --only
@@ -906,12 +943,16 @@ any failure. Categories:
     scripts/make-firstrun.sh                wifi.env → firstrun.sh (700)
     scripts/fix-pi-shell.sh                 small connectivity repairs
 
-  Pi side                                   ~3,500 lines of bash + python
+  Pi side                                   ~19,000 lines of bash + python
+                                            (~12,500 in pi/api, ~4,000 in
+                                            pi/bin, ~2,500 in the phases)
     pi/install-ark.sh                       phase runner, lock, summary
     pi/lib/common.sh                        logging, ark_write (compare-first),
                                             apt helpers, http probes, free bytes
-    pi/steps/{10,20,30,40,50,60,65,70,95,90}-*.sh  the ten phases (95 before 90,
-                                            so the gate can see the backup tools)
+    pi/steps/{10,15,20,30,40,50,58,60,65,70,95,90}-*.sh  the twelve phases (95 before 90,
+                                            so the gate can see the backup tools;
+                                            15 before 20 and 58 before 60 because
+                                            each installs what the later one assumes)
     pi/bin/ark-zim-resolve                  catalogue → pinned queue
     pi/bin/ark-zim-download                 flock, resume, size + space guards
     pi/bin/ark-kiwix-library                /kiwix prefix + library.xml rebuild
@@ -923,6 +964,33 @@ any failure. Categories:
     pi/bin/ark-boot-guard                   failsafe hotspot after timeout
     pi/bin/ark-net-watch                    the same question every minute:
                                             --dry-run | --decide (pure table)
+    pi/bin/ark-self-heal                    the power-cut pass: --dry-run |
+                                            --json | --quiet (exit 1 = a person
+                                            is needed); run before ark-api
+    pi/bin/ark-ai-serve                     waits for a model, runs the engine
+                                            on 127.0.0.1:8089
+    pi/bin/ark-ai-model-fetch               the only way a model arrives
+                                            (--from a stick, or --url + a
+                                            fingerprint to check)
+    pi/bin/ark-build-ai-brief               --write | --dry-run | --show: what
+                                            is on this card, counted, as `pi`
+    pi/api/main.py                          FastAPI: /api/status, /api/ready,
+                                            /api/health (liveness only),
+                                            /search, /board, /files, /ask and
+                                            /api/ask/stream (one switch closes
+                                            both), /api/ask/status
+    pi/api/ark_self_heal.py                 the only place that knows what a cut
+                                            leaves behind: the clock, a torn
+                                            small file (and its .bak), a database
+                                            that will not open (quick_check, then
+                                            the newest copy), half-built uploads
+                                            and bundles swept by age
+    pi/api/ark_atomic.py                    write-then-rename with the previous
+                                            version kept: one writer, one shape
+    pi/api/ark_ai.py                         the helper: the brief, the guide
+                                            excerpts, one answer at a time, the
+                                            off switch, the honest sentence when
+                                            there is no brain
     pi/api/main.py                          FastAPI: /api/status, /api/ready,
                                             /api/health (liveness only),
                                             /search, /board, /files

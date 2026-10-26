@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+"""ark-self-heal — what the box does about itself when the power comes back.
+
+Run once at boot by ``ark-self-heal.service``, before the portal opens, and safe to
+run at any time by hand:
+
+  --dry-run   say what it would do, and change nothing at all
+  --json      the whole report as one JSON object (what the verifier reads)
+  --quiet     only what was actually repaired
+
+It reads the card and repairs what a power cut leaves behind: a clock that is in
+the past, a small file that came back unreadable, a database SQLite cannot open, a
+library catalogue that points at files which are not there, and temp files left
+half-written.  It never deletes a database, never touches a file it does not
+recognise, and never restarts a service — the boot order does that.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+from typing import Any, Dict
+
+API_DIR = Path(os.environ.get("ARK_API_DIR", "/srv/ark/api"))
+if not (API_DIR / "ark_self_heal.py").is_file():
+    # Running from a checkout, before an install: the modules sit beside this file.
+    API_DIR = Path(__file__).resolve().parent.parent / "api"
+sys.path.insert(0, str(API_DIR))
+
+import ark_atomic as atomic                     # noqa: E402
+import ark_self_heal as heal                    # noqa: E402
+
+
+def _say(message: str) -> None:
+    """Print, and treat a closed pipe as a finished job."""
+    try:
+        print(message, flush=True)
+    except BrokenPipeError:
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        raise SystemExit(0) from None
+
+
+def main(argv: Any = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="ark-self-heal",
+        description="Repair what a power cut leaves behind, and say what was done.")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="say what would be done; change nothing")
+    parser.add_argument("--json", action="store_true",
+                        help="print the whole report as JSON")
+    parser.add_argument("--quiet", action="store_true",
+                        help="print nothing when nothing needed repairing")
+    parser.add_argument("--root", help="the box's folder (default /srv/ark)")
+    args = parser.parse_args(argv)
+
+    root = Path(args.root or os.environ.get("ARK_ROOT") or "/srv/ark")
+    report = heal.run(root, dry_run=args.dry_run)
+
+    # The report is a file the verifier reads, written the same careful way as
+    # everything else — a report that is half-written is not a report.
+    if not args.dry_run:
+        try:
+            atomic.save_json(root / "logs" / "self-heal.json", report)
+            atomic.sync()
+        except OSError as exc:
+            heal.log("could not write the report: %s" % exc, root=root)
+
+    if args.json:
+        _say(json.dumps(report, indent=2, ensure_ascii=False))
+    else:
+        lines = heal.summary(report)
+        for line in lines:
+            # A problem is written to stderr below, once, already marked as one;
+            # printing it here as well would say the same thing twice.
+            if line.startswith("Still to look at:"):
+                continue
+            if args.quiet and line.startswith("The clock agrees"):
+                continue
+            if not args.dry_run:
+                heal.log(line, root=root)
+            _say(line)
+        if not lines and not args.quiet:
+            _say("Nothing needed repairing — every file and the clock are as they "
+                 "should be.")
+
+    if report.get("problems"):
+        for problem in report["problems"]:
+            sys.stderr.write("Still to look at: %s\n" % problem)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

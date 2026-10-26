@@ -2,7 +2,7 @@
 
 **Date:** 25 October 2026  
 **Branch:** `feature/admin-hardening`  
-**Suite:** `382 passed, 2 skipped` (21 files; `python -m pytest -o addopts='--strict-markers' -q`, Mac, throwaway databases) — the two skips are QR cross-checks that need `qrcode` / `opencv-python-headless` on the machine  
+**Suite:** `467 passed, 2 skipped` (23 files; `python -m pytest -o addopts='--strict-markers' -q`, Mac, throwaway databases) — the two skips are QR cross-checks that need `qrcode` / `opencv-python-headless` on the machine  
 **Hardware:** **deployed 25 Oct 2026** — `90-verify` green, `/api/ready` 200, the doors, the book
 route rules, a bundle and the arcade origin all answered on the Pi (`docs/IMPLEMENTATION-LOG.md`
 §15), `ark-arcade --import` answered honestly three times on the box (§18.4), and the name-from-the-
@@ -420,6 +420,9 @@ household member has opened `/household` on a phone.
 | R6 | DONE (code + test) | all; on-box nginx unproven |
 | R7 | PARTIAL | gate yes; inventory/queue/metadata no |
 | R8 | PARTIAL | per-writer refusal yes; one shared budget no |
+| R9 | DONE (code + test + proved on the box) | all; search quality unmeasured |
+| R10 | DONE (code + test) | all on the Mac; **no model on the box, nothing in a browser, not deployed** |
+| R11 | DONE (code + test) | the pass and its settings yes; **never met a real power cut, phase not run on the box** |
 | A | PARTIAL | accounts/community/games/health yes; players/services/backup UI no |
 | B | PARTIAL (early) | guest play + named saves + preferences yes; history/metadata/visuals no |
 | C | PARTIAL | stage 3–6 fixes yes; thermal/jobs/search cancellation no |
@@ -476,6 +479,83 @@ lookup. `ark_health.kiwix_base()` carries the prefix; probes built by hand must 
 **Not proved:** search quality (which articles are ranked first) and behaviour with a
 collection whose full-text index is missing. Both are the library's business, not the
 portal's, and neither is measured here.
+
+---
+
+## R10 — a question is answered on the box, and the box is honest when it cannot
+
+**Status: DONE on the Mac (code + tests, 26 Oct 2026); NOT deployed, and never seen in a
+browser.** `/ask` answers a question typed in a person's own words, from a small model
+that lives on the card: no internet, no account, nothing stored. The requirement that
+matters most is the negative one — **a helper that is not fitted must never look like a
+helper that is thinking**, and the rest of the box must not care either way.
+
+| Acceptance sentence | Where | Test |
+|---|---|---|
+| With no engine and no model the page says so in one sentence and still offers the form | `main.ask_page()`, `ark_ai.not_ready_sentence()` | `test_ai.py::test_a_helper_that_is_not_fitted_says_so_and_offers_the_form` |
+| A question with nothing behind it is not answered with invented words | `ark_ai.ask()` | `test_ai.py::test_a_question_with_no_helper_behind_it_is_not_answered` |
+| An engine that is fitted but not answering says *that*, instead of *not fitted* | `ark_ai.answering()`, `not_ready_reason()` | `test_ai.py::test_a_fitted_helper_that_is_not_answering_says_that_instead` |
+| The question is escaped wherever it is echoed back | `main.ask_page()` (`esc()` on the cleaned question and on every note), `main._ask_paragraphs()` | `test_ai.py::test_a_question_is_escaped_wherever_it_is_echoed` |
+| A question that is too long is refused **with the limit named**, never silently cut | `ark_ai.clean_question()` | `test_ai.py::test_a_question_that_is_too_long_is_refused_with_the_limit_named`; `::test_the_cleaner_trims_and_names_the_limit_rather_than_cutting` |
+| An answer is escaped and broken into paragraphs, so a model's line breaks cannot become markup | `main._ask_paragraphs()` | `test_ai.py::test_an_answer_is_escaped_and_broken_into_paragraphs` |
+| A question about water is sent to the guides and a question about a book to the library | `ark_ai.route()`, `context_for()` | `test_ai.py::test_a_water_question_is_sent_to_the_guides_and_a_book_question_to_the_library` |
+| The model is given the card's own pages — and **never** the household's answers, the board or the File Box | `ark_ai.messages()`, `context_for()` | `test_ai.py::test_the_helper_reads_the_pages_and_never_the_households_own_answers`; `::test_the_brief_never_lends_the_model_the_households_own_words` |
+| The brief is written by rename and a dry run writes nothing | `ark_ai.build_brief()`, `pi/bin/ark-build-ai-brief` | `test_ai.py::test_the_brief_is_published_by_rename_and_a_dry_run_writes_nothing` |
+| An answer arrives a piece at a time, and the stream says why when there is no answer | `main.ask_stream()`, `ark_ai.ask_stream()` | `test_ai.py::test_the_answer_streams_to_the_page_a_piece_at_a_time`; `::test_the_stream_says_why_there_is_no_answer_rather_than_answering_nothing` |
+| One answer is written at a time; the second person is told so and sees no half-written sentence | `ark_ai._SLOT`, `BUSY_SENTENCE` | `test_ai.py::test_one_answer_is_written_at_a_time` |
+| An engine that dies mid-answer keeps the words already written, and the page still answers 200 | `ark_ai.ask_stream()` | `test_ai.py::test_an_engine_that_dies_mid_answer_keeps_what_it_wrote` |
+| A truncated answer is one honest sentence, not a broken page | `main.ask_page()` | `test_ai.py::test_a_truncated_answer_is_one_honest_sentence_and_not_a_broken_page` |
+| The switch closes the page **and** the address the page streams from | `main.ask_page()`, `main.ask_stream()`, `public_ask` | `test_ai.py::test_the_switch_closes_both_doors_and_not_only_the_page` |
+| The helper is reported on the owner's page and **never** blocks readiness | `ark_health.ask_section()`, `BLOCKING_SECTIONS` | `test_ai.py::test_the_helper_is_reported_on_the_owner_page_and_never_blocks_readiness` |
+| A model is copied in from a stick, a wrong fingerprint keeps **nothing**, and a half-arrived file is invisible | `pi/bin/ark-ai-model-fetch` | `test_ai.py::test_a_model_is_copied_in_from_a_stick_and_nothing_is_left_half_arrived`; `::test_a_fingerprint_that_does_not_match_keeps_nothing_at_all`; `::test_the_fingerprint_is_compared_without_caring_about_case`; `::test_a_download_still_arriving_is_invisible_to_the_helper` |
+| The engine is started on the loopback address, with one slot, from the newest model | `pi/bin/ark-ai-serve` | `test_ai.py::test_the_engine_is_started_on_the_loopback_address_with_one_slot` |
+| A box with no engine stops instead of restarting for ever; a box with no model waits and starts by itself when words arrive | `condition`s in `ark-ai.service`, `ark-ai-serve` | `test_ai.py::test_the_service_refuses_to_run_with_no_engine_instead_of_restarting_for_ever`; `::test_the_helper_waits_for_words_and_starts_by_itself_when_they_arrive` |
+| A fresh box with no model is still a working box: the phase finishes, the unit is enabled | `pi/steps/58-ai.sh`, `ark-ai.service` | `test_ai.py::test_the_phase_installs_the_helper_and_the_brief_that_feeds_it`; `::test_the_unit_stops_cleanly_on_a_box_with_no_engine_and_cannot_grow_without_limit` |
+
+**Not proved, and must be said out loud:** no model has been fitted on the box, so the
+page has never answered a real question there; `/ask` has never been drawn by a browser,
+human or headless; the stream has never crossed nginx on the box (only the backend test
+client); and the switch has never been flipped on a live installation. Section 14 of
+`docs/HUMAN-TEST-LIST.md` covers what a person must do.
+
+---
+
+---
+
+## R11 — a power cut is not a reboot
+
+**Status: DONE (code + test); the phase has not been run on the box and the pass has
+never met a real power cut.** A Pi in a house has its plug pulled. Phase `15-resilience`
+installs one tool that runs **before anything serves a page** (`Before=ark-api.service`)
+and once a day, and the settings that make the next cut cheaper. The requirement that
+matters most is the negative one: **a repair tool must never be able to lose a file that
+was not already broken.**
+
+| Acceptance sentence | Where | Test |
+|---|---|---|
+| A clock in the past is put forward to the newest thing on the card, and a file written a moment ago is not evidence | `ark_self_heal.fix_clock()`, `CLOCK_SLACK` | `test_self_heal.py::test_a_file_from_the_future_means_the_clock_is_behind`; `::test_a_file_written_a_moment_ago_is_not_evidence`; `::test_the_clock_is_put_forward_to_the_newest_thing_on_the_card` |
+| The time is remembered across a cold boot, and a clock that agrees says nothing alarming | `fix_clock()` (fake-hwclock), `ark-self-heal --quiet` | `::test_the_clock_is_remembered_for_the_next_cold_boot`; `::test_a_clock_that_agrees_with_the_card_says_nothing_alarming` |
+| A small file that will not read is set aside, and the copy from before is put back only if **it** reads | `heal_json()` | `::test_a_broken_file_is_set_aside_and_the_copy_from_before_put_back`; `::test_a_broken_file_with_no_copy_is_set_aside_never_deleted`; `::test_a_good_copy_that_is_itself_broken_is_never_put_back` |
+| A file that is simply absent is not a problem; one that vanished is put back from its copy | `heal_json()` | `::test_a_file_that_is_simply_not_there_is_not_a_problem`; `::test_a_file_that_vanished_is_put_back_from_its_copy` |
+| The watchdog's counters are checked by **their own** shape, not as JSON, and are never filed back under JSON | `STATE_KEYS`, `state_problem()`, `heal_state()`, `JSON_TARGETS` | `::test_healthy_counters_are_left_alone`; `::test_damaged_counters_are_set_aside_and_the_watchdog_starts_again`; `::test_counters_that_are_not_numbers_are_damage`; `::test_missing_counters_are_not_a_fault` |
+| The counters are written in one move, so a cut cannot leave half a file | `write_state()` in `pi/bin/ark-net-watch` | `test_network.py::test_the_watchdog_writes_its_counters_in_one_move` |
+| Only the newest three broken copies are kept, and a dot-temp file from a cut is swept | `CORRUPT_KEEP`, `sweep()` | `::test_only_the_newest_three_broken_copies_are_kept`; `::test_a_half_written_counter_file_is_swept_and_the_real_one_is_not` |
+| A database SQLite cannot open is replaced only by a copy that passes the same check, and one with no good copy is left exactly where it is | `heal_sqlite()` | `::test_a_database_that_cannot_be_read_is_put_back_from_its_good_copy`; `::test_a_broken_database_with_no_copy_is_left_exactly_where_it_is` |
+| A database whose `-shm` is gone after a cut is healthy, and a WAL missing its commits is never copied | `heal_sqlite()` | `::test_a_database_whose_shared_memory_is_gone_after_a_cut_is_healthy`; `::test_a_database_is_not_copied_into_a_wal_missing_its_commits` |
+| Old temp files and half-built copies are swept; fresh ones, a finished copy and a database journal are not | `sweep()` | `::test_old_temp_files_are_swept_and_fresh_ones_are_left`; `::test_a_half_built_copy_is_swept_but_a_finished_one_is_not`; `::test_the_database_journal_is_never_swept` |
+| A catalogue pointing at books that are not there is rebuilt; a sound one is left alone; no builder is reported, never guessed | `heal_library()` | `::test_a_catalogue_that_points_at_missing_files_is_rebuilt`; `::test_a_catalogue_that_cannot_be_rebuilt_is_reported_and_not_broken` |
+| The sweep is judged by the clock **after** it is fixed | `run()` ordering | `::test_the_sweep_is_judged_by_the_clock_after_it_is_fixed` |
+| A repair counts as repaired; only what is left for a person is a problem, and only that exits 1 | `run()` (`healed` / `problems`), `ark-self-heal` | `::test_the_command_exits_one_when_something_is_left_to_look_at`; `::test_a_quiet_pass_on_a_healthy_box_says_nothing`; `::test_a_pass_repairs_everything_and_answers_a_report` |
+| A dry run changes nothing at all, at the module and at the command | `dry_run` everywhere | `::test_a_dry_run_changes_nothing_at_all`; `::test_a_dry_run_at_the_command_leaves_no_trace`; `::test_a_dry_run_sweeps_nothing` |
+| The boot pass runs before the portal and the daily pass is armed | `ark-self-heal.service` / `.timer`, phase `15-resilience` | `::test_the_phase_is_installed_before_anything_that_serves_a_page`; `::test_the_phase_enables_both_units_and_proves_itself` |
+| The phase sets the things that make a cut cheap, and can never leave the box unbootable | `15-resilience.sh` (`fstab`/`cmdline.txt` edits, one-line guard) | `::test_the_phase_sets_the_things_that_make_a_cut_cheap`; `::test_the_phase_can_never_leave_the_box_unbootable` |
+| The verifier reads the record the pass leaves, keeps the receipt from before, and never fails on an absent pass | `90-verify.sh` | `::test_the_verifier_reads_the_record_the_boot_pass_leaves_behind`; `::test_the_verifier_keeps_the_receipt_from_before` |
+
+**Not proved, and must be said out loud:** the phase has not been run on the box, no
+reboot has been taken with it installed, `fsck.mode=force` has never checked that card,
+the hardware watchdog has never reset anything, and **no power cut has been simulated on
+hardware** — every test drives a throwaway folder tree on the Mac. `docs/HUMAN-TEST-LIST.md`
+§15 is the walk-through: pull the plug, wait, and read `logs/self-heal.json`.
 
 ---
 

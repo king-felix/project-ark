@@ -25,7 +25,8 @@ say_soft() { printf '   \033[1;33m·\033[0m %-40s %s\n' "$1" "$2"; }
 # ark-kiwix only runs once at least one collection has arrived, so it is checked
 # softly: an empty library is a normal state on a metered connection, not a bug.
 for u in nginx.service ark-api.service ark-zim-downloader.service ark-boot-guard.service \
-         ark-net-watch.timer ark-book-import.path ark-arcade-discover.timer ssh.service \
+         ark-net-watch.timer ark-book-import.path ark-arcade-discover.timer \
+         ark-self-heal.timer ssh.service \
          NetworkManager.service avahi-daemon.service; do
   en="$(systemctl is-enabled "$u" 2>/dev/null || true)"
   ac="$(systemctl is-active  "$u" 2>/dev/null || true)"
@@ -48,6 +49,56 @@ elif compgen -G "$ARK_ROOT/kiwix/*.zim" >/dev/null; then
   say_bad "ark-kiwix.service" "bundles on disk but service is $ac"
 else
   say_soft "ark-kiwix.service" "enabled, waiting for the first collection"
+fi
+
+# The helper is the same kind of thing: an engine and one file of words, neither of
+# which a fresh box has.  It is enabled so that the day a model lands it starts by
+# itself, and it stays inactive until then — so this is reported, never failed.
+en="$(systemctl is-enabled ark-ai.service 2>/dev/null || true)"
+ac="$(systemctl is-active  ark-ai.service 2>/dev/null || true)"
+if [[ "$en" != "enabled" ]]; then
+  say_soft "ark-ai.service" "not enabled — run phase 58-ai (the /ask page still answers)"
+elif [[ "$ac" == "active" ]]; then
+  say_ok "ark-ai.service" "enabled, active"
+elif [[ -x /usr/local/bin/llama-server ]] && compgen -G "$ARK_ROOT/ai/models/*.gguf" >/dev/null; then
+  say_bad "ark-ai.service" "engine and words are on the card but the helper is $ac"
+else
+  say_soft "ark-ai.service" "enabled, waiting for an engine and words (see ark-ai-model-fetch --status)"
+fi
+
+# ---- what the box did about itself after the last cut ------------------------
+#  The boot pass writes its own record before the portal opens.  No record is a
+#  normal state — a box that has not rebooted since phase 15-resilience, or a card
+#  installed before it — and is reported, never failed.  A pass that left something
+#  for a person to look at says so in its own words: the repair tool is the one
+#  thing on the box that knows what it could not repair.
+self_heal_when=""
+self_heal_fixed=""
+self_heal_left=""
+heal_record="$ARK_ROOT/logs/self-heal.json"
+if [[ ! -x /usr/local/sbin/ark-self-heal ]]; then
+  say_soft "self-heal" "not installed — run phase 15-resilience (the box still serves every page)"
+elif [[ ! -e "$heal_record" ]]; then
+  say_soft "self-heal" "no pass recorded yet — it runs before the portal at the next boot (sudo ark-self-heal --dry-run)"
+else
+  self_heal_line="$(python3 -c 'import json,sys
+try:
+    r = json.load(open(sys.argv[1]))
+except Exception:
+    print("unreadable")
+    raise SystemExit(0)
+print("%s|%s|%s" % (r.get("when") or "an unreadable time",
+                    r.get("healed") or 0, len(r.get("problems") or [])))' "$heal_record" 2>/dev/null || true)"
+  if [[ -z "$self_heal_line" || "$self_heal_line" == "unreadable" ]]; then
+    say_soft "self-heal" "the record on the card cannot be read — sudo ark-self-heal --dry-run"
+  else
+    IFS='|' read -r self_heal_when self_heal_fixed self_heal_left <<<"$self_heal_line"
+    if [[ "${self_heal_left:-0}" == "0" ]]; then
+      say_ok "self-heal" "last pass $self_heal_when · $self_heal_fixed repaired · nothing left to look at"
+    else
+      say_bad "self-heal" "$self_heal_left thing(s) left to look at (last pass $self_heal_when) — /srv/ark/logs/self-heal.log"
+    fi
+  fi
 fi
 
 # ---- pages a person actually taps -------------------------------------------
@@ -89,6 +140,30 @@ check_page "/vault/quick-card.html" "printable cards"
 check_page "/generate_204"        "captive-portal trigger"
 check_page "/kiwix/"              "offline library" "200 302 503"
 check_page "/books/"              "book shelf"      "200 302"
+
+# ---- the helper that answers questions ---------------------------------------
+#  Three supported states and one fault.  *Not fitted* (no engine, no words) is
+#  normal on a fresh box and says so in one sentence; *switched off* is the
+#  owner's choice; *fitted and answering* is the finished thing.  A page that
+#  answers without being the helper's page — the front page falling through
+#  `location /` — is the fault, and so is anything else.
+ask_code="$(ark_http_code http://127.0.0.1/ask)"
+ask_body="$(curl -sS --max-time 30 http://127.0.0.1/ask 2>/dev/null || true)"
+case "$ask_code" in
+  403) if [[ "$ask_body" == *"switched off"* ]]; then
+         say_soft "ask the helper" "switched off by the owner (turn it back on in Community)"
+       else
+         say_bad "ask the helper" "refused with something that is not the helper's page"
+       fi ;;
+  200) if [[ "$ask_body" != *"Questions other people ask"* ]]; then
+         say_bad "ask the helper" "answered, but not with the helper's page"
+       elif [[ "$ask_body" == *"not fitted on this box"* ]]; then
+         say_soft "ask the helper" "the page answers; no engine or words yet — sudo ark-ai-model-fetch --status"
+       else
+         say_ok "ask the helper" "the page answers, and the helper is fitted"
+       fi ;;
+  *)   say_bad "ask the helper" "HTTP ${ask_code:-none}" ;;
+esac
 
 # ---- the pack a household can carry -----------------------------------------
 #  None made yet is normal.  A front page answering 200 in place of a zip is
@@ -372,6 +447,12 @@ esac
 # ---- receipt for the Mac ------------------------------------------------------
 ready_line="$(printf '%s' "${ready_json:-}" | python3 -c 'import json,sys; r=json.load(sys.stdin); print(json.dumps({"ok": r.get("ok"), "blocking": r.get("blocking") or [], "checked": r.get("checked")}))' 2>/dev/null || true)"
 STATUS="$ARK_ROOT/ark_status.json"
+#  Keep the receipt from before beside the new one: a cut while this file is being
+#  written then leaves something safe to fall back to, which is exactly what
+#  ark-self-heal looks for (a damaged file with no `.bak` is set aside and reported,
+#  never invented).  A copy that is itself damaged is ignored by the reader, so this
+#  is a courtesy that can never make things worse.
+[[ -f "$STATUS" ]] && cp -f "$STATUS" "$STATUS.bak" 2>/dev/null || true
 tmp="$(mktemp)"
 cat > "$tmp" <<JSON
 {
@@ -393,6 +474,8 @@ cat > "$tmp" <<JSON
   "free_gib": ${free_gib:-0},
   "free_pct_used": "$root_use",
   "backup": {"copies": ${backup_copies:-0}, "newest": "$backup_newest", "made": "$backup_made"},
+  "self_heal": {"when": "${self_heal_when}", "repaired": ${self_heal_fixed:-null},
+                "left_to_look_at": ${self_heal_left:-null}},
   "addresses": ["http://ark.lan", "http://ark.local", "http://${HOTSPOT_ADDRESS:-10.42.0.1}"]
 }
 JSON

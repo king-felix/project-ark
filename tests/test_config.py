@@ -144,13 +144,13 @@ def test_every_page_the_backend_builds_is_named_in_the_proxy_block():
     three names in the shipped configuration.
     """
     pages = _backend_pages()
-    for name in ("search", "board", "files", "household", "cards"):
+    for name in ("search", "ask", "board", "files", "household", "cards"):
         assert name in pages, f"/{name} would fall through to index.html"
     assert r"essentials\.zip" in pages, "/essentials.zip would answer with index.html"
 
     # a page nobody can reach from the front page is a page nobody uses
     front = (REPO / "pi" / "portal" / "index.html").read_text(encoding="utf-8")
-    for door in ('href="/household"', 'href="/cards"'):
+    for door in ('href="/household"', 'href="/cards"', 'href="/ask"'):
         assert door in front, f"the front page does not offer {door}"
 
     # and the installer proves the two pages by what they say, not by the code alone;
@@ -464,3 +464,27 @@ def test_the_library_catalogue_is_built_beside_the_bundles_it_describes():
         "the index must be built inside the folder it describes, or its paths are wrong")
     assert 'mv -f "$1" "$LIB"' in script, (
         "publish by rename (publish()), so a half-built catalogue is never served")
+
+# ---------------------------------------------------------------------------
+#  an answer arrives while it is being written
+# ---------------------------------------------------------------------------
+def test_the_answer_stream_is_not_held_back_by_the_proxy():
+    """A minute of words must arrive as words, not as one lump at the end.
+
+    nginx buffers by default, so an un-buffered route is the only reason the page
+    can show sentences as they are written.  Both halves are checked: the proxy
+    must not buffer, and the app must tell any other proxy in the way not to
+    either (``X-Accel-Buffering: no``).
+    """
+    block = re.search(r"location = /api/ask/stream \{(?P<body>.*?)\n    \}", NGINX, re.S)
+    assert block, "ark.conf has no exact location for the answer stream"
+    body = block.group("body")
+    assert re.search(r"^\s*proxy_buffering off;", body, re.M), (
+        "nginx would hold the whole answer and hand it over at the end")
+    assert re.search(r"^\s*gzip off;", body, re.M), (
+        "compressing a stream means waiting for enough words to compress")
+    assert re.search(r"^\s*proxy_read_timeout\s+300s;", body, re.M), (
+        "an answer may take a minute; the default 60 s would cut it off")
+    assert "X-Accel-Buffering" in MAIN_APP, (
+        "the stream route must ask any other proxy not to buffer it")
+

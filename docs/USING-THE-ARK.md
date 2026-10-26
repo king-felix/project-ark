@@ -80,7 +80,7 @@ The home screen is deliberately boring: five headings, plain words, big buttons.
 | Section | Tiles | What it really is |
 |---|---|---|
 | **Find something** | one search box | searches every collection, every manual and the bookshelf at once |
-| **Start here** | Offline Library · Books · Manuals & Guides | the three libraries |
+| **Start here** | Ask the Ark · Offline Library · Books · Manuals & Guides | a helper that answers a question typed in your own words — on the box, with no internet — and the three libraries |
 | **When something breaks** | Repair guides · Quick card · This Household · Card to get back on | iFixit-style repair pages, a one-page card to print, the household's own answers, and a printable card that gets a phone back to the box |
 | **For everybody here** | Message Board · File Box · Games | notes, file swapping and a small game shelf for anyone on the Wi-Fi |
 | **Not sure how this works?** | Help | the same instructions, in even simpler words |
@@ -338,6 +338,37 @@ The owner's **Household** page has the nine answers, the switch, the review list
 `/household` and `/cards` from visitors — hiding them leaves the pack downloadable and every
 other page untouched.
 
+### 3.10 Ask a question in your own words — `http://ark.lan/ask`
+
+**What it is for:** the moment when you do not know what to search for, or which words
+the book would use.
+
+Type the question the way you would say it out loud — *"how do I make water safe to
+drink"*, *"what do I do about a deep cut"*, *"the fridge stopped and the food has been
+warm since this morning"* — and the answer is written on this box. Nothing leaves it,
+nothing is downloaded, and no answer is stored.
+
+**Read the sentence at the bottom of every answer first.** It says the helper can be
+wrong and the guides are the truth, because that is exactly what it means: this is a
+small model talking, not a doctor. Where the page can point at a real guide, it does —
+tap through and read the page itself.
+
+**How to use it:** one question at a time, in a full sentence, and give it the detail a
+person would need (who, how long, how bad). If the answer arrives word by word, that is
+normal — it is being written as you watch. **Questions other people ask** under the box
+are ready-made examples to tap.
+
+**If it says the helper is not fitted:** the box has no model in it yet, and that is a
+completely normal state — the owner puts one on the card when they want to
+(`sudo ark-ai-model-fetch --status` says what is missing). Every other page works
+without it.
+
+**If it says somebody else is asking:** the box writes one answer at a time, because it
+has no cores to spare. Wait a minute and ask again. Nothing is lost.
+
+**If the owner has switched it off**, the page says so in one sentence and everything
+else on the box is untouched.
+
 ---
 
 ## 4. Getting books onto it
@@ -514,6 +545,10 @@ Do this after any power cut, and before you rely on the box for a trip.
 7. `sudo ark-mode status` — the mode, and **chosen by**: `owner` means a person pinned it,
    `auto` means the box decided. `tail -n 5 /srv/ark/logs/net-watch.log` says what the box did
    about the network — an empty or short log is normal, because a quiet check writes nothing.
+8. `sudo ark-self-heal --dry-run` — says what the last power cut left behind **and what would be
+   done about it**, changing nothing. The box already does this itself at every boot (before any
+   page can read the clock) and again at 04:17; this is how you read what it found. *No pass
+   recorded yet* is normal on a new box.
 
 
 For whoever looks after the box, one more: `https://ark.local:8443/admin` shows a
@@ -551,6 +586,9 @@ Re-provisioning is idempotent: re-running any phase repairs it rather than dupli
 | Cannot reach it from a phone at all | hotspot not up | `sudo ark-mode hotspot`, then join `The-Ark-Offline` |
 | Out of space | something large added by hand | **What is working** shows which folder holds what; `sudo du -sh /srv/ark/*` for the detail; the downloader keeps 12 GiB free on its own |
 | Forgot the address | — | `ark.lan`, `ark.local`, `10.42.0.1` — all the same box |
+| After a power cut the times look wrong (“3 hours ago” about something made yesterday) | the Pi has no clock battery, so it woke up in the past | nothing — the box sets the clock from the newest file on the card before any page opens. If it is still wrong, `sudo ark-self-heal --dry-run` says what it thinks |
+| A page mentions a repair, or a file was “set aside” | the box found a half-written file after a cut and kept it rather than using it | nothing; `cat /srv/ark/logs/self-heal.log` reads like a sentence. A *repair* is not a fault — only the line under `problems` needs a person |
+| The box ran on after a cut with an empty shelf, or a page said the records could not be opened | the database would not open | it keeps the damaged file and puts back the last copy that passes the check; if none does, **What is working** names it. A copy is the only cure: `sudo ark-backup --to /srv/ark/backup` |
 
 ---
 
@@ -585,6 +623,10 @@ sudo ark-backup --verify PATH          # re-read every byte of one copy
 sudo ark-restore --list                # what could be put back
 sudo ark-restore --from PATH           # put one back (asks before replacing)
 
+sudo ark-self-heal --dry-run           # what the last power cut left, and what would be done
+sudo ark-self-heal --quiet             # only what was actually repaired (what boot runs)
+cat /srv/ark/logs/self-heal.log        # the same, as a sentence per line
+
 tail -f /srv/ark/logs/zim-download.log # watch downloads
 tail -f /srv/ark/logs/net-watch.log    # watch the box's own network decisions
 systemctl list-units 'ark-*' --all     # every Ark service and its state
@@ -617,6 +659,12 @@ sudo reboot
   automatic backup timer, on purpose.
 - **Not built yet** (candidates, not promises): a planting calendar, an offline map pack, a photo
   archive of the house and its shut-off valves.
+- **The helper answers, it does not search.** Ask the Ark is a small model on the card that writes
+  an answer in its own words. It is not a search engine, it does not read the household's answers,
+  it does not remember what you asked last time, and it is allowed to be wrong — the page says so
+  under every answer. When it names a guide, read the guide. It also does not work out of the box:
+  the box ships with no model (a model is ~1 GB and the owner chooses it), and until one is on the
+  card the page says so plainly and every other page works as usual.
 
 ---
 
@@ -625,7 +673,8 @@ sudo reboot
 - Everything lives under `/srv/ark` — `kiwix/` (collections), `calibre-library/` (books),
   `vault/` (manuals and PDFs), `drop/files/` (File Box, the only folder the web server is allowed
   to serve), `drop/tmp/` (half-arrived uploads, never served), `calibre-incoming/` (staging, with
-  `.imported.json` and `done/`), `portal/` (front page), `logs/`.
+  `.imported.json` and `done/`), `ai/` (the helper's model and its page of facts — no model by
+  default), `portal/` (front page), `logs/`.
 - The owner's door keeps its accounts in `/srv/ark/api/data/ark.db`, with the marker file
   `ark.installed` beside it (that marker is what turns a wiped database into
   "recovery-required" instead of a fresh default password). Its certificate lives under

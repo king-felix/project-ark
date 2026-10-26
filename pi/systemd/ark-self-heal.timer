@@ -1,0 +1,15 @@
+[Unit]
+Description=Project ARK — look over the card once a day
+Documentation=http://ark.lan/help
+# The boot pass catches the cut that just happened; this catches what a crash or a
+# failing card does while the box is up.  One cheap pass a day, at an hour nobody
+# is reading.
+[Timer]
+OnCalendar=*-*-* 04:17:00
+RandomizedDelaySec=20m
+Persistent=true
+AccuracySec=5m
+Unit=ark-self-heal.service
+
+[Install]
+WantedBy=timers.target

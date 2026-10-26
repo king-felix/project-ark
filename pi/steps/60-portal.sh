@@ -35,7 +35,7 @@ ark_ok "portal pages installed in $PORTAL"
 for f in main.py ark_db.py ark_storage.py ark_security.py ark_admin.py ark_recover.py ark_health.py \
          ark_arcade.py ark_arcade_install.py ark_arcade_web.py \
          ark_romdb.py ark_romdb_build.py ark_rommeta.py \
-         ark_review.py ark_household.py ark_cards.py ark_qr.py ark_essentials.py; do
+         ark_review.py ark_household.py ark_cards.py ark_qr.py ark_essentials.py ark_ai.py; do
   ark_copy "$ARK_SRC/api/$f" "$API_DIR/$f" 644 "$ARK_PI_USER:$ARK_PI_GROUP"
 done
 ark_copy "$ARK_SRC/api/requirements.txt" "$API_DIR/requirements.txt" 644 "$ARK_PI_USER:$ARK_PI_GROUP"
@@ -214,6 +214,19 @@ check "http://127.0.0.1/arcade/emulator/loader.js"     "game player"
 check "http://127.0.0.1/vault/"           "manuals index"
 check_says "http://127.0.0.1/household"  "household page" "The page for the day something goes wrong"
 check_says "http://127.0.0.1/cards"      "printable cards" "Three addresses, three squares"
+#  The helper's page is itself even when no model has been carried to the box: the
+#  question box is always there, and the answer is the only thing that may be missing.
+#  Switched off is honest too — the switch is the owner's to throw, and a redeploy
+#  must never fail because of a decision the owner made on their own page.
+ask_body="$(curl -sS --max-time 30 http://127.0.0.1/ask 2>/dev/null || true)"
+if [[ "$ask_body" == *"Questions other people ask"* ]]; then
+  printf '   \033[1;32m✓\033[0m %-42s %s\n' "the helper's page" "answers"
+elif [[ "$ask_body" == *"switched off"* ]]; then
+  printf '   \033[1;32m✓\033[0m %-42s %s\n' "the helper's page" "switched off by the owner"
+else
+  printf '   \033[1;33m!\033[0m %-42s %s\n' "the helper's page" "the front page, not this page"
+  fail=1
+fi
 #  The pack only exists once somebody has made one, so 404 is the honest answer on
 #  a fresh box.  A 200 has to be the zip itself: `location /` would otherwise
 #  serve index.html here and every status code would agree it was fine.

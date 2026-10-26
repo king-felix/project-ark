@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+"""ark-build-ai-brief — write down what is on this card, for the helper to read.
+
+The helper answers from a small model that knows nothing about this box.  It is
+given one page of facts — how many collections, books and guides there are, which
+pages exist, and the three addresses a household is told to try — so it points at
+a page that is really there instead of inventing one.  Every number comes from the
+same readers the portal's own pages use, so the brief can never claim a shelf the
+portal does not show.
+
+  --write    write the brief (the only thing here that writes)
+  --show     print what it says now, without writing anything
+  --dry-run  build it in memory, say where it would go, write nothing
+
+It is run as ``pi`` by phase 58-ai and may be run again at any time: a fresh box
+that has since filled with books should be described as it is now.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+from pathlib import Path
+
+API_DIR = Path(os.environ.get("ARK_API_DIR", "/srv/ark/api"))
+if not (API_DIR / "ark_ai.py").is_file():
+    # Running from a checkout, before an install: the modules sit beside this file.
+    API_DIR = Path(__file__).resolve().parent.parent / "api"
+sys.path.insert(0, str(API_DIR))
+
+import ark_ai                                  # noqa: E402
+
+
+def _say(message: str) -> None:
+    """Print, and treat a closed pipe as a finished job."""
+    try:
+        print(message, flush=True)
+    except BrokenPipeError:
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        raise SystemExit(0) from None
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="ark-build-ai-brief",
+        description="Write down what is on this card, for the helper to read.")
+    parser.add_argument("--write", action="store_true", help="write the brief")
+    parser.add_argument("--show", action="store_true", help="print the brief as it is now")
+    parser.add_argument("--dry-run", action="store_true", help="say where it would go, write nothing")
+    parser.add_argument("--out", help="the file to write (default: the helper's own place)")
+    args = parser.parse_args(argv)
+
+    if not any((args.write, args.show, args.dry_run)):
+        parser.print_help()
+        return 2
+
+    if args.out:
+        os.environ["ARK_AI_BRIEF"] = args.out
+    path = ark_ai.brief_path()
+
+    if args.show:
+        if not path.is_file():
+            _say(f"There is no brief yet at {path}. Run --write.")
+            return 1
+        try:
+            _say(path.read_text(encoding="utf-8").rstrip("\n"))
+        except OSError as exc:
+            _say(f"That brief cannot be read ({exc}).")
+            return 1
+        return 0
+
+    result = ark_ai.build_brief(dry_run=args.dry_run)
+    if result["problem"]:
+        _say(f"Not done: {result['problem']}")
+        return 1
+    if args.dry_run:
+        _say(f"Would write {result['path']} — {len(result['text'])} characters. "
+             f"Nothing was written.")
+        return 0
+    _say(f"Wrote {result['path']} — {len(result['text'])} characters, "
+         f"{len([line for line in result['text'].splitlines() if line.strip()])} lines.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

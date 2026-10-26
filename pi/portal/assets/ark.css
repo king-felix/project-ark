@@ -100,6 +100,16 @@ button.go-btn{
 button.go-btn:active{transform:scale(.995)}
 .note{font-size:.88rem;color:var(--dim);margin-top:10px}
 
+/* An answer from the helper.  The words arrive one piece at a time and are written
+   with textContent, so the line breaks a person sees must come from the CSS. */
+.answer{
+  margin-top:18px;padding:16px 18px;border-radius:var(--r);background:var(--panel);
+  border:1px solid var(--line);font-size:1.02rem;line-height:1.6;white-space:pre-wrap;
+  overflow-wrap:anywhere
+}
+.answer p{margin:0 0 10px}
+.answer p:last-child{margin-bottom:0}
+
 /* ---------- footer ---------- */
 footer{margin-top:48px;padding-top:18px;border-top:1px solid #17171a;color:#7d7d86;font-size:.86rem}
 footer a{color:#9fe7b8}
@@ -132,7 +142,24 @@ main{display:block}
   text-decoration:none;padding:12px 16px;margin-top:18px
 }
 .go-link:active{transform:scale(.995)}
+/* ---------- the helper: one field, one button, one answer ---------- */
+/* A question is typed on a phone, often one-handed, so the field is a full-width
+   52 px target and the answer is a panel rather than a wall of text. */
+.ask{display:grid;gap:10px;margin:18px 0}
+.ask label{font-weight:700}
+.ask input{
+  width:100%;min-height:52px;padding:12px 14px;border-radius:12px;
+  border:1px solid var(--line);background:var(--panel2);color:var(--ink);
+  font-size:1.05rem
+}
+.answer{
+  border-left:4px solid var(--go);background:#04120a;border-radius:0 var(--r) var(--r) 0;
+  padding:14px 16px;margin:16px 0
+}
+.answer p{margin:0 0 12px}
+.answer p:last-child{margin-bottom:0}
 /* ---------- the cards for the wall (white on purpose: scanners need contrast) ---------- */
+
 .wall{display:grid;gap:18px}
 @media (min-width:620px){ .wall{grid-template-columns:1fr 1fr} }
 .wall-card{

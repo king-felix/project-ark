@@ -37,9 +37,10 @@ from pathlib import Path
 
 from fastapi import FastAPI, Form, Response, UploadFile, File
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
-                               RedirectResponse)
+                               RedirectResponse, StreamingResponse)
 
 import ark_admin
+import ark_ai
 import ark_arcade
 import ark_arcade_install
 import ark_arcade_web
@@ -139,7 +140,7 @@ def esc(value) -> str:
     return html.escape(str(value if value is not None else ""), quote=True)
 
 
-NAV = [("/", "Home"), ("/search", "Search"), ("/kiwix/", "Library"),
+NAV = [("/", "Home"), ("/search", "Search"), ("/ask", "Ask"), ("/kiwix/", "Library"),
        ("/books/", "Books"), ("/vault/", "Manuals"), ("/board", "Messages"),
        ("/files", "File box"), ("/household", "Household")]
 
@@ -290,6 +291,13 @@ def status():
              "stalled", "reported")
         },
         "download_reason": sections["downloads"]["reason"],
+        # The helper that answers questions in a person's own words.  Reported so
+        # the owner can see it; never a blocker (see ark_health.ask_section).
+        "ask": {
+            "ready": sections["ask"]["ready"],
+            "reason": sections["ask"]["reason"],
+            "facts": sections["ask"]["facts"],
+        },
     }
 
 
@@ -803,6 +811,165 @@ def files_post(file: UploadFile = File(None), note: str = Form("")):
              (note or "").strip()[:140], stored.sha256),
         )
     return RedirectResponse("/files?ok=1", status_code=303)
+# ---------------------------------------------------------------------------
+#  Ask the Ark — a question in a person's own words, answered on this box
+#
+#  Two doors, one question.  ``GET /ask?q=…`` answers server-side, so the page
+#  works with no JavaScript at all (the critical path); the small script on the
+#  page upgrades that to words arriving as they are written, from
+#  ``/api/ask/stream``.  Nothing leaves the box: the model and the engine are
+#  files on the card and the engine listens on the loopback address only.
+# ---------------------------------------------------------------------------
+ASK_EXAMPLES = (
+    "How do I make water safe to drink?",
+    "What do I do about a deep cut?",
+    "Where are the guides about fixing a leak?",
+)
+
+
+def _ask_paragraphs(text: str) -> str:
+    """An answer as escaped paragraphs.
+
+    Model text is a stranger: it is escaped like anything else a reader's eye
+    lands on, and blank lines become paragraph breaks rather than one wall.
+    """
+    blocks = [block.strip() for block in (text or "").split("\n") if block.strip()]
+    return "".join(f"<p>{esc(block)}</p>" for block in blocks)
+
+
+@app.get("/ask", response_class=HTMLResponse)
+def ask_page(q: str = ""):
+    """Ask a question.  The answer is made here; the guides stay the authority."""
+    if setting("public_ask", "1") == "0":
+        return error_page("The helper is switched off.",
+                          "The owner can turn it back on. Everything else on the box "
+                          "still works: the library, the books, the guides and the games.",
+                          403)
+    question, problem = ark_ai.clean_question(q)
+    typed = str(q or "").strip()
+    sentence, hint = ark_ai.not_ready_sentence()
+    answer, ask_problem = ("", problem)
+    if question and not problem and not sentence:
+        answer, ask_problem = ark_ai.ask(question)
+    examples = "".join(
+        f'<li><a href="/ask?q={urllib.parse.quote(sample)}">{esc(sample)}</a></li>'
+        for sample in ASK_EXAMPLES)
+    notes = []
+    if sentence:
+        notes.append(f'<p class="note"><b>{esc(sentence)}.</b> {esc(hint)}</p>')
+    if ask_problem and typed:
+        # What a person typed is never silently cut: the refusal names the limit.
+        notes.append(f'<p class="note">{esc(ask_problem)}</p>')
+    if answer:
+        notes.append(f'<div id="ask-answer" class="answer" aria-live="polite">'
+                     f'{_ask_paragraphs(answer)}</div>'
+                     f'<p class="note">This answer was put together on this box, with no '
+                     f'internet. It can be wrong — the guides are the truth.</p>')
+    state = "".join(notes)
+
+    body = f"""
+  <p class="note">Ask in your own words. The answer is made on this box, with no
+  internet, from what is on it — the library, the books and the guides.</p>
+  {state}
+  <form id="ask-form" method="get" action="/ask" class="ask">
+    <label for="q">Your question</label>
+    <input id="q" name="q" type="text" value="{esc(question)}"
+           maxlength="{ark_ai.MAX_QUESTION}" enterkeyhint="send"
+           autocomplete="off" autocapitalize="sentences" spellcheck="false"
+           placeholder="For example: how do I store water?">
+    <button class="go-btn" type="submit">Ask the helper</button>
+  </form>
+  <p id="ask-thinking" class="note" hidden>Thinking — this can take a minute on a
+  small box.</p>
+  <h2>Questions other people ask</h2>
+  <ul class="clean">{examples}</ul>
+  <p class="note">No account, no history, nothing kept. What you type is not saved
+  anywhere on the box.</p>
+  <script>
+  (function () {{
+    var form = document.getElementById('ask-form');
+    var output = document.getElementById('ask-answer');
+    if (!form || !window.fetch || !window.TextDecoder) return;
+    var thinking = document.getElementById('ask-thinking');
+    form.addEventListener('submit', function (event) {{
+      var field = document.getElementById('q');
+      var question = (field && field.value || '').trim();
+      if (!question) return;
+      event.preventDefault();
+      if (!output) {{
+        output = document.createElement('div');
+        output.id = 'ask-answer';
+        output.className = 'answer';
+        output.setAttribute('aria-live', 'polite');
+        form.parentNode.insertBefore(output, form);
+      }}
+      output.textContent = '';
+      if (thinking) thinking.hidden = false;
+      var typed = '';
+      var decoder = new window.TextDecoder();
+      fetch('/api/ask/stream?q=' + encodeURIComponent(question), {{cache: 'no-store'}})
+        .then(function (response) {{
+          if (!response.ok || !response.body) throw new Error('no stream');
+          var reader = response.body.getReader();
+          function pump() {{
+            return reader.read().then(function (step) {{
+              if (step.done) {{
+                if (thinking) thinking.hidden = true;
+                history.replaceState(null, '', '/ask?q=' + encodeURIComponent(question));
+                return;
+              }}
+              typed += decoder.decode(step.value, {{stream: true}});
+              output.textContent = typed;
+              return pump();
+            }});
+          }}
+          return pump();
+        }})
+        .catch(function () {{
+          if (thinking) thinking.hidden = true;
+          form.submit();          // the plain page still answers, without a script
+        }});
+    }});
+  }})();
+  </script>"""
+    return page("Ask the Ark", body, here="/ask",
+                tagline="A question in your own words, answered on this box")
+
+
+@app.get("/api/ask/stream")
+def ask_stream(q: str = ""):
+    """The same answer, as it is written — plain text, no buffering in the way."""
+    # The switch closes both doors.  The page refusing while the stream kept
+    # answering would leave the helper switched on for anybody who typed the
+    # address instead of tapping the button.
+    if setting("public_ask", "1") == "0":
+        return Response("The helper is switched off.\n", status_code=403,
+                        media_type="text/plain; charset=utf-8",
+                        headers={"Cache-Control": "no-store"})
+
+    def pieces():
+        try:
+            for piece in ark_ai.ask_stream(q):
+                yield piece
+        except Exception as exc:                    # a broken helper never 500s a page
+            print(f"ask stream failed: {exc}", flush=True)
+            yield ark_ai.SORRY_SENTENCE
+    return StreamingResponse(pieces(), media_type="text/plain; charset=utf-8",
+                             headers={"Cache-Control": "no-store",
+                                      "X-Accel-Buffering": "no"})
+
+
+@app.get("/api/ask/status")
+def ask_status():
+    """Is the helper able to answer, in one sentence — for the owner's page."""
+    facts = ark_ai.status()
+    sentence, hint = ark_ai.not_ready_sentence()
+    return {"available": facts["available"], "engine": facts["engine"],
+            "model": facts["model"], "model_bytes": facts["model_bytes"],
+            "answering": facts["answering"], "sentence": sentence, "hint": hint,
+            "advice": ark_ai.advice(), "max_question": facts["max_question"]}
+
+
 # ---------------------------------------------------------------------------
 #  the household page, the cards for the wall, and the pack to carry
 # ---------------------------------------------------------------------------

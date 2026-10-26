@@ -191,10 +191,14 @@ something about them.
 |---|---|---|
 | Anyone nearby can post a message | anyone on the Wi-Fi can add a note | new notes are refused with a friendly page; every note already written stays readable |
 | Anyone nearby can add a file | anyone on the Wi-Fi can put a file in the box | new uploads are refused; everything already in the box stays downloadable |
+| Anyone nearby can ask the helper a question | `http://ark.lan/ask` answers, and so does the address the page streams from | the page and the stream both answer 403 *"The helper is switched off."*; every other page is untouched |
 
-Neither switch hides anything, and neither touches the library, the manuals or
-the books. Use them when the board or the box is being misused by someone you
-cannot identify — that is the honest limit of an open network.
+None of the three hides anything that was written before, and none touches the
+library, the manuals or the books. Use them when the board or the box is being
+misused by someone you cannot identify — that is the honest limit of an open
+network. The helper's switch is the heaviest of the three: a model answer costs
+the box a minute of its four cores, so on a hot afternoon with three readers it is
+the first thing to switch off.
 
 ### Messages
 
@@ -521,8 +525,10 @@ ssh pi@ark.local 'sudo install -o pi -g pi -m 0644 /tmp/romdb.sqlite /srv/ark/ro
 
 The build prints how many games it understood and the date of the catalogue it read; the
 same catalogue on a stick is `--from-dir /media/stick/libretro-database` for a machine with
-no connection at all. `pi/bin/ark-romdb-build --self-test` proves the reader against the
-catalogue that is installed, without a network and without touching the shelf.
+no connection at all. `pi/bin/ark-romdb-build --self-test` proves the reader on **made-up
+files** it builds in a temporary folder — one with a wrappering header, one inside an
+archive, one nobody has listed — so it needs no network, no catalogue and no shelf, and it
+answers `Self-test passed.` with exit code 0 (or `Self-test FAILED.` with 1).
 `ark-romdb-build --status` says what this box has (how many names, which catalogue, when it
 was built) and `--status --out FILE` says the same about a file you are about to carry over,
 so a half-copied database is caught before it reaches the card.
@@ -666,7 +672,183 @@ state on a fresh box; nothing takes or refreshes a pack on a timer.
 
 ---
 
-## 12. Not in this release yet
+## 12. Ask the Ark — the helper on the box
+
+`http://ark.lan/ask` (public, no sign-in) answers a question typed in the reader's
+own words. Everything happens on the box: no internet, no account, no stored
+question and no stored answer. The switch in §7 closes it.
+
+### The three parts, and what happens when one is missing
+
+| Part | Path | Missing means |
+|---|---|---|
+| the engine | `/usr/local/bin/llama-server` | the unit stops before starting (`ConditionPathExists`); the page answers *"the helper is not fitted on this box"* and says what is missing |
+| the words | `/srv/ark/ai/models/*.gguf` (newest wins) | `ark-ai-serve` says so once and waits, checking every minute; drop a `.gguf` in and the helper starts by itself |
+| the facts | `/srv/ark/ai/ark-system-brief.md` | written by `ark-build-ai-brief`; without it the helper simply has less to say about the card |
+
+**None of the three is required for the box to be well.** `/api/ready` does not
+block on any of them, `/ask` is honest in one sentence, and every other page works.
+That is deliberate: a model is ~1 GB and the owner chooses it, so a fresh box
+ships without one.
+
+### Fitting it
+
+```bash
+sudo ark-ai-model-fetch --status                       # is there one, which, how big
+sudo ark-ai-model-fetch --from /media/stick/model.gguf  # carry one in (no internet needed)
+sudo ark-ai-model-fetch                                # or fetch the default (~1 GB, needs internet)
+sudo ark-ai-model-fetch --url URL --name file.gguf --sha256 …   # be exact
+sudo systemctl restart ark-ai                          # (the fetch prints this hint itself)
+```
+
+The fetch writes `…part` first, verifies the fingerprint when you give one, hands
+the file to the folder's owner and only then renames it into place — so the unit
+never opens a half-arrived model. `--from` is the way in on a box with no
+internet, which is the normal state of a box in a house.
+
+`ark-ai-model-fetch` deliberately avoids `find | sort` pipelines (a name with a
+space in it is not a bug report): it uses `nullglob` and a `for` loop, and hands
+ownership over with `chown --reference`.
+
+### The page of facts
+
+```bash
+sudo -u pi /usr/local/sbin/ark-build-ai-brief --write   # what is on this card, now
+sudo -u pi /usr/local/sbin/ark-build-ai-brief --show    # read it
+sudo -u pi /usr/local/sbin/ark-build-ai-brief --dry-run # print it, write nothing
+```
+
+Run it after a library or book import so the helper's answers describe the card as
+it is. It counts what the box really has and names the guides it can see; **the
+household's own answers are never in it and are never given to the model** — a
+visitor's question must not be able to read what the household wrote down. Phase
+`58-ai` builds it once, as `pi` (never as root: a root-owned brief is the same
+fault as a root-made bundle the pages cannot read).
+
+### The service
+
+`ark-ai.service` — installed and enabled by phase `58-ai`, bound to
+`127.0.0.1:8089`, `Nice=10`, `CPUWeight=40`, `MemoryMax=5500M`, sandboxed
+(`ProtectSystem=full`, `ProtectHome=read-only`, `PrivateTmp`, `NoNewPrivileges`,
+a writable `/srv/ark/ai` only). It is **enabled and inactive** on a box with no
+model, which is the correct state and not a fault.
+
+```bash
+systemctl status ark-ai --no-pager
+journalctl -u ark-ai -n 60 --no-pager        # load time, context size, any refusal
+curl -s http://127.0.0.1:8089/health          # the engine, from the box itself
+```
+
+### How a question is answered
+
+The portal answers `GET /ask?q=…` server-side (works with no JavaScript) and the
+page's own script streams the same answer from `GET /api/ask/stream?q=…` (plain
+text, `X-Accel-Buffering: no`, no gzip, a long read timeout in nginx). The question
+is trimmed and capped, one answer is written at a time (`BUSY_SENTENCE` for the
+second person), and the model is given: the brief, plus — for a question about a
+guide — the few guide pages whose words overlap the question. It is never given
+the board, the File Box, the accounts or the household answers.
+
+Every answer ends with the sentence that says it can be wrong and the guides are
+the truth. Do not remove it: the page is a helper, not an authority.
+
+### What it deliberately does not do
+
+* No history, no conversation memory, no "ask again" context, no stored answer.
+* No internet, ever — the engine has no route and the service has no proxy.
+* No download button for a model on any page, no model chooser, no quantisation
+  menu. A model is a file the owner puts on the card on purpose.
+* No queue: one answer at a time, and the second person is told so.
+* No per-person limit and no identity — the same honest limit as the board: the
+  switch turns the helper off for everybody, it never identifies anybody.
+
+---
+
+---
+
+## 13. When the power goes out
+
+A Pi in a house has its plug pulled. Nothing about that is unusual, and the box is
+built to come back on its own: phase `15-resilience` installs one repair tool that
+runs **before the portal opens**, plus the settings that make the next cut cheaper.
+
+### What a cut actually leaves behind
+
+| The mess | What the box does about it |
+|---|---|
+| **The clock is in the past** — a Pi has no battery-backed clock, so it wakes up believing it is the day the card was written. Every "3 hours ago" is wrong and a copy looks like it came from the future | The newest file on the card is the best evidence of the real time: if anything is newer than the clock, the clock is set from it (two minutes of slack). `fake-hwclock` also remembers the last known time across a cold boot |
+| **A small file is half written** — `ark_status.json`, the import ledger | The file is checked; if it will not read, it is set aside as `…corrupt-<stamp>` (the last three are kept) and the `.bak` beside it is put back **only if it reads**. A repair is never invented |
+| **The network watchdog's counters are damaged** | They are not JSON — three numbers as `key=value` lines — so they are checked by their own rule. Damaged ⇒ set aside, and the watchdog starts from zero, which can only make a rescue *slower*, never wrong |
+| **The database will not open** | Opened read-only and checked with SQLite's own `quick_check`. Damaged ⇒ the newest copy that passes the same check is put in its place, and a good copy is kept beside it. **It never deletes a database** |
+| **Half-built uploads, bundles and catalogue temp files** | Swept after 6–12 hours, **by pattern and age**, never by guessing. A published file is never touched |
+| **A library catalogue that lists books which are not there** | Rebuilt from the ZIMs the card really has |
+
+### What an owner does about it
+
+Nothing, normally. After a cut the box takes a minute longer to appear, and the
+portal is there. To look:
+
+```bash
+sudo /usr/local/sbin/ark-self-heal --dry-run   # what it would repair, changes nothing
+sudo /usr/local/sbin/ark-self-heal --json      # the whole report (what the verifier reads)
+tail -n 30 /srv/ark/logs/self-heal.log         # what the last pass actually did
+cat /srv/ark/logs/self-heal.json               # the same, for a machine
+systemctl status ark-self-heal.timer --no-pager  # the daily look is armed
+journalctl -u ark-self-heal -n 40 --no-pager     # boot pass and today's pass
+```
+
+A pass that repaired something exits 0 and says what it repaired. A pass that
+**left something for a person** exits 1 and lists it under *Still to look at:* —
+that is the only failure. `90-verify` reports the same two things: *no pass
+recorded yet* is a normal box (one that has not booted since the phase ran), and a
+non-empty `problems` is a fault.
+
+### The settings that come with it
+
+Installed by phase `15-resilience`; most of them apply **at the next boot**, so a
+re-run of the phase is what proves them:
+
+* `fake-hwclock` — the time is written to the card and put back at boot, so a cold
+  box does not start in 1970.
+* `vm.dirty_writeback_centisecs = 1500` (and `dirty_expire` the same) — a cut costs
+  a few seconds of writes instead of thirty. `vm.swappiness = 10`, because swapping
+  to a card wears it out.
+* `/tmp` and `/var/tmp` on **tmpfs** — a throwaway folder in memory has nothing
+  half-written to leave behind.
+* `fsck.mode=force fsck.repair=yes panic=10` on the kernel command line — the next
+  boot checks the card instead of trusting a flag nobody verified. The phase checks
+  that the command line is still **one line** and refuses otherwise.
+* A **volatile journal** (`Storage=volatile`) — a corrupt journal is the one thing
+  that can stop journald at boot; the two logs that matter (`self-heal.log`,
+  `net-watch.log`) are plain files on the card.
+* `RuntimeWatchdogSec=15s` — a hung box is reset by the hardware instead of sitting
+  dark with the whole house offline.
+* `Restart=always` + `StartLimitIntervalSec=0` on `ark-api`, `ark-kiwix`,
+  `ark-calibre`, `ark-zim-downloader` and `ark-ai` — the start limit is what
+  usually stops this working: systemd gives up after five restarts in ten seconds.
+* WAL + `synchronous=FULL` + `quick_check` on Calibre's two databases, which
+  otherwise default to a sync mode a cut can lose.
+
+### What it deliberately does not do
+
+* **It never deletes a database** and never touches a file it does not recognise. A
+  row and its file can disagree on purpose (`ark-restore --no-files`).
+* **It never restarts a service.** The boot order does that; a repair that starts
+  units would be a second writer to the same state.
+* **It takes no copy.** A copy is still the owner's deliberate act (§9), and the
+  daily pass is a *repair*, not a backup timer.
+* **It counts a repair as a repair, not as a fault.** Only what is left needing a
+  person makes the verifier say a bad word.
+* **It cannot survive a card that is physically dying.** It repairs what a cut
+  leaves behind; a card that has stopped reading is what the recovery sheet is for
+  (§9, `http://ark.lan/recovery.txt`).
+
+`docs/HUMAN-TEST-LIST.md` §15 is the walk-through: pull the plug, wait, and check
+that everything above really happened.
+
+---
+
+## 14. Not in this release yet
 
 Stated plainly, because a missing control is better than a fake one:
 
@@ -723,6 +905,13 @@ Stated plainly, because a missing control is better than a fake one:
   removes it. There is **no per-person quota** on the public door: anyone on the Wi-Fi can
   add games one 64 MB file at a time until the box keeps its own reserve, so
   **Anyone can add a game of their own** on the Games page is the way to close it.
+* **No words are shipped with the box.** There is no model in this repository and
+  none in the build: `/ask` answers one honest sentence until someone carries a
+  `.gguf` onto the card (§12). The engine is installed by phase `58-ai`; the words
+  are a deliberate act, like a game.
+* A power cut is **repaired, not prevented**: the box cannot survive a card that
+  has stopped reading, the pass takes no copy, and nothing on any page can run it
+  by hand (§13).
 * Emergency content review (first aid, water, electrical) is still pending.
 
 The audit history, the account rules above, the transport boundary, the
@@ -730,9 +919,9 @@ Community controls and the readiness page are complete and tested.
 
 ---
 
-## 12. Tested / not tested
+## 15. Tested / not tested
 
-**Tested** — 299 automated tests, disposable databases, `pytest` (the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md`):
+**Tested** — 467 automated tests, disposable databases, `pytest` (the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md`):
 
 * bootstrap account exists once; a wiped database becomes recovery-required
   instead of re-creating the default; the marker lives outside the database;
@@ -755,6 +944,13 @@ Community controls and the readiness page are complete and tested.
   cannot leave the folder; an oversized or empty file is refused with a sentence
   a person can read; a crashed upload leaves nothing in the served folder;
 * the File Box and the board honour both switches (off ⇒ refused, nothing lost);
+* the helper: the page answers with no model and says what is missing; a question is
+  trimmed and capped and an empty one is not sent to the engine; the switch closes
+  **both** doors (the page and the address it streams from) and turning it back on
+  restores both; the model is never given the household's answers, the board, the
+  File Box or the accounts; the brief describes the card from what is really on it;
+  `ark-ai-model-fetch` verifies a fingerprint and refuses a mismatched file, and
+  `ark-ai-serve` picks the newest model and waits when there is none;
 * moderation: pin / sorted out / hide and their inverses; every action audited;
   an unknown action changes nothing; a hidden message is gone from the reading
   page but still in the database;

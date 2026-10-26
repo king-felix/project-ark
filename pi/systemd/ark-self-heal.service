@@ -1,0 +1,25 @@
+[Unit]
+Description=Project ARK — repair what a power cut left behind
+Documentation=http://ark.lan/help
+# The card has to be mounted before anything can be read or repaired, and this has
+# to finish before the portal opens: a clock in the past makes every age on every
+# page wrong, so it is fixed before a reader can see one.
+After=local-fs.target
+Before=ark-api.service ark-kiwix.service ark-calibre.service ark-boot-guard.service
+ConditionPathIsDirectory=/srv/ark
+
+[Service]
+Type=oneshot
+# Root, because three of the repairs need it: setting the clock, asking
+# fake-hwclock to remember it, and giving back a file to the account the pages run
+# as.  It never restarts a service — the boot order does that.
+User=root
+ExecStart=/usr/local/sbin/ark-self-heal --quiet
+# A cut can leave a card slow to read; five minutes is generous and finite.
+TimeoutStartSec=300
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ark-self-heal
+
+[Install]
+WantedBy=multi-user.target

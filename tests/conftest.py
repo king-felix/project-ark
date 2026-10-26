@@ -19,7 +19,8 @@ if str(API_DIR) not in sys.path:
 MODULES = ("main", "ark_admin", "ark_security", "ark_db", "ark_storage", "ark_health",
            "ark_arcade", "ark_arcade_web", "ark_arcade_install",
            "ark_romdb", "ark_romdb_build", "ark_rommeta",
-           "ark_household", "ark_qr", "ark_cards", "ark_review", "ark_essentials")
+           "ark_household", "ark_qr", "ark_cards", "ark_review", "ark_essentials",
+           "ark_ai")
 
 
 @pytest.fixture()
@@ -37,6 +38,11 @@ def ark(tmp_path, monkeypatch):
     monkeypatch.setenv("ARK_BOOTSTRAP_PASSWORD", "ChangeMe-ARK!")
     monkeypatch.setenv("KIWIX_INTERNAL", "http://127.0.0.1:9/kiwix")   # nothing listens
     monkeypatch.setenv("CALIBRE_INTERNAL", "http://127.0.0.1:9")       # ditto
+    # The helper: no engine, no words, and an address nothing answers on.  A test
+    # that wants an answer puts its own stand-in engine in place.
+    monkeypatch.setenv("ARK_AI_DIR", str(root / "ai"))
+    monkeypatch.setenv("ARK_AI_URL", "http://127.0.0.1:9")
+    monkeypatch.setenv("ARK_AI_ENGINE", str(root / "ai/llama-server"))
     for name in MODULES:
         sys.modules.pop(name, None)
 

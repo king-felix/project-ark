@@ -1,0 +1,46 @@
+[Unit]
+Description=Project ARK — the helper that answers questions (local model, no internet)
+Documentation=http://ark.lan/ask
+After=local-fs.target
+# A box with no engine, or no model carried to it, is a supported state: the unit is
+# simply inactive and /ask says in one sentence what is missing.  Without these two
+# conditions `Restart=always` would loop on a box that has nothing to run.
+ConditionPathExists=/usr/local/bin/llama-server
+ConditionPathIsDirectory=/srv/ark/ai/models
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+Environment=ARK_ROOT=/srv/ark
+Environment=ARK_AI_DIR=/srv/ark/ai
+Environment=ARK_AI_MODELS=/srv/ark/ai/models
+Environment=ARK_AI_ENGINE=/usr/local/bin/llama-server
+Environment=ARK_AI_PORT=8089
+Environment=ARK_AI_THREADS=3
+Environment=ARK_AI_CONTEXT=4096
+ExecStart=/usr/local/sbin/ark-ai-serve
+# Never at the expense of a reader: the portal, the library and the bookshelf keep the
+# processor when somebody is waiting for a page.  An answer may take a minute; a page
+# may not.
+Nice=10
+CPUWeight=40
+IOSchedulingClass=idle
+# Enough room for a 1.5B model in four bits plus its context, and a hard stop so a
+# runaway engine dies instead of taking the portal down with it in the OOM killer.
+MemoryMax=5500M
+TimeoutStopSec=20
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ark-ai
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/srv/ark/ai
+
+[Install]
+WantedBy=multi-user.target

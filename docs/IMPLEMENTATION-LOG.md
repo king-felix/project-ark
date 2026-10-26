@@ -10,9 +10,9 @@ and what the next executable step is.
 | Branch | `feature/admin-hardening` (nothing force-pushed; no release tag moved) |
 | Platform used for work | macOS 26.x, Python 3.9.6 (LibreSSL), venv in `.venv/` |
 | Appliance target | Raspberry Pi 4B, Raspberry Pi OS Lite, Python 3.13.5, nginx 1.22 |
-| Deployment status | **deployed on the box 25 Oct 2026** — stages 2–6, ARK Arcade, the 25 Oct hardening, R3's book door, the owner-import fix and the name-from-the-bytes work are live; database at layout **v5**, `90-verify` green, `/api/ready` 200 (§15, §18.4, §19, §20). Rollback: `/root/ark-snapshot-20261025-092106`; the later deploys took their own copies at `/root/ark-db-before-owner-import.db` and `/root/ark-db-before-v5.db` |
-| Hardware tests | **scripted proofs only** — the installer, the verifier, the doors, a bundle, `/api/ready`, the arcade origin and `ark-arcade --import` have all answered on the Pi, and a headless Chromium on the Mac has drawn three of the shelf's games from the box's own files (§18.2, §20.2). **No human has used it on a phone yet**, no 2 GiB upload has crossed the proxy, and the watchdog has never seen a real radio event |
-| Requirements matrix | `docs/REQUIREMENTS-MATRIX.md` — R1–R8/A–D, each status with the test that proves it and the sentences still missing |
+| Deployment status | **deployed on the box 25 Oct 2026** — stages 2–6, ARK Arcade, the 25 Oct hardening, R3's book door, the owner-import fix and the name-from-the-bytes work are live; database at layout **v5**, `90-verify` green, `/api/ready` 200 (§15, §18.4, §19, §20). Rollback: `/root/ark-snapshot-20261025-092106`; the later deploys took their own copies at `/root/ark-db-before-owner-import.db`, `/root/ark-db-before-v5.db`, `/root/ark-db-before-addgame.db` and `/root/ark-db-before-stage7.db`. **Not on the box yet: phase `15-resilience` (§26)** — no reboot has been taken with it installed, and phase `58-ai` has not been run (there is no model to run it for) |
+| Hardware tests | **scripted proofs only** — the installer, the verifier, the doors, a bundle, `/api/ready`, the arcade origin and `ark-arcade --import` have all answered on the Pi, and a headless Chromium on the Mac has drawn three of the shelf's games from the box's own files (§18.2, §20.2). **No human has used it on a phone yet**, no 2 GiB upload has crossed the proxy, the watchdog has never seen a real radio event, **the boot repair pass has never met a real power cut (§26)**, and **no model has ever been on the box, so the helper has never answered (§25)** |
+| Requirements matrix | `docs/REQUIREMENTS-MATRIX.md` — R1–R11/A–D, each status with the test that proves it and the sentences still missing |
 
 ---
 
@@ -30,10 +30,12 @@ and what the next executable step is.
 | 10 | Network loss after boot | **stage 5 done** — `ark-net-watch` asks the boot guard's question again every minute, rescues the hotspot after two lost checks, returns home when the network is back and nobody is using the hotspot, never takes the access point from a connected device, and never overrules a choice the owner made with `ark-mode home` / `ark-mode hotspot` (§10) |
 | 11 | Backup / offline recovery kit | **stage 6 done** — `ark-backup` writes one dated, verified bundle (records, shared files, import list, a manifest with a sha256 per file) built as `.partial` and published by rename; `ark-restore` proves a bundle before touching anything, refuses an occupied box without `--force`, and never replaces a shared file; the printed recovery sheet needs only a phone, a card reader and a working card (§11) |
 | 12 | Emergency content review | **stage 7 done (code + test)** — `ark_review` holds the eight topics, each naming the pages that carry it; a page the card does not have is *named as missing*, never assumed; the owner records "I have read this today" and a topic older than a year is shown as **due**. Nothing judges a page and nothing refuses to serve one (§23) |
-| 13 | Essentials pack, QR, accessibility, household page | **stage 7 done (code + test)** — `/household` (nine answers the household typed + when each emergency page was last read), `/cards` (three wall cards, inline SVG, no image/font/script/network), `/essentials.zip` (one file: our manuals and guides rewritten for a folder, the cards, the recovery sheet, a sha256 manifest), the owner's **Household** page, and an accessibility pass (skip link, visible focus ring, ≥16 px body, 44 px targets, print rules) (§23) |
+| 13 | Essentials pack, QR, accessibility, household page | **stage 7 done (code + test)** — `/household` (nine answers the household typed + when each emergency page was last read), `/cards` (three wall cards, inline SVG, no image/font/script/network), `/essentials.zip` (one file: our manuals and guides rewritten for a folder, the quick card, the recovery sheet, `START-HERE` and a sha256 manifest — **not** the three wall cards, which print from `/cards`), the owner's **Household** page, and an accessibility pass (skip link, visible focus ring, ≥16 px body, 44 px targets, print rules) (§23) |
 | — | ARK Arcade | **delivered and tested** — public shelf, guest play, optional named-player saves on the TLS `:8445` origin, owner **Games** page, licence/allowlist/hash gate, weekly discovery, and saves carried by a backup (§12); since 25 Oct a game can also be named from the file itself against an offline catalogue, and added from the owner's page (§19) |
-| 14 | Sequence | stages 1–6, ARK Arcade, R3, the name-from-contents work (§19) and the household layer (§23) are **code + test**; everything except stage 7 is **deployed 25 Oct 2026** (§15, §19); **stage 7 has not been deployed yet** — the phone walk-through is the next human step, stage 7's deploy is the next machine step |
-| 15 | Acceptance tests | **382 tests** (`382 passed, 2 skipped`; the two skips are QR cross-checks needing `qrcode`/`opencv-python-headless`), all green (`pytest -o addopts='--strict-markers' -q`); the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md` |
+| — | Ask the Ark — a helper on the card | **delivered and tested** — `http://ark.lan/ask` answers from a model file on the card, the engine listens on `127.0.0.1:8089`, the page of facts is built from what is really here, one answer at a time, and **a box with no model is a supported state** that says so in one sentence (§25). No model has ever been on the box |
+| — | A power cut | **delivered and tested** — phase `15-resilience`: `ark-self-heal` runs before the portal and once a day, fixing a clock in the past, a half-written small file, a database SQLite cannot open and the temp files a cut leaves behind; plus `fake-hwclock`, tmpfs `/tmp`, a 15 s write-behind, a forced filesystem check, a volatile journal, a 15 s hardware watchdog and `Restart=always` on every long-running unit (§26). **It has never met a real power cut** |
+| 14 | Sequence | stages 1–7, ARK Arcade, R3, the name-from-contents work (§19), the helper (§25) and the power-cut repair (§26) are **code + test**; **everything except phases `15-resilience` and `58-ai` is deployed 25 Oct / 26 Oct 2026** (§15, §19, §20, §24) — the phone walk-through is the next human step, and neither of those two phases has been run on the box |
+| 15 | Acceptance tests | **467 tests, 2 skipped, 23 files** (`467 passed, 2 skipped`; the two skips are QR cross-checks needing `qrcode`/`opencv-python-headless`), all green (`pytest -o addopts='--strict-markers' -q`); the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md` |
 
 ---
 
@@ -2180,4 +2182,162 @@ exist is invisible to pytest. What did catch it was listing the artefact and rea
 paperwork beside it — the same method that found the duplicate `index.html` in §24.2, an hour
 earlier and on the same box. Both defects lived in the gap between *what the pack is* and *what
 was said about the pack*.
+
+
+---
+
+## 25. Ask the Ark — a helper that reads this card and nothing else — 25 Oct 2026
+
+Phase `58-ai` (the installer calls it *PHASE 5b/7*), and the one thing on this box that
+answers a sentence nobody wrote down first. `http://ark.lan/ask`, public, no sign-in.
+Everything it needs is on the card: an engine, one model file, and a page of facts about
+what is actually here. The words never leave the box, because there is nowhere for them
+to go — the model is a file and the engine has no route.
+
+| Piece | What it owns |
+|---|---|
+| `pi/api/ark_ai.py` | the whole helper: the brief, the guide excerpts, one answer at a time, the off switch, the honest sentence when there is no brain |
+| `pi/bin/ark-ai-serve` | waits for a `.gguf`, starts `llama-server` on the loopback address, restarts when a newer file lands |
+| `pi/bin/ark-ai-model-fetch` | the only way a model arrives: `--from` a stick (no internet), `--url` with a fingerprint to check, `.part` → verify → rename, ownership handed to the folder's owner |
+| `pi/bin/ark-build-ai-brief` | `--write` / `--dry-run` / `--show`: what is on the card, counted, as `pi` — never the household's nine answers, never the board, never the File Box, never the accounts |
+| `pi/systemd/ark-ai.service` | `127.0.0.1:8089` only, `Nice=10`, `CPUWeight=40`, `MemoryMax=5500M`, `ProtectSystem=full`, `PrivateTmp`; **enabled and inactive** on a box with no model, which is the correct state and not a fault |
+| `pi/steps/58-ai.sh` | installs the three tools + the unit, installs a carried engine if one is in the source tree, builds the brief as `pi`, says plainly what is missing |
+| `pi/nginx/ark.conf` | `/ask` and `/api/ask/stream` — **`proxy_buffering off`** on the stream, so a sentence appears as it is written instead of after the last token |
+| `pi/portal/index.html` | the front-page card; the switch closes the door it links to as well as the stream |
+| `ark_admin.py` **Community** | `ask_the_ark` — *Anyone nearby can ask the helper a question*, on by default, and closing it leaves every other page working |
+| `tests/test_ai.py` | 30 tests: no model ⇒ one honest sentence; a question trimmed and capped, an empty one never sent; both doors closed by one switch and both restored; the brief describes the card and cannot see the household; the fetch refuses a mismatched fingerprint; the serve picks the newest model and waits when there is none |
+
+**The four rules the module keeps.** A question is never refused for *being* a question —
+the only refusal is "there is no brain on this card yet", and it names what is missing.
+The brief is **built, not remembered**, so the helper points at pages that exist. One
+answer at a time, and the second person is told so (`BUSY_SENTENCE`) rather than waiting
+for the box to crawl. And every answer ends with the sentence that says it can be wrong
+and the guides are the truth — a helper, not an authority.
+
+**A box with no model is a supported state,** and it is the state this box is in: no
+engine is carried in this repo, `/ask` answers in one sentence, `/api/ready` does not
+block on it, and nothing else is affected. `ark-ai-model-fetch --from /media/usb/…` is
+the way a model arrives on a box with no internet, which is the normal state of a box in
+a house.
+
+**Unproven, and said so:** no model has ever been on this box, so no answer has ever come
+out of it — the streaming proxy, the page's own script and an engine loading a gigabyte
+have met the test suite and these docs and nothing else. `docs/HUMAN-TEST-LIST.md` §14 is
+the walk-through for the day a model is carried in.
+
+
+---
+
+## 26. A power cut is not a reboot — phase `15-resilience` — 25 Oct 2026
+
+A Pi in a house with an unreliable supply gets its plug pulled. Four things break, in
+order of what they cost: **the clock is in the past** (no battery-backed clock, so every
+"3 hours ago" is wrong and a copy can look like it came from the future); **a small file
+is half written**; **a database will not open and the box runs on with an empty shelf**;
+**half-built uploads and bundles pile up until the card is full.** Phase `15-resilience`
+installs one tool that repairs all four at boot, and the operating-system settings that
+make the *next* cut cheaper.
+
+| Piece | What it does |
+|---|---|
+| `pi/api/ark_self_heal.py` | the only place that knows what a cut leaves behind: `fix_clock()` (the newest mtime on the card is the best evidence of the real time; `CLOCK_SLACK = 120 s`), `sweep()` (temp files and `.partial` folders by **pattern and age**, never by guess), `heal_json()` (`ark_status.json`, the import ledger: the broken file is set aside and `<name>.bak` put back if it reads), `heal_state()` (the watchdog's counters — §26.1), `heal_sqlite()` (`quick_check` on a read-only open; only ever replaced by a copy that passes the same check), `heal_library()` (a catalogue listing books that are not there), `run()` = the pass and one report |
+| `pi/api/ark_atomic.py` | write-then-rename, with the `.bak` of the version before it — shared by every small file the box rewrites |
+| `pi/bin/ark-self-heal` | `--dry-run` (says what it would do, changes nothing), `--json` (what the verifier reads), `--quiet` (only what was actually repaired). Exit 1 means *something is left for a person*, never "the pass crashed" |
+| `pi/systemd/ark-self-heal.service` | `Type=oneshot`, `User=root`, `After=local-fs.target`, **`Before=ark-api.service`** — the clock is fixed before a page can read it. `TimeoutStartSec=300` |
+| `pi/systemd/ark-self-heal.timer` | once a day at 04:17 (`RandomizedDelaySec=20m`, `Persistent=true`): the boot pass catches the cut, this catches a failing card while the box is up |
+| `pi/steps/15-resilience.sh` | installs all of it, then: `fake-hwclock` (a cold boot no longer starts in 1970), `vm.dirty_writeback_centisecs = 1500` and lower swappiness, **tmpfs for `/tmp` and `/var/tmp`** (a cut then has nothing half-written to leave behind), `fsck.mode=force fsck.repair=yes panic=10` on the kernel command line **and the line re-checked for one line only**, a volatile journal (a corrupt journal is the one thing that can stop journald at boot), `RuntimeWatchdogSec=15s` (a hung box reboots itself), `Restart=always` + `StartLimitIntervalSec=0` on every long-running unit, and WAL + `synchronous=FULL` + `quick_check` on Calibre's two databases |
+| `pi/steps/90-verify.sh` | reports the last pass and fails only if it **left something for a person**: *no pass recorded yet* is a normal box, a non-empty `problems` is a fault |
+
+**The rules it keeps, which are the reasons it cannot do harm.**
+
+* **It never deletes a database** and never touches a file it does not recognise. A row
+  and its file can disagree on purpose (`ark-restore --no-files`), and "tidy up" is how
+  data loss gets dressed as maintenance (§8.7, one layer up).
+* **Recovery is only ever from a copy that passes the check** the damaged file failed — a
+  `.bak` that will not read is set aside, not put back.
+* **A repair is not a problem.** Anything put back, set aside or swept counts as
+  `healed`; only what is left needing a person lands in `problems`, and only a non-empty
+  `problems` makes the verifier say a bad word.
+* **Everything is written down**: `logs/self-heal.log` (a line at a time, fsynced,
+  rotated at 256 kB with one previous file) and `logs/self-heal.json` for a machine.
+* **It never restarts a service.** The boot order does that; a repair tool that starts
+  units is a second writer to the same state.
+
+**The settings are the half that prevents the fault instead of repairing it,** and they are
+the half a future reader is most likely to call unnecessary: a 15-second write-behind
+window is why a cut costs seconds of writes instead of thirty; tmpfs is why there is
+nothing half-written to sweep; `fsck.mode=force` is what turns a damaged card into a
+repaired one instead of a box that boots into a shell nobody can reach over the network;
+the hardware watchdog turns "the box is hung and the whole house is offline" into "the box
+rebooted by itself".
+
+**Unproven, and it is the important part:** this has never met a real power cut. Every test
+drives the pass against a throwaway folder tree, and the phase has not been run on the box
+at all yet (§8.9). Pulling the plug on a live box is the human test —
+`docs/HUMAN-TEST-LIST.md` §15.
+
+### 26.1 Defect: the watchdog's counters are not JSON, and every boot threw them away
+
+`logs/net-watch.state` was listed in `JSON_TARGETS`, so the boot pass read it with
+`json.loads` — and it is three numbers as `key=value` lines:
+
+```
+lost_streak=0
+home_streak=3
+home_block_until=0
+updated=2026-10-25T09:21:06+00:00
+```
+
+`json.loads` raises on the first character. The pass therefore concluded that a
+perfectly healthy file was damaged, **set it aside at every single boot**, and started the
+watchdog from zero — silently, because a repair is not a problem and `--quiet` says
+nothing about a repair that "worked". Two consequences, both real: those counters are the
+watchdog's memory of *how long* the network has been gone and *when* it last tried a
+return, so a box rebooting in a flapping power cut could never see the second lost check
+that a rescue needs; and `logs/` quietly accumulated `net-watch.state.corrupt-<stamp>`
+files, up to `CORRUPT_KEEP` of them, looking like evidence of a fault that did not exist.
+
+The tests hid it, which is the more interesting half: the two tests that needed *a small
+file that came back unreadable* had both used the counters file as their fixture, so they
+were asserting against the bug rather than around it. They use `ark_status.json` now,
+which is really JSON.
+
+**The fix is a shape check of its own** (`state_problem` + `heal_state`), because the file
+is not JSON and never was: `STATE_KEYS = ("lost_streak", "home_streak",
+"home_block_until")`, every key present and numeric, an extra `updated=` ignored on purpose
+(a timestamp for a person, not a counter). A file that fails is **set aside, never
+invented** — the counters restart at zero, which `decide()` already reads as "nothing has
+been seen yet", so the only possible consequence is a *slower* rescue, never a wrong one.
+It counts as `healed`, and `report["state"]["state"]` says `fine` / `absent` /
+`set aside` / `would`.
+
+**Three smaller changes went with it, each closing the same door from another side:**
+
+* `ark-net-watch`'s `write_state()` writes `logs/.net-watch.state.tmp`, `sync`s, and
+  `mv -f`s it into place — a cut can no longer leave half a counter file for the sweep to
+  find. (It had been `printf … >"$STATE"`, which is exactly the shape a cut truncates.)
+* `sweep()` learned `logs/.*.tmp`, so a dot-temp file left by a cut is *cleared* instead
+  of surviving as a permanent mystery in `logs/`.
+* `90-verify.sh` copies the receipt it is about to replace to `ark_status.json.bak` before
+  writing the new one. `heal_json`'s whole *put the old version back* branch depended on
+  that copy existing and the only writer of `ark_status.json` was not making one, so the
+  fallback could only ever have said "set aside". Now it can really restore.
+
+**Guards.** `tests/test_self_heal.py`: `test_healthy_counters_are_left_alone` (and it
+asserts `logs/net-watch.state not in heal.JSON_TARGETS`, so nobody files it back under
+JSON), `test_damaged_counters_are_set_aside_and_the_watchdog_starts_again` (the bytes are
+kept as `.corrupt-*`), `test_counters_that_are_not_numbers_are_damage`,
+`test_missing_counters_are_not_a_fault` (`absent`, not damage),
+`test_a_half_written_counter_file_is_swept_and_the_real_one_is_not`,
+`test_the_verifier_keeps_the_receipt_from_before` (the copy is taken *before* the replace);
+and `tests/test_network.py::test_the_watchdog_writes_its_counters_in_one_move` (the temp
+name, the redirect into it, the one `mv`, and **no `>"$STATE"`** anywhere). **467 passed,
+2 skipped.**
+
+**The lesson worth keeping:** *a file's shape belongs to its writer, not to the folder it
+lives in.* `logs/` holds a JSON receipt and a `key=value` counter file side by side, and
+treating the folder as a category is what made a healthy file look broken every morning.
+It is the same family as `-1` not being `0`, `None` not being a measurement, and an
+absent log not being a broken timer.
+
 

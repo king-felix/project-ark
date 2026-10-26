@@ -304,6 +304,101 @@ reads oddly once it is on the page, and whether the printed card is big enough t
 
 ---
 
+## 14. The helper, with a model on the card (30 minutes, needs a model file)
+
+**Why it is unproven:** `/ask` has never been drawn by a browser on the box and no model has ever
+been fitted there, so the page has only ever answered *"the helper is not fitted on this box"* to
+the test suite's eyes. Everything below the page — routing, escaping, the one-answer-at-a-time
+rule, the stream, the switch — is covered by `tests/test_ai.py` (30 tests) and nothing in that file
+is a thumb on glass (`docs/IMPLEMENTATION-LOG.md` §25).
+
+1. **First, with nothing fitted.** Deploy with `--only 58-ai`, then open `http://ark.lan/ask` on a
+   phone. It must say the helper is not fitted, name the one thing that is missing, still show the
+   box to type in, and the three example questions must be tappable. No other page changes.
+2. Ask a question anyway. You must get the same honest sentence back — **not** an answer, and not a
+   spinner that never finishes.
+3. Carry a model in on a stick: `sudo ark-ai-model-fetch --from /media/usb/model.gguf`, then
+   `systemctl status ark-ai --no-pager`. It must say *listening*, MemAvailable must stay above
+   ~1.5 GiB, and a first answer may take a **minute** on this box — that is the box's speed, not a
+   fault. Then reload `/ask`; ask *"how do I make water safe to drink"* and read the answer out
+   loud: it must be plain prose, and the sentence *"It can be wrong — the guides are the truth"*
+   must be under it.
+4. Ask a question about a guide (*"where are the plumbing guides"*): the answer must name pages from
+   **this** card, and tapping the guide it names must open the real page.
+5. Type a question 2,000 characters long: it must be refused **with the limit named** (never
+   silently shortened, never a broken page).
+6. `sudo -u pi /usr/local/sbin/ark-build-ai-brief --write`, then ask something about this box
+   (*"how many books are there"*): the number must match **Books** on the front page, not a number
+   the model invented. Run `--dry-run` too and confirm it writes nothing.
+7. Open `https://ark.lan:8443/admin/health`: the helper's row must be there, must say what is
+   fitted, and **must not** be able to make the box look broken — pull the model out and
+   `/api/ready` must still answer 200.
+8. In **Community**, turn *"Anyone nearby can ask the helper a question"* off. `/ask` must refuse
+   **and** `/api/ask/stream?q=hello` must refuse — type that address by hand, because a page that
+   closes while the address stays open is exactly the hole this step is for. Turn it back on.
+9. Ask the same question from two phones within a second of each other: one gets words, the other
+   is told somebody else is asking. Do it again with the second phone asking about the household's
+   nine answers: the helper must not know them, and must not quote one back.
+
+**You should see:** one plain answer, made on the box, with the guides as the authority and the
+household's own words never leaving the page they were typed on.
+
+**Write down:** roughly how long the first answer took, whether any answer named a page that does
+not exist, and any question where the helper answered *about the box* instead of about the
+question.
+
+---
+
+## 15. Pull the plug (30 minutes, the one that cannot be tested any other way)
+
+**Why:** every other test in this repo runs against a throwaway folder tree. `ark-self-heal`
+has never met a real power cut, the forced filesystem check has never run on this card, and
+the hardware watchdog has never reset anything. Only the plug can prove those.
+
+**Before you start:** a copy that is **not on this card** (a stick, or a computer) — pull the
+plug mid-write and you are proving the repair, not tempting fate. Note the time on a clock
+you trust, and note what `/api/ready` says now.
+
+1. Unplug the box **while it is doing something**: open `/search?q=water` on a phone and pull
+   the power as the page loads. That is the harshest realistic moment — a small file is being
+   rewritten and a database transaction is open.
+2. Plug it back in and wait. **Do not press anything.** It will take longer than usual: the
+   next boot checks the card (`fsck.mode=force`), so a minute or two is normal.
+3. On a phone, open `http://ark.local`. The portal must appear. Then `/api/ready` must answer
+   **200**, or 503 naming a part that needs a look.
+4. Over SSH:
+
+   ```bash
+   date                                    # the right time, not 1970 or the card's birthday
+   sudo /usr/local/sbin/ark-self-heal --json | head -40
+   tail -n 40 /srv/ark/logs/self-heal.log
+   systemctl status ark-self-heal.service ark-self-heal.timer --no-pager
+   ```
+
+   **You should see** a pass that names what it repaired — most likely the clock, possibly a
+   `.corrupt-*` file beside `ark_status.json` or the watchdog's counters. **Nothing should
+   say "still to look at"** except a genuine fault, and nothing that was there before the cut
+   may be missing.
+5. Open the pages a person cares about: `/`, `/files`, `/board`, `/household`, `/cards`, one
+   game, one book. Every one must work, and the File Box must still list the files it listed
+   before the cut.
+6. Do it a second time, and this time pull the plug **while a file is uploading** from a
+   phone. After the reboot `/files` must not offer a half-file, and `/srv/ark/drop/tmp` must
+   contain nothing (or only something newer than six hours).
+7. Leave it a day, then read `logs/self-heal.log` again: the 04:17 pass must have run and
+   repaired nothing.
+
+**Write down:** how long the box took to come back, what the pass repaired (verbatim), and
+anything that a person would have noticed as broken afterwards. If a `problems` line ever
+mentions a database you had not touched, stop — that is the one case where the repair tool
+should have left everything exactly where it was, and the recovery sheet comes out.
+
+**What this proves that nothing else can:** `fsck.mode=force` really runs, `fake-hwclock`
+really keeps the time, tmpfs really has nothing to sweep, the watchdog unit really still runs
+after a cut, and a half-written upload never becomes a file.
+
+---
+
 ## What is *not* on this list, on purpose
 
 * The v5 migration has run once, on the live database. It will be proved on a card that already

@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# =============================================================================
+#  ark-ai-serve — start the helper on the model that is on this card
+#
+#  Run by ark-ai.service and by nothing else.  The engine listens on the loopback
+#  address and nowhere else, so the only way a question reaches it is through
+#  nginx and the portal.  A model is a file on the card; nothing is downloaded
+#  here, because the box this runs on usually has no internet at all.
+#
+#  Two honest waits, so a box is never in a hot restart loop:
+#    * no engine on the card  → exit 78 (a configuration fault; systemd's
+#      ConditionPathExists normally stops the unit before it gets this far)
+#    * no `.gguf` yet         → say so once and wait, checking every minute.
+#      Drop a model into the folder and the helper starts by itself.
+# =============================================================================
+set -Eeuo pipefail
+
+AI_DIR="${ARK_AI_DIR:-${ARK_ROOT:-/srv/ark}/ai}"
+MODELS="${ARK_AI_MODELS:-$AI_DIR/models}"
+ENGINE="${ARK_AI_ENGINE:-/usr/local/bin/llama-server}"
+PORT="${ARK_AI_PORT:-8089}"
+THREADS="${ARK_AI_THREADS:-3}"
+CONTEXT="${ARK_AI_CONTEXT:-4096}"
+POLL="${ARK_AI_POLL:-60}"        # how often to look for a model that is not there yet
+
+say() { printf 'ark-ai: %s\n' "$*"; }
+
+# GNU coreutils on the Pi, BSD on the Mac this is developed on.  A silent fallback
+# would make "the newest model" mean "the alphabetically last one", which is a
+# different model answering a person's question.
+file_size()  { stat -c %s "$1" 2>/dev/null || stat -f %z "$1"; }
+file_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; }
+
+if [[ ! -x "$ENGINE" ]]; then
+  say "there is no engine to run at $ENGINE — phase 58-ai installs one, and /ask says so in the meantime"
+  exit 78                                   # EX_CONFIG: do not retry a thing that is absent
+fi
+
+newest_model() {
+  # A half-copied file is named .part and is therefore invisible: the helper must
+  # never try to open something that is still arriving.
+  local best="" newest=0 m t
+  shopt -s nullglob
+  for m in "$MODELS"/*.gguf; do
+    t="$(file_mtime "$m" || printf '0')"
+    if [[ "$t" -ge "$newest" ]]; then newest=$t; best=$m; fi
+  done
+  shopt -u nullglob
+  printf '%s\n' "$best"
+}
+
+model="$(newest_model)"
+while [[ -z "$model" ]]; do
+  say "no model yet in $MODELS — the box still works; /ask will say it is waiting for its words"
+  sleep "$POLL"
+  model="$(newest_model)"
+done
+
+say "answering from $(basename "$model") on 127.0.0.1:$PORT, $THREADS threads, $CONTEXT tokens of context"
+# -c is the whole context (prompt + answer).  One slot: a second question waits for a
+# sentence rather than making both slower than the box can bear.
+exec "$ENGINE" \
+  --model "$model" \
+  --host 127.0.0.1 --port "$PORT" \
+  -c "$CONTEXT" -t "$THREADS" --parallel 1

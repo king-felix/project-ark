@@ -23,6 +23,7 @@ down, and the portal address does not serve it at all.
 | `/files` | a file box anyone can drop things into (2 GB per file, links never overwrite) |
 | `/household` | what this household wrote down, and when a person last read each emergency page |
 | `/cards` | three cards for the wall, printed from the browser — no internet needed |
+| `/ask` | type a question in your own words and get an answer made on this box, with no internet |
 | `/arcade/` | small openly licensed games, played in the browser; guests need nothing |
 | `/help.html` | how it works, in plain words |
 
@@ -160,8 +161,8 @@ new uploads, plus pin / sorted-out / hide for messages, hide for files, and a
 delete that asks for your own password again. **Household** is where the
 emergency pages are looked after: which topics the card still has no page for,
 when somebody last read each one (a topic is called due after a year), a space
-for a note, and one button that puts our own manuals, the cards for the wall and
-the recovery sheet into a single file you can carry away. **Games** is where the shelf is
+for a note, and one button that puts our own manuals, the quick card and the
+recovery sheet into a single file you can carry away. **Games** is where the shelf is
 managed: hide or show a game, see every licence and suggestion, allow player
 names, and choose whether newly found games are added without asking. The
 player's sign-in is a separate HTTPS origin (`https://ark.lan:8445/arcade/`) and
@@ -182,7 +183,7 @@ SHA-256 fingerprint). The same certificate serves the player's secure origin
 with the browser before you trust it — see `docs/ADMIN.md` for the exact steps,
 the session rules and what is deliberately *not* in this release yet.
 
-Tests (no Pi needed, throwaway databases only; the current suite is 382 tests):
+Tests (no Pi needed, throwaway databases only; the current suite is 467 tests):
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r tests/requirements.txt
@@ -365,8 +366,10 @@ reachable when the box itself does not start.
   that back again, switch the public household page off, and press **Make the
   pack**.
 * **The pack** — one file, `/srv/ark/essentials/ark-essentials.zip`, holding our
-  own manuals and guides (rewritten so the links work from a folder), the cards
-  and `RECOVERY-SHEET.txt`, plus `MANIFEST.txt` with a fingerprint per file. It is
+  own manuals and guides (rewritten so the links work from a folder), the quick
+  card and `RECOVERY-SHEET.txt`, plus a front page, `START-HERE.txt` and
+  `MANIFEST.txt` with a fingerprint per file. **The three cards for the wall are
+  not in it** — they print from `/cards`, which needs no pack. It is
   served as `/essentials.zip` with `nosniff` and a fixed filename, and the page
   refuses to offer it if it does not read back whole. Copy it to a phone or a
   stick: that copy is the one that still opens when the card dies.
@@ -383,6 +386,65 @@ sudo -u pi /usr/local/sbin/ark-essentials --build     # make the pack now
 sudo -u pi /usr/local/sbin/ark-essentials --status    # is there one, what is in it, what is missing
 sudo -u pi /usr/local/sbin/ark-essentials --verify    # re-read every fingerprint
 ```
+
+---
+
+## Ask the Ark — a helper on the box
+
+`http://ark.lan/ask`. Type a question the way you would say it out loud — *"how do
+I make water safe to drink"*, *"what do I do about a deep cut"* — and the answer is
+written on this box, by a small model that lives on the card. No internet, no
+account, no history: what you type is not saved anywhere and there is nothing to
+sign into.
+
+What the helper is allowed to read is decided by the box, not by the question. It
+is given one page of facts about this card (how many collections, books and guides
+there are, and which pages exist, written by `ark-build-ai-brief`) and, for a
+question about a guide, the few guide pages whose words overlap the question. It
+never sees the household's own answers, an administrator's records, or anything a
+person typed into the File Box or the message board.
+
+**It can be wrong, and the page says so in the same breath as the answer.** The
+guides are the truth; the helper is the thing that helps you find them. Every
+answer carries that sentence.
+
+Three parts, all of them on the card:
+
+| Part | Where | What it is |
+|---|---|---|
+| the engine | `/usr/local/bin/llama-server` | one program, carried to the box (nothing on a Pi builds it, and by the time the box is in a house it has no internet) |
+| the words | `/srv/ark/ai/models/*.gguf` | one file, fetched with `sudo ark-ai-model-fetch` or copied off a stick with `--from` |
+| the facts | `/srv/ark/ai/ark-system-brief.md` | written by `ark-build-ai-brief`, re-runnable, so the helper describes the card as it is now |
+
+**A box with no model is a completely normal state.** `/ask` still answers, in one
+sentence, saying what is missing and how the owner fixes it; every other page is
+untouched; `/api/ready` stays 200. The service is `ark-ai.service`, installed by
+phase `58-ai`, enabled so that the day a model lands it starts by itself, and
+inactive until then.
+
+The engine listens on `127.0.0.1:8089` only. A question reaches it through nginx
+and the portal and in no other way, and a visitor's browser never talks to it
+directly. One answer is written at a time — the box has four cores and no spare
+ones — and a second person who asks while somebody else is waiting is told so in
+plain words rather than being made to wait for a queue.
+
+The owner can switch the whole thing off from **Community** (*"Anyone nearby can
+ask the helper a question"*); closing it turns away the page **and** the address
+the page streams from, and leaves every other page working.
+
+```bash
+sudo ark-ai-model-fetch --status                      # is there a model, how big, which
+sudo ark-ai-model-fetch --from /media/usb/model.gguf   # carry one in (no internet needed)
+sudo ark-ai-model-fetch                              # or fetch it (needs internet, ~1 GB)
+sudo -u pi /usr/local/sbin/ark-build-ai-brief --write # re-describe what is on this card
+journalctl -u ark-ai -n 40 --no-pager                 # what the engine said
+```
+
+Deliberate limits, so nobody is surprised: it does not search the library for you
+(it points at pages by reading their words, which is not a search index), it does
+not remember a conversation, it never reaches the internet, and no answer is
+stored. There is no download button for a model on any page — a model is a file
+the owner puts there on purpose.
 
 ---
 
@@ -406,7 +468,7 @@ The receipt is machine-readable so the Mac never has to guess.
 * `http://ark.lan/api/ready` — **200** only when every part a reader came for
   works, **503** otherwise. The body is the whole picture either way: one entry
   per part (`library`, `books`, `manuals`, `messages`, `files`, `storage`,
-  `backup`, `downloads`) with `ready`, `content` (is there anything on the card yet?),
+  `backup`, `downloads`, `ask`) with `ready`, `content` (is there anything on the card yet?),
   `reason` in plain words and `action` (empty when nothing is wrong).
   `downloads` never blocks: work in progress is not a fault.
 * `https://ark.lan:8443/admin/health` — the same answer as a page for the owner,
@@ -459,6 +521,48 @@ the box's own pages can read it back — **What is working → Latest copy** sho
 date and what it holds. A copy the pages are not allowed to open is reported as
 exactly that, never as "no copy", and re-running phase `95-backup` hands an older
 one over.
+
+---
+
+## When the power goes out
+
+A box in a house loses its power without warning, and a Raspberry Pi has no
+battery-backed clock — so it wakes up believing it is the day the card was
+written. Phase `15-resilience` installs one repair tool that runs **before the
+portal opens** (`ark-self-heal`, `Before=ark-api.service`) and once a day
+(`ark-self-heal.timer`, 04:17 with a twenty-minute spread), plus the settings
+that make the next cut cheaper:
+
+```bash
+sudo /usr/local/sbin/ark-self-heal --dry-run   # what it would repair — changes nothing
+sudo /usr/local/sbin/ark-self-heal --json      # the whole report
+tail -n 30 /srv/ark/logs/self-heal.log         # what the last pass actually did
+```
+
+A pass repairs, or says what it could not: **a clock in the past** is set forward
+to the newest file on the card; **a half-written small file**
+(`ark_status.json`, the import ledger, the network watchdog's counters) is set
+aside as `…corrupt-<stamp>` and the copy from before is put back only if that
+copy reads; **a database SQLite cannot open** is replaced only by a copy that
+passes the same `quick_check`, and one with no good copy is left exactly where it
+is; **half-built uploads and bundles** are swept after 6–12 hours; **a library
+catalogue listing books that are gone** is rebuilt. It never deletes a database,
+never restarts a service, and takes no copy — a copy is still your deliberate act
+(see above). Anything repaired counts as repaired; only what is left **for a
+person** exits non-zero, and `90-verify` fails on exactly that and nothing else.
+
+The settings, which is the half that prevents the damage instead of repairing it:
+`fake-hwclock` (a cold boot no longer starts in 1970), a 15-second write-behind
+window instead of thirty, `/tmp` and `/var/tmp` in memory so a cut has nothing
+half-written to leave behind, a forced filesystem check at the next boot, a
+volatile journal (a corrupt journal is the one thing that can stop journald),
+`RuntimeWatchdogSec=15s` (a hung box resets itself), and `Restart=always` with the
+start limit lifted on every long-running service.
+
+**Honest limit:** no power cut has been simulated on the hardware. Every test
+drives a throwaway folder tree on a Mac, the phase has not been run on the box,
+and no reboot has been taken with it installed — `docs/HUMAN-TEST-LIST.md` §15 is
+the walk-through. The detail for an owner is `docs/ADMIN.md` §13.
 
 ---
 
