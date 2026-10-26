@@ -361,9 +361,29 @@ def test_the_helper_is_reported_on_the_owner_page_and_never_blocks_readiness(pub
     assert row["ready"] is False, "nothing is fitted, so the row is honest"
     assert "not fitted" in row["reason"]
     assert "58-ai" in row["action"], "a gap always comes with the next step"
+    assert row["content"] is False, (
+        "nothing is fitted, so there is nothing on the card to serve yet — a box with "
+        "no helper is 'still filling up', not 'broken' (the gate reads content: "
+        "90-verify failed a healthy card over this, 26 Oct 2026)")
     assert "ask" not in ark_health.BLOCKING_SECTIONS, (
         "a box with no helper is a whole box: the helper must never block readiness")
     assert "Ask the Ark" not in (body.get("blocking") or [])
+
+
+def test_a_model_that_is_here_but_silent_is_the_one_case_worth_a_failure(monkeypatch):
+    """Words on the card that do not answer are content the box cannot serve."""
+    import ark_ai
+    import ark_health
+
+    monkeypatch.setattr(ark_ai, "status", lambda: {
+        "engine": True, "model": "good-words.gguf", "model_bytes": 4096,
+        "answering": False, "available": False,
+        "address": "http://127.0.0.1:8089", "max_question": 500})
+
+    row = ark_health.ask_section()
+    assert row["ready"] is False
+    assert row["content"] is True, "there are words here and they are not answering"
+    assert "not answering" in row["reason"]
 
 
 def test_the_status_endpoint_answers_in_one_sentence(public):

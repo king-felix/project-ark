@@ -788,6 +788,40 @@ def test_the_phase_can_never_leave_the_box_unbootable():
     assert "fstab.ark-review" in text, "a tmpfs line that does not verify is taken back out"
 
 
+def test_the_boot_line_is_built_apart_and_proved_before_the_card_is_touched():
+    """The card on 26 Oct 2026: `cmdline.txt` came back with **two** lines.
+
+    `sed -i "s/[[:space:]]*$/ $opt/"` is unanchored: it appends to *every* line, and
+    the image ships a file that ends with a blank line — so the option landed on
+    both, the file grew a second line of nothing but our options, and because the
+    old guard ran *after* the write the phase died with the boot line already
+    damaged.  The line is built in a temporary file now, proved (one line, `root=`
+    still there), and only then written in place.
+    """
+    text = PHASE.read_text(encoding="utf-8")
+
+    assert 'sed -i "s/[[:space:]]*$/' not in text, \
+        "an unanchored sed appends to every line, including a trailing blank one"
+    assert 'head -n 1 "$CMDLINE"' in text, "the real line is the first line, and only it"
+    assert "grep -q 'root=' " in text, "a boot line that lost root= is a dead Pi"
+    built = text.index('printf \'%s\\n\' "$line" > "$tmp"')
+    proved = text.index('wc -l < "$tmp"')
+    written = text.index('cat "$tmp" > "$CMDLINE"')
+    assert built < proved < written, \
+        "the line has to be built and proved before the file it replaces is written"
+    assert text.index("ark-fsck-once") < text.index('cat "$tmp" > "$CMDLINE"'), \
+        "the withdrawal is installed before the check it withdraws is arranged"
+
+
+def test_the_clock_units_are_the_ones_the_package_really_ships():
+    """`fake-hwclock.service` does not exist, so enabling it warned on a healthy box."""
+    text = PHASE.read_text(encoding="utf-8")
+
+    assert "systemctl enable fake-hwclock.service" not in text
+    assert "fake-hwclock-load.service" in text, "the unit that puts the time back at boot"
+    assert "fake-hwclock-save.timer" in text, "the unit that writes it down again"
+
+
 def test_the_verifier_keeps_the_receipt_from_before(tmp_path):
     """A receipt that is being rewritten when the lights go out has to leave a copy.
 

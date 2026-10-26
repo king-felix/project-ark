@@ -131,6 +131,12 @@ box with a spinner is a different fault: note the console name.
 ## 6. A player's name, and a save that follows it (20 minutes)
 
 **Why it is unproven:** no phone has ever signed in as a player or kept a save on the box.
+**What *is* proved (26 Oct 2026, log §29):** the API underneath it — a name made on the player
+origin, a 45-byte save written, the bytes found on the card in
+`saves/<player id>/<game id>/blobs/state-01-<sha256>.bin` (`700`/`600`), read back identical, a
+second revision stored as a **second** file, a stale page refused with 409 and no cookie refused
+with 401. What has never happened is a **person** doing it in a browser, on a phone, with a real
+game's save. Everything below is that missing half.
 
 1. On the phone, from a game page, choose a name and a password. Play, then save.
 2. Open **My saves**. Export them (one file). Put the file somewhere you can find it.
@@ -200,8 +206,10 @@ that leaves the box unreachable is the one failure that would matter in an emerg
 
 ## 9. Two gigabytes over the wire (30 minutes, needs a big file)
 
-**Why it is unproven:** the proxy and the app agree on 2 GiB and a test keeps them agreeing, but no
-file that size has ever crossed the wire.
+**Why it is unproven:** the proxy and the app agree on 2 GiB and a test keeps them agreeing, and
+**300 MiB has crossed the public door** on the live box (26 Oct 2026, log §29: 13.8 s, `/tmp` at
++0 MiB, the card +600 MiB, nothing left in `drop/tmp` or `tmp/nginx`) — but no file that size has
+ever crossed the wire, and 2 GiB is where the reserve and the 64-bit paths start to matter.
 
 1. Make a 2 GiB file on a computer: `dd if=/dev/zero of=/tmp/two-gib.bin bs=1m count=2048`.
 2. On the hotspot, open `http://ark.lan/files` and upload it.
@@ -355,6 +363,16 @@ question.
 has never met a real power cut, the forced filesystem check has never run on this card, and
 the hardware watchdog has never reset anything. Only the plug can prove those.
 
+**Where the box stands on 26 Oct 2026** (log §29): phase `15-resilience` **has run** — every
+setting is in place and was read back — and `fsck.mode=force panic=10` is on the boot line
+**right now**, with `ark-fsck-once.service` enabled and waiting for the boot that will use it.
+So **the next reboot of this box checks the whole card** (about 102 GB is in use: expect several
+minutes with nothing on the screen — that is one boot only). If you would rather not pull the
+plug today, a plain `sudo systemctl reboot` is still worth doing on its own: it clears the armed
+check and is the only way to see the tmpfs folders mounted from `/etc/fstab` and the three
+serving units come up through `local-fs.target` instead of the network. Steps 1–6 are the cut;
+step 7 is the withdrawal.
+
 **Before you start:** a copy that is **not on this card** (a stick, or a computer) — pull the
 plug mid-write and you are proving the repair, not tempting fate. Note the time on a clock
 you trust, and note what `/api/ready` says now.
@@ -363,8 +381,9 @@ you trust, and note what `/api/ready` says now.
    the power as the page loads. That is the harshest realistic moment — a small file is being
    rewritten and a database transaction is open.
 2. Plug it back in and wait. **Do not press anything.** It will take longer than usual: the
-   next boot checks the card (`fsck.mode=force`), so a minute or two is normal. That check is
-   taken back off the boot line by the boot that used it — step 7 is what proves that.
+   next boot checks the card (`fsck.mode=force`) — on this card that is **several minutes**
+   with nothing on the screen, not a hang. That check is taken back off the boot line by the
+   boot that used it — step 7 is what proves that.
 3. On a phone, open `http://ark.local`. The portal must appear. Then `/api/ready` must answer
    **200**, or 503 naming a part that needs a look.
 4. Over SSH:

@@ -756,6 +756,14 @@ def ask_section() -> dict:
     every library, book, guide and game works without it — so this row exists to
     keep the owner's page honest, never to make a working box look broken.  The
     three states are the three the page tells a reader about, in the same words.
+
+    ``content`` is the part the *gate* reads, and "not fitted yet" is not content:
+    an engine that was never carried in, or a card with no words on it, is a box
+    that has nothing to serve yet — exactly like an empty library.  Saying
+    ``content=True`` there made `90-verify` fail a healthy box for a state this
+    project calls supported (§8.7) — found on the live card, 26 Oct 2026.  A model
+    that *is* on the card and is not answering is the one case that has content and
+    cannot serve it, and that is worth a failure.
     """
     import ark_ai
     facts = ark_ai.status()
@@ -763,17 +771,20 @@ def ask_section() -> dict:
             "model_bytes": facts["model_bytes"], "answering": facts["answering"]}
     sentence, _hint = ark_ai.NOT_READY["engine"]
     if not facts["engine"]:
-        return _section("ask", "Ask the Ark", False, f"{sentence}.", ark_ai.advice(), **kept)
+        return _section("ask", "Ask the Ark", False, f"{sentence}.",
+                        ark_ai.advice(), content=False, **kept)
     if not facts["model"]:
         sentence, _hint = ark_ai.NOT_READY["model"]
-        return _section("ask", "Ask the Ark", False, f"{sentence}.", ark_ai.advice(), **kept)
+        return _section("ask", "Ask the Ark", False, f"{sentence}.",
+                        ark_ai.advice(), content=False, **kept)
     if not facts["answering"]:
         sentence, _hint = ark_ai.NOT_READY["silent"]
-        return _section("ask", "Ask the Ark", False, f"{sentence}.", ark_ai.advice(), **kept)
+        return _section("ask", "Ask the Ark", False, f"{sentence}.",
+                        ark_ai.advice(), content=True, **kept)
     return _section(
         "ask", "Ask the Ark", True,
         f"Questions are answered on this box — {human_size(facts['model_bytes'])} of words, "
-        "no internet needed.", "", **kept)
+        "no internet needed.", "", content=True, **kept)
 
 
 SECTIONS = (library_section, books_section, manuals_section, messages_section,

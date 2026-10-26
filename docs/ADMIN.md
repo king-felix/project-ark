@@ -555,7 +555,9 @@ the shelf.
 
 **Saves and copies.** A guest's save lives in that browser (EmulatorJS local
 storage). A named player gets three server slots per game, stored under
-`/srv/ark/arcade/saves/<player>/<game>/` with `0700` folders and `0600` files.
+`/srv/ark/arcade/saves/<player id>/<game id>/` with `0700` folders and `0600`
+files — **the two folder names are numbers**, not the name and the title, and a
+person looking under `saves/alice/tobutobugirl/` will find nothing.
 The bytes themselves live in a `blobs/` folder beside the slots, one immutable
 file per **content**, named after it (`state-01-<sha256>.bin`), and the record in
 the database names that file. Nothing on the card is ever overwritten: a save

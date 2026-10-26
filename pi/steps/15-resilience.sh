@@ -43,9 +43,25 @@ if ark_have fake-hwclock; then
 else
   ark_apt_install fake-hwclock
 fi
-systemctl enable fake-hwclock.service >/dev/null 2>&1 \
-  || ark_warn "could not enable fake-hwclock.service"
-ark_ok "fake-hwclock remembers the time across a cold boot"
+# The package's units are named after what they do — `fake-hwclock-load` at boot,
+# `fake-hwclock-save.timer` afterwards — and there is no unit called
+# `fake-hwclock.service`.  Enabling that name answers "not-found" on every
+# Raspberry Pi OS, so this phase used to warn on a perfectly healthy box (found on
+# the card, 26 Oct 2026).  Enable what the package actually shipped.
+hw_units=0
+for u in fake-hwclock-load.service fake-hwclock-save.service fake-hwclock-save.timer; do
+  systemctl cat "$u" >/dev/null 2>&1 || continue
+  if systemctl enable "$u" >/dev/null 2>&1; then
+    hw_units=$((hw_units + 1))
+  else
+    ark_warn "could not enable $u"
+  fi
+done
+if (( hw_units )); then
+  ark_ok "fake-hwclock remembers the time across a cold boot ($hw_units unit(s) enabled)"
+else
+  ark_warn "fake-hwclock is installed but offers no unit this phase knows — see: systemctl list-unit-files 'fake-hwclock*'"
+fi
 
 # ---- a narrower write-behind window ----------------------------------------
 # The kernel normally holds dirty pages for up to 30 s.  Fifteen is the point
@@ -143,11 +159,34 @@ else
   ark_warn "this board has no /dev/watchdog — it will not reboot itself if it hangs"
 fi
 
+# ---- the tool that withdraws the check is installed FIRST -------------------
+# The order matters: the *arrangement* (a forced check on the next boot) must not
+# exist before the thing that takes it back off.  A box whose run died between the
+# two — which is exactly what happened on the card on 26 Oct 2026 — would check the
+# whole card on every boot for ever, and nothing would say why.
+ark_copy "$ARK_SRC/bin/ark-fsck-once" /usr/local/sbin/ark-fsck-once 755 root:root
+ark_install_unit ark-fsck-once.service
+systemctl enable ark-fsck-once.service >/dev/null 2>&1 \
+  || ark_die "cannot enable ark-fsck-once.service (the forced check would never be withdrawn)"
+# Deliberately **not started**: the check it withdraws belongs to the *next* boot,
+# which has not happened yet.  Starting it now would quietly cancel the very check
+# this phase is about to arrange.
+ark_ok "the withdrawal is installed and enabled; nothing has been changed yet"
+
 # ---- the filesystem check the cut demands ----------------------------------
 # A card that was mid-write when the power went can come back with a filesystem
 # that is "clean" only because nobody looked.  Forcing the check on the next boot
 # (once) is what turns a damaged card into a repaired one instead of a box that
 # boots into a shell nobody can reach over the network.
+#
+# **The line is built in a temporary file and proved before the card is touched.**
+# The image ships a `cmdline.txt` that ends with a blank line (133 bytes, two
+# newlines — that is what was on the card), and the old `sed -i
+# "s/[[:space:]]*$/ $opt/"` appended the option to *every* line: the file grew a
+# second line holding nothing but our options, and because the guard ran *after*
+# the write, the phase died with the boot line already damaged.  So: read the first
+# line, add what is missing to that line only, prove it is still one line with
+# `root=` in it, and only then replace the file in place.
 CMDLINE=""
 for c in /boot/firmware/cmdline.txt /boot/cmdline.txt; do
   [[ -f "$c" ]] && { CMDLINE="$c"; break; }
@@ -155,16 +194,31 @@ done
 if [[ -z "$CMDLINE" ]]; then
   ark_warn "no kernel command line file found — the filesystem check is left to the default"
 else
+  cp -a "$CMDLINE" "$CMDLINE.ark-before-resilience"
+  line="$(head -n 1 "$CMDLINE" | tr -d '\r' | sed 's/[[:space:]]*$//')"
+  [[ -n "$line" ]] || ark_die "$CMDLINE has no first line to read (copy: $CMDLINE.ark-before-resilience)"
   for opt in fsck.mode=force fsck.repair=yes panic=10; do
-    if ! grep -qw -- "$opt" "$CMDLINE"; then
-      cp -a "$CMDLINE" "$CMDLINE.ark-before-resilience"
-      sed -i "s/[[:space:]]*$/ $opt/" "$CMDLINE"
-      ark_info "added $opt to $CMDLINE"
+    if grep -qw -- "$opt" <<<"$line"; then
+      ark_info "$opt is already on the boot line"
+    else
+      line="$line $opt"
+      ark_info "adding $opt to the boot line"
     fi
   done
-  if [[ "$(wc -l < "$CMDLINE")" -gt 1 ]]; then
-    ark_die "$CMDLINE now has more than one line — the box would not boot.  Compare with $CMDLINE.ark-before-resilience"
+  grep -q 'root=' <<<"$line" \
+    || ark_die "the new boot line has lost root= (copy: $CMDLINE.ark-before-resilience)"
+  tmp="$(mktemp)"
+  printf '%s\n' "$line" > "$tmp"
+  if [[ "$(wc -l < "$tmp")" -ne 1 ]] || [[ "$(wc -w < "$tmp")" -lt 3 ]]; then
+    rm -f "$tmp"
+    ark_die "the new boot line is not one usable line (copy: $CMDLINE.ark-before-resilience)"
   fi
+  # In place, so the file keeps its owner and its mode.  `cat >` is the write;
+  # the copy beside it is what a person restores if this box ever fails to boot.
+  cat "$tmp" > "$CMDLINE"
+  rm -f "$tmp"
+  [[ "$(wc -l < "$CMDLINE")" -eq 1 ]] \
+    || ark_die "$CMDLINE is not one line after the write — restore $CMDLINE.ark-before-resilience NOW"
   ark_ok "the next boot checks the card (one line, $(wc -w < "$CMDLINE") words)"
 fi
 
@@ -174,15 +228,8 @@ fi
 # every reboot for ever.  `ark-fsck-once` takes the two options back off the line
 # on the boot that used them, refuses to write anything that is not still exactly
 # one line (a newline there stops the Pi dead, with no console to see it), and does
-# nothing at all on any other boot.
-#
-# It is installed and enabled here and deliberately **not started**: the check it
-# withdraws belongs to the *next* boot, which has not happened yet.  Starting it now
-# would quietly cancel the very check this phase has just arranged.
-ark_copy "$ARK_SRC/bin/ark-fsck-once" /usr/local/sbin/ark-fsck-once 755 root:root
-ark_install_unit ark-fsck-once.service
-systemctl enable ark-fsck-once.service >/dev/null 2>&1 \
-  || ark_die "cannot enable ark-fsck-once.service (the forced check would never be withdrawn)"
+# nothing at all on any other boot.  The unit is installed and enabled above; here
+# it is only *proved* against the real line, which changes nothing.
 if [[ -n "$CMDLINE" ]]; then
   if /usr/local/sbin/ark-fsck-once --cmdline "$CMDLINE" --dry-run; then
     ark_ok "the forced check is withdrawn by the boot that used it (proved; nothing changed)"

@@ -2488,3 +2488,132 @@ the unit, not of the code path.* `client_max_body_size 2064m` and "works offline
 written down and both true of the app — and a 256 MB tmpfs and a `Wants=network-online.target`
 made them false a layer underneath.
 
+## 29. The deploy of §25–§28 — and four things the card already knew — 26 Oct 2026
+
+**What was run.** Pre-flight first, because this deploy reaches a schema change: the live
+database was at layout **v5**, so `sqlite3 … ".backup /root/ark-db-before-v6.db"` (233,472 B,
+`PRAGMA quick_check` → `ok`), then `/root/ark-etc-before-v6.tgz` (fstab, nginx, systemd units,
+`ark.env`, `cmdline.txt`), `/root/ark-src-before-v6.tgz` (11.8 MB) and separate copies of
+`/root/fstab.before-v6` and `/root/cmdline.before-v6.txt`. Then, from the Mac:
+
+```
+bash scripts/03-provision.sh ark.local --only 15-resilience,20-storage,30-calibre,50-kiwix,58-ai,\
+                                       60-portal,65-admin,70-network,95-backup,90-verify
+```
+
+**Deploy 1 failed, and every failure was worth having.** `15-resilience` died on its own guard
+and `90-verify` failed on two rows. Four defects came out of it, all four are fixed, all four now
+have a test:
+
+* **A tmpfs mounted by hand is a state, not a setting.** `/tmp` on the card was a 3.9 GB tmpfs
+  with **no line in `/etc/fstab`** (mounted by hand in an earlier session), and `/var/tmp` was
+  still on the card. The phase's old branch read the *live mount*, said "the throwaway folders
+  already live in memory" and skipped its own `fstab` edit — so the next reboot would have put
+  `/tmp` back on the card while the phase reported success, and `/var/tmp` would never have been
+  memory at all. The decision now reads the marker line in `/etc/fstab`; a live mount gets one
+  sentence ("that is a state, not a setting") and nothing else; both tmpfs lines carry `nofail`.
+  Guard: `tests/test_self_heal.py::test_the_memory_folders_are_judged_by_what_persists_not_by_what_is_mounted`.
+* **An unanchored `sed` appended to every line, and the guard ran after the write.** The image
+  ships `cmdline.txt` as 133 bytes ending in a blank line (`…regdom=US\n\n`, so `wc -l` = 2), and
+  `sed -i "s/[[:space:]]*$/ $opt/"` put the option on **both** lines: the file grew a second line
+  holding nothing but our options, and the old `wc -l > 1` check then fired *after* the write and
+  killed the phase. On the card that was
+  `…regdom=US fsck.mode=force panic=10\n fsck.mode=force panic=10\n` — a boot line nobody had
+  proved. It was repaired from `/root/cmdline.before-v6.txt` to one line (132 B, mode 755 kept),
+  and the phase now **installs `ark-fsck-once` first**, reads line 1 only, appends to that line,
+  proves *one line with `root=` still in it* in a temporary file, writes in place, and proves one
+  line again afterwards. Guards:
+  `test_the_boot_line_is_built_apart_and_proved_before_the_card_is_touched` and the ordering
+  assertion inside it (the withdrawal is enabled before the check is arranged).
+* **`fake-hwclock.service` does not exist.** Trixie ships `fake-hwclock-load.service`,
+  `fake-hwclock-save.service` and `fake-hwclock-save.timer`; enabling the package name answers
+  `not-found`, so a healthy box got a warning every run. The phase now enables what is really
+  installed (3 units on this card). Guard:
+  `test_the_clock_units_are_the_ones_the_package_really_ships`.
+* **`ask_section()` said `content: True` about a box that has never been fitted.** `90-verify`
+  reads `content` as "there is something here that cannot be served", so the gate **failed a
+  healthy box** for the state this project calls supported. A helper with no engine, or with no
+  words, now reports `content=False` ("still filling up", a soft line); `content=True` is kept for
+  the one case that deserves a failure — words on the card, not answering. Guards:
+  `test_the_helper_is_reported_on_the_owner_page_and_never_blocks_readiness` (extended) and
+  `test_a_model_that_is_here_but_silent_is_the_one_case_worth_a_failure`.
+
+**Deploy 2** (`--only 15-resilience,60-portal,90-verify`) finished `ARK_INSTALL_COMPLETE` in 40 s,
+`90-verify` → *"everything a visitor touches is working"*, `/api/ready` **200**, `8 / 9`,
+`blocking: []` (the ninth row is the helper, honestly `ready: false, content: false`).
+
+**What the card now says about itself** — all of this measured on the box, 12:05–12:15:
+
+| Fact | Evidence |
+|---|---|
+| Layout **v6** on the live database | `select max(version) from schema_version` → `6`, after the `.backup` above |
+| The boot line is one line | `…regdom=US fsck.mode=force panic=10`, 1 line, 9 words |
+| The forced check belongs to one boot | `ark-fsck-once --dry-run` → *"Would withdraw fsck.repair=yes fsck.mode=force from cmdline.txt; nothing has been changed."*; the unit is `enabled` / `inactive` |
+| The memory folders persist | `/etc/fstab` carries two `tmpfs … size=256M,mode=1777,nofail` lines; `findmnt --verify` → ok |
+| The cut settings | `RuntimeWatchdogUSec=15s`; `Storage=volatile`; `vm.dirty_writeback_centisecs=1500`, `vm.swappiness=10`, `kernel.panic=10`; `fake-hwclock-load.service` + `fake-hwclock-save.timer` enabled |
+| Repair ran, found nothing wrong | real pass 12:10:51 → `healed: 0`, `problems: []`, three databases `fine` (each with a `good.bak`), `romdb.sqlite ok`, `sweep: []`; `--dry-run` afterwards → nothing to repair; timer `enabled` + `active` |
+| The body parks on the card | `client_body_temp_path /srv/ark/tmp/nginx 1 2` in `sites-available/ark`, `-admin`, `-players`; `Environment=TMPDIR=/srv/ark/tmp` on `ark-api`; `/srv/ark/tmp/nginx` exists, `www-data`, `0700` |
+| Nothing waits for the internet | `systemctl show -p After` on `ark-api`, `ark-kiwix`, `ark-calibre` → `local-fs.target` in all three |
+| The helper is enabled and idle | `ark-ai.service` `enabled` + `inactive`; `/ask` → 200 with *"The helper is not fitted on this box"* |
+| Every door | `/` 200, `/arcade/` 200, a game page 200, its ROM `HEAD` 200, `/arcade/add` 200, `/books/` 200, `/household` 200, `/cards` 200 (3 `<svg>`), `/ask` 200, `/files` 200, `/board` 200, `:8443/admin` 303, `:8445/arcade/` 200, `/admin` on `:8445` 404, plain HTTP to `:8443` 400, `/essentials.zip` 200 |
+| The tools read, and write nothing | `ark-backup --dry-run` → *"Nothing was written"*; `ark-essentials --verify` → *"This pack is whole"*; `ark-arcade --status` → 23 games, 0 players, 45 suggestions |
+
+**Proved by hand, on the card — the first save that has ever lived there (§27).** Through
+`https://ark.local:8445` with `--resolve`, exactly as a browser would arrive:
+
+1. a name was made on the player origin only → 303 to `/arcade/?ok=Your+name+is+ready…`;
+2. `PUT /arcade/api/saves/1/state/1` with 45 bytes → 200, `sha256 9d0e184c…` — **the bytes that
+   were sent**;
+3. on the card: `/srv/ark/arcade/saves/1/1/blobs/state-01-9d0e184c…bin`, 45 B, folder `700`, file
+   `600`, and the row's `blob` names that file — note **player id / game id**, not names, which
+   is what the code does and what three documents had wrong (§30);
+4. `GET` the same slot → those same 45 bytes;
+5. a second `PUT`, different bytes, `X-ARK-Revision: 1` → 200, **revision 2**, a **second**
+   immutable blob, the replaced one gone — the save was never overwritten;
+6. a stale page (`X-ARK-Revision: 1` again) → **409**; no player cookie → **401**;
+7. `DELETE` the save → 200; the probe's rows and folder were then removed → **0 players, 0 saves,
+   0 prefs, 0 sessions**, `saves/` empty, still 23 games, `/api/ready` 200.
+
+**Proved by hand, on the card — a body larger than the tmpfs (§28).** 300 MiB
+(314,572,800 B) posted to `/files`: **303** in 13.8 s (≈20 MB/s), the row and the file both
+exactly 314,572,800 B, `drop/tmp` and `tmp/nginx` empty afterwards, and — sampled every 0.25 s
+across both filesystems — **`/tmp` (RAM) +0 MiB at peak, the card +600 MiB** (300 MiB of the
+app's spooled temp file, which Python creates *unlinked* so `du` cannot see it, plus 300 MiB of
+published file; `df` is the only honest measure here). Both probes were removed afterwards: 0
+file rows, 0 files in the folder, 118 GiB free. So the reason `/tmp` becomes a 256 MB tmpfs is
+now measured rather than argued, and the upload path does not use it.
+
+**Still unproven, and no amount of curl can change it:** the **reboot**. `fsck.mode=force` has
+never run on that card, `ark-fsck-once` has never rewritten a real `cmdline.txt`, the
+`local-fs.target` ordering has never been observed from a cold start, the tmpfs folders have
+never been mounted from `fstab`, and no power cut has been simulated. `docs/HUMAN-TEST-LIST.md`
+§15 is the walk-through; the first reboot is expected to take minutes and every reboot after it
+must be fast.
+
+**Tests:** **508 passed, 2 skipped, 24 files.** `bash -n` on the phase, `python3 -m py_compile`
+on `ark_health.py`.
+
+## 30. Two sentences the paperwork had wrong, found by measuring the card — 26 Oct 2026
+
+Both of these were written down confidently in `.clinerules` and `docs/ADMIN.md` and both were
+wrong about the box. Neither is a code defect; both would have cost somebody an afternoon.
+
+* **A save's folder is named by id, not by name.** The documents said
+  `/srv/ark/arcade/saves/<player>/<game>/`, and the save probe on the card landed in
+  `/srv/ark/arcade/saves/1/1/blobs/state-01-9d0e184c….bin` — `new_player_save_dir(player_id,
+  game_id)` in `pi/api/ark_arcade.py` is the only thing that decides this, and it uses the two
+  numbers. A person looking under `saves/alice/tobutobugirl/` would find nothing and conclude the
+  saves were not being kept. Corrected in `.clinerules` §8.3, §8.11 and §8.12 and in
+  `docs/ADMIN.md`; the reader-facing sentence ("your saves are kept on this box") never named a
+  path, so nothing a reader sees changed.
+* **The box does have a route to the internet right now.** `.clinerules` §8.9 and §8.11 both said
+  "the Pi has no route to the internet" — and this deploy installed `fake-hwclock` from
+  `deb.debian.org` (7,208 B, `Get:1 … trixie/main arm64`), and `https://deb.debian.org/` answered
+  **200** from the box minutes earlier. What is true is the thing that matters and is unchanged:
+  **nothing this box serves needs the internet**, the model and the games are files, and the
+  library is fetched or carried. Whether a cable is in the wall today is not a fact to build a
+  page or a script on.
+
+
+
+
