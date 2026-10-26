@@ -104,6 +104,47 @@ def test_a_page_too_big_to_be_a_manual_is_skipped_and_named(tmp_path, vault):
     assert "manuals/huge.txt" in made["skipped"]
 
 
+def test_the_shelfs_own_front_page_does_not_ride_along_beside_the_packs(tmp_path, vault):
+    """Phase 4 writes an ``index.html`` at the top of the vault; the pack writes its own.
+
+    Both at once meant one zip with two members called ``index.html``: zipfile only
+    warned, every unzipper kept whichever came last, and a pack could open on the
+    shelf's generated listing instead of the pack's front page.  Found on the Pi on
+    26 Oct 2026, on the first real pack this box ever built.
+    """
+    (vault / "index.html").write_text(
+        '<!doctype html><html><head><title>Manuals and guides</title></head>'
+        '<body><a href="/vault/manuals/water.html">Water</a></body></html>',
+        encoding="utf-8")
+    assert "index.html" not in [name for name, _path in pack.collect(vault)]
+    # a page called index.html inside a folder is content, and still travels
+    (vault / "guides" / "index.html").write_text(
+        '<!doctype html><html><head><title>Guides</title></head><body>x</body></html>',
+        encoding="utf-8")
+    made = build(tmp_path, vault)
+    assert made["names"].count("index.html") == 1
+    with zipfile.ZipFile(pack.pack_path(tmp_path / "out")) as archive:
+        assert len(set(archive.namelist())) == len(archive.namelist())
+        front = archive.read("index.html").decode("utf-8")
+    assert "The Ark — essentials" in front            # the pack's own page, not the shelf's
+    assert "Manuals and guides" not in front
+
+
+def test_a_pack_that_would_hold_two_files_of_one_name_is_refused(tmp_path, vault, monkeypatch):
+    """A duplicate name is a bug, not a warning: nothing is written and the words say why."""
+    duplicate = [
+        ("manuals/water.html", vault / "manuals" / "water.html"),
+        ("manuals/water.html", vault / "manuals" / "first-aid.html"),
+    ]
+    monkeypatch.setattr(pack, "collect", lambda _vault: duplicate)
+    out = tmp_path / "out"
+    with pytest.raises(ValueError) as refused:
+        pack.build(out, vault=vault, when=WHEN)
+    assert "two files called manuals/water.html" in str(refused.value)
+    assert not pack.pack_path(out).exists()
+    assert not (out / (pack.PACK_NAME + ".partial")).exists()
+
+
 # ---------------------------------------------------------------------------
 #  landing somewhere that works
 # ---------------------------------------------------------------------------

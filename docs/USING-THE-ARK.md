@@ -310,11 +310,12 @@ three parts, and each one is honest about what it does not know:
   nobody has read says *"Nobody has read this yet."*; a date the box cannot read is treated
   as overdue rather than as fresh. Nothing here is invented, and nothing is a percentage.
 - **Take it with you** — one download, `/essentials.zip`: the small pages and the repair
-  guides rewritten so their links work from a folder, the three wall cards, the recovery
-  sheet and a `MANIFEST.txt` naming every file with its fingerprint. Unzip it on any
-  computer with no network and open `START-HERE`. If no pack has been made, the page says
-  so (and the link answers a friendly "there is no copy to download yet", never a broken
-  download).
+  guides rewritten so their links work from a folder, the quick card, the recovery sheet and a
+  `MANIFEST.txt` naming every file with its fingerprint. Unzip it on any computer with no
+  network and open `START-HERE`. If no pack has been made, the page says so (and the link
+  answers a friendly "there is no copy to download yet", never a broken download). The three
+  wall cards are **not** inside the pack — they are on `/cards`, to print and put up now,
+  because that is what they are for.
 
 **`http://ark.lan/cards`** — three addresses as squares a phone camera can read, with the
 address written underneath each one: `http://ark.lan` (the box's own Wi-Fi),

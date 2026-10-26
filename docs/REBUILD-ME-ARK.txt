@@ -194,10 +194,12 @@ On the Pi, everything the Ark owns lives under /srv/ark:
                             every game plays and is named from its file name
   /srv/ark/essentials       the pack: ark-essentials.zip (+ .partial while it is
                             being built), our manuals and guides rewritten so their
-                            links work from a folder, cards/, RECOVERY-SHEET.txt,
-                            START-HERE.txt, index.html, MANIFEST.txt (a sha256 per
-                            file). Made by the owner's Household page or
-                            ark-essentials --build; nothing makes one on a timer
+                            links work from a folder, the quick card,
+                            RECOVERY-SHEET.txt, START-HERE.txt, index.html,
+                            MANIFEST.txt (a sha256 per file). The three wall cards
+                            are NOT in it — print them from /cards. Made by the
+                            owner's Household page or ark-essentials --build;
+                            nothing makes one on a timer
   /etc/ssl/ark/             ark-admin.crt + ark-admin.key (0600 root:root)
   /etc/ark/ark.env          operator settings (single place to change things)
   /etc/ark/zim-queue.tsv    resolved download queue (pinned URLs + sizes)

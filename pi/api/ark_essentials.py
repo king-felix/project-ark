@@ -88,7 +88,15 @@ def _sha256(data: bytes) -> str:
 
 
 def collect(vault) -> list:
-    """Every page worth carrying, as sorted [(name in the pack, path on the card)]."""
+    """Every page worth carrying, as sorted [(name in the pack, path on the card)].
+
+    The shelf's **own** ``index.html`` is left out on purpose: phase 4 writes one at the
+    top of the vault, and the pack builds its own front page under that name (a written
+    index of what is in *this* pack, with the titles read out of the pages).  Carrying
+    both put two members called ``index.html`` in one zip — zipfile only warned about it
+    and every unzipper silently kept whichever came last.  A page called ``index.html``
+    inside a folder is content and still travels.
+    """
     root = Path(vault)
     if not root.is_dir():
         return []
@@ -98,6 +106,8 @@ def collect(vault) -> list:
         if any(part in SKIP_DIRS for part in rel.parts):
             continue
         if not path.is_file() or path.suffix.lower() not in KEEP:
+            continue
+        if rel.as_posix() == INDEX:
             continue
         found.append((rel.as_posix(), path))
     return found
@@ -315,6 +325,15 @@ def build(out_dir, *, vault, sheet=None, when=None) -> dict:
     payload.append((INDEX, _index_html(sorted(pages), built).encode("utf-8")))
     payload.append((START, _start_text(built, sorted(pages), missing).encode("utf-8")))
     payload.sort()
+
+    # One zip, one member per name.  zipfile merely warns about a duplicate and every
+    # unzipper then keeps whichever came last, so a pack built on a shelf whose index
+    # collided looked whole and held the wrong front page.  Refuse loudly instead.
+    names = [name for name, _data in payload]
+    doubled = sorted({name for name in names if names.count(name) > 1})
+    if doubled:
+        raise ValueError("this pack would hold two files called "
+                         + ", ".join(doubled) + " — nothing was written")
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)

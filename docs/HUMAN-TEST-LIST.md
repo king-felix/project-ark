@@ -268,6 +268,42 @@ between *Books* and *Manuals*.
 
 ---
 
+## 13. The household page, the cards and the pack (30 minutes, needs a printer)
+
+**Why it is unproven:** the deploy of 26 Oct 2026 proved what nginx and the API answer — the body
+sentences, the 303 on the owner's page, a pack of `41.1 kB, 16 files` that `--verify` read back —
+and nothing about a person using it. No phone has scanned a card, nothing has been printed, the
+pack has never been opened on a device that is not the Ark, and not one of the nine answers has
+been filled in (`docs/IMPLEMENTATION-LOG.md` §24.3).
+
+1. Open `http://ark.lan/household` on a phone. Read the eight topics out loud and tap each page it
+   names — every one must open. Every topic says *Nobody has read this yet*.
+2. As the owner (`https://ark.lan:8443/admin/household`), press **I have read this today** on two
+   topics with a short note, then reload `/household`: the two must now say somebody read it today,
+   the count must move off zero, and the other six must still admit nobody has.
+3. Press **Take that back** on one of them and confirm it returns to *Nobody has read this yet*.
+4. Fill in **three** of the nine answers (where the water stops, who to ring, where the first-aid
+   kit is) and reload the page as a visitor. The three must appear in your own words; the other six
+   must say *Nobody has written this page yet* — never an empty line.
+5. Open `/cards` and print it — or screenshot it — then **scan one square with a real phone
+   camera, off paper**. It must open the portal. This is the one thing a test can only approximate.
+6. Tap **Download the pages as one file**. Take the zip to a computer with **no network at all**,
+   unzip it, open `START-HERE`, then `index.html`, then a manual from the list. Every link must stay
+   inside the folder: no `http://ark.lan` left anywhere, nothing fetched, nothing broken. There is
+   **no `cards/` folder inside and that is correct** — the cards are page 5's job, done in advance
+   (`docs/IMPLEMENTATION-LOG.md` §24.4).
+7. Turn **Show the household page to everyone** off. `/household` and `/cards` must go away for a
+   visitor, `/essentials.zip` must still download, and the manuals, guides, books, games and File
+   Box must be untouched. Turn it back on.
+
+**You should see:** plain sentences in the household's own words, a date and never a percentage, a
+card that scans, and a pack that opens from a folder with the network switched off.
+
+**Write down:** any topic whose page does not really answer the question beside it, any answer that
+reads oddly once it is on the page, and whether the printed card is big enough to scan from a wall.
+
+---
+
 ## What is *not* on this list, on purpose
 
 * The v5 migration has run once, on the live database. It will be proved on a card that already

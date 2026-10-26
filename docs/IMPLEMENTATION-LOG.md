@@ -33,7 +33,7 @@ and what the next executable step is.
 | 13 | Essentials pack, QR, accessibility, household page | **stage 7 done (code + test)** — `/household` (nine answers the household typed + when each emergency page was last read), `/cards` (three wall cards, inline SVG, no image/font/script/network), `/essentials.zip` (one file: our manuals and guides rewritten for a folder, the cards, the recovery sheet, a sha256 manifest), the owner's **Household** page, and an accessibility pass (skip link, visible focus ring, ≥16 px body, 44 px targets, print rules) (§23) |
 | — | ARK Arcade | **delivered and tested** — public shelf, guest play, optional named-player saves on the TLS `:8445` origin, owner **Games** page, licence/allowlist/hash gate, weekly discovery, and saves carried by a backup (§12); since 25 Oct a game can also be named from the file itself against an offline catalogue, and added from the owner's page (§19) |
 | 14 | Sequence | stages 1–6, ARK Arcade, R3, the name-from-contents work (§19) and the household layer (§23) are **code + test**; everything except stage 7 is **deployed 25 Oct 2026** (§15, §19); **stage 7 has not been deployed yet** — the phone walk-through is the next human step, stage 7's deploy is the next machine step |
-| 15 | Acceptance tests | **380 tests** (`380 passed, 2 skipped`; the two skips are QR cross-checks needing `qrcode`/`opencv-python-headless`), all green (`pytest -o addopts='--strict-markers' -q`); the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md` |
+| 15 | Acceptance tests | **382 tests** (`382 passed, 2 skipped`; the two skips are QR cross-checks needing `qrcode`/`opencv-python-headless`), all green (`pytest -o addopts='--strict-markers' -q`); the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md` |
 
 ---
 
@@ -1961,11 +1961,11 @@ now collects them.
 
 ## 23. Stage 7 — the household layer, and the paperwork that goes with a bag of pages — 25 Oct 2026
 
-**Code + test only. Nothing in this section has run on the Pi yet.** At this checkpoint
-`pytest` is **380 passed, 2 skipped** (21 files), the branch is `feature/admin-hardening`,
-the schema is untouched (**v5**, no migration in this stage) and `90-verify` has *not* been
-asked about `/household`, `/cards` or `/essentials.zip`. The deploy is the next machine step
-and it is deliberately small: `--only 60-portal,65-admin`, then `--only 90-verify`.
+**Deployed 26 Oct 2026, green — see §24.** At this checkpoint `pytest` was **380 passed,
+2 skipped** (21 files), the branch was `feature/admin-hardening`, the schema is untouched
+(**v5**, no migration in this stage) and `90-verify` had *not* been asked about `/household`,
+`/cards` or `/essentials.zip`. The deploy was deliberately small: `--only 60-portal,65-admin`,
+then `--only 90-verify`, then a pack built on the card.
 
 ### 23.1 What a household gets
 
@@ -1975,7 +1975,7 @@ and it is deliberately small: `--only 60-portal,65-admin`, then `--only 90-verif
 | The eight topics | `pi/api/ark_review.py` `TOPICS` | breathing and bleeding, water, food, fire, power, toilets without water, cold/heat/shelter, small repairs — each names the vault pages that carry it (`manuals/first-aid.html`, `guides/electrical.html`, …) and the question the page must answer. A page the card does not have is **named as missing**, never assumed present |
 | What was read | `settings` key `emergency_review` | one JSON row per topic: the day, the account, an optional note. *"Somebody here read this today."* / *"…214 days ago."* / *"Nobody has read this yet."*; `CHECK_EVERY_DAYS = 365` makes a topic **due for a look**. **Take that back** returns it to *nobody has read this*, audited `household-forget` |
 | The cards for the wall | `http://ark.lan/cards` (`ark_cards`, `ark_qr`) | **three** cards — `http://ark.lan` (the box's own Wi-Fi), `http://ark.local` (a home network), `http://10.42.0.1` (the number that always works) — each with the sentence that says when it works. The square is drawn **in the page**: one inline `<svg>`, one `<path>`, no image file, no font, no script, no network |
-| The pack to carry | `/srv/ark/essentials/ark-essentials.zip` → `/essentials.zip` | our own manuals and guides (every `/vault/…` link rewritten relative, so the pack opens from a folder), `cards/`, `RECOVERY-SHEET.txt`, `START-HERE.txt`, its own `index.html`, and `MANIFEST.txt` with a sha256 per member. Built as `.partial` and published by rename; **deterministic** (sorted members, fixed 1980 stamps), so two builds of the same shelf are the same bytes |
+| The pack to carry | `/srv/ark/essentials/ark-essentials.zip` → `/essentials.zip` | our own manuals and guides (every `/vault/…` link rewritten relative, so the pack opens from a folder), the quick card, `RECOVERY-SHEET.txt`, `START-HERE.txt`, its own `index.html`, and `MANIFEST.txt` with a sha256 per member — **16 members** on the box on 26 Oct 2026. Built as `.partial` and published by rename; **deterministic** (sorted members, fixed 1980 stamps), so two builds of the same shelf are the same bytes. The three **wall cards are not in it**; they print from `/cards` (§24.4 corrected three docs that said otherwise) |
 | The owner's half | `https://ark.lan:8443/admin/household` (`ark_admin.household*`) | save the nine answers, **I have read this today** (+ note), **Take that back**, **Show the household page to everyone** (`public_household`, absent or `1` = open), and **Make a new copy now**. Audited: `household-save`, `household-switch`, `household-read`, `household-forget`, `household-pack` |
 
 A topic nobody has read, a page the card does not carry and a box with no pack are all
@@ -1998,14 +1998,14 @@ its **content type**: 404 is honest (nobody has made a pack), a 200 must be
 `application/zip` — a 200 that is `text/html` is the portal answering, not the pack, and that
 is a failure.
 
-### 23.3 The tests (83 new: 382 collected, `380 passed, 2 skipped`)
+### 23.3 The tests (83 new here — 382 collected, `380 passed, 2 skipped`; **85 new / 384 collected / `382 passed`** after §24.2's two fix tests)
 
 | File | Tests | What it holds |
 |---|---|---|
 | `tests/test_household.py` | 13 | trimming and control characters, a refusal that names the limit (never a truncation), an unreadable stored row is an empty page and not a crash, `6 of 9` progress, and that a value is a sentence a person typed |
 | `tests/test_household_page.py` | 34 | `/household` renders the nine answers escaped, a missing page is named, *"Nobody has read this yet."* vs *read 214 days ago*, a page older than a year is **due**, the switch turns the page off and leaves the cards, manuals and pack alone, `/cards` carries three cards and no external reference, the owner's door saves/reads/forgets/rebuilds, and **every topic names a file that really is in `pi/vault`** |
 | `tests/test_qr.py` | 9 (+2 skipped) | structure with nothing installed (finders, timing, always-dark module, quiet zone, both copies of the format block read back) and — on a machine that has them — every module of versions 1–4 and all eight masks against `qrcode`, and the picture decoded back to its text by OpenCV. On the box the two cross-checks skip; the structure and the refusal still run |
-| `tests/test_essentials.py` | 22 | a build is whole and says what is in it, two builds are the same bytes, `/vault/…` links are relative where the pack lands, a member over the size cap is refused, a damaged member fails `verify`, `.partial` is swept and never offered, a `START-HERE` and an `index.html` come with it, and nothing is written outside `/srv/ark/essentials` |
+| `tests/test_essentials.py` | 24 | a build is whole and says what is in it, two builds are the same bytes, `/vault/…` links are relative where the pack lands, a member over the size cap is refused, a damaged member fails `verify`, `.partial` is swept and never offered, a `START-HERE` and an `index.html` come with it, nothing is written outside `/srv/ark/essentials`, **the shelf's own front page does not ride along beside the pack's** (found on the Pi, §24.2), and a pack that would hold two files of one name is refused before anything is written |
 | `tests/test_config.py` | +3 | the portal stays dark, large and self-contained: `--bg:#000`, ≥16 px body text, ≥44 px tap targets, and **nothing a browser would fetch** from outside the box in `index.html`/`help.html` (the box's own three addresses are stripped first, so written-out text like *open http://ark.lan* is not mistaken for a remote asset), and the two static pages start their body with a skip link that points at a `<main>` that really exists |
 
 The portal-plainness test failed twice for the right reason before it passed: a bare `http://`
@@ -2045,19 +2045,139 @@ the real eight topics, the console commands (run as `pi`, no root) and the house
 described as a reader sees it; `docs/REBUILD-ME-ARK.txt` lists the two new doors, the pack
 folder, the phase-60/65 additions and the body-based proof rule.
 
-### 23.6 What is unproven, and what is next
+### 23.6 What was unproven before the deploy, and what is next
 
-Nothing in this section has been seen by a browser on the Pi. Specifically unproven:
+At this checkpoint nothing in this section had been seen by a browser on the Pi: `/household`
+and `/cards` answering from the box's own nginx, a pack built on the card and verified, a card
+scanned by a real phone camera, the `:8443` `location = /essentials.zip` under TLS, and
+anything printed. The deploy (§24) closed the first three of those and found one real defect
+doing it; the camera and the printer are still nobody's.
 
-* `/household` and `/cards` answering **from the box's own nginx** (they answer from
-  `TestClient` and from the Mac's copies of the templates only);
-* a pack built on the card, `--verify` reading it back, and the little `index.html` inside it
-  opened on a phone with the box switched off;
-* a card **scanned by a real phone camera** — the square is proved against an independent
-  encoder and decoder on the Mac, not by a lens;
-* the `:8443` `location = /essentials.zip` answering under TLS (phase 65 will prove 200 or 404);
-* nobody has printed anything.
+---
 
-The next step is the deploy, in this order: `--only 60-portal,65-admin` (no migration, but the
-usual `sqlite3 … ".backup"` first is still cheap insurance), then `--only 90-verify`, then a
-pack, then a phone.
+## 24. The stage 7 deploy — and the one zip that talked over itself — 26 Oct 2026
+
+| | |
+|---|---|
+| Command | `bash scripts/03-provision.sh ark.local --only 60-portal,65-admin`, then `--only 90-verify` |
+| Insurance first | `sudo sqlite3 /srv/ark/api/data/ark.db ".backup '/root/ark-db-before-stage7.db'"` → 233,472 B, 01:15. **No migration ran**; the layout is still **v5**, because stage 7 adds no schema |
+| Result | both runs `ARK_INSTALL_COMPLETE`; `90-verify` → *“everything a visitor touches is working”* |
+| New proofs in the deploy | `✓ household page — The page for the day something goes wrong`; `✓ printable cards — Three addresses, three squares`; `✓ the pack to carry — 404`; `✓ Household page behind the sign-in — 303`; `✓ page pack path answers (no pack made yet) — 404` |
+| New proofs in the verifier | `✓ household page` and `✓ cards for the wall` (by body sentence), `✓ printable cards HTTP 200`; two soft lines, *none made yet — the owner makes one from their page* and *none yet* for the pack on `:8443` |
+| `/api/ready` | **200**, `8 / 8`, `blocking: []` before and after |
+| `/household` on the box | eight topics, each saying *Nobody has read this yet*, the nine answers still empty and admitted (*Nobody has written this page yet*), and *There is no copy to carry yet* under **Take it with you** |
+| The pages behind the topics | all eight answer 200 from `/vault/…` (`manuals/first-aid`, `water`, `food`, `fire`, `power`, `sanitation`, `shelter`, `guides/plumbing`) |
+| `/cards` on the box | three `<svg>` squares and **no external reference**: the only `http://` strings in the page are the box's own three addresses plus the SVG namespace |
+| The fix, deployed | `--only 60-portal` again after §24.2 (**no migration**, same `.backup` still good) → `ARK_INSTALL_COMPLETE`, *“the pack to carry 200”*; then `--only 90-verify` → **`✓ everything a visitor touches is working`**, `✓ household page` / `✓ cards for the wall` by body sentence, `✓ the pack to carry — a zip, application/zip`, `✓ page pack to carry — 41.1 kB, 16 files, made 2026-10-26 01:21` |
+| `/essentials.zip` after the fix | `200`, **`Content-Type: application/zip`**, `Content-Length: 42038` — the pack is now downloadable from `:80`, where it was honestly 404 before one existed |
+
+### 24.1 The pack, built on the card — twice
+
+The first build on the box, `sudo -u pi /usr/local/sbin/ark-essentials --build`, wrote
+`/srv/ark/essentials/ark-essentials.zip` — **43.2 kB, 17 files** — printed
+`UserWarning: Duplicate name: 'index.html'`, and `--list` showed `index.html` **twice**. That is
+the first pack this box has ever made, and it is what exposed the defect below.
+
+The same command, after the fix was deployed, wrote **41.1 kB, 16 files**, no warning at all,
+`index.html` exactly **once**, and:
+
+```
+This pack is whole: every file matches its fingerprint
+(/srv/ark/essentials/ark-essentials.zip).
+```
+
+The front page inside it is the pack's own — `<title>The Ark — essentials, on a stick</title>` —
+not phase 4's generated shelf listing, which is the whole point of the fix. Sixteen members is
+also the honest count: seventeen minus the shelf's `index.html` that no longer rides along.
+
+### 24.2 Defect: a real shelf has an `index.html` of its own, and the pack has one too
+
+The build said `UserWarning: Duplicate name: 'index.html'` and `--list` printed it **twice**.
+Phase 4 writes a generated `index.html` at the top of `/srv/ark/vault` (the plain shelf index),
+and `ark_essentials.build()` appends **its own** front page under the same name. `zipfile` only
+*warns*; every unzipper keeps whichever member came last, so a pack could open on the shelf's
+older listing instead of the pack's front page — silently, on the one file a person opens first
+on a stick. The Mac's copy of the vault has no `index.html` (it is generated on the card), so
+**no test could have caught this**; only building on the box could.
+
+The fix, in the same commit: `collect()` leaves out the vault's **root** `index.html` on purpose
+(a page called `index.html` inside a folder is content and still travels), and `build()` now
+refuses outright when two members would share a name — `ValueError("this pack would hold two
+files called … — nothing was written")`, raised before the `.partial` is created, with
+`ark-essentials` printing it as *Not done: …* rather than a traceback. Two tests:
+`test_the_shelfs_own_front_page_does_not_ride_along_beside_the_packs` (one member called
+`index.html`, every name unique, and the front page is the pack's own) and
+`test_a_pack_that_would_hold_two_files_of_one_name_is_refused` (nothing written, and the words
+say why). **382 passed, 2 skipped.**
+
+Proved on the box after deploying it, which is the only place it could be proved:
+
+```
+$ sudo -u pi /usr/local/sbin/ark-essentials --build
+Wrote /srv/ark/essentials/ark-essentials.zip — 41.1 kB, 16 files, made 2026-10-26 01:21.
+$ /usr/local/sbin/ark-essentials --list | grep -c index.html
+1
+$ /usr/local/sbin/ark-essentials --verify
+This pack is whole: every file matches its fingerprint (/srv/ark/essentials/ark-essentials.zip).
+```
+
+No `UserWarning`, one `index.html`, no `.partial` left behind, and `unzip -l` counts **16 files**
+against the pre-fix 17. The lesson, said plainly: **the box's vault is not the repo's vault** —
+phase 4 generates an `index.html` at the top of `/srv/ark/vault` that `pi/vault` has never
+contained, so a pack built on the Mac proves the format and nothing about this collision.
+
+### 24.3 What the deploy does not prove
+
+* **No camera has seen a square.** The cards are proved against an independent encoder and a
+  decoder on the Mac (`test_qr.py`), and drawn on the box's own page — but no phone has scanned
+  a printed card.
+* **Nothing has been printed.** The print stylesheet, the white cards and the page breaks are
+  read by a test and by the eye on screen only.
+* **The pack has not been opened on a phone with the box switched off** — it is built, listed,
+  `--verify`-proved and served as `application/zip` from the card, and its `index.html` and
+  `START-HERE.txt` have only ever been read by the tools. Nobody has unzipped it on a device that
+  is not the Ark.
+* **No person has filled in the nine answers**, so every sentence on `/household` is still the
+  page's own *Nobody has written this page yet*.
+* The store is still empty of read marks: *I have read this* has only met the test suite.
+* Nobody has looked at `/household`, `/cards` or **This household** in a browser. The deploy
+  proves what nginx and the API answer, and the proofs for the two public pages are **body
+  sentences** precisely because a 200 there means nothing (`location /` ends in
+  `try_files … /index.html`).
+
+### 24.4 Defect: three docs promised a `cards/` folder the pack has never held
+
+Found by reading `ark-essentials --list` on the box, name by name, against what the paperwork
+says. The real pack is fifteen pieces of payload plus `MANIFEST.txt`:
+
+```
+MANIFEST.txt  RECOVERY-SHEET.txt  START-HERE.txt  quick-card.html  index.html  manual.css
+guides/electrical.html  guides/household-repairs.html  guides/plumbing.html
+manuals/{fire,first-aid,food,power,sanitation,shelter,water}.html
+```
+
+Three documents said otherwise — `docs/ADMIN.md`'s *Where it is kept* table and its *what it
+holds is public content* sentence, `docs/USING-THE-ARK.md`'s **Take it with you** bullet, and
+`docs/REBUILD-ME-ARK.txt`'s `/srv/ark/essentials` block — each listing `cards/` (or "the three
+wall cards") **inside the pack**. Nothing in `pi/api/ark_essentials.py` has ever written a
+`cards/` folder: `grep -n cards` finds no match in the module. The design never asked for one
+either (`.clinerules`'s stage 7 row and §D of the requirements matrix both say *the quick card,
+the recovery sheet, `START-HERE` and `MANIFEST`*), so this was paperwork drifting ahead of the
+product, not a missing feature — the same family as a page that shows a control which does not
+exist (§8.6), one medium over.
+
+**Fixed by correcting the words, not by bolting a folder on.** A wall card's whole purpose is to
+be printed and stuck up *before* the box dies; buried in a zip on a stick it would be found on
+the worst possible day. `/cards` is where it is printed, the household page links there from
+**Take it with you**, and all three documents now say exactly that — including *"the three wall
+cards are **not** in it"* in so many words, so the next reader does not have to diff a listing
+against a sentence. `docs/REQUIREMENTS-MATRIX.md`'s pack row gained the quick card, the recovery
+sheet and the same negative sentence.
+
+**No test can catch this one**, and that is worth writing down: every member the pack really
+holds is covered by `tests/test_essentials.py`, but a document claiming a member that does not
+exist is invisible to pytest. What did catch it was listing the artefact and reading the
+paperwork beside it — the same method that found the duplicate `index.html` in §24.2, an hour
+earlier and on the same box. Both defects lived in the gap between *what the pack is* and *what
+was said about the pack*.
+

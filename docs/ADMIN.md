@@ -616,7 +616,7 @@ behind the same sign-in as the rest of the owner's door.
 | `settings` key `emergency_review` | one JSON row: which topic, which day, which account, which note. It travels in a backup with the rest of the records — a replaced card keeps what the household read |
 | `settings` key `household` | the household's own answers (plain text, capped per entry) |
 | `settings` key `public_household` | absent or `1` = the public page is on |
-| `/srv/ark/essentials/ark-essentials.zip` | the pack: our own manuals and guides (rewritten so their links work from a folder), `cards/` with the three wall cards, `RECOVERY-SHEET.txt`, `START-HERE.txt`, its own `index.html` and `MANIFEST.txt` with a sha256 per file |
+| `/srv/ark/essentials/ark-essentials.zip` | the pack: our own manuals and guides (rewritten so their links work from a folder), the quick card, `RECOVERY-SHEET.txt`, `START-HERE.txt`, its own `index.html` and `MANIFEST.txt` with a sha256 per file. **It does not hold the three wall cards** — those are printed from `/cards`, because a card's job is to be on the wall before the box dies, not inside a zip on a stick |
 | `audit_log` | `household-save`, `household-switch`, `household-read`, `household-forget`, `household-pack` |
 
 The pack is written as `ark-essentials.zip.partial` and published by **rename**, so
@@ -628,7 +628,7 @@ offers it is worse than no link — with `X-Content-Type-Options: nosniff`,
 `Cache-Control: no-cache` and a fixed
 `Content-Disposition: attachment; filename="ark-essentials.zip"`. The path is a
 fixed name; nothing in the request is ever joined to a folder. What it holds is
-public content (our own pages, the cards and the recovery sheet), never an
+public content (our own pages, the quick card and the recovery sheet), never an
 account or a record.
 
 From a console (run it as `pi`, never `sudo` — `/usr/local/sbin` is not on `pi`'s

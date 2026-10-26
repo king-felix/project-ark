@@ -84,7 +84,7 @@ def main(argv=None) -> int:
         sheet = Path(args.sheet) if args.sheet else _root() / "RECOVERY-SHEET.txt"
         try:
             made = pack.build(out, vault=vault, sheet=sheet)
-        except FileNotFoundError as exc:
+        except (FileNotFoundError, ValueError) as exc:
             _say(f"Not done: {exc}")
             return 1
         if not args.quiet:

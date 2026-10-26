@@ -2,7 +2,7 @@
 
 **Date:** 25 October 2026  
 **Branch:** `feature/admin-hardening`  
-**Suite:** `380 passed, 2 skipped` (21 files; `python -m pytest -o addopts='--strict-markers' -q`, Mac, throwaway databases) — the two skips are QR cross-checks that need `qrcode` / `opencv-python-headless` on the machine  
+**Suite:** `382 passed, 2 skipped` (21 files; `python -m pytest -o addopts='--strict-markers' -q`, Mac, throwaway databases) — the two skips are QR cross-checks that need `qrcode` / `opencv-python-headless` on the machine  
 **Hardware:** **deployed 25 Oct 2026** — `90-verify` green, `/api/ready` 200, the doors, the book
 route rules, a bundle and the arcade origin all answered on the Pi (`docs/IMPLEMENTATION-LOG.md`
 §15), `ark-arcade --import` answered honestly three times on the box (§18.4), and the name-from-the-
@@ -368,11 +368,14 @@ ones named in `docs/IMPLEMENTATION-LOG.md` §8.5 and §8.9.
 
 ## D — household layer
 
-**Status: PARTIAL (code + test), not deployed.** The emergency pages are reviewed, the
-cards and the pack exist and the household page is real, and each one is proved by a test
-that fails without it. What is missing is the rest of the house: there is no accessibility
-audit of the *library* pages (Kiwix's own reader is third-party markup), and no household
-page in any language but English.
+**Status: PARTIAL — deployed 26 Oct 2026, unproven in a person's hands.** The emergency pages
+are reviewed, the cards and the pack exist and the household page is real, and each one is proved
+by a test that fails without it; `/household`, `/cards`, the owner's **This household** page and
+`/essentials.zip` all answer from the box's own nginx (`docs/IMPLEMENTATION-LOG.md` §24). What is
+missing is the rest of the house: there is no accessibility audit of the *library* pages (Kiwix's
+own reader is third-party markup), no household page in any language but English, no phone has
+scanned a printed card, nothing has been printed, the pack has not been opened with the box off,
+and no person has filled in the nine answers.
 
 | Acceptance sentence | Where | Test |
 |---|---|---|
@@ -386,7 +389,7 @@ page in any language but English.
 | `/household` is public, plain words, no sign-in, and says only what the household told it | `main.household_page()` | `test_household_page.py::test_none_of_this_needs_a_password_from_a_reader`; `::test_the_household_page_is_reachable_from_every_page_and_says_nothing_it_was_not_told`; `::test_the_page_shows_what_a_person_typed_escaped_and_in_its_own_order` |
 | Three wall cards — the box's own Wi-Fi name, the home-network name, the number that always works — drawn **by the box** with no image file, no font and no network | `ark_cards.cards()`, `ark_qr.py`, `/cards` | `test_household_page.py::test_the_cards_are_inline_pictures_with_the_address_written_out`; `::test_a_card_needs_no_file_a_font_a_script_or_a_network`; `test_qr.py::test_only_a_short_plain_address_may_be_printed`; `test_household.py::test_the_cards_name_a_way_in_and_when_to_use_it` |
 | The squares decode back to the addresses they claim | `ark_qr.encode()` | `test_qr.py::test_the_shape_is_a_qr_symbol_and_not_just_a_square_of_noise`; `::test_both_copies_of_the_format_block_agree_with_the_mask_that_was_used`; `::test_the_picture_has_the_white_margin_the_scanner_needs` — plus two cross-checks against other encoders/decoders (`::test_every_module_matches_an_independent_encoder` needs `qrcode`, `::test_a_real_decoder_reads_the_text_back` needs `opencv-python-headless`), both skipped when the package is absent |
-| The pack holds the manuals and guides with links that still work from a folder, its own front page, and a `MANIFEST.txt` with a sha256 per member | `ark_essentials.build()/verify()` | `test_essentials.py::test_a_fresh_pack_is_whole_and_says_what_is_in_it`; `::test_a_link_on_the_box_is_made_relative_at_every_depth`; `::test_the_pack_carries_its_own_front_page_and_a_page_that_says_how_to_use_it`; `::test_nothing_in_the_pack_needs_the_network` |
+| The pack holds the manuals and guides with links that still work from a folder, the quick card, the recovery sheet, its own front page, and a `MANIFEST.txt` with a sha256 per member (the three wall cards are **not** in it — `/cards` is where they are printed) | `ark_essentials.build()/verify()` | `test_essentials.py::test_a_fresh_pack_is_whole_and_says_what_is_in_it`; `::test_a_link_on_the_box_is_made_relative_at_every_depth`; `::test_the_pack_carries_its_own_front_page_and_a_page_that_says_how_to_use_it`; `::test_nothing_in_the_pack_needs_the_network` |
 | A damaged pack is refused, never offered: `.partial` → rename, verified before it is published | `ark_essentials.verify()`, `pack_path()` | `test_essentials.py::test_a_pack_that_is_not_a_pack_is_refused_and_never_crashes`; `::test_a_member_that_changed_is_caught_by_its_fingerprint`; `test_household_page.py::test_a_damaged_pack_is_not_offered` |
 | `/essentials.zip` is a fixed name from a folder the box owns; no part of the request chooses a path | `main.essentials_download()` | `test_household_page.py::test_a_pack_that_was_made_is_offered_as_one_file_with_no_path_from_the_request`; `::test_a_reader_may_ask_how_big_it_is_before_downloading_it` |
 | No pack yet is a sentence, never a 500 and never an empty file | `main.essentials_download()` | `test_household_page.py::test_a_pack_that_was_never_made_is_a_sentence_not_a_broken_link`; `test_essentials.py::test_there_is_nothing_to_pack_and_it_says_so` |
