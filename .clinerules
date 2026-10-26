@@ -640,7 +640,7 @@ reference. `sudo -u pi /usr/local/sbin/ark-essentials --build` made
 60-portal` again, no migration) and the pack rebuilt on the card: **41.1 kB, 16 files**, one
 `index.html`, no warning, `--verify` → *“This pack is whole”*, `/essentials.zip` **200
 `application/zip` 42,038 B**; `90-verify` green again, `/api/ready` 200 `8 / 8`; **382 passed,
-2 skipped**. **Still unproven:** a phone scanning a printed card, anything printed at all, the
+2 skipped at that checkpoint (467 now, 23 files)**. **Still unproven:** a phone scanning a printed card, anything printed at all, the
 pack opened on a device that is not the Ark, and the nine answers — no person has filled them in,
 and no browser has drawn `/household`, `/cards` or **This household**. Those seven steps are written
 out as **`docs/HUMAN-TEST-LIST.md` §13**. Also found on the box while reading the pack's own
