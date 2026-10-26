@@ -800,9 +800,12 @@ curl -s http://127.0.0.1:8089/health          # the engine, from the box itself
 The portal answers `GET /ask?q=…` server-side (works with no JavaScript) and the
 page's own script streams the same answer from `GET /api/ask/stream?q=…` (plain
 text, `X-Accel-Buffering: no`, no gzip, a long read timeout in nginx). The question
-is trimmed and capped, one answer is written at a time (`BUSY_SENTENCE` for the
-second person), and the model is given: the brief, plus — for a question about a
-guide — **one** page: the one a plain word in the question points at (*cut* → first
+is trimmed and capped, one answer is written at a time — a **lease** with an owner and an expiry,
+never a bare lock: `begin()`/`end()`/`cancel()`, `busy_for()` and `busy_sentence()`, so a question
+whose reader closed the tab stops the engine and gives the slot back in the same breath, a lease
+past `LEASE_SECONDS` (260 s) is taken back with a line in the journal, and the second person is told
+how many seconds the wait really is (defect, log §32). The model is given: the brief, plus — for a
+question about a guide — **one** page: the one a plain word in the question points at (*cut* → first
 aid, *fuse* → power, *flush* → sanitation, `ark_ai.TOPIC_HINTS`), otherwise the one
 whose words overlap the question most, with a title match worth four times a body
 match. It is never given the board, the File Box, the accounts or the household
@@ -822,7 +825,10 @@ the truth. Do not remove it: the page is a helper, not an authority.
 * No internet, ever — the engine has no route and the service has no proxy.
 * No download button for a model on any page, no model chooser, no quantisation
   menu. A model is a file the owner puts on the card on purpose.
-* No queue: one answer at a time, and the second person is told so.
+* No queue: one answer at a time, and the second person is told so — with the seconds they will
+  really wait. A question whose reader has gone is **stopped** (the engine's connection is closed and
+  the slot is freed at once), and a slot that outlives its own ceiling is taken back rather than
+  refusing for ever (log §32).
 * No per-person limit and no identity — the same honest limit as the board: the
   switch turns the helper off for everybody, it never identifies anybody.
 

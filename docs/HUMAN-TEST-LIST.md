@@ -319,7 +319,8 @@ card, `/ask` answers real questions through nginx, and `/api/ready` reports the 
 Three questions were asked from the box's own shell and answered in 102–107 s; the streamed route
 was read with `curl`. **What no machine has done:** drawn the page in a browser or a phone, used the
 page's own script in a real browser, been asked twice at once, or read an answer aloud. Everything
-below the page is covered by `tests/test_ai.py` (36 tests).
+below the page is covered by `tests/test_ai.py` (44 tests), including the one slot as a lease and the
+cancel that frees it the moment a reader walks away (log §32).
 
 **Read this first:** an answer takes **one to two minutes** on a Pi 4. That is the box's speed with a
 940 MB model and not a fault; the page says "this can take a minute on a small box" and nginx waits
@@ -346,9 +347,18 @@ below the page is covered by `tests/test_ai.py` (36 tests).
 7. In **Community**, turn *"Anyone nearby can ask the helper a question"* off. `/ask` must refuse
    **and** `/api/ask/stream?q=hello` must refuse — type that address by hand, because a page that
    closes while the address stays open is exactly the hole this step is for. Turn it back on.
-8. Ask the same question from two phones within a second of each other: one gets words, the other
-   is told somebody else is asking. Then ask about the household's nine answers: the helper must not
-   know them, and must not quote one back.
+8. Ask the same question from two phones within a second of each other: one gets words, the other is
+   told somebody else is asking — **with the number of seconds to wait** ("in about 40 seconds"),
+   not just "a minute". Then ask about the household's nine answers: the helper must not know them,
+   and must not quote one back.
+8a. **Close the tab in the middle of an answer, then ask again straight away.** This is the defect
+   that made the page say *somebody else is asking* when nobody was (log §32). The second question
+   must be **answered**, not refused, and it must not matter that the first answer never finished.
+8b. At the box's own keyboard, while nothing is being asked:
+   `curl -sN --max-time 6 "http://127.0.0.1/api/ask/stream?q=tell+me+about+water" >/dev/null` and
+   then `sudo ss -tnp | grep :8089` **at once** — the connection must be **gone** (before the fix it
+   stayed `ESTABLISHED` for the whole answer) — and `curl "http://127.0.0.1/ask?q=hello"` must begin
+   answering instead of returning the *somebody else* sentence.
 9. **Optional, and it will be slow:** Gemma 4 E2B (3.3 GB) is still in `/srv/ark/ai/models/` and the
    **newest** `*.gguf` is the one used — Gemma is older, so the 1.5B answers. At 2.3 tokens/s Gemma
    cannot answer a page in under five minutes and it thinks before it writes, so it is not the model

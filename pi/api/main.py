@@ -24,6 +24,7 @@ cannot travel over plain HTTP even by accident.
 from __future__ import annotations
 
 import html
+import inspect
 import mimetypes
 import re
 import sqlite3
@@ -35,7 +36,8 @@ from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, Form, Response, UploadFile, File
+import anyio
+from fastapi import FastAPI, Form, Request, Response, UploadFile, File
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
                                RedirectResponse, StreamingResponse)
 
@@ -892,14 +894,22 @@ def ask_page(q: str = ""):
   <script>
   (function () {{
     var form = document.getElementById('ask-form');
-    var output = document.getElementById('ask-answer');
+    // Take the form over only when this browser can really receive an answer a piece
+    // at a time.  A browser that cannot is left with the plain form, which the box
+    // answers itself — asking twice would be two questions at once, and the second one
+    // would be told "somebody else is asking" about a question that was never given up
+    // on (defect, log §32).
     if (!form || !window.fetch || !window.TextDecoder) return;
+    if (!(window.Response && 'body' in window.Response.prototype)) return;
     var thinking = document.getElementById('ask-thinking');
+    var asking = false;
     form.addEventListener('submit', function (event) {{
       var field = document.getElementById('q');
       var question = (field && field.value || '').trim();
       if (!question) return;
       event.preventDefault();
+      if (asking) return;           // the box answers one question at a time as well
+      var output = document.getElementById('ask-answer');
       if (!output) {{
         output = document.createElement('div');
         output.id = 'ask-answer';
@@ -907,6 +917,7 @@ def ask_page(q: str = ""):
         output.setAttribute('aria-live', 'polite');
         form.parentNode.insertBefore(output, form);
       }}
+      asking = true;
       output.textContent = '';
       if (thinking) thinking.hidden = false;
       var typed = '';
@@ -918,7 +929,6 @@ def ask_page(q: str = ""):
           function pump() {{
             return reader.read().then(function (step) {{
               if (step.done) {{
-                if (thinking) thinking.hidden = true;
                 history.replaceState(null, '', '/ask?q=' + encodeURIComponent(question));
                 return;
               }}
@@ -930,8 +940,14 @@ def ask_page(q: str = ""):
           return pump();
         }})
         .catch(function () {{
+          // The words did not arrive.  One honest sentence, in place — a second
+          // question behind the first would only be told to wait.
+          output.textContent = 'That answer did not arrive. Try once more — '
+            + 'everything else on the box keeps working while you do.';
+        }})
+        .then(function () {{
+          asking = false;
           if (thinking) thinking.hidden = true;
-          form.submit();          // the plain page still answers, without a script
         }});
     }});
   }})();
@@ -940,9 +956,63 @@ def ask_page(q: str = ""):
                 tagline="A question in your own words, answered on this box")
 
 
+def _advance(iterator):
+    """One piece of an answer — ``None`` when there are no more.
+
+    ``StopIteration`` may not cross a thread boundary into an async generator: it comes
+    back as *async generator raised StopIteration*, which is a 500 for a person reading
+    a page.  The end of the answer is a plain ``None``.
+    """
+    try:
+        return next(iterator)
+    except StopIteration:
+        return None
+
+
+_ABANDON = {}
+
+
+def _abandon_kwarg() -> dict:
+    """The keyword that lets a blocked worker thread be left behind.
+
+    anyio renamed it (``cancellable`` → ``abandon_on_cancel``) and both spellings are in
+    the field.  Without it, cancelling the response *waits* for the thread — which on
+    this box means waiting out the rest of an answer nobody is reading, exactly the
+    defect this route exists to fix (log §32).  Asking the installed library is the only
+    way to be right on both.
+    """
+    if not _ABANDON:
+        try:
+            params = inspect.signature(anyio.to_thread.run_sync).parameters
+        except (TypeError, ValueError):                # pragma: no cover — never seen
+            params = {}
+        if "abandon_on_cancel" in params:
+            _ABANDON["kw"] = {"abandon_on_cancel": True}
+        elif "cancellable" in params:
+            _ABANDON["kw"] = {"cancellable": True}
+        else:                                          # pragma: no cover — never seen
+            _ABANDON["kw"] = {}
+    return _ABANDON["kw"]
+
+
+async def _one_piece(iterator):
+    """One piece of the answer, off the event loop and abandonable."""
+    return await anyio.to_thread.run_sync(_advance, iterator, **_abandon_kwarg())
+
+
 @app.get("/api/ask/stream")
-def ask_stream(q: str = ""):
-    """The same answer, as it is written — plain text, no buffering in the way."""
+async def ask_stream(request: Request, q: str = ""):
+    """The same answer, as it is written — plain text, no buffering in the way.
+
+    **The person in front of the page is what stops it.**  Starlette cancels this
+    response when their connection goes; the ``finally`` below then unhooks the engine
+    and gives the one slot back immediately.  Without that, an abandoned question kept
+    the box answering nobody for as long as the engine kept writing, and the next
+    visitor was told *somebody else is asking* about a question that had been given up
+    on — for up to the whole answer, and for ever if it never ended (defect, log §32).
+    Unhooking also tells the engine to stop, which is the only way a core stops burning
+    on words nobody will read on a box with four of them.
+    """
     # The switch closes both doors.  The page refusing while the stream kept
     # answering would leave the helper switched on for anybody who typed the
     # address instead of tapping the button.
@@ -951,14 +1021,26 @@ def ask_stream(q: str = ""):
                         media_type="text/plain; charset=utf-8",
                         headers={"Cache-Control": "no-store"})
 
-    def pieces():
+    token, pieces = ark_ai.stream(q)
+
+    async def words():
         try:
-            for piece in ark_ai.ask_stream(q):
+            while True:
+                piece = await _one_piece(pieces)
+                if piece is None:
+                    break
                 yield piece
+                if await request.is_disconnected():
+                    break
         except Exception as exc:                    # a broken helper never 500s a page
             print(f"ask stream failed: {exc}", flush=True)
             yield ark_ai.SORRY_SENTENCE
-    return StreamingResponse(pieces(), media_type="text/plain; charset=utf-8",
+        finally:
+            # Given back whether the answer was read to the end, the engine fell over,
+            # or the reader closed the page: all three mean nobody is waiting for it.
+            ark_ai.cancel(token)
+
+    return StreamingResponse(words(), media_type="text/plain; charset=utf-8",
                              headers={"Cache-Control": "no-store",
                                       "X-Accel-Buffering": "no"})
 

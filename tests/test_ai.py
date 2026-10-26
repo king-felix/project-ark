@@ -400,7 +400,8 @@ def test_one_answer_is_written_at_a_time(public, monkeypatch):
 
     with Engine() as engine:
         _fit(public.ark, monkeypatch, engine)
-        assert ark_ai._SLOT.acquire(blocking=False), "the slot should have been free"
+        token, left = ark_ai.begin("test")
+        assert token and left == 0, "the slot should have been free"
         try:
             assert ark_ai.busy() is True
             assert ark_ai.ask("how do I store water") == ("", ark_ai.BUSY_SENTENCE)
@@ -408,8 +409,117 @@ def test_one_answer_is_written_at_a_time(public, monkeypatch):
             page = public.client.get("/ask", params={"q": "how do I store water"})
             assert "Somebody else is asking" in page.text
         finally:
-            ark_ai._SLOT.release()
+            ark_ai.end(token)
     assert ark_ai.busy() is False
+
+
+def test_the_slot_is_a_lease_that_names_who_holds_it(public, monkeypatch):
+    """A late answer must never free the slot of the question that came after it."""
+    import ark_ai
+
+    first, _left = ark_ai.begin("test")
+    assert first
+    try:
+        assert ark_ai.end(first + 1) is False, "a token that is not the holder frees nothing"
+        assert ark_ai.busy() is True
+        assert ark_ai.end(first) is True
+    finally:
+        ark_ai.end(first)
+    assert ark_ai.busy() is False
+    assert ark_ai.end(first) is False, "giving the slot back twice is not an error"
+
+
+def test_the_wait_is_named_in_seconds_and_not_just_in_minutes(public, monkeypatch):
+    """A person told *wait* deserves to be told how long — and it is a real figure."""
+    import ark_ai
+
+    with Engine() as engine:
+        _fit(public.ark, monkeypatch, engine)
+        token, _left = ark_ai.begin("test")
+        try:
+            with ark_ai._lease:
+                ark_ai._holder["since"] = time.monotonic() - (ark_ai.LEASE_SECONDS - 40)
+            assert 34 <= ark_ai.busy_for() <= 46
+            problem = ark_ai.ask("how do I store water")[1]
+            assert problem.startswith("Somebody else is asking")
+            assert "in about" in problem and "seconds" in problem
+            assert ark_ai.busy_sentence(600) == ark_ai.BUSY_SENTENCE
+        finally:
+            ark_ai.end(token)
+
+
+def test_a_slot_left_behind_is_taken_back_rather_than_refusing_for_ever(public, monkeypatch,
+                                                                      capsys):
+    """The half of §32 that no amount of politeness can fix on its own.
+
+    A question that outlives its own ceiling is not going to be collected by anybody.
+    The next person must be answered, not told to come back for ever — and the journal
+    must say what happened, because a takeover that leaves no trace is a takeover nobody
+    can diagnose a month later.
+    """
+    import ark_ai
+
+    with Engine() as engine:
+        _fit(public.ark, monkeypatch, engine)
+        token, _left = ark_ai.begin("test")
+        with ark_ai._lease:
+            ark_ai._holder["since"] -= ark_ai.LEASE_SECONDS + 1
+        answer, problem = ark_ai.ask("how do I store water")
+        assert problem == ""
+        assert answer == "".join(ANSWER_WORDS)
+        assert ark_ai.busy() is False
+        assert "took the slot back" in capsys.readouterr().out
+        assert ark_ai.end(token) is False, "the slot it took over is somebody else's now"
+
+
+def test_the_engine_is_unhooked_from_the_moment_the_reader_goes(public, monkeypatch):
+    """Cancelling closes the engine's response — that is what stops the reading.
+
+    A flag alone cannot do it: the worker thread is already blocked inside the engine's
+    socket, so the connection is what has to go.  Closing it is also how the engine is
+    told to stop writing, which gives one of four cores back.
+    """
+    import ark_ai
+
+    closed = []
+
+    class SlowEngine:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            chunk = json.dumps({"choices": [{"delta": {"content": "Half "}}]})
+            return f"data: {chunk}\n".encode("utf-8")
+
+        def close(self):
+            closed.append(True)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    with Engine() as engine:
+        _fit(public.ark, monkeypatch, engine)
+        monkeypatch.setattr(ark_ai, "_request", lambda *_a, **_k: SlowEngine())
+        token, pieces = ark_ai.stream("how do I store water")
+        try:
+            assert next(pieces) == "Half "
+            assert ark_ai.busy() is True
+            assert ark_ai.cancel(token) is True
+            assert closed == [True], "the engine must be told the reader has gone"
+            assert ark_ai.busy() is False, "and the next question must not be refused"
+            newer, _left = ark_ai.begin("test")
+            try:
+                pieces.close()
+                assert closed == [True]
+                assert ark_ai.busy() is True, "an old answer must not free a new slot"
+            finally:
+                ark_ai.end(newer)
+        finally:
+            pieces.close()
+    assert ark_ai._live == {}, "nothing may be left hooked to the engine"
 
 
 def test_an_engine_that_dies_mid_answer_keeps_what_it_wrote(public, monkeypatch):
@@ -470,6 +580,64 @@ def test_a_truncated_answer_is_one_honest_sentence_and_not_a_broken_page(public,
 # ---------------------------------------------------------------------------
 #  the owner's side, and the one thing it must never do
 # ---------------------------------------------------------------------------
+def test_the_page_gives_the_slot_back_the_moment_its_reader_goes(public, monkeypatch):
+    """The route, driven the way Starlette drives it: read one piece, then a close.
+
+    This is the whole defect in one test.  Before the fix, the client going away left
+    the slot taken until the engine finished writing words nobody would read; now the
+    close reaches the ``finally`` and the next person is answered straight away.
+    """
+    import anyio
+
+    import ark_ai
+    import main as portal
+
+    class NobodyThere:
+        async def is_disconnected(self):
+            return False
+
+    async def read_one_then_close():
+        response = await portal.ask_stream(NobodyThere(), q="how do I store water")
+        body = response.body_iterator
+        first = await body.__anext__()
+        assert ark_ai.busy() is True, "the slot is held while the words are being written"
+        await body.aclose()                     # what Starlette does when the tab closes
+        return first
+
+    with Engine() as engine:
+        _fit(public.ark, monkeypatch, engine)
+        assert anyio.run(read_one_then_close) == ANSWER_WORDS[0]
+        assert ark_ai.busy() is False, "a reader who has gone must not block the next question"
+
+
+def test_nothing_is_left_hooked_or_held_after_an_answer(public, monkeypatch):
+    import ark_ai
+
+    with Engine() as engine:
+        _fit(public.ark, monkeypatch, engine)
+        assert "".join(ark_ai.ask_stream("how do I store water")) == "".join(ANSWER_WORDS)
+        assert ark_ai._live == {}
+        assert ark_ai.busy() is False
+        assert public.client.get("/ask", params={"q": "how do I store water"}).status_code == 200
+        assert ark_ai._live == {}, "the plain page must not leave a response hooked"
+        assert ark_ai.busy() is False, "and must give the slot back too"
+
+
+def test_the_page_asks_one_question_and_never_a_second_behind_the_first(public):
+    """The other half of §32: the page's own way of asking twice.
+
+    A browser that cannot take a stream never got an answer from the script, so the
+    script handed the question to the form *after* the first question had already left —
+    two questions at once, and the second one told to wait.  Streaming is checked before
+    the form is taken over now, and a failure is a sentence rather than another question.
+    """
+    page = public.client.get("/ask").text
+    assert "'body' in window.Response.prototype" in page, \
+        "the script must know it can stream before it takes the form over"
+    assert "form.submit()" not in page, "a failed stream must never send a second question"
+    assert "asking = false" in page, "one question at a time, in the page too"
+
+
 def test_the_helper_is_reported_on_the_owner_page_and_never_blocks_readiness(public):
     import ark_health
 

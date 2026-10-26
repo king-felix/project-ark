@@ -457,7 +457,20 @@ def messages(question: str, kind: str = "") -> list:
 # ---------------------------------------------------------------------------
 #  one answer at a time — the box has four cores and no spare ones
 # ---------------------------------------------------------------------------
-_SLOT = threading.Lock()
+# The slot is a **lease**, not a lock: it names whoever holds it and the moment they
+# took it, so a question whose reader has gone can never leave the box saying
+# "somebody else is asking" for ever.  A bare `threading.Lock` did exactly that
+# (defect, log §32) — the abandoned question held it for as long as the engine kept
+# writing a full answer, and a wedged one held it until the service was restarted,
+# because nothing ever gave it back.
+LEASE_SECONDS = ANSWER_SECONDS + 60
+
+_lease = threading.Lock()                 # guards the two lines below
+_holder = {"token": 0, "since": 0.0, "kind": ""}
+_last_token = 0
+
+_live_lock = threading.Lock()
+_live = {}                                # token -> the engine's response, so it can be unhooked
 
 BUSY_SENTENCE = ("Somebody else is asking the helper right now. Try again in a minute — "
                  "everything else on the box still works while you wait.")
@@ -465,9 +478,93 @@ SORRY_SENTENCE = ("The helper could not put an answer together. Everything else 
                   "still works; the guides and the library are the place to look.")
 
 
+def _now() -> float:
+    return time.monotonic()
+
+
+def busy_sentence(seconds: int = 0) -> str:
+    """One plain sentence about the wait, with the number when the box knows it."""
+    if 0 < seconds < 90:
+        return ("Somebody else is asking the helper right now. Try again in about "
+                + str(int(seconds)) + " seconds — everything else on the box still "
+                "works while you wait.")
+    return BUSY_SENTENCE
+
+
+def begin(kind: str = "answer"):
+    """Take the one slot: ``(token, 0)`` — or ``(0, seconds_left)`` if it is taken.
+
+    A lease that has outlived its own ceiling is **taken back** rather than honoured
+    for ever: the answer it belonged to is not going to be collected by anybody, and a
+    helper that refuses for the rest of its life is worse than one that says so.
+    """
+    global _last_token
+    with _lease:
+        held = _holder["token"]
+        if held:
+            left = LEASE_SECONDS - (_now() - _holder["since"])
+            if left > 0:
+                return (0, max(1, int(round(left))))
+            print("ark-ai: took the slot back from an answer that outlived "
+                  + str(int(LEASE_SECONDS)) + " seconds", flush=True)
+        _last_token += 1
+        token = _last_token
+        _holder.update(token=token, since=_now(), kind=kind)
+    cancel(held)                          # stop the answer nobody is collecting
+    return (token, 0)
+
+
+def end(token) -> bool:
+    """Give the slot back — only if it is still ours.
+
+    A late answer must never free the slot of the question that came after it.
+    """
+    with _lease:
+        if token and _holder["token"] == token:
+            _holder.update(token=0, since=0.0, kind="")
+            return True
+        return False
+
+
+def busy_for() -> int:
+    """Seconds the next person would wait; ``0`` when nobody is asking at all."""
+    with _lease:
+        if not _holder["token"]:
+            return 0
+        left = LEASE_SECONDS - (_now() - _holder["since"])
+    return max(0, int(round(left)))
+
+
 def busy() -> bool:
-    """True while another question is being answered."""
-    return _SLOT.locked()
+    """True while another question is really being answered."""
+    return busy_for() > 0
+
+
+def _hook(token, response) -> None:
+    with _live_lock:
+        _live[token] = response
+
+
+def _unhook(token):
+    with _live_lock:
+        return _live.pop(token, None)
+
+
+def cancel(token) -> bool:
+    """The person who asked has gone: unhook the engine and free the slot at once.
+
+    Closing the response is what interrupts a read that is already waiting inside a
+    worker thread, and dropping the connection is how the engine is told to stop
+    writing — one of the four cores stops burning on words nobody will read.
+    """
+    response = _unhook(token)
+    if response is not None:
+        try:
+            response.close()
+        except Exception:                 # a socket that is already gone needs no closing
+            pass
+    end(token)
+    return response is not None
 
 
 def clean_question(text) -> tuple:
@@ -508,10 +605,20 @@ def ask(question: str) -> tuple:
     reason = not_ready_reason()
     if reason:
         return ("", NOT_READY[reason][0])
-    if not _SLOT.acquire(blocking=False):
-        return ("", BUSY_SENTENCE)
+    token, left = begin("answer")
+    if not token:
+        return ("", busy_sentence(left))
+    try:
+        return _answer_once(token, question)
+    finally:
+        end(token)
+
+
+def _answer_once(token, question: str) -> tuple:
+    """One whole answer, with the slot already held (and given back by the caller)."""
     try:
         with _request(question, stream=False) as resp:
+            _hook(token, resp)
             raw = resp.read()
         data = json.loads(raw.decode("utf-8", "replace") or "{}")
         choices = data.get("choices") or []
@@ -528,7 +635,7 @@ def ask(question: str) -> tuple:
         print(f"ark-ai: could not answer ({exc})", flush=True)
         return ("", SORRY_SENTENCE)
     finally:
-        _SLOT.release()
+        _unhook(token)
 
 
 def _delta(raw: bytes) -> str:
@@ -554,27 +661,32 @@ def _delta(raw: bytes) -> str:
     return piece or ""
 
 
-def ask_stream(question: str):
-    """Yield an answer as it is written.  Always yields *something*.
+def stream(question: str):
+    """``(token, pieces)`` — the answer as it is written.
 
-    The first thing yielded is either the answer's first words or one plain sentence
-    explaining why there are none.  "Somebody else is asking" is decided before the
-    first byte, so the page can say *wait* instead of showing an empty box.
+    The slot is taken **now**, before the first byte, so the page can say *wait*
+    instead of showing an empty box; ``cancel(token)`` is what the page calls when the
+    person in front of it goes away.  ``token`` is ``0`` for an answer that never needed
+    the slot (a refusal), and cancelling that is a no-op.
     """
     question, problem = clean_question(question)
     if problem:
-        yield problem
-        return
+        return (0, iter((problem,)))
     reason = not_ready_reason()
     if reason:
-        yield NOT_READY[reason][0] + ". " + NOT_READY[reason][1]
-        return
-    if not _SLOT.acquire(blocking=False):
-        yield BUSY_SENTENCE
-        return
+        return (0, iter((NOT_READY[reason][0] + ". " + NOT_READY[reason][1],)))
+    token, left = begin("stream")
+    if not token:
+        return (0, iter((busy_sentence(left),)))
+    return (token, _pieces(token, question))
+
+
+def _pieces(token, question: str):
+    """The words one at a time, from a slot this generator gives back."""
     written = 0
     try:
         with _request(question, stream=True) as resp:
+            _hook(token, resp)
             for raw in resp:
                 piece = _delta(raw)
                 if not piece:
@@ -583,14 +695,37 @@ def ask_stream(question: str):
                 if written > MAX_ANSWER:
                     break
                 yield piece
-    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as exc:
+    except Exception as exc:
+        # Broad on purpose.  A response closed by `cancel()` from another thread is the
+        # ordinary way this ends when a person walks away, and it arrives as whichever
+        # error the socket library felt like raising.
         print(f"ark-ai: stream stopped ({exc})", flush=True)
         if written:
             yield "\n\n(The helper stopped answering there. What it wrote is above.)"
     finally:
-        _SLOT.release()
+        _unhook(token)
+        end(token)
     if not written:
         yield SORRY_SENTENCE
+
+
+def ask_stream(question: str):
+    """Yield an answer as it is written.  Always yields *something*.
+
+    The first thing yielded is either the answer's first words or one plain sentence
+    explaining why there are none.  "Somebody else is asking" is decided before the
+    first byte, so the page can say *wait* instead of showing an empty box.
+
+    ``cancel`` in the ``finally`` is what makes an abandoned answer harmless: a caller
+    that stops reading half way (the page did, because the person closed it) still
+    gives the slot back, and stops the engine writing to nobody.
+    """
+    token, pieces = stream(question)
+    try:
+        for piece in pieces:
+            yield piece
+    finally:
+        cancel(token)
 
 
 # ---------------------------------------------------------------------------

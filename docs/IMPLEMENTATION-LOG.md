@@ -2723,3 +2723,108 @@ speed of a Pi 4 with a 1.5B model and should be read as such in `docs/USING-THE-
 **Tests:** **516 passed, 2 skipped, 24 files** (8 new: the proxy's patience, the prompt budget, the
 worst-case arithmetic, the title weight, the plain word, the hint that never hides a page, the
 numbered steps, the rsync that must not eat the engine).
+
+---
+
+## 32. A question nobody was reading, and a box that said "somebody else is asking"
+
+**Reported 26 Oct 2026, by the owner, from a phone:** *"Somebody else is asking the helper right
+now. Try again in a minute — everything else on the box still works while you wait."* Nobody was
+asking anything.
+
+### 32.1 What was really happening
+
+`ark_ai._SLOT` was `threading.Lock()`, taken by `ask()` and by `ask_stream()` and given back in a
+`finally`. **`ask_stream()` is a generator**, and a generator's `finally` runs only when somebody
+*resumes* it. `/api/ask/stream` handed that generator to `StreamingResponse`, which runs a sync
+iterator through `iterate_in_threadpool`; when Starlette cancels an abandoned response, the
+cancellation stops the async wrapper but the worker thread stays blocked in `for raw in resp` —
+inside the engine's socket — so the generator is never resumed, the `finally` never runs, and the
+slot stays taken until the engine has finished writing an answer nobody will ever read. The lock had
+no owner and no expiry either, so a wedged answer held it for ever, until the service was restarted.
+
+Measured on the box before the fix (a 6 s `curl -N` against `/api/ask/stream`, then a second
+question):
+
+```
+curl -sN --max-time 6 .../api/ask/stream?q=…   → client gone after 6 s
+ss -tnp | grep :8089                           → ESTABLISHED  …:52442 python   ← still reading
+curl /ask?q=hello                              → "Somebody else is asking the helper right now."
+ss -tnp | grep :8089   (17 s later)            → 2 sockets, still there
+```
+
+Two more paths produced the same sentence, and both are the page's fault rather than the engine's:
+the `/ask` script called `form.submit()` when the stream failed — **a second question behind the
+first**, which any browser without `Response.body` did every time — and a person asking again while
+their first answer was still being written (100 s feels like a long time) was told to wait without
+being told how long.
+
+### 32.2 The fix
+
+1. **The slot is a lease.** `begin(kind)` returns `(token, 0)` or `(0, seconds_left)`; `end(token)`
+   gives it back **only if that token is still the holder** (a late answer cannot free the slot of
+   the question that came after it); `busy_for()` is the honest remaining time, and a lease past
+   `LEASE_SECONDS` (= `ANSWER_SECONDS + 60`) is **taken back**, with
+   `ark-ai: took the slot back from an answer that outlived 260 seconds` in the journal. `busy()`
+   still exists, now backed by the lease. `busy_sentence(seconds)` says *"in about 40 seconds"* when
+   the box knows, and the old sentence when it does not.
+2. **The engine is hooked, and unhooked.** `_live[token]` holds the engine's response while an
+   answer is being read. `cancel(token)` pops it, `close()`s it — which is what breaks a read that
+   is already blocked in a worker thread — and releases the lease. Closing the socket is also how
+   the engine is told to stop writing, so a core stops burning on words nobody will read.
+3. **The route watches the person, not the engine.** `/api/ask/stream` is now `async def`, takes the
+   `Request`, pulls each piece in a worker thread with
+   `anyio.to_thread.run_sync(…, abandon_on_cancel=True)` (anyio renamed that flag from
+   `cancellable` — `_abandon_kwarg()` asks the installed signature instead of guessing), checks
+   `request.is_disconnected()` between pieces, and calls `ark_ai.cancel(token)` in a `finally`, so a
+   closed tab, a dropped Wi-Fi and a cancelled response all end in the same two things: the engine is
+   unhooked and the slot is free. `_advance()` turns `StopIteration` into `None`, because it may not
+   cross into an async generator (that would be *async generator raised StopIteration*, a 500 for a
+   reader).
+4. **The page asks once.** The script checks `'body' in window.Response.prototype` *before* taking
+   the form over, keeps one request in flight (`asking`), and on failure writes one plain sentence —
+   *"That answer did not arrive. Try once more — everything else on the box keeps working while you
+   do."* — instead of submitting the question again.
+
+### 32.3 What the tests now hold
+
+`tests/test_ai.py` is **44** (7 new), and the suite is **523 passed, 2 skipped, 24 files**:
+
+| Test | What it pins |
+|---|---|
+| `test_the_slot_is_a_lease_that_names_who_holds_it` | a token that is not the holder frees nothing; giving it back twice is not an error |
+| `test_the_wait_is_named_in_seconds_and_not_just_in_minutes` | `busy_for()` is a real figure and the sentence carries it; 600 s falls back to the plain sentence |
+| `test_a_slot_left_behind_is_taken_back_rather_than_refusing_for_ever` | an expired lease is taken over, the journal says so, and the next question is **answered** |
+| `test_the_engine_is_unhooked_from_the_moment_the_reader_goes` | `cancel()` closes the engine's response and frees the slot, and a later `close()` of the old answer cannot free a newer one |
+| `test_the_page_gives_the_slot_back_the_moment_its_reader_goes` | the real route: one piece read, then `aclose()` — the slot is free and the next person is not refused |
+| `test_nothing_is_left_hooked_or_held_after_an_answer` | after a stream and after a plain `/ask?q=`, `_live` is empty and the slot is free |
+| `test_the_page_asks_one_question_and_never_a_second_behind_the_first` | the script checks it can stream, never calls `form.submit()`, and keeps one request in flight |
+
+### 32.4 Proved, and still to prove
+
+Proved here: the seven tests above, `python3 -m py_compile` on both changed modules, and the whole
+suite green at **523 passed, 2 skipped**.
+
+Proved on **this machine, against a real server** (`/tmp/ark_askproof.py`, throwaway, removed after
+the run — the `pi/api` app under `uvicorn`, a stub engine writing a piece every 0.25 s, and a **raw
+socket** that asks for a streamed answer and closes at 3 s, which is what a closed tab does):
+
+```
+client gone at 3 s; engine had written 12 pieces
+API sockets still to the engine, 2 s after the reader left: 0
+second answer: piece0 piece1 piece2 …
+PASS: the abandoned question gave the slot back; the second was answered
+engine pieces: 14 before the second answer | the abandoned stream failed on the engine side: True
+plain page answered: True | busy sentence: False
+```
+
+Three things that run says, and that the old code could not: the API's connection to the engine is
+**gone** two seconds after the reader left (before the fix it was still `ESTABLISHED` — measured on
+the card, §32.1); the **engine** saw its stream fail, so it stopped writing instead of finishing an
+answer for nobody; and the next question was **answered** rather than told to wait. The plain page
+(`/ask?q=…`) still answers afterwards, so the server-side door holds nothing either.
+
+**Still to prove on the card:** the same 6 s `curl -N` followed by a second question (expected: the
+`:8089` socket gone at once, and an answer instead of a refusal), and the two-thumb version — closing
+a tab mid-answer on a phone and asking again straight away. Both are steps 8a and 8b of
+`docs/HUMAN-TEST-LIST.md` §14.

@@ -365,8 +365,9 @@ completely normal state — the owner puts one on the card when they want to
 (`sudo ark-ai-model-fetch --status` says what is missing). Every other page works
 without it.
 
-**If it says somebody else is asking:** the box writes one answer at a time, because it
-has no cores to spare. Wait a minute and ask again. Nothing is lost.
+**If it says somebody else is asking:** the box answers one question at a time, because it
+has no cores to spare. It tells you how many seconds to wait — wait that long and ask again.
+Nothing is lost, and everything else on the box keeps working while you wait.
 
 **If the owner has switched it off**, the page says so in one sentence and everything
 else on the box is untouched.
