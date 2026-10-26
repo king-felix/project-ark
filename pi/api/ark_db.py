@@ -30,7 +30,7 @@ ARK_ROOT = Path(os.environ.get("ARK_ROOT", "/srv/ark"))
 DB_PATH = Path(os.environ.get("ARK_DB", str(ARK_ROOT / "api" / "data" / "ark.db")))
 MARKER_PATH = Path(os.environ.get("ARK_MARKER", str(DB_PATH.parent / "ark.installed")))
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # ---------------------------------------------------------------------------
 #  migrations — append, never edit an entry that has already shipped
@@ -349,6 +349,19 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             "CREATE INDEX IF NOT EXISTS games_crc32 ON games(crc32) WHERE crc32 <> ''",
         ],
     ),
+    (
+        6,
+        [
+            # A save used to be one file per slot, overwritten in place before the
+            # row was committed: a cut between the two left new bytes under the old
+            # row's fingerprint, and every later read was refused.  A save is now
+            # stored as an immutable, content-addressed file and the row names it,
+            # so the old bytes stay readable until the new row is on the card
+            # (see ark_arcade.player_save_put).  An empty ``blob`` means the row
+            # predates this layout: the file is still at its old name.
+            "ALTER TABLE player_saves ADD COLUMN blob TEXT NOT NULL DEFAULT ''",
+        ],
+    ),
 ]
 
 
@@ -364,7 +377,15 @@ def connect() -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=8000")
     conn.execute("PRAGMA foreign_keys=ON")
-    conn.execute("PRAGMA synchronous=NORMAL")
+    # ``synchronous=FULL`` on **every** connection, not just the one the repair
+    # pass opened.  With ``NORMAL`` SQLite reports a commit once the bytes are in
+    # the kernel's cache, so a power cut can lose the last thing the box told a
+    # person it had kept — a note that was posted, a save that was confirmed.  The
+    # cost is one fsync per write transaction on this card; the portal's writes are
+    # a handful a minute, and correctness here is the whole point of the box.
+    # ``ark_self_heal.harden()`` sets the same pair on the databases it owns, but a
+    # pragma is per connection: this line is what the living box actually uses.
+    conn.execute("PRAGMA synchronous=FULL")
     return conn
 
 

@@ -151,9 +151,13 @@ def test_a_save_round_trip_and_a_stale_page_is_refused(public):
     kept = public.client.put(url, content=b"first save", headers=headers, cookies=cookies)
     assert kept.status_code == 200, kept.text
     assert kept.json()["revision"] == 1
-    stored = next((public.ark.root / "arcade" / "saves").rglob("state-01.state"))
-    assert (stored.stat().st_mode & 0o777) == 0o600
-    assert (stored.parent.stat().st_mode & 0o777) == 0o700
+    # The bytes live once, under a name made of their own fingerprint.
+    folder = public.ark.root / "arcade" / "saves" / str(1) / str(game_id) / "blobs"
+    stored = [p for p in folder.iterdir() if p.suffix == ".bin"]
+    assert len(stored) == 1
+    assert stored[0].read_bytes() == b"first save"
+    assert (stored[0].stat().st_mode & 0o777) == 0o600
+    assert (stored[0].parent.stat().st_mode & 0o777) == 0o700
 
     listing = public.client.get(f"/arcade/api/saves/{game_id}", cookies=cookies)
     assert listing.status_code == 200
@@ -395,11 +399,14 @@ def test_an_import_cannot_walk_out_of_the_save_folder(public):
         zf.writestr("not-a-save.txt", b"nope")
     with public.ark.db.read() as conn:
         result = arc.player_import_bytes(conn, int(player["id"]), buffer.getvalue())
+        kept = arc.player_save_get(conn, int(player["id"]), int(game_id), "state", 1)
     assert result["imported"] == 1
     assert result["skipped"]
     assert not (public.ark.root / "arcade" / "escape.state").exists()
-    assert (public.ark.root / "arcade" / "saves" / str(player["id"]) / str(game_id)
-            / "state-01.state").is_file()
+    # The good entry arrived, at the blob name — never at a path from the archive.
+    assert kept is not None and kept["data"] == b"a real save"
+    assert not (public.ark.root / "arcade" / "saves" / str(player["id"]) / str(game_id)
+                / "state-01.state").exists()
 
 
 def test_a_player_name_is_not_an_administrator(public):

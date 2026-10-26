@@ -16,9 +16,12 @@ reach ``/admin``.  The two session tables are deleted separately.
 
 A save is a file that arrives from a browser, which makes it untrusted input.
 It is therefore bounded (``MAX_SAVE``), named by ARK rather than by the browser,
-spooled and fsynced in ``/srv/ark/arcade/tmp``, fingerprinted with SHA-256, and
-published with ``os.replace`` while the database row and the file are made to
-agree.  The game's own label is only ever used for display.
+and stored **once, under a name made of its own SHA-256** (``blobs/``): written to
+a temporary file, fsynced, renamed into place with the folder fsynced too, and
+only then pointed at by the database row, in one transaction with compare-and-set.
+Nothing is overwritten in place, so a save that is committed and a save that is
+readable are always the same save — even across a power cut.  The game's own
+label is only ever used for display.
 """
 
 from __future__ import annotations
@@ -541,9 +544,18 @@ def save_filename(kind: str, slot: int) -> str:
 
 
 def _atomic_write(destination: Path, data: bytes, mode: int = 0o600) -> None:
-    ensure_dirs()
+    """Write these bytes beside their destination, fsynced, and rename into place.
+
+    Staged in the destination's **own folder**: a rename is atomic only within one
+    filesystem, and ``arcade/tmp`` and ``arcade/saves`` are two folders a future
+    change could put on different cards.  The temporary keeps a leading dot, so a
+    leftover from a cut can never be mistaken for a save, and the folder is fsynced
+    after the rename — without that the rename itself can be lost, which is how a
+    "saved" game comes back empty.
+    """
     destination.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(prefix="save-", suffix=".part", dir=str(temp_root()))
+    fd, tmp_name = tempfile.mkstemp(prefix=".save-", suffix=".part",
+                                    dir=str(destination.parent))
     try:
         with os.fdopen(fd, "wb") as fh:
             fh.write(data)
@@ -551,13 +563,138 @@ def _atomic_write(destination: Path, data: bytes, mode: int = 0o600) -> None:
             os.fsync(fh.fileno())
         os.chmod(tmp_name, mode)
         os.replace(tmp_name, destination)
+        sync_dir(destination.parent)
     finally:
         if os.path.exists(tmp_name):
-            os.unlink(tmp_name)
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+
+
+def sync_dir(folder: Path) -> None:
+    """Make a rename in this folder survive the next cut.  Never raises."""
+    try:
+        fd = os.open(str(folder), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        try:
+            os.close(fd)
+        except OSError:                  # pragma: no cover - nothing to do
+            pass
 
 
 def save_path(player_id: int, game_id: int, kind: str, slot: int) -> Path:
+    """Where a save used to live: one file per slot, overwritten in place.
+
+    Kept because a card that predates the blob layout still holds its saves here,
+    and a restore of an older bundle puts them back here.  New saves are written
+    once, under a name made of their own fingerprint (``blob_path``).
+    """
     return new_player_save_dir(player_id, game_id) / save_filename(kind, slot)
+
+
+#: Where a save's bytes live now: one immutable file per content, in a folder
+#: beside the slot names.  Nothing is ever overwritten, so the row and the file can
+#: never disagree — a save that is written but not committed is a file no row names
+#: (pruned later), and a save committed whose file is gone reads as "not there"
+#: rather than as a lie.
+BLOB_DIR = "blobs"
+
+#: How long an unreferenced blob (a put that was cut short) is left before the next
+#: put in the same folder clears it away.  Long enough for a slow phone.
+STALE_BLOB_HOURS = 6.0
+
+
+def blob_dir(player_id: int, game_id: int) -> Path:
+    path = new_player_save_dir(player_id, game_id) / BLOB_DIR
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        os.chmod(path, 0o700)
+    except OSError:
+        pass
+    return path
+
+
+def blob_name(kind: str, slot: int, digest: str) -> str:
+    """A save's file name, decided by what is in it — never by a counter."""
+    stem = Path(save_filename(kind, slot)).stem
+    return "%s-%s.bin" % (stem, digest)
+
+
+def blob_path(player_id: int, game_id: int, blob: str) -> Optional[Path]:
+    """The file a row names, or ``None`` if the name is not one this box wrote."""
+    name = str(blob or "")
+    if not name or name != Path(name).name or "/" in name or "\\" in name:
+        return None
+    return blob_dir(player_id, game_id) / name
+
+
+def _value(row: Any, name: str, default: Any = "") -> Any:
+    """One column of a row, or a default — a row need not carry every column."""
+    try:
+        return row[name]
+    except (IndexError, KeyError, TypeError):
+        return default
+
+
+def save_file(player_id: int, row: Any) -> Optional[Path]:
+    """The file holding this row's bytes: the blob, or the old slot name."""
+    blob = _value(row, "blob", "")
+    game_id = int(_value(row, "game_id", 0) or 0)
+    if blob:
+        return blob_path(player_id, game_id, str(blob))
+    name = str(_value(row, "filename", "") or "")
+    if not name or name != Path(name).name or "/" in name or "\\" in name:
+        return None
+    return new_player_save_dir(player_id, game_id) / name
+
+
+def _forget(path: Optional[Path]) -> None:
+    """Remove a file this box made, and say nothing if it is already gone."""
+    if path is None:
+        return
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
+def _prune_blobs(conn: sqlite3.Connection, player_id: int, game_id: int) -> None:
+    """Clear away blobs no row names, and half-written ones from a cut.
+
+    Run after a commit has landed, so anything unreferenced is either what a
+    crashed put left behind or a save that has been replaced.  Age is the guard: a
+    blob younger than ``STALE_BLOB_HOURS`` may belong to another browser saving
+    right now, and deleting a save somebody is in the middle of writing is far
+    worse than leaving a file for another day.
+    """
+    folder = blob_dir(player_id, game_id)
+    try:
+        named = {str(r[0]) for r in conn.execute(
+            "SELECT blob FROM player_saves WHERE player_id = ? AND game_id = ? AND blob <> ''",
+            (int(player_id), int(game_id))).fetchall()}
+    except sqlite3.DatabaseError:
+        return
+    cutoff = time.time() - STALE_BLOB_HOURS * 3600.0
+    try:
+        entries = list(os.scandir(str(folder)))
+    except OSError:
+        return
+    for entry in entries:
+        if entry.name in named:
+            continue
+        try:
+            if not entry.is_file(follow_symlinks=False) or entry.stat().st_mtime > cutoff:
+                continue
+            os.unlink(entry.path)
+        except OSError:
+            continue
 
 
 def saves_for(conn: sqlite3.Connection, player_id: int,
@@ -570,7 +707,14 @@ def saves_for(conn: sqlite3.Connection, player_id: int,
         args.append(int(game_id))
     sql += " ORDER BY g.title COLLATE NOCASE, s.kind, s.slot"
     rows = conn.execute(sql, args).fetchall()
-    return [_row(r) for r in rows]
+    # The blob's name is how this box finds the bytes; it is not part of a save as
+    # a person or another page sees it.
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        item = _row(row)
+        item.pop("blob", None)
+        out.append(item)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -658,7 +802,21 @@ def _check_game(conn: sqlite3.Connection, game_id: int) -> Dict[str, Any]:
 def player_save_put(conn: sqlite3.Connection, player_id: int, game_id: int, kind: str,
                     slot: int, data: bytes, expected_revision: Optional[int] = None,
                     expected_sha: str = "") -> Dict[str, Any]:
-    """Replace one save, refusing stale writes and never touching another owner."""
+    """Replace one save, refusing stale writes and never touching another owner.
+
+    The order matters, and it is the whole point of this function:
+
+    1. the bytes are written to a **new** file named after their own fingerprint,
+       fsynced, with the folder fsynced after the rename;
+    2. only then is the row pointed at it, in one transaction, with a compare and
+       set on ``revision`` — so two browsers saving at once cannot both win;
+    3. only after that commit is the save it replaced removed.
+
+    A cut at any point leaves either the old row describing the old bytes or the new
+    row describing the new bytes.  Nothing is overwritten in place, so there is no
+    moment in which a row describes a file it no longer matches — which is exactly
+    how a save used to come back as "the file does not match its record".
+    """
     game = _check_game(conn, game_id)
     filename = save_filename(kind, slot)
     if not data:
@@ -677,40 +835,53 @@ def player_save_put(conn: sqlite3.Connection, player_id: int, game_id: int, kind
         )
     if expected_sha and row and row["sha256"] and expected_sha != row["sha256"]:
         raise SaveConflict("This save changed somewhere else. Reload the game before saving.")
+
     digest = sha256_bytes(data)
-    path = save_path(player_id, game["id"], kind, slot)
-    previous = None
-    if row and path.is_file():
-        try:
-            previous = path.read_bytes()
-        except OSError:
-            previous = None
-    _atomic_write(path, data)
+    blob = blob_name(kind, slot, digest)
+    destination = blob_dir(player_id, game["id"]) / blob
+    # Step 1 — the bytes, under a name nothing else can claim.  An identical save
+    # re-writes the same file (harmless); different bytes get a different name,
+    # which is what lets the old row keep describing the old bytes.
+    if not destination.is_file():
+        _atomic_write(destination, data)
+
+    previous_blob = str(_value(row, "blob", "") or "") if row else ""
     stamp = now_iso()
     try:
+        # Step 2 — the record.  Compare and set: the UPDATE only applies while the
+        # revision is the one read above, so a second writer gets zero rows and a
+        # SaveConflict instead of quietly clobbering a newer save.
         with ark_db.tx(conn):
-            conn.execute(
-                "INSERT INTO player_saves (player_id, game_id, kind, slot, filename, size, sha256, revision, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?) "
-                "ON CONFLICT(player_id, game_id, kind, slot) DO UPDATE SET "
-                "  filename = excluded.filename, size = excluded.size, sha256 = excluded.sha256, "
-                "  revision = player_saves.revision + 1, updated_at = excluded.updated_at",
-                (int(player_id), int(game["id"]), kind, int(slot), filename, len(data), digest, stamp),
-            )
-    except sqlite3.DatabaseError:
-        # The database row is the truth.  If it could not record the save, the
-        # disk must go back to what the row still describes (or to nothing).
-        if previous is not None:
-            try:
-                _atomic_write(path, previous)
-            except OSError:
-                pass
-        else:
-            try:
-                path.unlink()
-            except OSError:
-                pass
+            if row:
+                changed = conn.execute(
+                    "UPDATE player_saves SET filename = ?, size = ?, sha256 = ?, blob = ?, "
+                    "  revision = revision + 1, updated_at = ? "
+                    "WHERE id = ? AND revision = ?",
+                    (filename, len(data), digest, blob, stamp, int(row["id"]), current_revision),
+                )
+            else:
+                changed = conn.execute(
+                    "INSERT INTO player_saves (player_id, game_id, kind, slot, filename, size, "
+                    "  sha256, blob, revision, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?) "
+                    "ON CONFLICT(player_id, game_id, kind, slot) DO NOTHING",
+                    (int(player_id), int(game["id"]), kind, int(slot), filename, len(data),
+                     digest, blob, stamp),
+                )
+            if changed.rowcount != 1:
+                raise SaveConflict("This save changed somewhere else. Reload the game before saving.")
+    except BaseException:
+        # The row is the truth.  Bytes no row names are unreferenced rather than
+        # wrong, and the next successful put in this folder clears them away.
+        _prune_blobs(conn, player_id, game["id"])
         raise
+
+    # Step 3 — what this save replaced, now that the record has landed.
+    if previous_blob and previous_blob != blob:
+        _forget(blob_path(player_id, game["id"], previous_blob))
+    if row and not previous_blob:
+        # A row from before the blob layout: its old slot file is redundant now.
+        _forget(save_path(player_id, game["id"], kind, slot))
+    _prune_blobs(conn, player_id, game["id"])
     return {
         "game_id": int(game["id"]), "slug": game["slug"], "kind": kind, "slot": int(slot),
         "filename": filename, "size": len(data), "sha256": digest,
@@ -727,13 +898,14 @@ def player_save_get(conn: sqlite3.Connection, player_id: int, game_id: int,
     ).fetchone()
     if not row:
         return None
-    path = save_path(player_id, game_id, kind, slot)
-    if not path.is_file():
+    path = save_file(player_id, row)
+    if path is None or not path.is_file():
         return None
     data = path.read_bytes()
     if sha256_bytes(data) != row["sha256"]:
         raise SaveConflict("The save file on this box does not match its record. It was not handed out.")
     out = _row(row)
+    out.pop("blob", None)
     out["data"] = data
     out["game"] = game_by_id(conn, int(game_id))
     return out
@@ -749,10 +921,10 @@ def player_save_delete(conn: sqlite3.Connection, player_id: int, save_id: int) -
     with ark_db.tx(conn):
         conn.execute("DELETE FROM player_saves WHERE id = ? AND player_id = ?",
                      (int(save_id), int(player_id)))
-    try:
-        save_path(player_id, row["game_id"], row["kind"], row["slot"]).unlink()
-    except OSError:
-        pass
+    # Nothing names these bytes any more, so they may go — and only now.
+    _forget(save_file(player_id, row))
+    _forget(save_path(player_id, int(row["game_id"]), row["kind"], int(row["slot"])))
+    _prune_blobs(conn, player_id, int(row["game_id"]))
     return True
 
 
@@ -763,8 +935,10 @@ def player_export_bytes(conn: sqlite3.Connection, player_id: int) -> bytes:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for row in saves_for(conn, player_id):
-            path = save_path(player_id, row["game_id"], row["kind"], row["slot"])
-            if not path.is_file():
+            stored = conn.execute(
+                "SELECT * FROM player_saves WHERE id = ?", (int(row["id"]),)).fetchone()
+            path = save_file(player_id, stored) if stored else None
+            if path is None or not path.is_file():
                 continue
             arc = f"saves/{row['game_slug']}/{row['filename']}"
             zf.writestr(arc, path.read_bytes())
