@@ -831,9 +831,13 @@ def _ask_paragraphs(text: str) -> str:
     """An answer as escaped paragraphs.
 
     Model text is a stranger: it is escaped like anything else a reader's eye
-    lands on, and blank lines become paragraph breaks rather than one wall.
+    lands on, blank lines become paragraph breaks rather than one wall, and a run of
+    numbered steps written without line breaks — the first real answer on the box came
+    back as *"…follow these steps:1. Boil water.2. Filter water…"* — gets one per step.
+    A list nobody can read is not an answer.
     """
-    blocks = [block.strip() for block in (text or "").split("\n") if block.strip()]
+    text = re.sub(r"(?<=[.!?:])\s*(?=\d{1,2}\.\s)", "\n", text or "")
+    blocks = [block.strip() for block in text.split("\n") if block.strip()]
     return "".join(f"<p>{esc(block)}</p>" for block in blocks)
 
 

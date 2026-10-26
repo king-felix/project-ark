@@ -196,6 +196,124 @@ def test_the_helper_reads_the_pages_and_never_the_households_own_answers(public)
     assert "Not a readable page" not in context, "only the manuals and guides are read"
 
 
+def test_one_question_is_a_prompt_this_box_can_read(public):
+    """Reading is the expensive half: about six characters a token, 6.8 tokens a second.
+
+    Measured on the box itself, 26 Oct 2026: 871 tokens of prompt took **128 s** to
+    read, so the first real question was answered at 152.6 s — past the page's own
+    ceiling, and long past the proxy's 120 s.  Three whole guide pages were most of
+    it.  This pins the size of one prompt, so a later "include a bit more" cannot
+    quietly make every answer late again.
+    """
+    import ark_ai
+
+    vault = public.ark.root / "vault"
+    (vault / "manuals").mkdir(parents=True, exist_ok=True)
+    for n in range(6):
+        (vault / "manuals" / f"water-{n}.html").write_text(
+            "<html><body><h1>Safe water " + str(n) + "</h1><p>"
+            + ("Boiling water for one whole minute makes it safe to drink. " * 60)
+            + "</p></body></html>", encoding="utf-8")
+    (public.ark.root / "ai").mkdir(parents=True, exist_ok=True)
+    (public.ark.root / "ai" / ark_ai.BRIEF_NAME).write_text("brief " * 900, encoding="utf-8")
+
+    conversation = ark_ai.messages("how do I make water safe to drink")
+    prompt = sum(len(turn["content"]) for turn in conversation)
+    assert prompt <= ark_ai.PROMPT_BUDGET, (
+        f"{prompt} characters is about {prompt // ark_ai.CHARS_PER_TOKEN} tokens — "
+        f"{prompt / ark_ai.CHARS_PER_TOKEN / ark_ai.READ_TOKENS_PER_SECOND:.0f} s of "
+        "reading on this box before the model writes a word")
+
+    # the page that matches best, and only that one: six pages mention water
+    context, used = ark_ai.context_for("how do I make water safe to drink", "guide")
+    assert len(used) == ark_ai.GUIDE_PAGES == 1
+    assert len(context) <= ark_ai.BRIEF_BUDGET + ark_ai.GUIDE_EXCERPT + 200
+
+
+def test_the_worst_case_answer_fits_in_the_time_the_page_waits():
+    """Three numbers that disagreed in the field, held together by arithmetic."""
+    import ark_ai
+
+    read_seconds = (ark_ai.PROMPT_BUDGET / ark_ai.CHARS_PER_TOKEN
+                    / ark_ai.READ_TOKENS_PER_SECOND)
+    write_seconds = ark_ai.MAX_TOKENS / ark_ai.WRITE_TOKENS_PER_SECOND
+    assert read_seconds + write_seconds < ark_ai.ANSWER_SECONDS, (
+        f"a full prompt plus a full answer is {read_seconds + write_seconds:.0f} s, "
+        f"which the page — waiting {ark_ai.ANSWER_SECONDS} s — would give up on")
+    assert ark_ai.MAX_TOKENS <= 200, "a longer answer is minutes of writing on a Pi 4"
+
+
+def test_a_run_of_numbered_steps_is_broken_into_one_line_each(public):
+    """The first real answer on the box came back as one unreadable run-on line.
+
+    *"…follow these steps:1. Boil water.2. Filter water through a clean cloth…"* — the
+    model wrote the list without line breaks and the page rendered it as a single
+    paragraph.  Steps a person cannot read are not an answer (measured on the box,
+    26 Oct 2026, log §31).
+    """
+    markup = public.app._ask_paragraphs(
+        "To make water safe to drink, follow these steps:1. Boil water."
+        "2. Filter water through a clean cloth.3. Let it cool before drinking.")
+    assert markup.count("<p>") == 4
+    assert ">1. Boil water.<" in markup
+    assert ">3. Let it cool before drinking.<" in markup
+
+    # ordinary prose keeps its shape: a decimal is not a numbered list
+    assert public.app._ask_paragraphs("Boil it for 1.5 minutes.").count("<p>") == 1
+
+
+def test_a_plain_word_like_cut_finds_the_first_aid_page(public):
+    """A person says "deep cut", not "wound" — and the box must find the page.
+
+    The first real answer to a first-aid question had **no first-aid page in front of
+    it**: "cut" was not one of the routing words, so the question went to the general
+    answer and the model invented a page called ``/firstaid/`` (measured on the box,
+    26 Oct 2026).  With the old scoring the page titled *First aid* also tied with the
+    sanitation page and lost the tie, because ties were broken by name in reverse.
+    """
+    import ark_ai
+
+    assert ark_ai.route("what do I do about a deep cut")[0] == "guide"
+
+    vault = public.ark.root / "vault"
+    (vault / "manuals").mkdir(parents=True, exist_ok=True)
+    (vault / "manuals" / "sanitation.html").write_text(
+        "<html><body><h1>Sanitation and hygiene</h1><p>Keep waste away from the water. "
+        "Wash your hands often.</p></body></html>", encoding="utf-8")
+    (vault / "manuals" / "first-aid.html").write_text(
+        "<html><body><h1>First aid: the first ten minutes</h1><p>Press firmly on a cut "
+        "with a clean cloth and keep pressing.</p></body></html>", encoding="utf-8")
+
+    context, used = ark_ai.context_for("what do I do about a deep cut", "guide")
+    assert used[0]["name"] == "manuals/first-aid.html"
+    assert "Press firmly on a cut" in context
+
+
+def test_a_hint_prefers_a_page_and_never_hides_one(public):
+    """A preference, not a filter: no first-aid page here, and the answer still comes."""
+    import ark_ai
+
+    vault = public.ark.root / "vault"
+    (vault / "guides").mkdir(parents=True, exist_ok=True)
+    (vault / "guides" / "household-repairs.html").write_text(
+        "<html><body><h1>Everyday fixes</h1><p>A cut in a hose can be taped until you "
+        "can buy another.</p></body></html>", encoding="utf-8")
+
+    assert ark_ai._hinted("what do I do about a deep cut") == [], (
+        "a hint must name only pages that are really on the card")
+    context, used = ark_ai.context_for("what do I do about a deep cut", "guide")
+    assert used and used[0]["name"] == "guides/household-repairs.html"
+    assert "A cut in a hose" in context
+
+
+def test_a_word_in_a_title_is_worth_more_than_one_in_the_body():
+    import ark_ai
+
+    assert ark_ai._score("how do I fix a leaking tap", "a tap", "") > 0, "three letters count"
+    assert (ark_ai._score("water", "nothing here", "Water: find it, store it")
+            > ark_ai._score("water", "water", "")), "a title says what a page is for"
+
+
 def test_the_brief_never_lends_the_model_the_households_own_words(public):
     """It is a file on the card, so it says out loud what must never be in an answer."""
     import ark_ai

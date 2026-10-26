@@ -354,9 +354,11 @@ small model talking, not a doctor. Where the page can point at a real guide, it 
 tap through and read the page itself.
 
 **How to use it:** one question at a time, in a full sentence, and give it the detail a
-person would need (who, how long, how bad). If the answer arrives word by word, that is
-normal — it is being written as you watch. **Questions other people ask** under the box
-are ready-made examples to tap.
+person would need (who, how long, how bad). **Give it a minute or two** — the box has four
+small cores and an answer takes 100 seconds or so here; you will see the words appear as
+they are written, and the page waits for it (the box gives one question three minutes
+before it gives up). **Questions other people ask** under the box are ready-made examples
+to tap.
 
 **If it says the helper is not fitted:** the box has no model in it yet, and that is a
 completely normal state — the owner puts one on the card when they want to

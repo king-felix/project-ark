@@ -74,12 +74,18 @@ REMOTE
 ok "SSH and passwordless sudo work"
 
 # ---- copy the source tree ----------------------------------------------------
+# `ai/llama-server` is excluded on both hops: the engine is a 17 MB arm64 binary that
+# phase 58-ai expects to find *carried* at /srv/ark/src/ai/llama-server (nothing on the
+# box can build one), and `--delete` would otherwise remove it on the next deploy — so
+# a carry that worked would silently disappear and /ask would say it is not fitted.
 info "copying pi/ to $STAGE (small — the collections are downloaded later)"
-rsync -az --delete --exclude '.DS_Store' -e "ssh ${SSH_OPTS[*]}" \
+rsync -az --delete --exclude '.DS_Store' --exclude 'ai/llama-server' \
+      -e "ssh ${SSH_OPTS[*]}" \
       "$ROOT/pi/" "pi@$HOST:$STAGE/" || die "rsync failed"
 
 ssh "${SSH_OPTS[@]}" "pi@$HOST" "sudo install -d -m 755 -o root -g root /srv/ark/src \
-  && sudo rsync -a --delete --chown=root:root --chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r $STAGE/ /srv/ark/src/ \
+  && sudo rsync -a --delete --chown=root:root --chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r \
+       --exclude 'ai/llama-server' $STAGE/ /srv/ark/src/ \
   && sudo find /srv/ark/src -name '*.sh' -exec chmod 755 {} + \
   && sudo find /srv/ark/src/bin -type f -exec chmod 755 {} + \
   && rm -rf $STAGE" || die "could not install the source tree into /srv/ark/src"

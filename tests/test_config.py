@@ -69,13 +69,53 @@ def test_the_admin_area_is_not_proxied_on_the_public_port():
 
 
 def _backend_pages() -> list[str]:
-    """The pages ``location /`` must not be allowed to answer for."""
+    """The pages ``location /`` must not be allowed to answer for.
+
+    Two shapes count, because two shapes are in the shipped file: the alternation for
+    the ordinary backend pages, and a ``location = /name`` for a page that needs its
+    own settings (``/ask`` waits longer than a search does).
+    """
     for line in NGINX.splitlines():
         stripped = line.strip()
         if stripped.startswith("location ~ ^/(") and "search" in stripped:
             inner = stripped.split("^/(", 1)[1].rsplit(")$", 1)[0]
-            return inner.split("|")
+            names = inner.split("|")
+            names.extend(_exact_page_locations())
+            return names
     raise AssertionError("ark.conf has no proxy location for the backend-built pages")
+
+
+def _exact_page_locations() -> list[str]:
+    """``location = /ask``-style blocks, for a page served on its own."""
+    found = []
+    for line in NGINX.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("location = /"):
+            continue
+        name = stripped[len("location = /"):].split(" ", 1)[0]
+        if name and "/" not in name and re.fullmatch(r"[\w.-]+", name):
+            found.append(name)
+    return found
+
+
+def _location_block(prefix: str) -> str:
+    """The body of one ``location`` block, up to its closing brace."""
+    lines = NGINX.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip().startswith(prefix):
+            body = []
+            for inner in lines[index + 1:]:
+                if inner.strip() == "}":
+                    break
+                body.append(inner)
+            return "\n".join(body)
+    return ""
+
+
+def _proxy_read_timeout(block: str) -> int:
+    match = re.search(r"^\s*proxy_read_timeout\s+(\d+)s\s*;", block, re.M)
+    assert match, "a proxied location must say how long it waits"
+    return int(match.group(1))
 
 
 # ---------------------------------------------------------------------------
@@ -163,6 +203,48 @@ def test_every_page_the_backend_builds_is_named_in_the_proxy_block():
         assert needle in PORTAL_PHASE, (
             f"60-portal.sh no longer proves the page that says {needle!r}")
         assert needle in MAIN_APP, f"no page says {needle!r} any more"
+
+
+# ---------------------------------------------------------------------------
+#  the proxy must wait longer than the page it is waiting for
+# ---------------------------------------------------------------------------
+def test_the_helper_gets_longer_than_its_own_ceiling():
+    """A proxy that gives up first turns a slow answer into a 504.
+
+    Recorded defect, 26 Oct 2026: ``/ask`` was served by the same block as a
+    search, whose ``proxy_read_timeout`` was 120 s, while ``ark_ai`` waits
+    ``ANSWER_SECONDS`` for the engine — so a perfectly healthy box answered
+    ``504 Gateway Time-out`` to the first real question, and again to the second.
+    The engine needs over two minutes for one answer on a Pi 4 (log §31), so the
+    proxy's patience has to be the longest of the three, not the shortest.
+    """
+    import ark_ai
+
+    block = _location_block("location = /ask")
+    assert block, ("/ask must have a location of its own: it waits far longer than a "
+                   "search does, and sharing that block is how the 504 happened")
+    waited = _proxy_read_timeout(block)
+    assert waited > ark_ai.ANSWER_SECONDS, (
+        f"nginx gives up after {waited}s while the page waits {ark_ai.ANSWER_SECONDS}s: "
+        "every slow answer would be a Gateway Time-out on a working box")
+
+    # and the page really does reach the backend that waits: named, proxied, no
+    # try_files fallback that would hand back the front page instead
+    assert "proxy_pass http://ark_api;" in block
+    assert "ask" in _backend_pages()
+
+
+def test_the_deploy_does_not_delete_the_engine_it_was_told_to_carry():
+    """``58-ai`` says "carry one to ``$ARK_SRC/ai/llama-server``"; the rsync uses --delete.
+
+    Nothing on the box can build the engine, so a carried binary is the only way one
+    arrives — and a deploy that removes it would leave ``/ask`` saying it is not fitted
+    on a box that had just been made to work.
+    """
+    provision = (REPO / "scripts" / "03-provision.sh").read_text(encoding="utf-8")
+    assert provision.count("--exclude 'ai/llama-server'") >= 2, (
+        "both rsync hops must keep a carried engine: the Mac hop and the hop into "
+        "/srv/ark/src")
 
 
 # ---------------------------------------------------------------------------

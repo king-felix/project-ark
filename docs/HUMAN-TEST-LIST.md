@@ -312,48 +312,54 @@ reads oddly once it is on the page, and whether the printed card is big enough t
 
 ---
 
-## 14. The helper, with a model on the card (30 minutes, needs a model file)
+## 14. The helper, with a model on the card (30 minutes — a model **is** fitted now)
 
-**Why it is unproven:** `/ask` has never been drawn by a browser on the box and no model has ever
-been fitted there, so the page has only ever answered *"the helper is not fitted on this box"* to
-the test suite's eyes. Everything below the page — routing, escaping, the one-answer-at-a-time
-rule, the stream, the switch — is covered by `tests/test_ai.py` (30 tests) and nothing in that file
-is a thumb on glass (`docs/IMPLEMENTATION-LOG.md` §25).
+**Where the box stands on 26 Oct 2026** (log §31): the engine is installed, a 1.5B model is on the
+card, `/ask` answers real questions through nginx, and `/api/ready` reports the helper as ready.
+Three questions were asked from the box's own shell and answered in 102–107 s; the streamed route
+was read with `curl`. **What no machine has done:** drawn the page in a browser or a phone, used the
+page's own script in a real browser, been asked twice at once, or read an answer aloud. Everything
+below the page is covered by `tests/test_ai.py` (36 tests).
 
-1. **First, with nothing fitted.** Deploy with `--only 58-ai`, then open `http://ark.lan/ask` on a
-   phone. It must say the helper is not fitted, name the one thing that is missing, still show the
-   box to type in, and the three example questions must be tappable. No other page changes.
-2. Ask a question anyway. You must get the same honest sentence back — **not** an answer, and not a
-   spinner that never finishes.
-3. Carry a model in on a stick: `sudo ark-ai-model-fetch --from /media/usb/model.gguf`, then
-   `systemctl status ark-ai --no-pager`. It must say *listening*, MemAvailable must stay above
-   ~1.5 GiB, and a first answer may take a **minute** on this box — that is the box's speed, not a
-   fault. Then reload `/ask`; ask *"how do I make water safe to drink"* and read the answer out
-   loud: it must be plain prose, and the sentence *"It can be wrong — the guides are the truth"*
-   must be under it.
-4. Ask a question about a guide (*"where are the plumbing guides"*): the answer must name pages from
-   **this** card, and tapping the guide it names must open the real page.
-5. Type a question 2,000 characters long: it must be refused **with the limit named** (never
+**Read this first:** an answer takes **one to two minutes** on a Pi 4. That is the box's speed with a
+940 MB model and not a fault; the page says "this can take a minute on a small box" and nginx waits
+300 s so a slow answer is never a 504.
+
+1. Open `http://ark.lan/ask` on a phone. The box to type in must be there, the three example
+   questions tappable, and **no** "not fitted" sentence — the helper is fitted on this card.
+2. Tap *"How do I make water safe to drink?"* and wait. Words should appear as they are written
+   (that is the page's script reading `/api/ask/stream`; it has only ever been read by `curl` on the
+   box until now). The answer must be plain prose with **no** words from the banned list (no
+   *Kiwix*, *ZIM*, *port*, *localhost*), and *"It can be wrong — the guides are the truth"* must be
+   under it.
+3. Ask *"what do I do about a deep cut"*. The answer must be first-aid advice, not a description of
+   which page to read, and it must not invent an address like `/firstaid/` — the box reads
+   `manuals/first-aid.html` for this question (that was a real defect on 26 Oct 2026, log §31.3).
+4. Type a question 2,000 characters long: it must be refused **with the limit named** (never
    silently shortened, never a broken page).
-6. `sudo -u pi /usr/local/sbin/ark-build-ai-brief --write`, then ask something about this box
-   (*"how many books are there"*): the number must match **Books** on the front page, not a number
-   the model invented. Run `--dry-run` too and confirm it writes nothing.
-7. Open `https://ark.lan:8443/admin/health`: the helper's row must be there, must say what is
-   fitted, and **must not** be able to make the box look broken — pull the model out and
-   `/api/ready` must still answer 200.
-8. In **Community**, turn *"Anyone nearby can ask the helper a question"* off. `/ask` must refuse
+5. Ask *"how many books are there"*: the number must match **Books** on the front page, not a number
+   the model invented. Rebuild the facts first with
+   `sudo -u pi /usr/local/sbin/ark-build-ai-brief --write` if the shelf has changed.
+6. Open `https://ark.lan:8443/admin/health`: the helper's row must say what is fitted, and it must
+   **never** be able to make the box look broken — move `models/*.gguf` aside and `/api/ready` must
+   still answer 200 with the helper's row not ready.
+7. In **Community**, turn *"Anyone nearby can ask the helper a question"* off. `/ask` must refuse
    **and** `/api/ask/stream?q=hello` must refuse — type that address by hand, because a page that
    closes while the address stays open is exactly the hole this step is for. Turn it back on.
-9. Ask the same question from two phones within a second of each other: one gets words, the other
-   is told somebody else is asking. Do it again with the second phone asking about the household's
-   nine answers: the helper must not know them, and must not quote one back.
+8. Ask the same question from two phones within a second of each other: one gets words, the other
+   is told somebody else is asking. Then ask about the household's nine answers: the helper must not
+   know them, and must not quote one back.
+9. **Optional, and it will be slow:** Gemma 4 E2B (3.3 GB) is still in `/srv/ark/ai/models/` and the
+   **newest** `*.gguf` is the one used — Gemma is older, so the 1.5B answers. At 2.3 tokens/s Gemma
+   cannot answer a page in under five minutes and it thinks before it writes, so it is not the model
+   a page can wait for (log §31.2). Leave it, or delete it to free 3.3 GB.
 
-**You should see:** one plain answer, made on the box, with the guides as the authority and the
-household's own words never leaving the page they were typed on.
+**You should see:** one plain answer, made on the box, in about a minute or two, with the guides as
+the authority and the household's own words never leaving the page they were typed on.
 
-**Write down:** roughly how long the first answer took, whether any answer named a page that does
-not exist, and any question where the helper answered *about the box* instead of about the
-question.
+**Write down:** roughly how long the first answer took on a phone, whether the words appeared
+gradually or all at once, whether any answer named a page that does not exist, and any question where
+the helper answered *about the box* instead of about the question.
 
 ---
 

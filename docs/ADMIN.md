@@ -693,9 +693,53 @@ question and no stored answer. The switch in §7 closes it.
 
 | Part | Path | Missing means |
 |---|---|---|
-| the engine | `/usr/local/bin/llama-server` | the unit stops before starting (`ConditionPathExists`); the page answers *"the helper is not fitted on this box"* and says what is missing |
+| the engine | `/usr/local/bin/llama-server`, carried to `/srv/ark/src/ai/llama-server` (arm64) | the unit stops before starting (`ConditionPathExists`); the page answers *"the helper is not fitted on this box"* and says what is missing |
 | the words | `/srv/ark/ai/models/*.gguf` (newest wins) | `ark-ai-serve` says so once and waits, checking every minute; drop a `.gguf` in and the helper starts by itself |
 | the facts | `/srv/ark/ai/ark-system-brief.md` | written by `ark-build-ai-brief`; without it the helper simply has less to say about the card |
+
+**Nothing on the box can build the engine.** Phase `58-ai` installs a *carried* arm64
+`llama-server` from `/srv/ark/src/ai/llama-server` — a hand-built binary anywhere else
+(`~/llama.cpp-build/build/bin/`, say) is invisible to the unit, however well it runs.
+Carry it and re-run the phase:
+
+```bash
+sudo install -d -m 755 -o root -g root /srv/ark/src/ai
+sudo install -m 755 -o root -g root ~/llama.cpp-build/build/bin/llama-server /srv/ark/src/ai/llama-server
+sudo bash /srv/ark/src/install-ark.sh --only 58-ai
+```
+
+`scripts/03-provision.sh` excludes that file from both rsync hops, because it rsyncs with
+`--delete` and would otherwise remove the very binary the phase tells you to carry
+(`tests/test_config.py` holds that).
+
+**A model that arrives any other way is invisible.** Only `ark-ai-model-fetch` renames a
+finished download into place; a `curl -o …gguf.part` of your own leaves a complete,
+invisible file. If you already have one, adopt it through the front door — that is what
+prints the fingerprint worth writing down:
+
+```bash
+sudo ark-ai-model-fetch --from /srv/ark/ai/models/thing.gguf.part --name thing.gguf
+```
+
+**How big a model this box can answer from** (measured on the Pi 4, 26 Oct 2026, three of
+four cores): a 1.5B model in four bits reads about **6.8 tokens of prompt a second** and
+writes about **3.2**. The page's prompt is capped at 3000 characters
+(`ark_ai.PROMPT_BUDGET`) and an answer at 160 tokens, which is 100–130 s of work — one to
+two minutes for a person. A 3.3B-class model measured **4.4 / 2.3 tokens a second**, which
+is five minutes-plus per answer, and a *reasoning* model spends its whole budget thinking
+and returns an empty answer. So: **1–2 GB of four-bit weights is the working range.**
+
+**Two timeouts must stay in this order** — engine budget, then the page, then the proxy:
+
+```bash
+grep -n 'ANSWER_SECONDS' /srv/ark/src/api/ark_ai.py     # 200 s: how long the page waits
+grep -n -A3 'location = /ask' /etc/nginx/ark.conf       # 300 s: how long nginx waits
+```
+
+`/ask` has a `location` of its own for exactly this reason. When it shared the block that
+serves searches (120 s), every real question on a working box answered `504 Gateway
+Time-out` — `tests/test_config.py::test_the_helper_gets_longer_than_its_own_ceiling`
+refuses that configuration now.
 
 **None of the three is required for the box to be well.** `/api/ready` does not
 block on any of them, `/ask` is honest in one sentence, and every other page works.
@@ -742,7 +786,8 @@ fault as a root-made bundle the pages cannot read).
 `127.0.0.1:8089`, `Nice=10`, `CPUWeight=40`, `MemoryMax=5500M`, sandboxed
 (`ProtectSystem=full`, `ProtectHome=read-only`, `PrivateTmp`, `NoNewPrivileges`,
 a writable `/srv/ark/ai` only). It is **enabled and inactive** on a box with no
-model, which is the correct state and not a fault.
+model, which is the correct state and not a fault; on this box it is **enabled and
+active** since 26 Oct 2026 (1.5B model, loaded in 19 s).
 
 ```bash
 systemctl status ark-ai --no-pager
@@ -757,8 +802,16 @@ page's own script streams the same answer from `GET /api/ask/stream?q=…` (plai
 text, `X-Accel-Buffering: no`, no gzip, a long read timeout in nginx). The question
 is trimmed and capped, one answer is written at a time (`BUSY_SENTENCE` for the
 second person), and the model is given: the brief, plus — for a question about a
-guide — the few guide pages whose words overlap the question. It is never given
-the board, the File Box, the accounts or the household answers.
+guide — **one** page: the one a plain word in the question points at (*cut* → first
+aid, *fuse* → power, *flush* → sanitation, `ark_ai.TOPIC_HINTS`), otherwise the one
+whose words overlap the question most, with a title match worth four times a body
+match. It is never given the board, the File Box, the accounts or the household
+answers.
+
+The whole prompt is a **budget**, not a catalogue (`PROMPT_BUDGET`, 3000 characters;
+one page of 520; the brief at 1400), because reading is the slow half on a Pi 4 —
+three whole pages measured 128 s of reading for a single answer. The same is why an
+answer is capped at `MAX_TOKENS = 160`.
 
 Every answer ends with the sentence that says it can be wrong and the guides are
 the truth. Do not remove it: the page is a helper, not an authority.

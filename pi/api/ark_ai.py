@@ -41,15 +41,42 @@ AI_PORT = 8089
 # silently truncate what a person wrote).
 MAX_QUESTION = 900
 
-# How long one answer may take.  A 2B model on a Pi 4 CPU is slow on purpose: it is
-# given a whole minute before the page gives up, and the streamed answer keeps
-# arriving while it works.
-ANSWER_SECONDS = 150
+# How fast this hardware really is.  Measured on the box itself (26 Oct 2026) with a
+# 1.5B model in four bits on three of the Pi's four cores: 871 tokens of prompt were
+# read in 128 s (6.8 tokens a second) and 80 tokens of answer were written in 25 s
+# (3.2 a second), about six characters to a token.  These numbers are the budget
+# below, so "let us helpfully include a bit more" can be refused by arithmetic
+# instead of by a person waiting two and a half minutes for an answer.
+CHARS_PER_TOKEN = 6
+READ_TOKENS_PER_SECOND = 6.8
+WRITE_TOKENS_PER_SECOND = 3.2
+
+# How long one answer may take.  Long enough for the worst case below with room to
+# spare on a busy box.  **nginx must wait longer than this** — a proxy that gives up
+# first turns a slow answer into a 504, which is a lie about a box that is working
+# (recorded defect: 120 s at the proxy, 150 s here, so every real question 504'd).
+ANSWER_SECONDS = 200
 CONNECT_SECONDS = 5
 
 # Answer length in tokens and in characters.  Both are ceilings, never targets.
-MAX_TOKENS = 380
+# 160 tokens is about 50 s of writing here and fits a plain-English answer; it was
+# 380, which is over two minutes of writing on this hardware before a person sees
+# the first useful sentence.
+MAX_TOKENS = 160
 MAX_ANSWER = 6000
+
+# Everything the model is given for one question, in characters — reading is the
+# expensive half on a Pi 4, so this is a budget and not a catalogue.  With the
+# measured speeds above it is about 74 s of reading, and MAX_TOKENS adds about 50 s
+# of writing: 124 s, inside ANSWER_SECONDS with a third of it to spare.
+PROMPT_BUDGET = 3000
+
+# Within that budget: the brief (what is on this card) keeps most of it, and a guide
+# question brings **one** page, a few sentences of it.  Three whole pages cost 128 s
+# of reading for a single answer, measured on the box.
+BRIEF_BUDGET = 1400
+GUIDE_PAGES = 1
+GUIDE_EXCERPT = 520
 
 # Where the pack of words about this card lives.
 BRIEF_NAME = "ark-system-brief.md"
@@ -73,11 +100,14 @@ HOUSE_RULES = (
 ROUTES = (
     ("guide", "the manuals and guides on this box",
      ("first aid", "bleed", "bleeding", "burn", "cpr", "choke", "wound", "fever",
-      "poison", "splint", "fracture", "shock", "water", "purif", "filter", "boil",
+      "poison", "splint", "fracture", "shock", "cut", "gash", "injur", "hurt",
+      "sprain", "bandage", "antiseptic", "sick", "vomit", "diarrh", "rash", "tooth",
+      "toilet", "sanitation", "water", "purif", "filter", "boil",
       "fire", "shelter", "warm", "cold", "power", "battery", "solar", "generator",
-      "leak", "pipe", "tap", "toilet", "waste", "sanitation", "food", "store",
+      "leak", "pipe", "tap", "waste", "food", "store",
       "seed", "plant", "garden", "harvest", "pest", "repair", "glue", "wire",
-      "fuse", "roof", "mould", "mold", "insect", "rat", "snake", "dog")),
+      "fuse", "roof", "mould", "mold", "insect", "rat", "snake", "dog",
+      "fix", "broken", "mend", "crack", "stuck", "squeak", "loose", "hinge")),
     ("library", "the offline library and the books on this box",
      ("book", "books", "novel", "author", "read", "reading", "chapter", "story",
       "encyclopedia", "encyclopaedia", "wikipedia", "article", "history", "define",
@@ -227,12 +257,42 @@ def advice() -> str:
     return ""
 # Words that say nothing about which page is wanted.  Kept small on purpose: a page
 # that matches "water" is useful, a page that matches "what" is noise.
-STOPWORDS = {"about", "after", "again", "against", "being", "could", "doing",
-             "every", "first", "from", "have", "help", "here", "into", "just",
-             "know", "like", "make", "much", "need", "only", "other", "should",
-             "some", "that", "their", "them", "then", "there", "these", "they",
-             "thing", "this", "those", "want", "what", "when", "where", "which",
-             "while", "with", "would", "your"}
+STOPWORDS = {"about", "after", "again", "against", "all", "also", "and", "any", "are",
+             "ask", "being", "but", "can", "could", "did", "does", "doing", "every",
+             "first", "for", "from", "get", "got", "had", "has", "have", "help", "her",
+             "here", "him", "his", "how", "into", "its", "just", "know", "let", "like",
+             "make", "may", "might", "much", "must", "need", "new", "not", "now", "off",
+             "old", "one", "only", "other", "our", "out", "own", "per", "put", "say",
+             "see", "she", "should", "some", "that", "their", "them", "then", "there",
+             "these", "they", "thing", "this", "those", "too", "two", "use", "used",
+             "want", "was", "way", "were", "what", "when", "where", "which", "while",
+             "who", "why", "with", "would", "yet", "you", "your"}
+
+# A question's words, and what each match is worth.  Three letters is enough ("cut",
+# "tap", "gas"), and a word in the page's title counts for far more than one in its
+# body — see ``_score``.
+MIN_WORD = 3
+TITLE_WEIGHT = 4
+
+# A word a person uses, and the page on this card that answers it.  This is a
+# preference, never a filter: a hinted page that is not on the card simply is not
+# preferred, and every other page is still ranked as before.  It exists because a tie
+# between two pages that both mention "cut" was decided by the alphabet, and the model
+# handed the wrong page invents one instead of answering — measured on the box,
+# 26 Oct 2026, on "what do I do about a deep cut".
+TOPIC_HINTS = (
+    (("cut", "cuts", "gash", "bleed", "bleeding", "wound", "wounds", "bandage",
+      "burn", "burns", "choke", "cpr", "sprain", "injur", "hurt"), "first-aid"),
+    (("water", "boil", "purif", "filter", "thirst"), "water"),
+    (("food", "fridge", "freezer", "spoil", "spills", "store"), "food"),
+    (("fire", "smoke", "flame", "flames", "extinguish", "chimney"), "fire"),
+    (("power", "electric", "electricity", "battery", "batteries", "fuse", "generator",
+      "solar"), "power"),
+    (("toilet", "flush", "waste", "sanitation", "sewage", "smell"), "sanitation"),
+    (("cold", "warm", "warmth", "heat", "heating", "shelter", "blanket", "tent"),
+     "shelter"),
+    (("leak", "leaking", "pipe", "pipes", "tap", "drip", "dripping"), "plumbing"),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -304,12 +364,20 @@ def pages() -> list:
     return out
 
 
-def _score(question: str, text: str) -> int:
-    """How many of the question's own words this page contains."""
-    words = {w for w in re.findall(r"[a-z]{4,}", (question or "").lower())
+def _score(question: str, text: str, title: str = "") -> int:
+    """How strongly one page answers one question.  ``0`` is "not at all".
+
+    A three-letter word counts — "cut", "tap", "gas" are how a person asks — and a
+    word in the page's **title** is worth far more than one buried in its body: the
+    page called *First aid* answers a question about a cut even when the plumbing page
+    is the one that mentions cutting a pipe.  Measured on the box, 26 Oct 2026: without
+    the title weight, "how do I fix a leaking tap" chose the food page.
+    """
+    words = {w for w in re.findall(r"[a-z]{%d,}" % MIN_WORD, (question or "").lower())
              if w not in STOPWORDS}
     lowered = text.lower()
-    return sum(1 for w in words if w in lowered)
+    head = (title or "").lower()
+    return sum(TITLE_WEIGHT if w in head else (1 if w in lowered else 0) for w in words)
 
 
 def _sentences(text: str, wanted: int = 3, limit: int = 900) -> str:
@@ -318,12 +386,33 @@ def _sentences(text: str, wanted: int = 3, limit: int = 900) -> str:
     return " ".join(parts[:wanted])[:limit]
 
 
+def _hinted(question: str) -> list:
+    """The pages a plain word in the question points at, best first.
+
+    Only pages that are really on the card, and only ever a *preference*: the ranking
+    below still puts every other page after them by score, so a hint can never hide
+    the right page — it can only break a tie the alphabet would otherwise decide.
+    """
+    text = " " + re.sub(r"[^a-z0-9]+", " ", (question or "").lower()) + " "
+    wanted = [stem for words, stem in TOPIC_HINTS if any(f" {w} " in text for w in words)]
+    if not wanted:
+        return []
+    found = []
+    for stem in wanted:
+        for _title, name, _text in pages():
+            if stem in name and name not in found:
+                found.append(name)
+    return found
+
+
 def context_for(question: str, kind: str) -> tuple:
     """``(context text, pages used)`` — what the model is allowed to read.
 
-    Always the brief (what is on this card), and for a guide question the pages whose
-    words overlap the question's words.  Nothing personal is ever included: the
-    household's own answers are never part of an answer a visitor can ask for.
+    Always the brief (what is on this card), and for a guide question the page whose
+    words overlap the question's words most.  **One** page, a few sentences of it:
+    reading is the slow half on this box, and three whole pages were 128 s of it.
+    Nothing personal is ever included: the household's own answers are never part of
+    an answer a visitor can ask for.
     """
     chunks, used = [], []
     try:
@@ -331,18 +420,22 @@ def context_for(question: str, kind: str) -> tuple:
     except OSError:
         brief = ""
     if brief:
-        chunks.append("What is on this box:\n" + brief.strip()[:2000])
+        chunks.append("What is on this box:\n" + brief.strip()[:BRIEF_BUDGET])
     if kind == "guide":
         scored = []
         for title, name, text in pages():
-            score = _score(question, text)
+            score = _score(question, text, title)
             if score:
                 scored.append((score, title, name, text))
-        scored.sort(key=lambda row: -row[0])
-        for score, title, name, text in scored[:3]:
+        # by score, then by name — but a page a plain word in the question points at
+        # comes first: a tie is otherwise a coin toss that depends on the alphabet, and
+        # it once handed a question about a cut the household-repairs page.
+        hinted = _hinted(question)
+        scored.sort(key=lambda row: (0 if row[2] in hinted else 1, -row[0], row[2]))
+        for score, title, name, text in scored[:GUIDE_PAGES]:
             used.append({"title": title, "name": name})
             chunks.append("From the page called “" + title + "” (" + name + "):\n"
-                          + _sentences(text))
+                          + _sentences(text, limit=GUIDE_EXCERPT))
     return ("\n\n".join(chunks), used)
 
 
@@ -564,9 +657,10 @@ def build_brief(dry_run: bool = False) -> dict:
     lines.append("")
     lines.append("The addresses a person can type: "
                  + ", ".join(card["address"] for card in ark_cards.cards()) + ".")
-    lines.append("")
-    lines.append("When a question is about a person's own house, say which page on the box "
-                 "answers it. Never invent a page, a phone number or a dose.")
+    # No instruction goes in the brief.  The rules live in ``HOUSE_RULES``, and a second
+    # copy here came straight back out of a small model's mouth as narration — the first
+    # real answer on the box (26 Oct 2026) began by reciting "When a question is about a
+    # person's own house, say which page on the box answers it".  The brief is facts.
     text = "\n".join(lines) + "\n"
     path = brief_path()
     if not dry_run:

@@ -2617,3 +2617,109 @@ wrong about the box. Neither is a code defect; both would have cost somebody an 
 
 
 
+
+## 31. "The helper is not fitted on this box" — and it was telling the truth, 26 Oct 2026
+
+The owner reported one sentence: *"Any attempt to ask Gemma a question throws: The helper is not
+fitted on this box."* Every library, book, guide and game was still there and still working — as
+the page itself says. The sentence was accurate, and two things were missing rather than one.
+
+| What the box looks for | What was on the card |
+|---|---|
+| `/usr/local/bin/llama-server` | nothing — but a working arm64 build sat in `/home/pi/llama.cpp-build/build/bin/llama-server` (v0.7.0-dev, only system libraries, `ldd` clean) |
+| `/srv/ark/ai/models/*.gguf` | `google_gemma-4-E2B-it-Q4_K_M.gguf.part` — 3,462,680,032 B, **a complete** GGUF v3 download (`general.architecture = gemma4`, 601 tensors), fetched by a hand-run `curl` at 01:42 and never renamed |
+
+A `.part` is invisible to the helper **on purpose** (a model must never be opened while it is still
+arriving), and the engine has to be at the path the unit's `ConditionPathExists` names. Two carriers
+had been built and neither had been put where the box looks.
+
+### 31.1 What was done
+
+* the binary was **carried to `$ARK_SRC/ai/llama-server`**, which is where phase `58-ai` says to put
+  it, and the phase installed it as `/usr/local/bin/llama-server` (755, `root:root`, sha256
+  `7ff4518b…`);
+* the finished download was **adopted through the one documented door** —
+  `ark-ai-model-fetch --from …gguf.part --name …gguf` — which is what prints the fingerprint that
+  now belongs in the paperwork: **`923c4c86177d2ee173a7f5b4fa3d0ac65f5962ab15e6d6a5bc250aec4fd7bf7e`**.
+  It copies through `.<name>.part` and renames, so nothing half-arrived is ever visible;
+* **the deploy no longer deletes it**: `scripts/03-provision.sh` rsyncs `pi/` with `--delete`, and
+  the carried engine lives exactly where the phase tells an operator to put it, so both hops now
+  `--exclude 'ai/llama-server'` (`tests/test_config.py::test_the_deploy_does_not_delete_the_engine_it_was_told_to_carry`).
+
+`ark-ai.service` went `enabled + inactive` → **`enabled + active`**, model loaded in 19 s, listening
+on `127.0.0.1:8089`, and `/api/ready` reports the ninth row as
+*"Questions are answered on this box — 940.4 MB of words, no internet needed."* (`ready: true`).
+
+### 31.2 The engine was faithful; the model was too big for the hardware
+
+Gemma 4 E2B at 3.3 GB answered, and its numbers were the reason it could never appear on a page:
+
+| Measured on the box | Gemma 4 E2B Q4_K_M | Qwen2.5-1.5B-Instruct Q4_K_M |
+|---|---|---|
+| prompt reading | **4.4 tokens/s** | 6.8 tokens/s |
+| writing | **2.3 tokens/s** | 3.2 tokens/s |
+| the app's real prompt (871 tokens) | **128 s** of reading | 92 s |
+| what came back | `content` **empty**; 120 tokens spent in `reasoning_content` ("Thinking Process: …") | a usable answer |
+
+It is a **reasoning** model: it thinks first and was cut off before it wrote a word of answer. On
+top of that, at its speed a full answer is **5 minutes plus** — not a page anybody waits for. So
+the documented default (1.5B, 940 MB) was fitted through the same door
+(`1adf0b11065d8ad2e8123ea110d1ec956dab4ab038eab665614adba04b6c3370`) and **the Gemma file is still on
+the card** for the owner to keep or remove; newest `*.gguf` wins, so the smaller one answers.
+
+### 31.3 Six defects, none of which a 200 from `curl` would have found
+
+1. **The proxy gave up before the page did.** `/ask` was served by the block that serves searches,
+   `proxy_read_timeout 120s`, while `ark_ai.ANSWER_SECONDS` is 150 — so the first two real questions
+   were `504 Gateway Time-out` at exactly 2m00s on a box that was working perfectly. `/ask` now has
+   a `location = /ask` of its own at **300 s**, and
+   `tests/test_config.py::test_the_helper_gets_longer_than_its_own_ceiling` refuses a config where
+   the proxy becomes the shortest patience of the three.
+2. **The prompt was three whole guide pages.** 682 chars of house rules + 1241 of brief + **2668 of
+   page excerpts** = 871 tokens = 128 s of reading before a word is written. Reading is the
+   expensive half on a Pi 4, so it is now a **budget** (`PROMPT_BUDGET = 3000` chars, one page at
+   520, brief 1400) and the answer is capped at `MAX_TOKENS = 160` instead of 380. The measured
+   speeds live in the module (`CHARS_PER_TOKEN`, `READ_TOKENS_PER_SECOND`,
+   `WRITE_TOKENS_PER_SECOND`) and `tests/test_ai.py::test_the_worst_case_answer_fits_in_the_time_the_page_waits`
+   does the arithmetic, so a later "include a bit more" fails a test instead of a person's patience.
+3. **"Cut" was not a word the router knew.** *"What do I do about a deep cut"* routed to `general`,
+   so **no page at all** was put in front of the model — and it invented one (`/firstaid/`). Fixed
+   in three places: plain injury words in `ROUTES`, three letters is enough in `_score`
+   (`MIN_WORD`), and a title match is worth four times a body match (`TITLE_WEIGHT`).
+4. **A tie was broken by the alphabet.** *First aid* and *household repairs* both contain "cut" and
+   "deep"; the sort was `-score` only, so `s…` beat `f…` on one run and `g…` beat `m…` on another.
+   Ties now sort by name, and `TOPIC_HINTS` lets a plain word (*cut*, *boil*, *flush*, *fuse*,
+   *battery*) **prefer** the page that answers it — a preference, never a filter, and only for a page
+   really on the card (`test_a_hint_prefers_a_page_and_never_hides_one`).
+5. **The brief carried an instruction, and the model recited it.** The first answer began *"When a
+   question is about a person's own house, say which page on the box answers it…"* — the last line
+   of the generated brief, verbatim. The rules live in `HOUSE_RULES`; the brief is facts only.
+6. **A numbered list arrived as one line.** The model wrote `…steps:1. Boil water.2. Filter water…`
+   and the page rendered it as a paragraph. `_ask_paragraphs()` now breaks a run of steps, and a
+   decimal in ordinary prose is left alone.
+
+### 31.4 What the box now proves, and what it does not
+
+Three real questions, asked through nginx on the card, all **200**:
+
+| Question | Wall clock | Reading / writing |
+|---|---|---|
+| *how do I make water safe to drink* (before the budget) | 152.6 s | 871 tok / 128 s + 80 tok / 25 s |
+| *how do I make water safe to drink* (after) | **106.9 s** | 632 tok / 92 s + 51 tok / 15 s |
+| *what do I do about a deep cut* (before) | 78.0 s | invented `/firstaid/`, recited its rules |
+| *what do I do about a deep cut* (after) | **102.1 s** | *"If you get a deep cut, first try to stop the bleeding. Then clean the wound with mild soap and water. Cover it with a sterile bandage or cloth."* |
+| *how do I store water* via `/api/ask/stream` | 100 s | chunked text through nginx, first words while it was still writing |
+
+`90-verify` finished green (*"everything a visitor touches is working"*), `/api/ready` 200 with the
+ask row `ready: true`, and the brief rebuilt without its instruction (1241 chars → 1166).
+
+**Still unproven, and no amount of `curl` can change it:** no browser or phone has drawn `/ask`; the
+page's script path (`/api/ask/stream`) has been read by `curl` on the box but never by JavaScript in
+a phone; nobody has asked two questions at once, closed `public_ask`, or read an answer aloud;
+**Gemma itself has never produced a full answer** (it is on the card, and at 2.3 tokens/s it is not
+the model a page can wait for); and an answer takes **one to two minutes**, which is the honest
+speed of a Pi 4 with a 1.5B model and should be read as such in `docs/USING-THE-ARK.md`.
+
+**Tests:** **516 passed, 2 skipped, 24 files** (8 new: the proxy's patience, the prompt budget, the
+worst-case arithmetic, the title weight, the plain word, the hint that never hides a page, the
+numbered steps, the rsync that must not eat the engine).
