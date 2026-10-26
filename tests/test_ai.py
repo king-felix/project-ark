@@ -522,6 +522,45 @@ def test_the_engine_is_unhooked_from_the_moment_the_reader_goes(public, monkeypa
     assert ark_ai._live == {}, "nothing may be left hooked to the engine"
 
 
+def test_the_journal_says_the_person_went_rather_than_a_socket_error(public, monkeypatch,
+                                                                    capsys):
+    """Whoever reads `journalctl` a month later must not meet a stack-trace fragment.
+
+    Closing the engine's response under a blocked read raises whichever error the socket
+    library felt like — on the card it was *'NoneType' object has no attribute 'peek'*
+    (26 Oct 2026).  That is the ordinary path now, so it is written as one plain line and
+    the token is forgotten.
+    """
+    import ark_ai
+
+    class Closed:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            raise AttributeError("'NoneType' object has no attribute 'peek'")
+
+        def close(self):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    with Engine() as engine:
+        _fit(public.ark, monkeypatch, engine)
+        monkeypatch.setattr(ark_ai, "_request", lambda *_a, **_k: Closed())
+        token, pieces = ark_ai.stream("how do I store water")
+        ark_ai.cancel(token)                      # the reader goes before a word is read
+        assert next(pieces) == ark_ai.SORRY_SENTENCE
+        out = capsys.readouterr().out
+        assert ark_ai._gone == {}, "a finished answer leaves nothing behind"
+    assert "the person who asked went away" in out
+    assert "peek" not in out
+
+
 def test_an_engine_that_dies_mid_answer_keeps_what_it_wrote(public, monkeypatch):
     """The words already on the screen are not thrown away when the engine stops.
 

@@ -471,6 +471,8 @@ _last_token = 0
 
 _live_lock = threading.Lock()
 _live = {}                                # token -> the engine's response, so it can be unhooked
+_gone = {}                                # tokens whose reader has gone (bounded, see cancel())
+_GONE_KEEP = 16
 
 BUSY_SENTENCE = ("Somebody else is asking the helper right now. Try again in a minute — "
                  "everything else on the box still works while you wait.")
@@ -555,9 +557,19 @@ def cancel(token) -> bool:
 
     Closing the response is what interrupts a read that is already waiting inside a
     worker thread, and dropping the connection is how the engine is told to stop
-    writing — one of the four cores stops burning on words nobody will read.
+    writing — it answers with *cancel task* and gives the core back (seen in
+    `journalctl -u ark-ai` on 26 Oct 2026).  Nothing else can stop a generation that
+    nobody is reading.
+
+    The token is remembered as *gone* so the journal says what happened rather than
+    printing whichever error the socket library felt like raising.
     """
-    response = _unhook(token)
+    with _live_lock:
+        response = _live.pop(token, None)
+        if token:
+            _gone[token] = True
+            while len(_gone) > _GONE_KEEP:
+                _gone.pop(next(iter(_gone)))
     if response is not None:
         try:
             response.close()
@@ -698,12 +710,20 @@ def _pieces(token, question: str):
     except Exception as exc:
         # Broad on purpose.  A response closed by `cancel()` from another thread is the
         # ordinary way this ends when a person walks away, and it arrives as whichever
-        # error the socket library felt like raising.
-        print(f"ark-ai: stream stopped ({exc})", flush=True)
+        # error the socket library felt like raising (`peek` on a closed file, usually).
+        with _live_lock:
+            gone = token in _gone
+        if gone:
+            print("ark-ai: the person who asked went away, so the answer was stopped",
+                  flush=True)
+        else:
+            print(f"ark-ai: stream stopped ({exc})", flush=True)
         if written:
             yield "\n\n(The helper stopped answering there. What it wrote is above.)"
     finally:
-        _unhook(token)
+        with _live_lock:
+            _live.pop(token, None)
+            _gone.pop(token, None)
         end(token)
     if not written:
         yield SORRY_SENTENCE

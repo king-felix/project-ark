@@ -319,8 +319,13 @@ card, `/ask` answers real questions through nginx, and `/api/ready` reports the 
 Three questions were asked from the box's own shell and answered in 102–107 s; the streamed route
 was read with `curl`. **What no machine has done:** drawn the page in a browser or a phone, used the
 page's own script in a real browser, been asked twice at once, or read an answer aloud. Everything
-below the page is covered by `tests/test_ai.py` (44 tests), including the one slot as a lease and the
+below the page is covered by `tests/test_ai.py` (45 tests), including the one slot as a lease and the
 cancel that frees it the moment a reader walks away (log §32).
+
+**Also true since 26 Oct 2026** (log §32.5): a question whose reader goes away — closed tab, reload,
+a phone that lost the hotspot — now **stops the engine** and frees the slot within a second, so
+*somebody else is asking* can only ever be true while a real answer is being written, and it names
+the seconds.
 
 **Read this first:** an answer takes **one to two minutes** on a Pi 4. That is the box's speed with a
 940 MB model and not a fault; the page says "this can take a minute on a small box" and nginx waits

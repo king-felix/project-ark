@@ -2788,7 +2788,7 @@ being told how long.
 
 ### 32.3 What the tests now hold
 
-`tests/test_ai.py` is **44** (7 new), and the suite is **523 passed, 2 skipped, 24 files**:
+`tests/test_ai.py` is **45** (8 new), and the suite is **524 passed, 2 skipped, 24 files**:
 
 | Test | What it pins |
 |---|---|
@@ -2799,11 +2799,12 @@ being told how long.
 | `test_the_page_gives_the_slot_back_the_moment_its_reader_goes` | the real route: one piece read, then `aclose()` — the slot is free and the next person is not refused |
 | `test_nothing_is_left_hooked_or_held_after_an_answer` | after a stream and after a plain `/ask?q=`, `_live` is empty and the slot is free |
 | `test_the_page_asks_one_question_and_never_a_second_behind_the_first` | the script checks it can stream, never calls `form.submit()`, and keeps one request in flight |
+| `test_the_journal_says_the_person_went_rather_than_a_socket_error` | an abandoned answer ends in one plain journal line, and its token is forgotten |
 
 ### 32.4 Proved, and still to prove
 
-Proved here: the seven tests above, `python3 -m py_compile` on both changed modules, and the whole
-suite green at **523 passed, 2 skipped**.
+Proved here: the eight tests above, `python3 -m py_compile` on both changed modules, and the whole
+suite green at **524 passed, 2 skipped**.
 
 Proved on **this machine, against a real server** (`/tmp/ark_askproof.py`, throwaway, removed after
 the run — the `pi/api` app under `uvicorn`, a stub engine writing a piece every 0.25 s, and a **raw
@@ -2828,3 +2829,34 @@ answer for nobody; and the next question was **answered** rather than told to wa
 `:8089` socket gone at once, and an answer instead of a refusal), and the two-thumb version — closing
 a tab mid-answer on a phone and asking again straight away. Both are steps 8a and 8b of
 `docs/HUMAN-TEST-LIST.md` §14.
+
+### 32.5 On the card, 26 Oct 2026 — deployed and proved
+
+Deployed with `--only 60-portal` after a `.backup` to `/root/ark-db-before-ask-lease.db` (**no
+migration**; the layout stays **v6**), then `--only 90-verify` → *"everything a visitor touches is
+working"*. The same 6-second `curl` that reproduced the defect, and a second question straight after
+it:
+
+```
+18:42:13  a question is asked through the proxy
+18:42:19  client gone after 70 bytes
+          sockets from the API to the engine, 2 s later: 0          ← was ESTABLISHED before
+18:42:30  second answer after 9 s: 95 bytes
+          "To store water, follow the instructions in the "Water: find it, make it safe,
+           store it" manual."
+          refusal sentence in it: 0
+ark-api:  ark-ai: the person who asked went away, so the answer was stopped
+ark-ai:   slot release: id 0 | task 421 | stop processing: n_tokens = 610
+ark-ai:   slot launch_slot_: id 0 | task 422 | processing task      ← the next question
+ark-ai:   … task 422 | prompt eval 1732 ms / 10 tokens, eval 7166 ms / 25 tokens (3.35 tok/s)
+```
+
+Four things there, none of which the old code could produce: the API's socket to the engine is
+**gone** two seconds after the reader left; the **engine** was told to stop (`cancel task`, then
+`release`) so the core comes back instead of finishing an answer for nobody; the next question was
+**answered** 11 s later, with real words and no refusal; and the journal says what happened in one
+plain line rather than printing `'NoneType' object has no attribute 'peek'` (which is what the first
+deploy wrote, and why the message exists).
+
+**Still to prove — a human, not a shell:** closing a tab mid-answer on a phone and asking again
+straight away (step 8a), and asking twice on purpose to see *"in about N seconds"* (step 8).
