@@ -83,6 +83,25 @@ case "$code" in
   *)           ark_die "https://ark.lan:8443/admin/community returned '$code'" ;;
 esac
 
+# The Household page is behind the same sign-in as everything else in /admin.
+code="$(tls_code ark.lan:8443 /admin/household)"
+case "$code" in
+  303|401|403) say "$(printf '\033[1;32m✓\033[0m')" "Household page behind the sign-in" "$code" ;;
+  200)         ark_die "https://ark.lan:8443/admin/household returned 200 without a sign-in" ;;
+  *)           ark_die "https://ark.lan:8443/admin/household returned '$code'" ;;
+esac
+
+# The page pack is the one non-/admin path on this origin: a visitor who follows
+# the link without a pack on the card gets a readable refusal, never an nginx 404
+# page (which is what an unlisted location would give).  Both answers are honest;
+# a 500 or a 000 is not.
+code="$(tls_code ark.lan:8443 /essentials.zip)"
+case "$code" in
+  200) say "$(printf '\033[1;32m✓\033[0m')" "page pack offered on :8443" "200" ;;
+  404) say "$(printf '\033[1;32m✓\033[0m')" "page pack path answers (no pack made yet)" "404" ;;
+  *)   ark_die "https://ark.lan:8443/essentials.zip returned '$code'" ;;
+esac
+
 # The loopback setup listener is reached before an account exists, so its
 # sign-in page (200) is the expected unauthenticated answer.
 code="$(tls_code localhost:8444 /admin)"

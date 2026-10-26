@@ -60,6 +60,17 @@ check_page() { # <path> <what> [codes]
     say_bad "$what" "HTTP $code (expected $want)"
   fi
 }
+check_says() { # <path> <what> <words that only that page has>
+  #  A page the proxy does not name still answers 200: `location /` falls back to
+  #  index.html, so the front page passes for any address.  Ask the body.
+  local path=$1 what=$2 needle=$3 body
+  body="$(curl -sS --max-time 15 "http://127.0.0.1$path" 2>/dev/null || true)"
+  if [[ "$body" == *"$needle"* ]]; then
+    say_ok "$what" "says \"$needle\""
+  else
+    say_bad "$what" "answered, but not with this page"
+  fi
+}
 check_page "/"                    "home page"
 check_page "/help.html"           "how-to-use page"
 check_page "/assets/ark.css"      "stylesheet"
@@ -72,12 +83,30 @@ check_page "/arcade/static/ark-arcade.css" "game shelf stylesheet"
 check_page "/arcade/emulator/loader.js"    "game player"
 check_page "/api/status"          "live status"
 check_page "/vault/"              "manuals index"
+check_says "/household"           "household page" "The page for the day something goes wrong"
+check_says "/cards"               "cards for the wall" "Three addresses, three squares"
 check_page "/vault/quick-card.html" "printable cards"
 check_page "/generate_204"        "captive-portal trigger"
 check_page "/kiwix/"              "offline library" "200 302 503"
 check_page "/books/"              "book shelf"      "200 302"
 
-# ---- what is ready, and the reason behind each answer -------------------------
+# ---- the pack a household can carry -----------------------------------------
+#  None made yet is normal.  A front page answering 200 in place of a zip is
+#  not: `location /` would serve index.html and every status-code check would
+#  call that a working download.
+zip_head="$(curl -sSI --max-time 15 http://127.0.0.1/essentials.zip 2>/dev/null || true)"
+zip_code="$(printf '%s\n' "$zip_head" | awk 'NR==1{print $2}')"
+zip_type="$(printf '%s\n' "$zip_head" | tr -d '\r' | awk 'tolower($1)=="content-type:"{print $2}')"
+case "$zip_code" in
+  404) say_soft "the pack to carry" "none made yet — the owner makes one from their page" ;;
+  200) if [[ "$zip_type" == "application/zip" ]]; then
+         say_ok "the pack to carry" "a zip, $zip_type"
+       else
+         say_bad "the pack to carry" "HTTP 200 as $zip_type — the portal answered, not the pack"
+       fi ;;
+  *)   say_bad "the pack to carry" "HTTP ${zip_code:-none}" ;;
+esac
+
 # /api/ready answers 200 only when every part a reader needs actually works, and
 # 503 with the reasons when one does not.  An empty shelf is reported softly: a
 # box that is still filling up is not broken.  Anything that has content but
@@ -312,6 +341,34 @@ else
   say_soft "recovery sheet" "missing — run phase 95-backup, then print it"
 fi
 
+# ---- the household page: what a person has read, and the pack to carry away ---
+# Neither line below is a failure.  A topic nobody has read is the truth about a
+# young card, not a defect (§8.8 rule 11), and a box with no pack yet still serves
+# every page it holds — the pack is something the owner asks for (§8.8 rule 12).
+household_line="$(runuser -u "$ARK_PI_USER" -- env PYTHONPATH="$ARK_ROOT/api" \
+  ARK_VAULT="$ARK_ROOT/vault" python3 -c '
+import os, ark_review
+state = ark_review.status(os.environ["ARK_VAULT"])
+print("%d %d %d %d" % (state["read"], state["total"], state["due"],
+                       len(state["missing_pages"])))' 2>/dev/null || true)"
+household_read=""       # unmeasured, never 0
+if [[ -n "$household_line" ]]; then
+  read -r household_read household_total household_due household_missing <<<"$household_line"
+  say_ok "emergency pages" "$household_read of $household_total answered for a friend · $household_due due for a look · $household_missing page(s) not on the box yet"
+else
+  say_soft "emergency pages" "not measured yet — the household record could not be read as $ARK_PI_USER"
+fi
+
+pack_state="none"
+pack_line="$(runuser -u "$ARK_PI_USER" -- /usr/local/sbin/ark-essentials --status 2>/dev/null | head -n 1 || true)"
+case "$pack_line" in
+  ""|"No pack yet"*)   say_soft "page pack to carry" "none yet — the Household page offers one when the owner asks for it" ;;
+  *"cannot be read"*)  pack_state="unreadable"
+                       say_soft "page pack to carry" "on the card but does not read back — build a fresh one from the Household page" ;;
+  *)                   pack_state="whole"
+                       say_ok "page pack to carry" "${pack_line:0:100}" ;;
+esac
+
 # ---- receipt for the Mac ------------------------------------------------------
 ready_line="$(printf '%s' "${ready_json:-}" | python3 -c 'import json,sys; r=json.load(sys.stdin); print(json.dumps({"ok": r.get("ok"), "blocking": r.get("blocking") or [], "checked": r.get("checked")}))' 2>/dev/null || true)"
 STATUS="$ARK_ROOT/ark_status.json"
@@ -330,6 +387,9 @@ cat > "$tmp" <<JSON
   "arcade": {"games": ${games:-0}, "players": ${player_names:-0}, "saves": ${player_saves:-0},
              "player_origin": "${player_code:-none}"},
   "game_names": {"rows": ${romdb_rows:-null}},
+  "household": {"answered": ${household_read:-null}, "topics": ${household_total:-null},
+                "due": ${household_due:-null}, "missing_pages": ${household_missing:-null},
+                "pack": "${pack_state}"},
   "free_gib": ${free_gib:-0},
   "free_pct_used": "$root_use",
   "backup": {"copies": ${backup_copies:-0}, "newest": "$backup_newest", "made": "$backup_made"},

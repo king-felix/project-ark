@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+"""ark-essentials — put the shelf's most important pages in one file to carry away.
+
+The pack is for the day the box does not boot: a folder on a stick that opens on any
+computer, with no internet, no password and no Ark.  It holds our own manuals and
+guides, the quick card and the recovery sheet, and every file's fingerprint, so the
+pack can be shown whole before anybody trusts it.
+
+  --build    write the pack (the only thing here that writes)
+  --status   is there one, how big, when, how many pages, what is missing
+  --list     what is inside it
+  --verify   recompute every fingerprint in the pack
+  --out DIR  where the pack lives (default /srv/ark/essentials)
+
+It reads ``/srv/ark/vault`` and never writes there; a failure leaves the previous pack
+exactly as it was, because the new one is written as ``.partial`` and renamed.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+from pathlib import Path
+
+API_DIR = Path(os.environ.get("ARK_API_DIR", "/srv/ark/api"))
+if not (API_DIR / "ark_essentials.py").is_file():
+    # Running from a checkout, before an install: the modules sit beside this file.
+    API_DIR = Path(__file__).resolve().parent.parent / "api"
+sys.path.insert(0, str(API_DIR))
+
+import ark_essentials as pack                  # noqa: E402
+
+
+def _say(message: str) -> None:
+    """Print, and treat a closed pipe as a finished job."""
+    try:
+        print(message, flush=True)
+    except BrokenPipeError:
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        raise SystemExit(0) from None
+
+
+def _root() -> Path:
+    return Path(os.environ.get("ARK_ROOT", "/srv/ark"))
+
+
+def _out(given) -> Path:
+    if given:
+        return Path(given)
+    return Path(os.environ.get("ARK_ESSENTIALS_DIR", str(_root() / "essentials")))
+
+
+def _size(n) -> str:
+    if n is None:
+        return "unknown"
+    for limit, unit in ((1024, "kB"), (1024 * 1024, "MB")):
+        if n < limit * 1024:
+            return f"{n / limit:.1f} {unit}"
+    return f"{n / (1024 ** 3):.1f} GB"
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="ark-essentials",
+        description="The page pack for a bag: our manuals, zipped and fingerprinted.")
+    parser.add_argument("--build", action="store_true", help="write a fresh pack")
+    parser.add_argument("--status", action="store_true", help="what is on the card now")
+    parser.add_argument("--list", action="store_true", help="what is inside the pack")
+    parser.add_argument("--verify", action="store_true", help="recompute every fingerprint")
+    parser.add_argument("--from", dest="vault", help="the folder of pages to pack")
+    parser.add_argument("--sheet", help="the recovery sheet to put inside")
+    parser.add_argument("--out", help="the folder to write the pack into")
+    parser.add_argument("--quiet", action="store_true", help="say only what matters")
+    args = parser.parse_args(argv)
+
+    if not any((args.build, args.status, args.list, args.verify)):
+        parser.print_help()
+        return 2
+
+    out = _out(args.out)
+    if args.build:
+        vault = Path(args.vault) if args.vault else _root() / "vault"
+        sheet = Path(args.sheet) if args.sheet else _root() / "RECOVERY-SHEET.txt"
+        try:
+            made = pack.build(out, vault=vault, sheet=sheet)
+        except FileNotFoundError as exc:
+            _say(f"Not done: {exc}")
+            return 1
+        if not args.quiet:
+            _say(f'Wrote {made["path"]} — {_size(made["bytes"])}, '
+                 f'{made["members"]} files, made {made["built"]}.')
+            if made["missing"]:
+                _say(f'Not in this copy: {", ".join(made["missing"])} '
+                     f'(it was not on the box yet).')
+            if made["skipped"]:
+                _say(f'Left out (too big to be a page): {", ".join(made["skipped"])}')
+        return 0
+
+    if args.verify:
+        whole, problems = pack.verify(pack.pack_path(out))
+        if whole:
+            _say(f'This pack is whole: every file matches its fingerprint '
+                 f'({pack.pack_path(out)}).')
+            return 0
+        for problem in problems:
+            _say(f"  {problem}")
+        _say("Not whole: this pack should not be trusted or printed.")
+        return 1
+
+    state = pack.status(out)
+    if args.list:
+        if not state.get("present"):
+            _say(f"No pack yet at {state['path']}. Run --build.")
+            return 1
+        for name in pack.names(pack.pack_path(out)):
+            _say(f"  {name}")
+        return 0
+
+    if not state.get("present"):
+        _say(f"No pack yet at {state['path']}. Run --build.")
+        return 1
+    if not state.get("readable", True):
+        _say(f"{state['path']} is there but cannot be read — build a fresh one.")
+        return 1
+    _say(f"{state['path']} — {_size(state['bytes'])}, {state['members']} files, "
+         f"made {state['built']}.")
+    _say(f"fingerprint {state['sha256']}")
+    if state["missing"]:
+        _say(f"not in this copy: {', '.join(state['missing'])}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

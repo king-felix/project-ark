@@ -575,7 +575,98 @@ source offers. Installation does not happen unless the owner switches it on.
 
 ---
 
-## 11. Not in this release yet
+## 11. Household — the emergency pages, the cards, and one file to carry away
+
+The household layer is deliberately small, because everything it touches is a
+person's own words. It is reached at **`https://ark.lan:8443/admin/household`**,
+behind the same sign-in as the rest of the owner's door.
+
+### What the page does
+
+* **The household's own answers.** Nine short entries (who lives here, where the
+  water, power and gas stop, who to ring, the meeting place, animals and medicine,
+  anything else), each with its character limit shown beside it. They are saved
+  with **Save what is written here**, are audited (`household-save`, *"6 of 9
+  answered"*), and appear as they were typed on the public page (`/household`) —
+  through `esc()`, because a person wrote them.
+* **The emergency pages.** The **eight** topics a household needs first
+  (breathing and bleeding, water, food, fire, power, toilets, cold, small repairs)
+  are *found*, not assumed: each topic names the page(s) that carry it, the card
+  is asked whether they are there, and a page that is missing is **listed as
+  missing**. Nothing here invents a page, a date or a tick.
+* **What was read, and when.** **I have read this today** records the day, the
+  account that said so, and an optional note (*"the number had changed"*). The
+  row then reads *"Somebody here read this today."* or *"Somebody here read this
+  214 days ago."*, and a topic older than `CHECK_EVERY_DAYS` (365) is marked
+  **due for a look**. **Take that back** returns a topic to *"Nobody has read this
+  yet."* — audited as `household-forget`, and the note goes with it.
+* **Show the household page to everyone** (setting `public_household`, absent or
+  `1` = **open**) switches the public `/household` page off for everyone except
+  the owner's door. Switching it off changes nothing else: the cards, the
+  manuals, the pack and the record all stay.
+* **Make a new copy now** builds the pack (§ below) and says what went into it.
+  A pack is only offered as a download if it reads back whole; if it does not,
+  the page says *"A copy is on the box but it cannot be read back, so it is not
+  offered. Make a new one."*
+
+### Where it is kept
+
+| Path | What it is |
+|---|---|
+| `settings` key `emergency_review` | one JSON row: which topic, which day, which account, which note. It travels in a backup with the rest of the records — a replaced card keeps what the household read |
+| `settings` key `household` | the household's own answers (plain text, capped per entry) |
+| `settings` key `public_household` | absent or `1` = the public page is on |
+| `/srv/ark/essentials/ark-essentials.zip` | the pack: our own manuals and guides (rewritten so their links work from a folder), `cards/` with the three wall cards, `RECOVERY-SHEET.txt`, `START-HERE.txt`, its own `index.html` and `MANIFEST.txt` with a sha256 per file |
+| `audit_log` | `household-save`, `household-switch`, `household-read`, `household-forget`, `household-pack` |
+
+The pack is written as `ark-essentials.zip.partial` and published by **rename**, so
+an interrupted build can never pass for a finished one. It is served at
+**`/essentials.zip`** — from the public portal (the household page links to it, so
+it has to work there) and from the management origin, where it is the one
+non-`/admin` path on `:8443` because a link that 404s on the very origin that
+offers it is worse than no link — with `X-Content-Type-Options: nosniff`,
+`Cache-Control: no-cache` and a fixed
+`Content-Disposition: attachment; filename="ark-essentials.zip"`. The path is a
+fixed name; nothing in the request is ever joined to a folder. What it holds is
+public content (our own pages, the cards and the recovery sheet), never an
+account or a record.
+
+From a console (run it as `pi`, never `sudo` — `/usr/local/sbin` is not on `pi`'s
+`PATH`, so use the full path):
+
+```bash
+/usr/local/sbin/ark-essentials --status    # is there one, how big, when, what is missing
+/usr/local/sbin/ark-essentials --build     # write a fresh pack
+/usr/local/sbin/ark-essentials --list      # what is inside it
+/usr/local/sbin/ark-essentials --verify    # recompute every fingerprint
+```
+
+`--status` prints *"No pack yet at …"* when there is none, which is the normal
+state on a fresh box; nothing takes or refreshes a pack on a timer.
+
+### What it deliberately does not do
+
+* **It never judges a page.** No moderation of a manual, no language check, no
+  "this looks out of date". The review record says who read what and when; the
+  words are the household's business.
+* **Nothing is a refusal.** A missing page, a topic nobody has read and a box with
+  no pack are all reported and never block a reader — the readiness verdict does
+  not depend on any of them.
+* No reminder, notification, email or timer; no reminder on the portal front page.
+* The cards are **drawn in the page** (inline SVG). There is no image file to
+  lose, no font to download, no script and no network reference, so printing them
+  with the box's own hotspot and no internet works.
+* The pack is not encrypted and holds no accounts — but it does hold the recovery
+  sheet, so treat a copy like a spare key: it belongs in a bag, not on a public
+  stick.
+* Accessibility is a pass, not a set of controls: ≥16 px body text, 44 px tap
+  targets, real headings, `role="img"` + `aria-label` on every card, no
+  JavaScript on the critical paths. There are **no text-size or contrast
+  controls** yet.
+
+---
+
+## 12. Not in this release yet
 
 Stated plainly, because a missing control is better than a fake one:
 
@@ -614,8 +705,10 @@ Stated plainly, because a missing control is better than a fake one:
   the home network disappears, and returns on its own when it comes back and
   nobody is connected — that is automatic, not a control you can see here, and a
   pin you set with `ark-mode home`/`hotspot` is never overruled.
-* No household page, no "download the essentials" pack, no QR cards, no
-  theme/text-size controls yet.
+* No household **text-size or contrast** controls, no translation, no reminder on
+  the portal front page in place of a person opening `/household`, and no printed
+  one-page version of the household's own answers (the cards carry the addresses,
+  not the answers). Everything else in §11 exists.
 * Arcade: no per-player save quota or trash (a deleted save is for ever), no way
   for an owner to reset or delete a player name, and no "check for new games"
   button on the owner's page — the weekly timer does the check. A forgotten

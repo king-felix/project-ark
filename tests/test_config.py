@@ -21,6 +21,7 @@ REPO = Path(__file__).resolve().parents[1]
 NGINX = (REPO / "pi" / "nginx" / "ark.conf").read_text(encoding="utf-8")
 KIWIX = (REPO / "pi" / "systemd" / "ark-kiwix.service").read_text(encoding="utf-8")
 PORTAL_PHASE = (REPO / "pi" / "steps" / "60-portal.sh").read_text(encoding="utf-8")
+MAIN_APP = (REPO / "pi" / "api" / "main.py").read_text(encoding="utf-8")
 EMULATOR = REPO / "pi" / "arcade" / "emulatorjs"
 
 UNITS = {"k": 1024, "m": 1024 ** 2, "g": 1024 ** 3}
@@ -63,6 +64,103 @@ def test_the_library_engine_is_only_reachable_through_the_proxy():
 
 def test_the_admin_area_is_not_proxied_on_the_public_port():
     assert "location ^~ /admin { return 404; }" in NGINX
+
+
+def _backend_pages() -> list[str]:
+    """The pages ``location /`` must not be allowed to answer for."""
+    for line in NGINX.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("location ~ ^/(") and "search" in stripped:
+            inner = stripped.split("^/(", 1)[1].rsplit(")$", 1)[0]
+            return inner.split("|")
+    raise AssertionError("ark.conf has no proxy location for the backend-built pages")
+
+
+# ---------------------------------------------------------------------------
+#  the portal is for someone who has never heard of any of this
+# ---------------------------------------------------------------------------
+def test_the_portal_stays_dark_large_and_self_contained():
+    """OLED-dark, 16 px or better, 44 px tap targets, and nothing fetched from outside.
+
+    These are the promises the household layer rests on: the pages are read on a
+    phone, in the dark, often by somebody who is frightened, and they are read with
+    the internet unplugged.  A webfont or a CDN stylesheet would break the second
+    half of that silently — the page still renders, just wrong, or not at all.
+    """
+    css = (REPO / "pi" / "portal" / "assets" / "ark.css").read_text(encoding="utf-8")
+    assert "--bg:#000" in css, "the portal must stay true black for an OLED phone"
+    size = re.search(r"body\{[^}]*font:\s*\d+\s+(\d+)px", css, re.S)
+    assert size, "the body font size is no longer a plain pixel value"
+    assert int(size.group(1)) >= 16, "16 px is the floor a phone can read in the dark"
+    assert "min-height:44px" in css or "min-height:48px" in css, \
+        "every tap target needs 44 px of height"
+
+    for name in ("index.html", "help.html"):
+        page = (REPO / "pi" / "portal" / name).read_text(encoding="utf-8")
+        # the box's own three names are not "outside" — the page offers them as links
+        # and prints them as text ("open http://ark.lan in your normal browser")
+        own = page.replace("http://ark.lan", "").replace("http://ark.local", "").replace(
+            "http://10.42.0.1", "")
+        for loaded in (r"src\s*=\s*[\"']?(?:https?:)?//",
+                       r"href\s*=\s*[\"']?(?:https?:)?//",
+                       r"url\(\s*[\"']?(?:https?:)?//",
+                       r"@import"):
+            assert not re.search(loaded, own, re.I), \
+                f"{name} loads something from outside the box ({loaded})"
+
+
+def test_a_keyboard_can_skip_the_front_page_to_what_matters():
+    """Both static pages offer the skip link, and it points at something real.
+
+    A page whose skip link points at an ``id`` that is not there is worse than no
+    skip link: the keyboard lands nowhere and the reader concludes the page is
+    broken.  The rule is one link, first in the tab order, aimed at a ``<main>``
+    that exists — the same shell the backend pages use (``main.page()``).
+    """
+    css = (REPO / "pi" / "portal" / "assets" / "ark.css").read_text(encoding="utf-8")
+    assert ".skip{" in css and ".skip:focus{left:0}" in css, \
+        "the skip link must be off-screen until it is focused"
+    assert "main{display:block}" in css
+
+    for name in ("index.html", "help.html"):
+        page = (REPO / "pi" / "portal" / name).read_text(encoding="utf-8")
+        body = page.split("<body>", 1)[1]
+        first = body.lstrip().splitlines()[0].strip()
+        assert first == '<a class="skip" href="#main">Skip to the main content</a>', \
+            f"{name} does not start its body with the skip link"
+        assert '<main id="main">' in page, f"{name} has no target for the skip link"
+        assert page.count("<main") == 1 and page.count("</main>") == 1, \
+            f"{name} must have exactly one main region"
+
+
+def test_every_page_the_backend_builds_is_named_in_the_proxy_block():
+    """A page that is not named still answers **200** — with the front page.
+
+    ``location /`` ends in ``try_files $uri $uri/ /index.html``, so ``/household``
+    and ``/cards`` would both return the portal's own front page with a healthy
+    status code if the proxy block did not name them: the door looks open and the
+    page is wrong.  The same trap made ``/essentials.zip`` a download link that
+    handed back HTML.  ``60-portal.sh`` asks what the body says, and this keeps the
+    three names in the shipped configuration.
+    """
+    pages = _backend_pages()
+    for name in ("search", "board", "files", "household", "cards"):
+        assert name in pages, f"/{name} would fall through to index.html"
+    assert r"essentials\.zip" in pages, "/essentials.zip would answer with index.html"
+
+    # a page nobody can reach from the front page is a page nobody uses
+    front = (REPO / "pi" / "portal" / "index.html").read_text(encoding="utf-8")
+    for door in ('href="/household"', 'href="/cards"'):
+        assert door in front, f"the front page does not offer {door}"
+
+    # and the installer proves the two pages by what they say, not by the code alone;
+    # each needle is a sentence only that page carries, so the front page (which
+    # `location /` would hand back) cannot pass for it
+    for needle in ("The page for the day something goes wrong",
+                   "Three addresses, three squares"):
+        assert needle in PORTAL_PHASE, (
+            f"60-portal.sh no longer proves the page that says {needle!r}")
+        assert needle in MAIN_APP, f"no page says {needle!r} any more"
 
 
 # ---------------------------------------------------------------------------

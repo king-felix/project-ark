@@ -29,7 +29,10 @@ from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 import ark_db
+import ark_essentials
 import ark_health
+import ark_household
+import ark_review
 import ark_security as sec
 import ark_storage
 import ark_arcade
@@ -222,13 +225,14 @@ def shell(title: str, body: str, *, ctx: Ctx | None = None, status: int = 200,
     nav = ""
     if ctx is not None and ctx.admin is not None and not ctx.admin["must_change"]:
         links = [("/admin", "Overview"), ("/admin/health", "What is working"),
+                 ("/admin/household", "Household"),
                  ("/admin/arcade", "Games"),
                  ("/admin/community", "Community"),
                  ("/admin/accounts", "Administrators"),
                  ("/admin/password", "My password"), ("/admin/audit", "History")]
-        nav = '<div class="nav">' + "".join(
+        nav = '<nav class="nav" aria-label="Administrator pages">' + "".join(
             f'<a href="{esc(href)}">{esc(label)}</a>' for href, label in links
-        ) + "</div>"
+        ) + "</nav>"
         who = f'<p class="hint">Signed in as <b>{esc(ctx.admin["username"])}</b></p>'
     else:
         who = ""
@@ -246,6 +250,7 @@ def shell(title: str, body: str, *, ctx: Ctx | None = None, status: int = 200,
 <link rel="stylesheet" href="/assets/ark-admin.css">
 </head>
 <body class="page-admin">
+<a class="skip" href="#main">Skip to the main content</a>
 <div class="wrap">
   <header>
     <span class="logo">Ark administrator</span>
@@ -254,7 +259,9 @@ def shell(title: str, body: str, *, ctx: Ctx | None = None, status: int = 200,
   </header>
   {nav}
   {who}
+<main id="main">
 {body}
+</main>
   <footer><p><b>Private area.</b> Public readers never see this page or these settings.</p></footer>
 </div>
 </body>
@@ -1375,6 +1382,277 @@ def _arcade_candidate_row(c: dict, csrf: str) -> str:
             </form>
           </td>
         </tr>"""
+# ---------------------------------------------------------------------------
+#  the household page — the owner's half
+# ---------------------------------------------------------------------------
+def _household_form(ctx, values) -> str:
+    """The nine answers, in the order the page asks for them."""
+    fields = []
+    for key, label, hint, limit, lines in ark_household.ENTRIES:
+        value = esc((values or {}).get(key, ""))
+        if lines:
+            control = (f'<textarea id="{esc(key)}" name="{esc(key)}" '
+                       f'maxlength="{int(limit)}">{value}</textarea>')
+        else:
+            control = (f'<input id="{esc(key)}" name="{esc(key)}" type="text" '
+                       f'maxlength="{int(limit)}" value="{value}">')
+        fields.append(f'    <label for="{esc(key)}">{esc(label)}</label>\n'
+                      f'    <p class="note">{esc(hint)}</p>\n    {control}')
+    return ('<form method="post" action="/admin/household/save">\n    '
+            + _csrf_field(ctx.csrf) + "\n" + "\n".join(fields)
+            + '\n    <button class="go-btn" type="submit">Save this page</button>\n  </form>')
+
+
+def _review_rows(ctx, rows) -> str:
+    """One emergency topic per line: the pages, the last look, and what to do about it."""
+    items = []
+    for row in rows:
+        pages = ", ".join(
+            f'<a href="/vault/{esc(page)}">{esc(page)}</a>' for page in row["pages"]
+        ) or "no page on the box yet"
+        actions = (
+            f'<form method="post" action="/admin/household/read/{esc(row["key"])}">\n'
+            f'      {_csrf_field(ctx.csrf)}\n'
+            f'      <label for="note-{esc(row["key"])}">What needed changing? '
+            f'(or leave blank)</label>\n'
+            f'      <input id="note-{esc(row["key"])}" name="note" type="text" maxlength="300">\n'
+            f'      <button class="go-btn" type="submit">Somebody read this today</button>\n'
+            f'    </form>')
+        if row["checked"]:
+            actions += (
+                f'\n    <form method="post" action="/admin/household/forget/{esc(row["key"])}">\n'
+                f'      {_csrf_field(ctx.csrf)}\n'
+                f'      <button class="go-btn" type="submit">Take that back</button>\n'
+                f'    </form>')
+        items.append(
+            f'<li><b>{esc(row["name"])}</b>'
+            f'<span class="sub">{esc(row["asks"])}</span>'
+            f'<span class="sub">Pages: {pages}</span>'
+            f'<span class="sub">{esc(row["words"])}'
+            + (f' — {esc(row["note"])}' if row["note"] else "")
+            + f'</span>\n    {actions}</li>')
+    return '<ul class="clean">' + "".join(items) + '</ul>'
+
+
+def _pack_owner_block(pack, csrf: str) -> str:
+    """What is on the card, and the one button that makes a new copy."""
+    if pack.get("present") and pack.get("readable"):
+        made = str(pack.get("built") or "").strip()
+        state = (f'A copy is on the box: {esc(ark_health.human_size(pack.get("bytes")))} · '
+                 f'{int(pack.get("members") or 0)} pages'
+                 + (f' · made {esc(made)}' if made else "") + '.')
+        link = ('<p><a class="go-link" href="/essentials.zip">Download this copy</a></p>')
+    elif pack.get("present"):
+        state = ("A copy is on the box but it cannot be read back, so it is not offered. "
+                 "Make a new one.")
+        link = ""
+    else:
+        state = "There is no copy to carry yet."
+        link = ""
+    return (f'<p>{state}</p>{link}\n'
+            '  <form method="post" action="/admin/household/pack">\n'
+            f'    {_csrf_field(csrf)}\n'
+            '    <button class="go-btn" type="submit">Make a new copy now</button>\n'
+            '  </form>')
+
+
+@router.get("/household", response_class=HTMLResponse)
+def household(request: Request):
+    """The owner's half: the nine answers, the switch, the review, and the copy."""
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.tx() as conn:
+        ctx = _load_ctx(conn, request, ark_db.session_epoch(conn))
+        if (blocked := _need_session(ctx, request)) is not None:
+            return blocked
+        page_open = ark_db.get_setting(conn, "public_household", "1") != "0"
+
+    values = ark_household.load()
+    updated = ark_household.updated()
+    answered, total = ark_household.progress(values)
+    rows = ark_review.summary(ark_health.vault_dir())
+    pack = ark_essentials.status(ark_essentials.pack_dir())
+    switch = _switch(
+        page_open, "household", "Anyone nearby can read the household page",
+        "Leave this on. It is the page somebody opens when something has gone wrong, "
+        "and switching it off changes nothing else on the box.")
+    stamp = (f'<p class="note">Last saved {esc(updated)}.</p>' if updated else "")
+    soon = ark_review.CHECK_EVERY_DAYS
+    body = f"""
+  <h2>What this household wrote down ({answered} of {total} answered)</h2>
+  <p class="note">Short answers, in your own words. Nothing here is shown to anyone
+     except people on this box's own Wi-Fi.</p>
+  {_household_form(ctx, values)}
+  {stamp}
+  <h2>Who can read it</h2>
+  <form method="post" action="/admin/household/switch">
+    {_csrf_field(ctx.csrf)}
+    {switch}
+    <button class="go-btn" type="submit">Save this switch</button>
+  </form>
+  <h2>The emergency pages — when did a person last read one?</h2>
+  <p class="note">A page nobody has read for {int(soon)} days is a page to read again:
+     words go stale and a neighbour's number changes. The box cannot tell whether a page is
+     right — only a person can, so this page records the look, never the judgement.</p>
+  {_review_rows(ctx, rows)}
+  <h2>The pages to carry away</h2>
+  <p class="note">One file holding the manuals, the guides and the recovery sheet, so they
+     still open on a computer with no box and no internet. A copy left on this card does
+     not survive this card — put one on a stick or a phone as well.</p>
+  {_pack_owner_block(pack, ctx.csrf)}
+"""
+    return shell("Household", body, ctx=ctx,
+                 tagline="The page a household fills in itself — and the emergency pages "
+                         "behind it.")
+
+
+@router.post("/household/save", response_class=HTMLResponse)
+def household_save(request: Request,
+                   people: str = Form(""), meeting: str = Form(""),
+                   contact: str = Form(""), water: str = Form(""),
+                   power: str = Form(""), gas: str = Form(""),
+                   firstaid: str = Form(""), animals: str = Form(""),
+                   notes: str = Form(""), csrf: str = Form("")):
+    """Store the nine answers.  Too long is refused with the limit named, never trimmed."""
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.tx() as conn:
+        ctx, blocked = _committed(request, conn, csrf)
+        if blocked is not None:
+            return blocked
+        actor_id, who = ctx.admin["id"], ctx.admin["username"]
+    given = {"people": people, "meeting": meeting, "contact": contact,
+             "water": water, "power": power, "gas": gas, "firstaid": firstaid,
+             "animals": animals, "notes": notes}
+    try:
+        kept = ark_household.save(given, who=who)
+    except ark_household.TooLong as exc:
+        return shell("Household", f"""
+  <p class="status"><span class="dot no" aria-hidden="true"></span>
+     <span><b>Not saved.</b> {esc(exc)}</span></p>
+  <p class="note">Nothing has been changed — shorten that answer and save again.</p>
+  <div class="nav"><a href="/admin/household">Back to the page</a></div>
+""", ctx=ctx, status=400)
+    answered = len(ark_household.filled(kept))
+    with ark_db.tx() as conn:
+        ark_db.audit(conn, action="household-save", actor_id=actor_id,
+                     actor_name=who, result="ok",
+                     detail=f"{answered} of {len(ark_household.ENTRIES)} answered")
+    return _redirect("/admin/household?ok=saved")
+
+
+@router.post("/household/switch", response_class=HTMLResponse)
+def household_switch(request: Request, household: str = Form(""), csrf: str = Form("")):
+    """A ticked box means anybody nearby can read the page; absent means only the owner."""
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.tx() as conn:
+        ctx, blocked = _committed(request, conn, csrf)
+        if blocked is not None:
+            return blocked
+        me = ctx.admin
+        ark_db.set_setting(conn, "public_household", "1" if household else "0")
+        ark_db.audit(conn, action="household-switch", actor_id=me["id"],
+                     actor_name=me["username"], result="ok",
+                     detail=f"public household page={'on' if household else 'off'}")
+    return _redirect("/admin/household")
+
+
+@router.post("/household/read/{topic}", response_class=HTMLResponse)
+def household_read(request: Request, topic: str, note: str = Form(""),
+                   csrf: str = Form("")):
+    """A person says they read one emergency page today, and maybe what was wrong."""
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.tx() as conn:
+        ctx, blocked = _committed(request, conn, csrf)
+        if blocked is not None:
+            return blocked
+        actor_id, who = ctx.admin["id"], ctx.admin["username"]
+    try:
+        kept = ark_review.record(topic, who=who, note=note)
+    except ark_review.UnknownTopic:
+        return shell("Household", _notice(
+            "bad", "<b>Nothing was changed.</b> That is not a page this box keeps."),
+            ctx=ctx, status=400)
+    except ValueError as exc:
+        return shell("Household", _notice(
+            "bad", f"<b>Nothing was changed.</b> {esc(exc)}"), ctx=ctx, status=400)
+    with ark_db.tx() as conn:
+        ark_db.audit(conn, action="household-read", actor_id=actor_id, actor_name=who,
+                     result="ok",
+                     detail=f"{topic} read {kept['on']}"
+                            + (f" — {kept['note'][:160]}" if kept["note"] else ""))
+    return _redirect("/admin/household?ok=read")
+
+
+@router.post("/household/forget/{topic}", response_class=HTMLResponse)
+def household_forget(request: Request, topic: str, csrf: str = Form("")):
+    """Take one 'somebody read this' back, so the page asks for a fresh look again."""
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.tx() as conn:
+        ctx, blocked = _committed(request, conn, csrf)
+        if blocked is not None:
+            return blocked
+        actor_id, who = ctx.admin["id"], ctx.admin["username"]
+    try:
+        ark_review.forget(topic)
+    except ark_review.UnknownTopic:
+        return shell("Household", _notice(
+            "bad", "<b>Nothing was changed.</b> That is not a page this box keeps."),
+            ctx=ctx, status=400)
+    with ark_db.tx() as conn:
+        ark_db.audit(conn, action="household-forget", actor_id=actor_id, actor_name=who,
+                     result="ok", detail=f"{topic}: that look is taken back")
+    return _redirect("/admin/household?ok=forgot")
+
+
+@router.post("/household/pack", response_class=HTMLResponse)
+def household_pack(request: Request, csrf: str = Form("")):
+    """Write the one file the household can carry away, then prove it reads back whole."""
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.tx() as conn:
+        ctx, blocked = _committed(request, conn, csrf)
+        if blocked is not None:
+            return blocked
+        actor_id, who = ctx.admin["id"], ctx.admin["username"]
+
+    vault = ark_health.vault_dir()
+    sheet = ark_health.ark_root() / "RECOVERY-SHEET.txt"
+    try:
+        made = ark_essentials.build(ark_essentials.pack_dir(), vault=vault, sheet=sheet)
+    except (FileNotFoundError, OSError) as exc:
+        with ark_db.tx() as conn:
+            ark_db.audit(conn, action="household-pack", actor_id=actor_id,
+                         actor_name=who, result="failed", detail=str(exc)[:200])
+        return shell("Household", f"""
+  <p class="status"><span class="dot no" aria-hidden="true"></span>
+     <span><b>No copy was made.</b> {esc(exc)}</span></p>
+  <p class="note">The copy is made from the pages under <b>Manuals &amp; Guides</b>, so there
+     has to be at least one page there first. Nothing else has changed.</p>
+  <div class="nav"><a href="/admin/household">Back to the page</a></div>
+""", ctx=ctx, status=400)
+
+    whole, problems = ark_essentials.verify(made["path"])
+    detail = (f"{int(made['members'])} pages, {int(made['bytes'])} bytes, "
+              f"sha256 {str(made['sha256'])[:16]}")
+    with ark_db.tx() as conn:
+        ark_db.audit(conn, action="household-pack", actor_id=actor_id, actor_name=who,
+                     result="ok" if whole else "damaged", detail=detail)
+    if not whole:
+        return shell("Household", f"""
+  <p class="status"><span class="dot no" aria-hidden="true"></span>
+     <span><b>The copy was made but it does not read back whole.</b>
+     {'; '.join(esc(one) for one in problems)}</span></p>
+  <p class="note">It is on the card, and it is not offered for download. Make it again; if
+     it happens twice the card is worth checking.</p>
+  <div class="nav"><a href="/admin/household">Back to the page</a></div>
+""", ctx=ctx, status=400)
+    return _redirect("/admin/household?ok=pack")
+
+
 @router.get("/arcade", response_class=HTMLResponse)
 def arcade_page(request: Request):
     if (blocked := _gate_tls(request)) is not None:

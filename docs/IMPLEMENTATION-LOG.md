@@ -29,11 +29,11 @@ and what the next executable step is.
 | 9 | Truthful downloads/readiness/health | **stage 4 done** — one module decides per-section readiness with a reason and a next step, `/api/ready` answers 200/503, `/admin/health` is the owner's page, `/api/health` is liveness only, and progress comes from measured bytes (§8) |
 | 10 | Network loss after boot | **stage 5 done** — `ark-net-watch` asks the boot guard's question again every minute, rescues the hotspot after two lost checks, returns home when the network is back and nobody is using the hotspot, never takes the access point from a connected device, and never overrules a choice the owner made with `ark-mode home` / `ark-mode hotspot` (§10) |
 | 11 | Backup / offline recovery kit | **stage 6 done** — `ark-backup` writes one dated, verified bundle (records, shared files, import list, a manifest with a sha256 per file) built as `.partial` and published by rename; `ark-restore` proves a bundle before touching anything, refuses an occupied box without `--force`, and never replaces a shared file; the printed recovery sheet needs only a phone, a card reader and a working card (§11) |
-| 12 | Emergency content review | not started |
-| 13 | Essentials pack, QR, accessibility, household page | not started |
+| 12 | Emergency content review | **stage 7 done (code + test)** — `ark_review` holds the eight topics, each naming the pages that carry it; a page the card does not have is *named as missing*, never assumed; the owner records "I have read this today" and a topic older than a year is shown as **due**. Nothing judges a page and nothing refuses to serve one (§23) |
+| 13 | Essentials pack, QR, accessibility, household page | **stage 7 done (code + test)** — `/household` (nine answers the household typed + when each emergency page was last read), `/cards` (three wall cards, inline SVG, no image/font/script/network), `/essentials.zip` (one file: our manuals and guides rewritten for a folder, the cards, the recovery sheet, a sha256 manifest), the owner's **Household** page, and an accessibility pass (skip link, visible focus ring, ≥16 px body, 44 px targets, print rules) (§23) |
 | — | ARK Arcade | **delivered and tested** — public shelf, guest play, optional named-player saves on the TLS `:8445` origin, owner **Games** page, licence/allowlist/hash gate, weekly discovery, and saves carried by a backup (§12); since 25 Oct a game can also be named from the file itself against an offline catalogue, and added from the owner's page (§19) |
-| 14 | Sequence | stages 1–6, ARK Arcade, R3 and the name-from-contents work (§19) **deployed 25 Oct 2026** (§15, and §19 for the v4 → v5 deploy); the phone walk-through is the next human step; stage 7 after it |
-| 15 | Acceptance tests | **299 tests**, all green (`pytest -q`); the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md` |
+| 14 | Sequence | stages 1–6, ARK Arcade, R3, the name-from-contents work (§19) and the household layer (§23) are **code + test**; everything except stage 7 is **deployed 25 Oct 2026** (§15, §19); **stage 7 has not been deployed yet** — the phone walk-through is the next human step, stage 7's deploy is the next machine step |
+| 15 | Acceptance tests | **380 tests** (`380 passed, 2 skipped`; the two skips are QR cross-checks needing `qrcode`/`opencv-python-headless`), all green (`pytest -o addopts='--strict-markers' -q`); the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md` |
 
 ---
 
@@ -392,8 +392,9 @@ on 25 Oct 2026 (§15). What comes next:
 1. **Walk through it on a phone** — the deploy and `90-verify` are green, but no
    human has tapped anything. `.clinerules` §8.9 item 2 is the checklist and it has
    not been done. No tag before it passes.
-2. **Stage 7 — the household layer.** Emergency content review, the essentials
-   pack, QR cards, accessibility and the household page.
+2. **Deploy stage 7, then walk it** — the household layer is code + test (§23) and has
+   never run on the Pi. No schema change, so `--only 60-portal,65-admin` is enough, then
+   `--only 90-verify`; after that open `/household`, `/cards` and a made pack on a phone.
 
 ### 7.1 Stage 6 in detail — delivered, see §11 for what was built
 
@@ -648,8 +649,9 @@ client list ("who is on the hotspot"), signal strength, a warning before the ret
 home, and a choice of hotspot channel from the page.
 
 **Next executable step at that checkpoint** — stage 6: the backup and recovery
-sheet, delivered in §11. ARK Arcade followed in §12; stage 7 is still the next
-new work after the deploy walk-through (`.clinerules` §8.9).
+sheet, delivered in §11. ARK Arcade followed in §12, and stage 7 — the household
+layer — was delivered on 25 Oct 2026 (§23); the deploy walk-through (`.clinerules`
+§8.9) is still the next human step, and stage 7 is the next thing to put on the box.
 
 
 ---
@@ -813,7 +815,8 @@ first run.
 
 **Next executable step** — the branch was deployed on 25 Oct 2026 (§15), so what
 remains is the phone walk-through in the paragraph above (`.clinerules` §8.9 item
-2); stage 7 (household layer) remains unstarted.
+2). Stage 7 (the household layer) was delivered on 25 Oct 2026 — §23 — and is not
+yet deployed.
 
 ---
 
@@ -1953,3 +1956,108 @@ is reading them and reporting what they are, in one round trip, on a Pi with an 
 a **human's thumb** on any of it, a genuinely new game **accepted onto the live shelf**, and the
 live radio transitions the watchdog exists for. `docs/HUMAN-TEST-LIST.md` is the one page that
 now collects them.
+
+---
+
+## 23. Stage 7 — the household layer, and the paperwork that goes with a bag of pages — 25 Oct 2026
+
+**Code + test only. Nothing in this section has run on the Pi yet.** At this checkpoint
+`pytest` is **380 passed, 2 skipped** (21 files), the branch is `feature/admin-hardening`,
+the schema is untouched (**v5**, no migration in this stage) and `90-verify` has *not* been
+asked about `/household`, `/cards` or `/essentials.zip`. The deploy is the next machine step
+and it is deliberately small: `--only 60-portal,65-admin`, then `--only 90-verify`.
+
+### 23.1 What a household gets
+
+| Piece | Where | What it is |
+|---|---|---|
+| The household page | `http://ark.lan/household` (`main.household_page`) | Nine answers only a person can write (who lives here, where we meet, who to ring, where the water / power / gas stops, where the first-aid kit is, animals and medicine, anything else) and, under each of the **eight** emergency topics, the plain truth about when somebody last read the page that covers it |
+| The eight topics | `pi/api/ark_review.py` `TOPICS` | breathing and bleeding, water, food, fire, power, toilets without water, cold/heat/shelter, small repairs — each names the vault pages that carry it (`manuals/first-aid.html`, `guides/electrical.html`, …) and the question the page must answer. A page the card does not have is **named as missing**, never assumed present |
+| What was read | `settings` key `emergency_review` | one JSON row per topic: the day, the account, an optional note. *"Somebody here read this today."* / *"…214 days ago."* / *"Nobody has read this yet."*; `CHECK_EVERY_DAYS = 365` makes a topic **due for a look**. **Take that back** returns it to *nobody has read this*, audited `household-forget` |
+| The cards for the wall | `http://ark.lan/cards` (`ark_cards`, `ark_qr`) | **three** cards — `http://ark.lan` (the box's own Wi-Fi), `http://ark.local` (a home network), `http://10.42.0.1` (the number that always works) — each with the sentence that says when it works. The square is drawn **in the page**: one inline `<svg>`, one `<path>`, no image file, no font, no script, no network |
+| The pack to carry | `/srv/ark/essentials/ark-essentials.zip` → `/essentials.zip` | our own manuals and guides (every `/vault/…` link rewritten relative, so the pack opens from a folder), `cards/`, `RECOVERY-SHEET.txt`, `START-HERE.txt`, its own `index.html`, and `MANIFEST.txt` with a sha256 per member. Built as `.partial` and published by rename; **deterministic** (sorted members, fixed 1980 stamps), so two builds of the same shelf are the same bytes |
+| The owner's half | `https://ark.lan:8443/admin/household` (`ark_admin.household*`) | save the nine answers, **I have read this today** (+ note), **Take that back**, **Show the household page to everyone** (`public_household`, absent or `1` = open), and **Make a new copy now**. Audited: `household-save`, `household-switch`, `household-read`, `household-forget`, `household-pack` |
+
+A topic nobody has read, a page the card does not carry and a box with no pack are all
+**information, not faults**: none of them is in `BLOCKING_SECTIONS`, and none of them makes
+`/api/ready` answer 503. That is the same rule the licence question follows (§17) — the box
+says what it knows and refuses nothing.
+
+### 23.2 The doors, and why two of them are proved by their words
+
+`pi/nginx/ark.conf` names `/household`, `/cards` and `/essentials.zip` in the portal-pages
+location, and `pi/nginx/ark-admin.conf` adds **one** non-`/admin` path to the management
+origin — `location = /essentials.zip` — because the Household page that offers the link lives
+behind that door and a link that 404s on the origin that offers it is worse than no link.
+
+`location /` ends in `try_files … /index.html`, so **every unnamed address still answers 200
+with the front page**. That is why `60-portal.sh` and `90-verify.sh` grew a `check_says()`
+helper: the household page is proved by the words *"The page for the day something goes
+wrong"* and the cards by *"Three addresses, three squares"*. `/essentials.zip` is proved by
+its **content type**: 404 is honest (nobody has made a pack), a 200 must be
+`application/zip` — a 200 that is `text/html` is the portal answering, not the pack, and that
+is a failure.
+
+### 23.3 The tests (83 new: 382 collected, `380 passed, 2 skipped`)
+
+| File | Tests | What it holds |
+|---|---|---|
+| `tests/test_household.py` | 13 | trimming and control characters, a refusal that names the limit (never a truncation), an unreadable stored row is an empty page and not a crash, `6 of 9` progress, and that a value is a sentence a person typed |
+| `tests/test_household_page.py` | 34 | `/household` renders the nine answers escaped, a missing page is named, *"Nobody has read this yet."* vs *read 214 days ago*, a page older than a year is **due**, the switch turns the page off and leaves the cards, manuals and pack alone, `/cards` carries three cards and no external reference, the owner's door saves/reads/forgets/rebuilds, and **every topic names a file that really is in `pi/vault`** |
+| `tests/test_qr.py` | 9 (+2 skipped) | structure with nothing installed (finders, timing, always-dark module, quiet zone, both copies of the format block read back) and — on a machine that has them — every module of versions 1–4 and all eight masks against `qrcode`, and the picture decoded back to its text by OpenCV. On the box the two cross-checks skip; the structure and the refusal still run |
+| `tests/test_essentials.py` | 22 | a build is whole and says what is in it, two builds are the same bytes, `/vault/…` links are relative where the pack lands, a member over the size cap is refused, a damaged member fails `verify`, `.partial` is swept and never offered, a `START-HERE` and an `index.html` come with it, and nothing is written outside `/srv/ark/essentials` |
+| `tests/test_config.py` | +3 | the portal stays dark, large and self-contained: `--bg:#000`, ≥16 px body text, ≥44 px tap targets, and **nothing a browser would fetch** from outside the box in `index.html`/`help.html` (the box's own three addresses are stripped first, so written-out text like *open http://ark.lan* is not mistaken for a remote asset), and the two static pages start their body with a skip link that points at a `<main>` that really exists |
+
+The portal-plainness test failed twice for the right reason before it passed: a bare `http://`
+substring check trips on the sentence a person reads, so the test now strips the box's own
+names and looks only at what a page would actually **fetch**.
+
+### 23.4 The accessibility pass
+
+`pi/portal/assets/ark.css` gained the skip link (first in the tab order, visible only while
+focused), one visible 3 px focus ring on every link/button/field, `main{display:block}`,
+`.line-breaks` so a typed answer keeps its line breaks, a full-width `.go-link` (50 px, the
+download that is a link and not a form), the `.wall`/`.wall-card` print styles (white on
+purpose — a scanner needs contrast), `prefers-reduced-motion`, and a print block that drops
+the navigation, the popup and every `.go-link`. `index.html` and `help.html` gained the two
+front-door cards (*This Household*, *Card to Get Back On*) and the skip link; neither page
+loads anything from anywhere, which is what the new test asserts.
+
+### 23.5 What reading the paperwork caught
+
+Three statements that were wrong in the docs and are now right — each one a small, plausible
+lie of the kind §8.7 collects:
+
+* `README.md` and `pi/portal/index.html` described **nine** cards for the wall. The box prints
+  **three** (`ark_household.CARDS`). Fixed in both, and the household test asserts the shape
+  rather than a number in prose.
+* `docs/ADMIN.md` §12 (*"Not in this release yet"*) still said *"no household page, no
+  'download the essentials' pack, no QR cards"*. They exist now; the list says what is really
+  still missing (no text-size or contrast controls, no translation, no reminder on the front
+  page, no printed one-page version of the household's own answers).
+* `pi/api/ark_qr.py`'s own docstring claimed the cross-check ran against **`segno`**; it runs
+  against `qrcode` and OpenCV. A docstring that names the wrong library is how the next person
+  installs the wrong package and believes the test skipped for a reason.
+
+`docs/REQUIREMENTS-MATRIX.md` §D is now a 20-row acceptance table whose every row cites a test
+that exists, plus the honest *"what is still missing"* paragraph; `docs/USING-THE-ARK.md` has
+the real eight topics, the console commands (run as `pi`, no root) and the household page
+described as a reader sees it; `docs/REBUILD-ME-ARK.txt` lists the two new doors, the pack
+folder, the phase-60/65 additions and the body-based proof rule.
+
+### 23.6 What is unproven, and what is next
+
+Nothing in this section has been seen by a browser on the Pi. Specifically unproven:
+
+* `/household` and `/cards` answering **from the box's own nginx** (they answer from
+  `TestClient` and from the Mac's copies of the templates only);
+* a pack built on the card, `--verify` reading it back, and the little `index.html` inside it
+  opened on a phone with the box switched off;
+* a card **scanned by a real phone camera** — the square is proved against an independent
+  encoder and decoder on the Mac, not by a lens;
+* the `:8443` `location = /essentials.zip` answering under TLS (phase 65 will prove 200 or 404);
+* nobody has printed anything.
+
+The next step is the deploy, in this order: `--only 60-portal,65-admin` (no migration, but the
+usual `sqlite3 … ".backup"` first is still cheap insurance), then `--only 90-verify`, then a
+pack, then a phone.

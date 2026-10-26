@@ -43,8 +43,12 @@ import ark_admin
 import ark_arcade
 import ark_arcade_install
 import ark_arcade_web
+import ark_cards
 import ark_db
+import ark_essentials
 import ark_health
+import ark_household
+import ark_review
 import ark_storage
 from ark_health import (book_count, guide_pages, human_size, library_books,
                         library_bytes, now_iso)
@@ -137,12 +141,18 @@ def esc(value) -> str:
 
 NAV = [("/", "Home"), ("/search", "Search"), ("/kiwix/", "Library"),
        ("/books/", "Books"), ("/vault/", "Manuals"), ("/board", "Messages"),
-       ("/files", "File box")]
+       ("/files", "File box"), ("/household", "Household")]
 
 
 def page(title: str, body: str, here: str = "", tagline: str = "",
          status: int = 200) -> HTMLResponse:
-    """Every page shares the same head, navigation and footer."""
+    """Every page shares the same head, navigation and footer.
+
+    Three things here are for a keyboard and a screen reader rather than for a phone:
+    a **skip link** that is the first thing tabbed to, the navigation as a named
+    ``<nav>``, and one ``<main>`` landmark around the page's own content.  They cost
+    nothing on a phone and make the box usable when the screen is not.
+    """
     parts = []
     for href, label in NAV:
         current = ' aria-current="page"' if href == here else ""
@@ -159,14 +169,17 @@ def page(title: str, body: str, here: str = "", tagline: str = "",
 <link rel="stylesheet" href="/assets/ark.css">
 </head>
 <body>
+<a class="skip" href="#main">Skip to the main content</a>
 <div class="wrap">
   <header>
     <span class="logo">Project Ark</span>
     <h1>{esc(title)}</h1>
     {sub}
   </header>
-  <div class="nav">{''.join(parts)}</div>
+  <nav class="nav" aria-label="Pages">{''.join(parts)}</nav>
+<main id="main">
 {body}
+</main>
   <footer>
     <p><b>Project Ark</b> — the library that lives on a small computer. No accounts, no tracking.</p>
   </footer>
@@ -790,4 +803,169 @@ def files_post(file: UploadFile = File(None), note: str = Form("")):
              (note or "").strip()[:140], stored.sha256),
         )
     return RedirectResponse("/files?ok=1", status_code=303)
+# ---------------------------------------------------------------------------
+#  the household page, the cards for the wall, and the pack to carry
+# ---------------------------------------------------------------------------
+def _public_household() -> bool:
+    """The owner can switch this page off; a missing switch means it is open."""
+    return setting("public_household", "1") != "0"
 
+
+def _household_written(values) -> str:
+    """What the household wrote down, in their own order and their own words."""
+    rows = ark_household.filled(values)
+    if not rows:
+        return ('<h2>Nobody has written this page yet</h2>'
+                '<p class="hint">Ask the owner to fill it in — it takes five minutes, and '
+                'this is the page that matters most on the day something goes wrong.</p>')
+    items = "".join(
+        f'<li><b>{esc(label)}</b>'
+        f'<span class="sub line-breaks">{esc(text)}</span></li>'
+        for label, text in rows)
+    return f'<h2>What this household wrote down</h2><ul class="clean">{items}</ul>'
+
+
+def _emergency_written() -> str:
+    """What the box really carries for each emergency, and when a person last read it.
+
+    Every line comes from :mod:`ark_review`, which finds the pages on the card and
+    counts the days since somebody opened one.  A topic with no page says so; nothing
+    here invents a manual, and nothing here invents a date.
+    """
+    rows = ark_review.summary(ark_health.vault_dir())
+    have = [row for row in rows if row["covered"]]
+    missing = [row["name"] for row in rows if not row["covered"]]
+    if not have:
+        listing = ('<p class="status"><span class="dot wait" aria-hidden="true"></span>'
+                   '<span><b>No emergency pages are on the box yet.</b> The owner can add '
+                   'them; until then the printed cards and what you already know are all '
+                   'there is.</span></p>')
+    else:
+        items = "".join(
+            f'<li><a href="/vault/{esc(row["pages"][0])}">{esc(row["name"])}</a>'
+            f'<span class="sub">{esc(row["asks"])}</span>'
+            f'<span class="sub">{esc(row["words"])}</span></li>'
+            for row in have)
+        listing = f'<ul class="clean">{items}</ul>'
+    if missing:
+        listing += ('<p class="note">No page on this box yet for: '
+                    + esc(", ".join(missing)) + '.</p>')
+    return listing
+
+
+def _pack_written() -> str:
+    """The one file that carries the small pages away, if one has been made."""
+    pack = ark_essentials.status(ark_essentials.pack_dir())
+    if not pack.get("present"):
+        return ('<p class="note">There is no copy to carry yet. The owner can make one; '
+                'until then the pages are here on the box.</p>')
+    if not pack.get("readable"):
+        return ('<p class="note">A copy is on the box but it looks damaged, so it is not '
+                'offered. Ask the owner to make a new one.</p>')
+    made = str(pack.get("built") or "").strip()
+    made_line = f' · made {esc(made)}' if made else ""
+    return (f'<p><a class="go-link" href="/essentials.zip">Download the pages as one file</a></p>'
+            f'<p class="note">{esc(human_size(pack.get("bytes")))} · '
+            f'{int(pack.get("members") or 0)} pages{made_line}. It opens on any computer with '
+            f'no network: unpack it and open <b>START-HERE</b>.</p>')
+
+
+
+
+
+@app.get("/household", response_class=HTMLResponse)
+def household_page():
+    """Who lives here, where the water stops, and what to do when something goes wrong.
+
+    Two halves on purpose: the household's own answers (which only a person can write)
+    and the box's emergency pages (which only the box can list).  Neither is invented,
+    and both keep working with nothing plugged in.
+    """
+    if not _public_household():
+        return error_page("The household page is switched off.",
+                          "The owner can turn it back on. Everything else on the box "
+                          "still works.", 404)
+    values = ark_household.load()
+    updated = ark_household.updated()
+    stamp = ""
+    if updated:
+        when = ago(updated)
+        if when:
+            stamp = f'<p class="note">Last written here {esc(when)}.</p>'
+    body = f"""
+  <p class="hint">Who lives here, where the water stops, and what to do when something
+     goes wrong. Everything on this page works with nothing plugged in.</p>
+  {_household_written(values)}
+  {stamp}
+  <h2>When something goes wrong</h2>
+  {_emergency_written()}
+  <h2>Take it with you</h2>
+  {_pack_written()}
+  <div class="nav"><a href="/cards">Print the cards for the wall</a></div>
+"""
+    return page("Household", body, here="/household",
+                tagline="The page for the day something goes wrong — written by the people "
+                        "who live here.")
+
+
+@app.api_route("/essentials.zip", methods=["GET", "HEAD"])
+def essentials_download() -> Response:
+    """The one file the household page offers to carry away.
+
+    Read-only, and served by name from a folder the box owns: no part of the request
+    chooses a path.  A pack that has not been made is a friendly 404 — a link that
+    quietly 500s is worse than a sentence saying there is no copy yet.
+    """
+    path = ark_essentials.pack_path(ark_essentials.pack_dir())
+    try:
+        present = path.is_file()
+    except OSError:
+        present = False
+    if not present:
+        return error_page("There is no copy to download yet.",
+                          "The owner can make one from their side of the box, and this "
+                          "link starts working. Nothing else has changed.", 404)
+    return FileResponse(path, media_type="application/zip",
+                        headers={"Content-Disposition":
+                                 'attachment; filename="ark-essentials.zip"',
+                                 "Cache-Control": "no-cache",
+                                 "X-Content-Type-Options": "nosniff"})
+
+
+@app.get("/cards", response_class=HTMLResponse)
+def cards_page():
+    """The three addresses as squares a phone camera can read, and as words.
+
+    Printed cards are the part of this box that survives the box: a dead screen, a flat
+    phone and a drawer are what a household has on a bad evening.  The squares are
+    inline SVG, so a card prints with no image file, no font and no network.
+    """
+    if not _public_household():
+        return error_page("The household page is switched off.",
+                          "The owner can turn it back on, and the cards come back with "
+                          "it.", 404)
+    wall = ark_cards.cards()
+    if wall:
+        items = "".join(
+            f'<article class="wall-card">\n'
+            f'  <h2>{esc(card["when"])}</h2>\n'
+            f'  <p class="wall-picture">{card["svg"]}</p>\n'
+            f'  <p class="wall-address">{esc(card["address"])}</p>\n'
+            f'  <p class="wall-when">{esc(card["sentence"])}</p>\n'
+            f'</article>' for card in wall)
+        wall_html = f'<div class="wall">{items}</div>'
+    else:
+        wall_html = ('<p class="status"><span class="dot wait" aria-hidden="true"></span>'
+                     '<span><b>No cards can be drawn.</b> The addresses are still on the '
+                     'household page.</span></p>')
+    body = f"""
+  <p class="hint">Print these and put one where everybody can see it: on the fridge, in
+     the drawer with the torch, in a bag. Point a phone camera at the square, or type the
+     address underneath into any browser.</p>
+  {wall_html}
+  <p class="note">These cards keep working whether the box is on the household router or
+     broadcasting its own Wi-Fi. They are the one thing that still helps when the box
+     itself will not start.</p>
+"""
+    return page("Cards for the wall", body, here="/household",
+                tagline="Three addresses, three squares, and when each one works.")

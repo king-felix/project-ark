@@ -22,6 +22,9 @@ below still works.
 | fix something today | `http://ark.lan/vault/` | open a manual; print the PDF if you want paper |
 | hand someone a file | `http://ark.lan/files` | choose file → **Put it in the box** |
 | play a game for a few minutes | `http://ark.lan/arcade/` | tap a game; nothing to install, no name needed |
+| see this household's own answers | `http://ark.lan/household` | who lives here, where the water stops, who to ring |
+| print a card that gets a phone back | `http://ark.lan/cards` | print it, put it by the router |
+| keep the guides when the box is dead | `http://ark.lan/household` | **Take it with you** → the pack downloads as one file |
 | keep a game save on the box | `http://ark.lan/arcade/player` | it opens the secure page; make a name, then **Save here** |
 | put a book on the shelf | `http://ark.lan/files` | drag the `.epub` in and walk away |
 | leave a note for the household | `http://ark.lan/board` | name is optional → **Put it on the board** |
@@ -78,7 +81,7 @@ The home screen is deliberately boring: five headings, plain words, big buttons.
 |---|---|---|
 | **Find something** | one search box | searches every collection, every manual and the bookshelf at once |
 | **Start here** | Offline Library · Books · Manuals & Guides | the three libraries |
-| **When something breaks** | Repair guides · Quick card | iFixit-style repair pages, and a one-page card to print |
+| **When something breaks** | Repair guides · Quick card · This Household · Card to get back on | iFixit-style repair pages, a one-page card to print, the household's own answers, and a printable card that gets a phone back to the box |
 | **For everybody here** | Message Board · File Box · Games | notes, file swapping and a small game shelf for anyone on the Wi-Fi |
 | **Not sure how this works?** | Help | the same instructions, in even simpler words |
 
@@ -289,9 +292,55 @@ the reasons when one does not. Both are safe to read on any phone — there is n
 `http://ark.lan/api/health` is the odd one out on purpose: it only says *"the backend answered"*,
 which is not the same as *"the box works"*.
 
+### 3.9 The household page, the cards and the pack
+
+Three things that are about the day something goes wrong rather than about reading.
+
+**`http://ark.lan/household`** — the page somebody opens when they are frightened. It has
+three parts, and each one is honest about what it does not know:
+
+- **What this household wrote down** — who lives here, where the water and the power stop,
+  where the first-aid kit is, who to ring. Only a person can fill this in (the owner does,
+  on their own page); until somebody does, the page says *"Nobody has written this page
+  yet"* rather than showing empty lines.
+- **When something goes wrong** — the eight emergency subjects the box carries (breathing and
+  bleeding, drinking water, food that is still good, fire, power, toilets with no water,
+  cold and shelter, small repairs), each with the page that covers it and **how long since
+  somebody last read it**. A subject with no page says so; a page
+  nobody has read says *"Nobody has read this yet."*; a date the box cannot read is treated
+  as overdue rather than as fresh. Nothing here is invented, and nothing is a percentage.
+- **Take it with you** — one download, `/essentials.zip`: the small pages and the repair
+  guides rewritten so their links work from a folder, the three wall cards, the recovery
+  sheet and a `MANIFEST.txt` naming every file with its fingerprint. Unzip it on any
+  computer with no network and open `START-HERE`. If no pack has been made, the page says
+  so (and the link answers a friendly "there is no copy to download yet", never a broken
+  download).
+
+**`http://ark.lan/cards`** — three addresses as squares a phone camera can read, with the
+address written underneath each one: `http://ark.lan` (the box's own Wi-Fi),
+`http://ark.local` (a home network) and `http://10.42.0.1` (the number that always works
+while the box is broadcasting). The squares are drawn by the box itself — no image files,
+no fonts, no network — so a printed card keeps working when the box does not. Print one and
+keep it beside the router.
+
+**The pack from a console** (no page needed — run it as `pi`, it does not need root):
+
+```bash
+/usr/local/sbin/ark-essentials --build     # make /srv/ark/essentials/ark-essentials.zip
+/usr/local/sbin/ark-essentials --status    # is there one, how big, how old, how many pages
+/usr/local/sbin/ark-essentials --list      # what is inside it
+/usr/local/sbin/ark-essentials --verify    # read every fingerprint back
+```
+
+The owner's **Household** page has the nine answers, the switch, the review list and a
+**Make a new copy now** button, plus a **Download this copy** link. The switch hides
+`/household` and `/cards` from visitors — hiding them leaves the pack downloadable and every
+other page untouched.
+
 ---
 
 ## 4. Getting books onto it
+
 
 ### 4.1 One or two books, from any device — 30 seconds
 

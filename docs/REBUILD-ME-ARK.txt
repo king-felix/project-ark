@@ -53,6 +53,13 @@ Doors on the box (once built):
   /board                message board, anyone can post, no login
   /files                File Box: anyone can drop a file in (2 GB each); books auto-shelve
   /arcade/              games shelf: small openly licensed homebrew, played in the browser
+  /household            what this household wrote down, and when a person last read
+                        each emergency page (eight topics; a missing page is named)
+  /cards                three cards for the wall, drawn in the page (no image, no
+                        internet): the box's own Wi-Fi name, the home-network name,
+                        the number that always works
+  /essentials.zip       the pack to carry away — our manuals, the cards and the
+                        recovery sheet in one file; 404 until somebody makes one
   /help.html            how it works, in plain words
   /status.json          machine-readable health (also mirrored in the portal)
 
@@ -65,7 +72,9 @@ page and every admin page still work without it.
 And one door that is NOT on the portal: the owner's door, on its own TLS
 address, for whoever maintains the box.
 
-  https://ark.lan:8443/admin   sign-in + accounts + audit + Community + Games
+  https://ark.lan:8443/admin   sign-in + accounts + audit + Community + Games +
+                               Household (the emergency pages, the household's own
+                               answers, and one button that makes the pack)
                                (404 on port 80); "What is working" — every part,
                                ready or not, with the plain reason and next step
   https://ark.lan:8445/arcade/ the player's own TLS origin: sign in for saves,
@@ -183,6 +192,12 @@ On the Pi, everything the Ark owns lives under /srv/ark:
                             games). Built on a networked machine by
                             ark-romdb-build --fetch and carried over; without it
                             every game plays and is named from its file name
+  /srv/ark/essentials       the pack: ark-essentials.zip (+ .partial while it is
+                            being built), our manuals and guides rewritten so their
+                            links work from a folder, cards/, RECOVERY-SHEET.txt,
+                            START-HERE.txt, index.html, MANIFEST.txt (a sha256 per
+                            file). Made by the owner's Household page or
+                            ark-essentials --build; nothing makes one on a timer
   /etc/ssl/ark/             ark-admin.crt + ark-admin.key (0600 root:root)
   /etc/ark/ark.env          operator settings (single place to change things)
   /etc/ark/zim-queue.tsv    resolved download queue (pinned URLs + sizes)
@@ -250,13 +265,22 @@ popup resolves to the portal instead of a "no internet" dead end.
   60  portal      static portal, API venv, systemd unit, nginx site, captive
                   endpoints, print styles, help page, the arcade modules/player,
                   the offline game-name catalogue reader, the first game shelf
-                  and its weekly discovery timer.
+                  and its weekly discovery timer, the household layer
+                  (ark_review emergency topics, ark_household answers,
+                  ark_qr/ark_cards wall cards, ark_essentials the pack and
+                  /usr/local/sbin/ark-essentials).
                   Proof: every route 200/302, including /arcade/ and its player,
-                  and ark-romdb-build --self-test reading the installed catalogue.
+                  ark-romdb-build --self-test reading the installed catalogue,
+                  and /household and /cards asked for the words only they
+                  print — `location /` would answer the front page with a 200
+                  for any address the proxy does not name. /essentials.zip is
+                  404 (normal: nobody has made a pack) or a real application/zip.
   65  admin       the owner's door: scrypt accounts, forced first password,
                   nginx :8443 management origin (+ :8444 loopback setup while
                   unclaimed) and the :8445 player origin, self-signed certificate,
-                  root-only recovery command.
+                  root-only recovery command, and the one non-/admin path on
+                  :8443 — `location = /essentials.zip`, because the Household
+                  page that offers the link lives behind that door.
                   Proof: :80/admin is 404, :8443 needs TLS and a sign-in,
                   :8444 only answers through the tunnel, recovery is 0700 root,
                   :8445 answers /arcade/player and 404 for /admin.
@@ -708,7 +732,12 @@ any failure. Categories:
   pages       HTTP codes for /, /help.html, /assets/ark.css, /search?q=water,
               /board, /files, /arcade/, /arcade/static/ark-arcade.css,
               /arcade/emulator/loader.js, /api/status, /vault/,
-              /vault/quick-card.html, /generate_204, /kiwix/, /books/
+              /vault/quick-card.html, /generate_204, /kiwix/, /books/ — and for
+              /household and /cards the BODY is asked too, because `location /`
+              answers the front page with a 200 for any address it does not name
+  the pack    /essentials.zip: 404 is normal (nobody has made one), a 200 must be
+              application/zip — a 200 that is text/html is the portal answering,
+              not the pack, and that is a failure
   readiness   one line per part of the box, read from /api/ready: ready / empty /
               broken, with the reason the box itself gave.  Empty (nothing on
               the card yet) is soft — a box still filling up is not a fault.

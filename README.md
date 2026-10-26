@@ -21,6 +21,8 @@ down, and the portal address does not serve it at all.
 | `/vault/` | survival manuals + repair guides, each with a printable PDF |
 | `/board` | a message board anyone can post to (the owner can pin, sort out, hide) |
 | `/files` | a file box anyone can drop things into (2 GB per file, links never overwrite) |
+| `/household` | what this household wrote down, and when a person last read each emergency page |
+| `/cards` | three cards for the wall, printed from the browser — no internet needed |
 | `/arcade/` | small openly licensed games, played in the browser; guests need nothing |
 | `/help.html` | how it works, in plain words |
 
@@ -155,7 +157,11 @@ welcome) and the temporary one stops working immediately. After that you can
 add other administrators, reset or switch off their accounts, read the audit
 history, and use the **Community** page — two switches that pause new notes and
 new uploads, plus pin / sorted-out / hide for messages, hide for files, and a
-delete that asks for your own password again. **Games** is where the shelf is
+delete that asks for your own password again. **Household** is where the
+emergency pages are looked after: which topics the card still has no page for,
+when somebody last read each one (a topic is called due after a year), a space
+for a note, and one button that puts our own manuals, the cards for the wall and
+the recovery sheet into a single file you can carry away. **Games** is where the shelf is
 managed: hide or show a game, see every licence and suggestion, allow player
 names, and choose whether newly found games are added without asking. The
 player's sign-in is a separate HTTPS origin (`https://ark.lan:8445/arcade/`) and
@@ -176,7 +182,7 @@ SHA-256 fingerprint). The same certificate serves the player's secure origin
 with the browser before you trust it — see `docs/ADMIN.md` for the exact steps,
 the session rules and what is deliberately *not* in this release yet.
 
-Tests (no Pi needed, throwaway databases only; the current suite is 299 tests):
+Tests (no Pi needed, throwaway databases only; the current suite is 380 tests):
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r tests/requirements.txt
@@ -336,6 +342,47 @@ Titles, authors, series, tags and covers come across because they live in
 `metadata.db`. The helper refuses a database written by a newer Calibre than the
 Pi's, moves the previous library to `/srv/ark/calibre-library.bak-<date>` (never
 deletes it), and puts it back if the shelf does not answer afterwards.
+
+---
+
+## The household layer
+
+A box full of manuals is only half of it: somebody still has to have read the
+page about water before the tap stops working, and the pages have to be somewhere
+reachable when the box itself does not start.
+
+* **`http://ark.lan/household`** — the household's own answers (who to ring, where
+  the water and gas shut-offs are, how to get out) and, under each of the eight
+  emergency topics, the plain truth: *"Nobody has read this yet."*, *"Somebody
+  here read this today."* or *"Somebody here read this 214 days ago."* A page the
+  card does not have is **named as missing**, never assumed present.
+* **`http://ark.lan/cards`** — three cards for the wall (the box's own Wi-Fi name,
+  the home-network name, and the number that always works), drawn in the page
+  itself (inline SVG, no image file, no font, no script, no internet). Print them,
+  or copy one onto a phone screenshot.
+* **`https://ark.lan:8443/admin/household`** (owner's door) — say you have read a
+  topic, add the note that matters ("the number on the card had changed"), take
+  that back again, switch the public household page off, and press **Make the
+  pack**.
+* **The pack** — one file, `/srv/ark/essentials/ark-essentials.zip`, holding our
+  own manuals and guides (rewritten so the links work from a folder), the cards
+  and `RECOVERY-SHEET.txt`, plus `MANIFEST.txt` with a fingerprint per file. It is
+  served as `/essentials.zip` with `nosniff` and a fixed filename, and the page
+  refuses to offer it if it does not read back whole. Copy it to a phone or a
+  stick: that copy is the one that still opens when the card dies.
+
+Nothing here judges the words in a page, and nothing refuses to serve one: a
+missing page or a topic nobody has read is information for the household, not a
+fault in the box. The record of what has been read is one row in the `settings`
+table, so it travels in a backup with the rest of the records, and a card with no
+pack is a completely normal state — the button makes one when somebody asks.
+The commands, for a console:
+
+```bash
+sudo -u pi /usr/local/sbin/ark-essentials --build     # make the pack now
+sudo -u pi /usr/local/sbin/ark-essentials --status    # is there one, what is in it, what is missing
+sudo -u pi /usr/local/sbin/ark-essentials --verify    # re-read every fingerprint
+```
 
 ---
 

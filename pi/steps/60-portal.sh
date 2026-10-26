@@ -20,6 +20,7 @@ ARCADE_DATA="$ARK_ROOT/arcade"
 # ---- static pages -----------------------------------------------------------
 for d in "$PORTAL" "$PORTAL/assets" "$API_DIR" "$API_DIR/data" \
          "$ARK_ROOT/drop/files" "$ARK_ROOT/drop/tmp" \
+         "$ARK_ROOT/essentials" \
          "$ARCADE_DATA" "$ARCADE_DATA/games" "$ARCADE_DATA/saves" "$ARCADE_DATA/tmp"; do
   ark_ensure_dir "$d" 775 "$ARK_PI_USER:$ARK_PI_GROUP"
 done
@@ -33,7 +34,8 @@ ark_ok "portal pages installed in $PORTAL"
 # ---- backend ----------------------------------------------------------------
 for f in main.py ark_db.py ark_storage.py ark_security.py ark_admin.py ark_recover.py ark_health.py \
          ark_arcade.py ark_arcade_install.py ark_arcade_web.py \
-         ark_romdb.py ark_romdb_build.py ark_rommeta.py; do
+         ark_romdb.py ark_romdb_build.py ark_rommeta.py \
+         ark_review.py ark_household.py ark_cards.py ark_qr.py ark_essentials.py; do
   ark_copy "$ARK_SRC/api/$f" "$API_DIR/$f" 644 "$ARK_PI_USER:$ARK_PI_GROUP"
 done
 ark_copy "$ARK_SRC/api/requirements.txt" "$API_DIR/requirements.txt" 644 "$ARK_PI_USER:$ARK_PI_GROUP"
@@ -63,6 +65,19 @@ ark_ok "vendored player and its add-ons match SHA256SUMS"
 ark_copy "$ARK_SRC/bin/ark-arcade" /usr/local/sbin/ark-arcade 755 root:root
 chmod +x /usr/local/sbin/ark-arcade
 ark_ok "ARK Arcade files present; shelf keeper installed in /usr/local/sbin"
+
+# ---- the page pack that travels in a bag -------------------------------------
+# Stage 7's Household page can hand a reader one file holding our own manuals,
+# the quick card and the recovery sheet.  The tool that makes it is installed
+# here beside the modules it imports; it reads /srv/ark/vault and writes only
+# inside /srv/ark/essentials, so a reader can run it and nothing else changes.
+ark_copy "$ARK_SRC/bin/ark-essentials" /usr/local/sbin/ark-essentials 755 root:root
+chmod +x /usr/local/sbin/ark-essentials
+if sudo -u "$ARK_PI_USER" /usr/local/sbin/ark-essentials --status >/dev/null 2>&1; then
+  ark_ok "page-pack tool installed and answers (no pack is made until the owner asks)"
+else
+  ark_warn "ark-essentials is installed but could not answer --status yet — the Household page will say so"
+fi
 
 # The offline game-name database is knowledge, not a service: a card without it
 # plays every game and names each one from its file name.  Install the builder so
@@ -170,6 +185,20 @@ check() { # <url> <what> [extra codes that also count as success]
     fail=1
   fi
 }
+check_says() { # <url> <what> <words that only that page has>
+  #  `location /` falls back to index.html, so a page that is not named in the
+  #  proxy block still answers 200 — with the front page.  Asking what the body
+  #  says is the only way to tell the page that was built from the page that was
+  #  simply always there.
+  local url=$1 what=$2 needle=$3 body
+  body="$(curl -sS --max-time 15 "$url" 2>/dev/null || true)"
+  if [[ "$body" == *"$needle"* ]]; then
+    printf '   \033[1;32m✓\033[0m %-42s %s\n' "$what" "$needle"
+  else
+    printf '   \033[1;33m!\033[0m %-42s %s\n' "$what" "the front page, not this page"
+    fail=1
+  fi
+}
 check "http://127.0.0.1/"                 "home page"
 check "http://127.0.0.1/help.html"        "how-to-use page"
 check "http://127.0.0.1/assets/ark.css"   "stylesheet"
@@ -183,6 +212,21 @@ check "http://127.0.0.1/arcade/add"      "add a game (no sign-in)"
 check "http://127.0.0.1/arcade/static/ark-arcade.css" "game shelf stylesheet"
 check "http://127.0.0.1/arcade/emulator/loader.js"     "game player"
 check "http://127.0.0.1/vault/"           "manuals index"
+check_says "http://127.0.0.1/household"  "household page" "The page for the day something goes wrong"
+check_says "http://127.0.0.1/cards"      "printable cards" "Three addresses, three squares"
+#  The pack only exists once somebody has made one, so 404 is the honest answer on
+#  a fresh box.  A 200 has to be the zip itself: `location /` would otherwise
+#  serve index.html here and every status code would agree it was fine.
+zip_head="$(curl -sSI --max-time 15 http://127.0.0.1/essentials.zip 2>/dev/null || true)"
+zip_code="$(printf '%s\n' "$zip_head" | awk 'NR==1{print $2}')"
+zip_type="$(printf '%s\n' "$zip_head" | tr -d '\r' | awk 'tolower($1)=="content-type:"{print $2}')"
+if [[ "$zip_code" == "404" || ( "$zip_code" == "200" && "$zip_type" == "application/zip" ) ]]; then
+  printf '   \033[1;32m✓\033[0m %-42s %s\n' "the pack to carry" "${zip_code}"
+else
+  printf '   \033[1;33m!\033[0m %-42s %s\n' "the pack to carry" \
+         "HTTP ${zip_code:-none} as ${zip_type:-nothing} — not the pack"
+  fail=1
+fi
 check "http://127.0.0.1/generate_204"     "captive-portal trigger"
 # 503 is the honest answer while the very first collection is still arriving
 check "http://127.0.0.1/kiwix/"           "offline library" "503"

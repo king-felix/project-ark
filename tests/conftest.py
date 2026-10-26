@@ -18,7 +18,8 @@ if str(API_DIR) not in sys.path:
 
 MODULES = ("main", "ark_admin", "ark_security", "ark_db", "ark_storage", "ark_health",
            "ark_arcade", "ark_arcade_web", "ark_arcade_install",
-           "ark_romdb", "ark_romdb_build", "ark_rommeta")
+           "ark_romdb", "ark_romdb_build", "ark_rommeta",
+           "ark_household", "ark_qr", "ark_cards", "ark_review", "ark_essentials")
 
 
 @pytest.fixture()

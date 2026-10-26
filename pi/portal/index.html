@@ -9,6 +9,7 @@
 <link rel="stylesheet" href="/assets/ark.css">
 </head>
 <body>
+<a class="skip" href="#main">Skip to the main content</a>
 <div class="wrap">
 
   <header>
@@ -34,6 +35,7 @@
       Everything on this page still works without JavaScript.</p>
   </noscript>
 
+  <main id="main">
   <h2>Find something</h2>
   <form action="/search" method="get" role="search">
     <label for="q">What do you need to look up?</label>
@@ -79,6 +81,18 @@
       <span class="d">Eight one-page cards — bleeding, burns, CPR, water, power cut, leaks. Print them and put them on the wall.</span>
       <span class="go">Open the printable cards</span>
     </a>
+    <a class="card" href="/household">
+      <span class="ico" aria-hidden="true">🏠</span>
+      <span class="t">This Household</span>
+      <span class="d">Who lives here, where the water and the power stop, who to ring — and when somebody last read each emergency page.</span>
+      <span class="go">Open the household page</span>
+    </a>
+    <a class="card" href="/cards">
+      <span class="ico" aria-hidden="true">📱</span>
+      <span class="t">Card to Get Back On</span>
+      <span class="d">Three squares a phone camera can read, and the address written under each. Print them and keep them beside the router.</span>
+      <span class="go">Show the cards to print</span>
+    </a>
   </div>
 
   <h2>For everybody here</h2>
@@ -109,6 +123,7 @@
     <a href="/help.html">How to use the Ark</a>
     <a href="http://ark.lan">Open ark.lan</a>
   </div>
+  </main>
 
   <footer>
     <p><b>Project Ark</b> — a small computer that carries a library. No accounts needed, no tracking, no internet.</p>

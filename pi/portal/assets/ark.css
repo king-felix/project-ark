@@ -110,4 +110,46 @@ footer a{color:#9fe7b8}
   text-decoration:none;font-size:.92rem;font-weight:600
 }
 .nav a[aria-current=page]{border-color:#1f4a31;background:#04120a;color:var(--go)}
-@media print{body{background:#fff;color:#000}.popup,.copy,.nav{display:none}}
+/* ---------- keyboard, screen readers, and the printed card ---------- */
+/* The skip link is the first thing tabbed to and is visible only while focused:
+   a phone never sees it, a keyboard never has to tab through eight pages to read. */
+.skip{
+  position:absolute;left:-9999px;top:0;z-index:10;background:var(--go);color:#04120a;
+  padding:14px 18px;border-radius:0 0 12px 0;font-weight:800;text-decoration:none
+}
+.skip:focus{left:0}
+/* One visible focus ring everywhere.  The default ring disappears against #000 on
+   some browsers; this one is 3px, offset, and in the box's own green. */
+a:focus-visible,button:focus-visible,input:focus-visible,textarea:focus-visible,
+select:focus-visible,.copy:focus-visible{outline:3px solid var(--go);outline-offset:2px}
+main{display:block}
+/* Anything a person typed keeps the line breaks they typed. */
+.line-breaks{white-space:pre-line}
+/* A full-width button that is a link (a download, not a form). */
+.go-link{
+  display:flex;align-items:center;justify-content:center;min-height:50px;border-radius:12px;
+  background:var(--go);color:#04120a;font-size:1.05rem;font-weight:800;
+  text-decoration:none;padding:12px 16px;margin-top:18px
+}
+.go-link:active{transform:scale(.995)}
+/* ---------- the cards for the wall (white on purpose: scanners need contrast) ---------- */
+.wall{display:grid;gap:18px}
+@media (min-width:620px){ .wall{grid-template-columns:1fr 1fr} }
+.wall-card{
+  background:#fff;color:#000;border-radius:var(--r);padding:18px;text-align:center;
+  break-inside:avoid;page-break-inside:avoid
+}
+.wall-card h2{color:#333;margin:0 0 10px;font-size:.78rem;letter-spacing:.14em}
+.wall-picture{margin:0}
+.ark-qr{width:100%;max-width:220px;height:auto;display:inline-block}
+.wall-address{font-size:1.3rem;font-weight:800;margin:10px 0 4px;word-break:break-all}
+.wall-when{color:#333;font-size:.92rem;margin:0}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+/* Paper: no dark panel, no navigation, and each card on its own block. */
+@media print{
+  body{background:#fff;color:#000}
+  .popup,.copy,.nav,.skip,footer,.go-link{display:none}
+  .wall-card{border:1px solid #000;border-radius:0}
+  a{color:#000;text-decoration:none}
+}
+
