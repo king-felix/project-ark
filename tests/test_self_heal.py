@@ -757,6 +757,27 @@ def test_the_phase_sets_the_things_that_make_a_cut_cheap():
         "a panic in the boot arguments is what reboots a wedged box"
 
 
+def test_the_memory_folders_are_judged_by_what_persists_not_by_what_is_mounted():
+    """Found on the live card, 26 Oct 2026: /tmp was a tmpfs with no fstab line.
+
+    Somebody had mounted it by hand, so the old branch ("a memory folder is already
+    mounted") skipped the fstab edit and reported success — and the next reboot put
+    /tmp back on the card.  /var/tmp had never been a memory folder at all.  A
+    setting has to be judged where it lives, or the phase says "already done" about
+    a box that is about to undo it.
+    """
+    text = PHASE.read_text(encoding="utf-8")
+
+    assert "if grep -q '^# ARK: throwaway folders' /etc/fstab; then" in text, \
+        "the fstab line is what makes the folders come back at every boot"
+    assert 'if [[ -L /tmp ||' not in text, \
+        "a mounted tmpfs is a state, never proof that the setting survives a reboot"
+    for line in text.splitlines():
+        if "size=256M" in line:
+            assert "nofail" in line, \
+                "a memory folder that will not mount must not stop the boot: %s" % line.strip()
+
+
 def test_the_phase_can_never_leave_the_box_unbootable():
     """Two lines in cmdline.txt is a Pi that does not boot; one guard, at least."""
     text = PHASE.read_text(encoding="utf-8")

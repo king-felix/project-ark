@@ -72,22 +72,32 @@ ark_ok "write-behind narrowed to 15 s, swappiness lowered, a panic reboots"
 # writing them is exactly what leaves a half-written file behind.  A tmpfs costs
 # nothing to lose.  The sizes are generous enough for apt and pip, and finite so a
 # runaway cannot eat the RAM the box needs to serve pages.
-if [[ -L /tmp || "$(findmnt -no FSTYPE /tmp 2>/dev/null || true)" == "tmpfs" ]]; then
-  ark_info "the throwaway folders already live in memory"
-elif grep -q '^# ARK: throwaway folders' /etc/fstab; then
-  ark_info "the throwaway folders are already in /etc/fstab"
+#
+# **The question is whether the setting PERSISTS, not whether a memory folder is
+# mounted right now.**  A tmpfs somebody mounted by hand looks exactly like one
+# /etc/fstab arranges — that is how the live card was found on 26 Oct 2026: `/tmp`
+# was a tmpfs with no line in `/etc/fstab` at all, so the old branch here said
+# "already live in memory" and skipped its own edit, and the next reboot would have
+# put `/tmp` back on the card while this phase reported success.  `/var/tmp` had
+# never been a memory folder at all.  So the decision reads the place the setting
+# lives, and a live mount is worth one sentence and nothing else.
+if grep -q '^# ARK: throwaway folders' /etc/fstab; then
+  ark_info "the throwaway folders are already in /etc/fstab (they come back every boot)"
 else
+  if findmnt -no FSTYPE /tmp 2>/dev/null | grep -qx tmpfs; then
+    ark_info "/tmp is a memory folder for this boot only — that is a state, not a setting"
+  fi
   cp -a /etc/fstab /etc/fstab.ark-before-tmpfs
   {
     printf '\n# ARK: throwaway folders live in memory, so a cut leaves nothing half-written\n'
-    printf 'tmpfs\t/tmp\ttmpfs\tnodev,nosuid,size=256M,mode=1777\t0\t0\n'
+    printf 'tmpfs\t/tmp\ttmpfs\tnodev,nosuid,size=256M,mode=1777,nofail\t0\t0\n'
     if [[ -d /var/tmp && ! -L /var/tmp ]]; then
-      printf 'tmpfs\t/var/tmp\ttmpfs\tnodev,nosuid,size=256M,mode=1777\t0\t0\n'
+      printf 'tmpfs\t/var/tmp\ttmpfs\tnodev,nosuid,size=256M,mode=1777,nofail\t0\t0\n'
     fi
   } >> /etc/fstab
   if findmnt --verify >/dev/null 2>&1; then
     rm -f /etc/fstab.ark-before-tmpfs
-    ark_ok "the throwaway folders will live in memory (from the next boot)"
+    ark_ok "the throwaway folders live in memory from the next boot, and every one after it"
   else
     cp -a /etc/fstab /etc/fstab.ark-review
     cp -a /etc/fstab.ark-before-tmpfs /etc/fstab
