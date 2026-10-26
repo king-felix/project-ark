@@ -2340,4 +2340,16 @@ treating the folder as a category is what made a healthy file look broken every 
 It is the same family as `-1` not being `0`, `None` not being a measurement, and an
 absent log not being a broken timer.
 
+**Next step (recorded 26 Oct 2026, after the docs pass).** The docs are reconciled and this
+whole checkpoint is committed and pushed — `8cca31b` on `feature/admin-hardening`, level with
+`origin`, working tree clean, **467 passed, 2 skipped, 23 files**. Every count in `README.md`,
+`docs/ADMIN.md`, `docs/REQUIREMENTS-MATRIX.md`, `docs/HUMAN-TEST-LIST.md` and `.clinerules` was
+checked against `pytest` and the folder, and the three sentences that had drifted were corrected
+(the essentials pack's real 16 members, the mixed-shebang list, and the deploy claim that had
+silently covered `58-ai`). What is left is **the box, and it needs the owner's go-ahead**: take
+the database aside (`.backup`, not `cp`), deploy `15-resilience` and `58-ai` (§8.9), reboot once
+and read `/srv/ark/logs/self-heal.json`, then carry a model with `ark-ai-model-fetch` and ask
+`/ask` one question from a phone. None of that has ever run there — no power cut, no reboot with
+the phase, no model on the card.
+
 
