@@ -1881,3 +1881,75 @@ no schema, no code. The live box was read, not touched — `/api/ready` 200, `/a
 `/arcade/add` 200.
 
 
+
+## 22. The box was audited against its own paperwork, and 64 MiB crossed the public door — 25 Oct 2026
+
+Two jobs, both read-mostly: ask the live box every question the documentation already answers,
+and make one real file go through the one public door that takes a large body.
+
+### 22.1 The audit — every claim the paperwork makes, asked of the box
+
+The whole audit was read-only (`curl`, `sqlite3` `SELECT`, `systemctl is-*`, `ls`). Nothing was
+restarted, deployed or written.
+
+| The paperwork says | What the box answered |
+|---|---|
+| `/api/ready` 200, `ready 8 / 8`, `blocking: []` | **200**, `ready 8 / 8`, `blocking: []` — each row with its plain sentence (20 collections and the reader answering, 1291 books and the shelf page answering, 11 manual pages, 0 messages, nobody has shared a file, 121.5 GB free, newest copy 15 hours ago, nothing waiting) |
+| every public page 200 | `/`, `/help.html`, `/assets/ark.css`, `/search?q=water`, `/board`, `/files`, `/vault/`, `/vault/quick-card.html`, `/arcade/`, `/arcade/add`, `/recovery.txt`, `/api/status` all **200**; `/admin` **404** |
+| the management door is `:8443`, TLS only, by **name** | `https://ark.local:8443/admin` → **303** (the sign-in redirect), `https://ark.local:8445/arcade/` → **200**, `https://ark.local:8445/admin` → **404** (see the probe trap below) |
+| the book shelf is a reading door | `GET /books/admin` **404**, `GET /books/upload` **404**, `POST /books/upload` **404**, `POST /books/book/1` **403** |
+| eleven units enabled **and** active | all twelve asked (`nginx`, `ark-kiwix`, `ark-calibre`, `ark-api`, `ark-boot-guard`, `ark-net-watch.timer`, `ark-zim-downloader`, `ark-book-import.path`, `ark-arcade-discover.timer`, `ssh`, `NetworkManager`, `avahi-daemon`) → `enabled` + `active` |
+| schema **v5** | `SELECT MAX(version) FROM schema_version` → **5** (note: `PRAGMA user_version` is **0** — the version lives in the table, not the pragma) |
+| 23 games, 23 files, `arcade/tmp` empty | **23** rows, **23** files on the card, `arcade/tmp` empty, `drop/files` empty, 0 `files` rows, 0 notes, 1 administrator |
+| 45 suggestions waiting, no players yet | **45** candidates, **0** players |
+| ~20 collections, 1291 books | **20** `.zim` files; **1291** books reported by the shelf, **444** of them `.epub` files on the card (the rest are other formats the shelf counts) |
+| `/srv/ark/romdb.sqlite` 25,120,768 B `pi:pi 0644` | **25,120,768 B**, owner `pi:pi`, `56448` names |
+| one copy, made 25 Oct | **1** bundle (`ark-backup-20261025-093643`), 15 hours old |
+| the recovery sheet is the same file in three places | sha256 begins `81cb5362be9093bf` at `pi/RECOVERY-SHEET.txt`, `/srv/ark/RECOVERY-SHEET.txt` and `/srv/ark/portal/recovery.txt` — **identical** |
+| `BOOT_MODE=hotspot`; the box is home **now**; no pin | `/etc/ark/ark.env` has `BOOT_MODE="hotspot"`; `ark-mode status` → `mode: home`, `chosen by: auto`, `at boot: hotspot (BOOT_MODE)`, `192.168.1.26/24`, portal 200; **no** `/etc/ark/mode.pinned` |
+| the switches are open on a fresh box | `public_board_post=1`, `public_uploads=1`, `arcade_players=1`, `arcade_auto_install=0`, `session_epoch=12` |
+| the watchdog is ticking | `net-watch.state` rewritten at 00:18; **no `net-watch.log`** — because no decision has ever acted, which is what its own header says would happen |
+
+**What disagreed.** Nothing about the box. One sentence about a file: `.clinerules` §8.3 listed
+`/srv/ark/logs/net-watch.log` as if it were always there. It is created the first time a decision
+*acts* — an empty log is not a quiet log, it is an absent one, and somebody reading the folder on a
+healthy day would have concluded the timer was broken. The line says so now.
+
+**A trap this audit walked into, and did not walk into twice.** The first TLS probe built
+`--resolve "ark.local:127.0.0.1"` (host and address, no **port**), so all three doors answered
+`000` on a box that was serving them perfectly. `curl` needs `host:port:addr`; the second probe
+with `--resolve "ark.local:8443:127.0.0.1"` answered 303/200/404. This is §8.7's *"a TLS probe
+must ask by NAME"* rule one field over — the rule is about SNI and this was about the port, but
+the shape of the mistake is the same: `000` from a hand-written probe is a statement about the
+probe until it is proved otherwise.
+
+### 22.2 64 MiB through the public door, thrown away again
+
+§8.9 item 0b left one wire unproved: *a 64 MB file over the real proxy*. The **`/arcade/add`**
+location is the only public path that takes a body that size (68 MB in nginx = the arcade's own
+64 MiB + framing), and — by design — a visitor's file is spooled to `arcade/tmp` under a name the
+box chose before anything is judged, then either published or **thrown away** by a second tap. So
+the proof can be complete and leave no game behind.
+
+| Step | Evidence |
+|---|---|
+| a real file, made on the Mac | `dd if=/dev/urandom bs=1m count=64` → **67,108,864 B** `ark-64mb-proof.gb` (exactly the cap; `spool_upload` refuses only what is **larger**, so this is the boundary itself) |
+| posted through the proxy from another machine on the LAN | `POST http://ark.local/arcade/add` → **200**, `size_upload` **67,109,085** B (the 221-byte difference is multipart framing), **8.15 s**, `proxy_request_buffering off` streaming |
+| what the box made of it | *"Does this look right?"* — *"Nobody has listed this file; the name on it is all this box has."*, name `ark-64mb-proof`, console offered as a choice (unknown from the bytes), waiting as `arcade/tmp/upload-696a3e4b…gb` |
+| thrown away | `POST /arcade/add/discard` → **303** to `?ok=That file was thrown away. Nothing was added.` |
+| afterwards | games **23**, files **23**, `arcade/tmp` **0**, `drop/files` **0**, `/api/ready` **200** `8 / 8`, **122 G** free |
+
+The only trace is the box's own receipt: two audit rows — `12 arcade-add / a visitor / ok / looked
+at, not added yet` and `13 arcade-add / a visitor / ok / thrown away before it was added`. That is
+the audit trail doing exactly its job on a visitor's attempt, so it was left standing and written
+down here rather than tidied away. (`11` is the earlier live fingerprint refusal, *already on the
+shelf as "Apotris"*.)
+
+Rendering the confirm page had also to be proved: it read the 64 MiB file back to fingerprint it,
+and the page answered in the same request — so the upload path is not merely *accepting* bytes, it
+is reading them and reporting what they are, in one round trip, on a Pi with an 8 GB card budget.
+
+**Still unproved, and unchanged by this:** a real **2 GiB** file over the wire (the File Box),
+a **human's thumb** on any of it, a genuinely new game **accepted onto the live shelf**, and the
+live radio transitions the watchdog exists for. `docs/HUMAN-TEST-LIST.md` is the one page that
+now collects them.
