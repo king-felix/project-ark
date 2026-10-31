@@ -2860,3 +2860,367 @@ deploy wrote, and why the message exists).
 
 **Still to prove — a human, not a shell:** closing a tab mid-answer on a phone and asking again
 straight away (step 8a), and asking twice on purpose to see *"in about N seconds"* (step 8).
+
+---
+
+## 33. A Wi-Fi the owner can save, and one restart asked for by name — 31 Oct 2026
+
+The box has always been able to do three things with a network, and until now it could only
+do two of them from a console: `sudo ark-mode home`, `sudo ark-mode hotspot`, `sudo ark-mode
+auto`. That is fine for the person who built it and useless for the household it was built
+for — **"carry the Ark to my mother's house and get it on her Wi-Fi"** is not an SSH session,
+it is a phone in a kitchen with the router's password on a sticker on the back. There is a
+**Network** page on the owner's console now:
+
+```
+https://ark.lan:8443/admin/network      (or https://ark.local:8443/admin/network)
+```
+
+It has four headings, and the order is the order a person asks the questions:
+
+| The page says | What it does |
+|---|---|
+| **Where the box is now** | one plain line, then one line about what a cold start does, taken from `BOOT_MODE` (`STANDING_BOOT`) |
+| **Restart on my own network for a while** | a picker of saved networks, a number of minutes, and a checkbox — *Restart the box now, without waiting* |
+| **Add a Wi-Fi network** | the name the phone shows and its password — *Save this network* |
+| **Networks already saved** | the box's own list read back, each by the name the phone shows and the name it is saved as |
+
+**A saved network is not a joined network.** Saving writes a NetworkManager profile with
+`autoconnect=false` and `autoconnect-retries=0` (`--autoconnect yes` is the one way to ask for
+the opposite, and nothing on the page offers it), so a box in a bag does not quietly start
+looking for somebody else's router. Joining is a *request*: it names one network, it waits a
+stated number of minutes, and it is used **once** — the boot after that broadcasts
+`The-Ark-Offline` as usual. If the named network is not there at that boot, the box
+broadcasts instead. That is the whole design premise, one sentence: **the box must never end
+up somewhere nobody is standing next to it.**
+
+### 33.1 The three writers, and who owns which file
+
+Nothing new writes anything by itself. The §6 rule ("one file, one author") is what the
+whole feature is built out of:
+
+| File | Only writer | Only reader |
+|---|---|---|
+| `/etc/ark/lan-request` | `ark-mode request-lan` (temp file → `mv`, `0644`) | `ark-mode`'s `cmd_boot`, `ark-mode status`, `90-verify` |
+| `/etc/NetworkManager/system-connections/*.nmconnection` | `ark-wifi-add` (`0600 root:root`) | NetworkManager |
+| the page itself | `ark_network.py` → `sudo -n ark-mode …` / `sudo -n ark-wifi-add …` | `ark_admin.network_page()` |
+
+`pi/api/ark_network.py` is the page's whole vocabulary and it **reads** both files and shells
+out for everything else: `mode_words()`, `request_state()`/`request_words()`, `saved_networks()`
+(`[]`, `None` for unreadable — the §8.7 `None` rule, never "no networks"), `add_network()`,
+`request_lan()`, `cancel_request()`, `boot_mode()`, and `last_words()` (the one line `ark-mode`
+printed, so the page relays the box's own sentence instead of paraphrasing it). A refusal is a
+`NetworkRefused` carrying a sentence a person can act on — never a traceback, never a silent
+no-op. A **network name and a passphrase have the sizes Wi-Fi really has**:
+`SSID_MIN, SSID_MAX = 1, 32` and `PSK_MIN, PSK_MAX = 8, 63`, and `LAN_MINUTES_MAX = 24 * 60`
+with `LAN_MINUTES_DEFAULT = 30` (which is what `ark_admin.NETWORK_MINUTES` puts in the field).
+
+**The passphrase goes in on stdin and comes out nowhere.** `ark-wifi-add` reads it from stdin
+(the usage text says `printf '%s\n' "$PASSWORD" | sudo ark-wifi-add --ssid "NAME"`), because a
+command line is readable by every process on the box and lands in shell history. It is never
+put in the database, the audit row, a log line or the page's own memory beyond the one call;
+the page writes the audit row as *saved a network called "…"* and nothing else. The profile it
+writes is `0600 root:root` (`.clinerules` §6), it keeps the profile's existing `uuid` so saving
+the same network twice **replaces** it instead of leaving a second one nobody will remember,
+and it reads the file back and dies unless `ssid=` matches what was asked for.
+
+`ark-mode request-lan` takes `--minutes N`, `--network PROFILE`, `--ssid NAME`, `--by WHO`,
+`--cancel` and `--restart`, and writes exactly six keys — `requested`, `expires`, `minutes`,
+`network`, `ssid`, `by` — to a temp file and renames it, so `cmd_boot` can never read half a
+request. A request that lapsed is *discarded*, not honoured (a stale "restart on my network"
+would be a way to make a box unreachable). `--restart` uses a **transient** `ark-lan-restart`
+unit (`systemd-run --on-active=… --collect --unit=ark-lan-restart systemctl reboot`) rather
+than a background `sleep`: it outlives the script, it cannot be forgotten, and the page has
+time to finish answering first. `ARK_MODE_REHEARSAL=1` (or `SYSTEMD_RUN_COMMAND`) is the seam
+that lets a rehearsal prove the request without rebooting the machine running it.
+
+`ark-mode status` grew one line — `lan request   : waiting … / expired … / nothing waiting` —
+which is what `90-verify` reads, so "why did it not come up on my router?" has an answer on
+the box and not only in a browser.
+
+
+### 33.2 The watchdog learns a third word, and gives it the same grace as `home`
+
+`ark-mode` records where the box is in `/etc/ark/mode`, and `pi/bin/ark-net-watch` reads that
+file every minute before it decides anything. `cmd_lan` adds a fourth word to the three that
+were there (`hotspot`, `home`, `auto`): **`lan`** — the box is on a saved network of the owner's
+for administrative work, which is exactly what the page's one-time restart produces
+(`lan_up()` → `set_mode lan`, then `pin lan`).
+
+The pure `decide()` table only ever had an opinion about one of those words: a box that believes
+it is `home` gets **one more check** before its radio becomes an access point
+(`lost_streak < LOST_STREAK`). Every other word fell straight through to `to-hotspot`. So a box
+the owner had just put on their own network — in a kitchen, mid sign-in, router password off the
+sticker on the back — was **one blinked check away from broadcasting**, and
+`ark-mode hotspot --auto` deliberately leaves no pin, so it would have stayed broadcasting at
+that house until somebody noticed. Nothing would have looked like a fault: `net-watch.log` would
+only show a decision it was right to make under its own old rules.
+
+`lan` gets the same bargain as `home` now, in one condition:
+
+```bash
+if [[ "$mode" == "home" || "$mode" == "lan" ]] && (( lost_streak < LOST_STREAK )); then
+  printf 'stay'
+```
+
+— *the owner asked for a network, so give the link a minute before broadcasting*, in the words
+written beside the line. Two rows joined the decision table in `tests/test_network.py` (`lan` with
+one lost check → `stay`; `lan` with two → `to-hotspot`), so the grace cannot quietly go back to
+being a `home`-only privilege. The table is **16 cases** now, and
+`test_the_thresholds_are_counted_not_guessed` still holds `LOST_STREAK` at two, so a `lan` box
+gets the same two checks a `home` box does rather than a third rule of its own.
+
+**The word is a state, not a private detail of one script**, so it reaches the rest of the box:
+`ark-mode status` prints the mode, `90-verify` reports the `lan request` line beside it,
+`ark_network.mode_words()` answers `lan` **exactly as it answers `home`** — from a phone the two
+look the same, *the box is on a saved network of yours, so it answers at
+`https://ark.local:8443`* — and `STANDING_BOOT["lan"]` gives the page a sentence rather than a
+blank if `/etc/ark/ark.env` ever says `lan`. A cold boot can reach `lan` only through a request,
+and only **once**; the boot after it broadcasts as usual.
+
+### 33.3 The four phases: two copies, one helper, three lines and one block of proof
+
+The feature spans four phases, and each one had a way of being wrong that would only have shown
+up later, on the box, in front of the person it was built for:
+
+| Phase | What it now does | Why |
+|---|---|---|
+| `60-portal.sh` | copies `ark_network.py` beside `ark_admin.py` in the API's module list | `ark_admin` imports it **at module level**, so a missing file is not "the Network page is gone", it is an `ark-api` that cannot start at all |
+| `65-admin.sh` | copies the same module again, and says why in its own header | `--only 65-admin` is the documented way to fix the console door; on its own it would otherwise leave an `ark-api` that cannot import |
+| `70-network.sh` | installs `/usr/local/sbin/ark-wifi-add` `0755 root:root`, then **knocks on both doors as the portal's own account** | the profile is written by root and reached with `sudo -n` as `pi`; a door nobody has knocked on is not an installed door, and the alternative is the owner discovering it an hour later as *"The box would not do that."* |
+| `90-verify.sh` | three lines, and one block in `ark_status.json` | "why did it not come up on my router?" has to have an answer after the terminal is closed |
+
+**The two knocks change nothing and leave nothing behind.** `ark-wifi-add --check --ssid "A
+network this box has never joined"` runs as `runuser -u "$ARK_PI_USER" -- sudo -n …` with the
+passphrase on **stdin** (a here-string, never argv), so the proof is the shape the page really
+uses; `--check` prints *would save …* and creates not even the folder. `ark-mode request-lan
+--minutes 0` must be **refused**, and the phase greps for `greater than zero` — a zero-minute
+request is the one legal-looking input that writes nothing, so the door is proved without leaving
+a request for the next boot. Both are `ark_warn` rather than a hard failure: a box with no helper
+still broadcasts and is still reachable, which is the whole design, so the installer must not be
+able to fail a run over a feature that is missing rather than broken.
+
+**The verifier's three lines are graded differently on purpose.** *add a Wi-Fi network* is `ok`
+when `/usr/local/sbin/ark-wifi-add` is executable and `soft` otherwise (*helper missing — run
+phase 70-network, or the page's button will refuse*); *one-time restart* reads
+`ark-mode status | awk '/lan request/'` and is `soft` for `waiting`/`expired` (a request is not a
+fault) and `ok` when nothing is waiting; *Network page behind the sign-in* is **hard**, because it
+is a door like `:8443` itself — `ark_tls_code ark.lan:8443 /admin/network` must answer `303`. That
+probe asks **by name**: `ark_tls_code` adds `--resolve`, because an IP literal sends no SNI, nginx
+then serves the rejecting default server, and curl reports `000` on a healthy door (§8.7). A `000`
+here means the probe, not the box.
+
+`ark_status.json` gains one block, so the answer survives the terminal:
+
+```json
+"network": {"wifi_helper": "yes", "lan_request": "absent", "owner_page": "303"}
+```
+
+
+### 33.4 Two traps: which sentence answers the page, and a restart asked for from inside a request
+
+Neither is a crash. Both would have left the page looking perfectly healthy while telling the
+person in front of it the wrong thing — the same family as §8.7's "an HTTP 200 is not evidence".
+
+**The page relays the helper's own words, so it has to relay the right one.** `ark-mode
+request-lan` says two sentences, on purpose:
+
+```
+asked: the next boot (within 20 minutes) joins "Rosebank Road" — once
+if that network is not there, the box broadcasts as usual — this cannot lock it out
+```
+
+Every other helper on the box ends with the sentence worth showing, which is why
+`ark_network.last_words()` exists and why the page puts **the last line** under its green banner.
+Applied here, that shows the reassurance and hides the request: a banner answering a question
+nobody asked, with the actual answer sitting one line above it. `ark_admin._what_was_asked()`
+prefers the line that starts `asked:` and falls through to `last_words()` for every helper that
+prints no such line, so both shapes are covered and no other caller changes.
+`test_a_restart_asked_for_from_the_page_is_used_by_exactly_one_boot` asserts the banner **starts
+with** `asked:` — *the request, not the aside after it* — and
+`test_the_page_hands_the_helper_one_name_and_one_number_and_nothing_more` holds the other shape
+(a helper that prints one line still has that line shown).
+
+**A restart asked for from inside a request has two ways to eat its own answer.** The handler
+calls the helper through `subprocess.run(..., capture_output=True)`, so anything the helper leaves
+behind holding that pipe keeps the handler waiting: a plain `sleep 5 && reboot &` hung off the
+helper would make the page sit there for the sleep and then have its answer cut off by the very
+restart it asked for. And a restart that happens *before* the page answers loses the one sentence
+that says what the box will do next. So the restart is **scheduled rather than performed**, by a
+transient unit:
+
+```bash
+"${SYSTEMD_RUN_COMMAND:-systemd-run}" --quiet --collect \
+  --on-active="$secs" --unit=ark-lan-restart systemctl reboot
+```
+
+`systemd-run` returns at once (so nothing is holding the pipe), `--on-active=5`
+(`LAN_RESTART_DELAY`) leaves the page time to answer, and `--collect` means the unit is not
+remembered afterwards — the code's own words are *it outlives this script and cannot be
+forgotten*. The promise it keeps is the sentence in the redirect: *restarting in 5s — open
+https://ark.local:8443/admin from your own network when it is back.*
+
+Two seams keep that provable on a machine nobody wants rebooted: `SYSTEMD_RUN_COMMAND` (a
+rehearsal substitutes a script that records the call instead of rebooting) and
+`ARK_MODE_REHEARSAL=1`, which does not try at all and says *rehearsal: this machine was not
+restarted*.
+
+**And if the restart cannot be scheduled, the request stays.** `restart_now()` returns 1,
+`ark-mode` prints *the request is saved, but this box did not restart itself — restart it by hand
+(sudo reboot)* and exits non-zero, so the page shows exactly that sentence. Losing the request
+would be the worse failure: the person did the work of naming a network, and all that is missing
+is the reboot.
+
+**The wrinkle, closed on 31 Oct 2026: a refusal that kept the request now says so.** The banner
+used to open with *Nothing was asked.* on that path — while the helper's own words in the same
+sentence said it had saved the request, and the **Waiting:** block underneath still offered *Take
+that request back* (that block is drawn from `ark_network.request_state()`, never from the form,
+which is why the two could disagree so visibly). The banner was denying what the page was offering
+to undo. `network_lan()` asks the box on the refusal path now and prints **The request is kept.**
+only when all three of these hold: the person ticked the restart, the helper was really reached, and
+the request the box's clock is reading is still `waiting`.
+
+The middle condition is why `NetworkRefused` grew a `ran` flag. `--minutes 0`, a name with a space
+in it and a name that would read as a flag are all refused **inside** `ark_network.request_lan()`
+before any subprocess starts, so none of them can have written a request — and a request left
+waiting by an earlier person must not be claimed as this one. `ran=True` is set only by a helper
+that came back non-zero, and by a timeout (the helper *was* running, so its request may well be on
+the card: the conservative half of the two).
+
+Three tests hold it, and they are deliberately three rather than one:
+
+* `test_a_restart_that_failed_while_the_request_was_kept_says_so_first` — a waiting request plus a
+  helper that exits 1: *The request is kept.*, not *Nothing was asked.*, the helper's sentence kept
+  word for word and escaped, and the **Take that request back** form present;
+* `test_a_refusal_that_wrote_no_request_still_says_nothing_was_asked` — the helper refuses and
+  nothing is written: the honest sentence is not quietly replaced by the flattering one, and no
+  request file appears;
+* `test_a_refusal_made_before_anything_runs_does_not_claim_the_old_request` — `--minutes 0` with an
+  older request already waiting: still *Nothing was asked.*, and the older request is byte-identical
+  afterwards. Without the `ran` flag this is the case that would have started lying.
+
+**A read that demanded root (found 31 Oct 2026, while checking the paperwork against the code).**
+`ark-mode`'s own comment said *reading needs no privilege: "status" and "boot --dry-run" touch
+nothing*, and so did §8.4 and `docs/ADMIN.md` — but the gate in front of it exempted only
+`boot --dry-run`:
+
+```bash
+if [[ "${1:-status}" == "boot" && "${2:-}" == "--dry-run" ]] \   # "status" was missing
+   || [[ "${ARK_MODE_REHEARSAL:-0}" == "1" ]]; then :; else need_root "$*"; fi
+```
+
+So a person following the paperwork got `ark-mode: run this as root (sudo ark-mode status)` for a
+command that writes nothing, and the only way to see the box's own account of itself without
+`sudo` was `ark-mode boot --dry-run`. The gate now exempts `status` (and an argument-less
+`ark-mode`, which asks the same question) as well; nothing else widened, and everything that
+writes — `boot`, `auto`, `home`, `hotspot`, `lan`, `request-lan`, `test` — is still root-only.
+`tests/test_network_page.py::test_reading_where_the_box_is_needs_no_root_at_all` **removes the
+rehearsal seam** and runs the real gate, so it asserts what a person meets rather than what the
+test door allows. Measured both ways on 31 Oct 2026 with the seam unset and a throwaway folder:
+the repo script answers `status` (and a bare `ark-mode`) with exit 0 and creates no file, while
+the same script with the old exemption line alone prints `ark-mode: run this as root (sudo
+ark-mode status)` and exits 1 — and `ark-mode hotspot` is refused by **both** copies, which is
+the half that must not widen.
+
+### 33.5 What the tests hold
+
+`tests/test_network_page.py` — **37 test functions, 41 collected**, several of them driven with a
+table of bad inputs — and `ark_network` joined `MODULES` in
+`tests/conftest.py`, so a broken import fails every test file instead of one. **Three layers**,
+because each catches a different kind of wrong:
+
+* **the words** — the real `ark_network` against a throwaway folder (`ARK_NM_DIR`,
+  `LAN_REQUEST_FILE`, `ARK_ENV_FILE`, `MODE_FILE`, `PIN_FILE`, `ARK_SUDO`, `ARK_MODE_BIN`,
+  `ARK_WIFI_ADD`, and the two connection-name overrides `LAN_WIFI_CONNECTION` /
+  `HOME_WIFI_CONNECTION` are all read at
+  call time, so nothing has to be patched into a module constant): a name of 1–32 and a
+  password of 8–63 refused with **the limit named**, a stray space refused rather than trimmed,
+  a password never trimmed, a name that would read as a flag or break a `.nmconnection` line
+  refused, the box's own access point never offered as somewhere to join, an unreadable folder
+  answered as `None` and **not** as an empty one, and `waiting`/`expired`/`nothing waiting`
+  read from a real request file;
+* **the flow** — the **shipped** `pi/bin/ark-mode` in its rehearsal seam against a fake radio,
+  so the script under test is the script that runs on the box: `request-lan` writes a request
+  the console can read, `boot` uses it **once** and the boot after that broadcasts, a lapsed
+  request is thrown away, a network that will not join leaves the box broadcasting, the network
+  a person named is the one that is joined, `--cancel` leaves nothing waiting, and minutes that
+  are not a whole number are refused **before** anything is written;
+* **the page** — the real routes (`GET /admin/network`, `POST /admin/network/add`,
+  `POST /admin/network/lan`, `POST /admin/network/cancel`) through the admin app with the
+  loopback-TLS peer the box really has, with the two helpers stubbed and every word they were
+  given recorded: a stranger gets 303 to the sign-in and the helpers are **never run**, a form
+  with a password is refused over plain HTTP, the page shows where the box is in plain words
+  and both jobs with a `type="password"` field, a save reaches the box as
+  `wifi-add --ssid Rosebank Road` with the password on **stdin** (the argv itself is asserted
+  to be clean), the password is never written back onto the page, a bad one is **Nothing was
+  saved.** with the number to fix and no audit row, the audit names only the network, the
+  minutes and the name reach `ark-mode request-lan` and nothing else does, the tick-box is a
+  second decision with its own audit sentence, a waiting request is shown with one
+  **Take that request back** form whose withdrawal the next boot proves, and a `--restart` the box
+  could not schedule says **The request is kept.** when a request is really waiting — with a
+  refusal that wrote nothing still saying *Nothing was asked.* (three tests, §33.4).
+
+Whole suite: **567 passed, 2 skipped** (`python -m pytest -o addopts='--strict-markers' -q`,
+Mac, throwaway databases) — §33 took it from **524** to 567 over **25 files**: the 41 collected in
+`tests/test_network_page.py` plus the two `lan` rows that joined the decision table in
+`tests/test_network.py` (16 cases now). The two skips are still the QR cross-checks
+that need `qrcode`/`opencv-python-headless`. `python3 -m py_compile` clean on
+`pi/api/ark_network.py`, `pi/api/ark_admin.py` and `tests/test_network_page.py`; `bash -n` clean
+on `pi/bin/ark-mode`, `pi/bin/ark-wifi-add`, `pi/bin/ark-net-watch` and the four phases named in
+§33.3.
+
+### 33.6 What a rehearsal proved, and what only the card can
+
+Rehearsed on the Mac, with throwaway paths and the real scripts (`ARK_MODE_REHEARSAL PASS`,
+`WIFI_REHEARSAL PASS`, `ARK_NETWORK_REHEARSAL PASS`):
+
+* `ark-mode request-lan --minutes 45 --network "Rosebank Road" --ssid "Rosebank Road" --by
+  rehearsal` wrote exactly the six keys, one rename, and printed the `asked:` sentence; a second
+  run with `--cancel` printed *"cancelled — nothing is waiting, and the box has not changed"* and
+  left no file; `ark-mode status` showed the `lan request   :` line in each state; the rehearsal
+  proved the **one-boot** promise by running `ark-mode boot` twice against a fake radio (the
+  request joined the named profile, `mode is lan`, the file gone, and the *next* boot went back
+  to broadcasting), a request naming no network fell back to the standing one, and minutes of
+  `0`, `abc` and `-5` were refused **with nothing written**. `--restart` with
+  `ARK_MODE_REHEARSAL=1` prints *"rehearsal: this machine was not restarted"* **and then** the
+  sentence it would have said on a real box — *"restarting in 5s — open
+  https://ark.local:8443/admin from your own network when it is back"* — because the seam is
+  there to rehearse the caller as well as the reboot, and a rehearsal is the only place those two
+  lines belong together. With a recorder standing in for `systemd-run`
+  (`SYSTEMD_RUN_COMMAND=/tmp/fake-run`) the scheduled command is proved word for word:
+  `--quiet --collect --on-active=5 --unit=ark-lan-restart systemctl reboot` — which is the
+  whole point of scheduling it (the page gets its answer, the reboot happens after it). A restart
+  that could not be scheduled says so out loud — *"the request is saved, but this box did not
+  restart itself — restart it by hand (sudo reboot)"* — with the request **kept**, because losing
+  it would be the worse failure.
+* `ark-wifi-add --ssid "Home Wi-Fi"` with the passphrase on stdin wrote one `.nmconnection`
+  `0600`, `autoconnect=false`, `autoconnect-retries=0`, `key-mgmt=wpa-psk`, read back by
+  `ssid=`; saving it again said *"Already saved … unchanged"* and left **one** profile with its
+   identifier; a new password said *"Saved …"*, replaced the secret, and the old one is gone from
+  the file; `--check` printed *"would save …"* and created no folder at all; a 3-character
+  password, a 33-character name, an empty password, no name and a leading space were each refused
+  with the limit named, and no refusal touched a byte.
+* `ark_network` against a throwaway `/etc/NetworkManager/system-connections`: `saved_networks()`
+  answered the Wi-Fi names, an absent folder was `[]` and an unlistable one `None`, the request
+  read `waiting` with its minutes and who asked, then `absent` after a cancel and `expired` from
+  the clock, and `mode_words()` answered a sentence even for a box that has never recorded a
+  network.
+
+**Still to prove, and it needs the box:** the page has **never been opened in a browser** —
+not on the Pi, not on a phone. Specifically, in `docs/HUMAN-TEST-LIST.md` **§17**:
+
+1. the page draws in a phone's browser over `https://ark.local:8443/admin/network`, and the
+   three headings read as plain English with no service name in them;
+2. saving the household's own Wi-Fi name + password from the page really writes a profile
+   (`sudo ls -l /etc/NetworkManager/system-connections/`) and the phone never shows the
+   password back;
+3. **the real one:** ask for a restart on the household network, watch the box join it, and
+   confirm the *next* restart broadcasts `The-Ark-Offline` again — because "used up, not a
+   mode" is the promise, and no test on a Mac can keep it;
+4. ask for a restart on a network that is **not** there, and watch the box broadcast instead —
+   the lock-out that must never happen;
+5. `sudo -n` really works for the portal's own account: `70-network` proves the helper is
+   installed, but a `sudoers` rule missing on the card turns the page's button into a refusal
+   sentence (`Nothing was saved. …`) and that sentence has never been seen;
+6. `90-verify` on the card, whose three new lines have never run there.
+

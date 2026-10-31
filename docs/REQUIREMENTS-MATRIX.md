@@ -1,8 +1,8 @@
 # Project ARK — requirements matrix
 
-**Date:** 26 October 2026  
+**Date:** 31 October 2026  
 **Branch:** `feature/admin-hardening`  
-**Suite:** `504 passed, 2 skipped` (24 files; `python -m pytest -o addopts='--strict-markers' -q`, Mac, throwaway databases) — the two skips are QR cross-checks that need `qrcode` / `opencv-python-headless` on the machine  
+**Suite:** `567 passed, 2 skipped` (25 files; `python -m pytest -o addopts='--strict-markers' -q`, Mac, throwaway databases) — the two skips are QR cross-checks that need `qrcode` / `opencv-python-headless` on the machine  
 **Hardware:** **deployed 25 Oct 2026** — `90-verify` green, `/api/ready` 200, the doors, the book
 route rules, a bundle and the arcade origin all answered on the Pi (`docs/IMPLEMENTATION-LOG.md`
 §15), `ark-arcade --import` answered honestly three times on the box (§18.4), and the name-from-the-
@@ -307,12 +307,17 @@ That is the gap this requirement names, and it is not closed.
 | Per-player management (reset, delete, disable, quota) | **absent** |
 | Service controls (restart, stop, pause/resume) | **absent** — no buttons, on purpose |
 | Backup/restore buttons | **absent** — the CLI and recovery sheet only |
-| Network mode controls beyond `ark-mode` on the console | **absent** |
+| Network page: add a Wi-Fi network, ask for **one** restart on it, take the request back | **done + tested** (`test_network_page.py`, 37 test functions / 41 collected); never opened in a browser. A `--restart` that keeps the request but cannot schedule the reboot says *The request is kept.* (never *Nothing was asked.* above a page offering to take it back), and a refusal made before anything ran still says nothing was asked |
+| Network mode controls beyond `ark-mode` on the console | **partial** — the page writes a saved profile and a one-boot request; it cannot switch the radio now, pin a mode, or unpin one (`ark-mode` is still the only thing that acts) |
 | Diagnostics: thermal, undervoltage, last restore, failed jobs | **absent** (readiness and storage only) |
 
 The owner can run the shelves, the accounts and the switches. They cannot run the box: no
-restart, no copy, no network change, no player reset from the portal. Those are deliberate
-absences today, not half-built screens.
+service restart, no copy, no player reset, and no way to pin or unpin a network from the portal.
+**One deliberate exception** (added with the Network page): the box can be asked for a **single**
+restart on a Wi-Fi network the owner has just saved, and that request can be taken back before it
+happens — because carrying the Ark to another house and getting it onto that house's Wi-Fi is the
+whole reason the page exists, and the box has no keyboard. It is one boot's worth, it lapses, it
+leaves no pin, and if the network is not there the box broadcasts instead of disappearing.
 
 ---
 
@@ -354,7 +359,8 @@ ones named in `docs/IMPLEMENTATION-LOG.md` §8.5 and §8.9.
 | One readiness authority with a reason and an action; `/api/ready` 200/503; liveness demoted | **done + tested** |
 | Measured download progress (rate, remaining, ETA, stalled), never a guessed `0` | **done + tested** |
 | Storage breakdown + card facts; unmeasurable is `None`, never `0` | **done + tested** |
-| Network-loss failover every minute, pins respected, never drops a reader | **done + tested against fakes**; never acted on real hardware |
+| Network-loss failover every minute, pins respected, never drops a reader | **done + tested against fakes**; never acted on real hardware. `lan` — the word the Network page's one-time restart leaves behind — now gets the same one-check grace `home` gets, so a box just put on a house's Wi-Fi is not one blinked check away from broadcasting (`test_network.py`, 16-case decision table) |
+| A box can be moved to another house and put on its Wi-Fi with no keyboard: save the network, ask for one restart, take it back | **done + tested on the Mac** (`test_network_page.py`); the page has never been opened in a browser and no request has ever been made on the card (`docs/HUMAN-TEST-LIST.md` §17) |
 | Backup bundle, verify, restore with quiesce/resume, recovery sheet | **done + tested on the Mac**; never on the Pi |
 | Upload/import/board/search safety fixes | **done + tested** |
 | A page offers only files it can really open: `/files` and the owner page count openable files, and a leftover record is reported as *"Nothing here can be opened"*, never counted as content | **done + tested + deployed** (`test_storage.py`, `test_health.py`); `/files` on the box now reads *"The box is empty"* beside the ghost record, and `/api/ready` answers 503 `blocking: ["File Box"]` until the owner deletes it — the sentence has not been read on a screen yet |

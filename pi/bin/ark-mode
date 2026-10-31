@@ -6,8 +6,15 @@
 #                       (add --dry-run to be told without touching the radio)
 #    ark-mode auto      try the home network, fall back to broadcasting
 #    ark-mode home      use the home network (needs one saved already)
+#    ark-mode lan       join the saved network for administrative work — this time
+#                       only; the next boot goes back to BOOT_MODE
 #    ark-mode hotspot   broadcast "The-Ark-Offline" and serve the portal
 #    ark-mode status    what is happening right now
+#    ark-mode request-lan [--minutes N] [--network PROFILE] [--ssid NAME]
+#                       [--by WHO] [--cancel] [--restart]
+#                       ask for ONE boot on the owner's own network; --cancel
+#                       withdraws it, --restart does it now.  The button on the
+#                       owner's Network page runs exactly this
 #    ark-mode test [s]  switch to the hotspot, wait s seconds (default 180),
 #                       then go back to "auto" — SSH will drop while it runs
 #
@@ -15,11 +22,25 @@
 #    "hotspot" (the shipped default) — come up broadcasting, and stay there
 #    "auto"                          — try the home network first, then broadcast
 #    "home"                          — try the home network, broadcast if absent
+#    "lan"                           — the owner asked for it by name; see below
 #
-#  "home" and "hotspot" are answers the owner gave, so they are remembered in
-#  /etc/ark/mode.pinned and the network watchdog will not take them back.
+#  "home", "hotspot" and "lan" are answers the owner gave, so they are remembered
+#  in /etc/ark/mode.pinned and the network watchdog will not take them back.
 #  "auto" forgets the answer.  Ark's own failover uses "hotspot --auto", which
 #  leaves no pin — the box is rescuing itself, not being told what to do.
+#
+#  THE ONE-TIME REQUEST (/etc/ark/lan-request).  The owner's page puts this card
+#  in "administrative (LAN) mode" for one boot by running `ark-mode request-lan`,
+#  and the flag it leaves behind is read and USED UP here, before any decision is
+#  made and before a single radio call.  Two consequences, both deliberate:
+#
+#    * a box that loses power on the way up comes back broadcasting — the LAN
+#      mode may be missed, it can never be left switched on by accident;
+#    * a request is honoured at most once, whether the join worked or not, so it
+#      can never become a second standing answer hiding beside BOOT_MODE.
+#
+#  Whichever way a boot goes, the hotspot is the fallback: if the network the
+#  owner named is not there, the box broadcasts instead of coming up dark.
 # =============================================================================
 set -Eeuo pipefail
 
@@ -31,6 +52,19 @@ HOTSPOT_CONNECTION="${HOTSPOT_CONNECTION:-ark-hotspot}"
 HOTSPOT_ADDRESS="${HOTSPOT_ADDRESS:-10.42.0.1}"
 HOME_WIFI_CONNECTION="${HOME_WIFI_CONNECTION:-home-wifi}"
 HOME_WIFI_TIMEOUT="${ARK_HOME_WIFI_TIMEOUT:-${HOME_WIFI_TIMEOUT:-75}}"
+# The network the owner asked for by name, when it is not the home one.  Adding
+# a network from the owner's page writes the profile whose name is in
+# /etc/ark/ark.env, so these are the same string unless an owner changed it.
+LAN_WIFI_CONNECTION="${LAN_WIFI_CONNECTION:-$HOME_WIFI_CONNECTION}"
+# The one-time "administrative mode next boot" request.  Written only by
+# `ark-mode request-lan` (which is what the owner's page runs) and used up by
+# cmd_boot, so the flag has exactly one writer and one consumer.
+LAN_REQUEST_FILE="${LAN_REQUEST_FILE:-/etc/ark/lan-request}"
+# How long a request waits for a boot before it is stale.  A button pressed by
+# mistake should not put this card on somebody's network a week later.
+LAN_REQUEST_MINUTES="${LAN_REQUEST_MINUTES:-30}"
+# How long the box waits before restarting, so the page that asked can answer.
+LAN_RESTART_DELAY="${LAN_RESTART_DELAY:-5}"
 MODE_FILE="${MODE_FILE:-/etc/ark/mode}"
 PIN_FILE="${PIN_FILE:-/etc/ark/mode.pinned}"
 WIFI_DEV="${WIFI_DEV:-wlan0}"
@@ -45,6 +79,79 @@ set_mode() { printf '%s\n' "$1" > "$MODE_FILE" 2>/dev/null || true; }
 pin()   { printf '%s\n' "$1" > "$PIN_FILE" 2>/dev/null || true; }
 unpin() { rm -f "$PIN_FILE" 2>/dev/null || true; }
 pinned() { cat "$PIN_FILE" 2>/dev/null || true; }
+
+
+# ---- the one-time administrative request ------------------------------------
+# Reading it never writes anything; `request-lan` writes it and cmd_boot is the
+# only thing that consumes it, before it looks at BOOT_MODE or touches the radio.
+lan_request_file_value() {   # <key> — one line out of the request, or nothing
+  local file
+  for file in "$LAN_REQUEST_FILE" "$LAN_REQUEST_FILE.claimed"; do
+    [[ -r "$file" ]] || continue
+    # awk rather than grep|head: a short file can never become a SIGPIPE failure
+    # under pipefail, and a value may hold '=' of its own.
+    awk -F= -v k="$1" '$1 == k { sub("^[^=]*=", ""); print; exit }' "$file" 2>/dev/null || true
+    return 0
+  done
+}
+
+lan_request_state() {   # waiting | expired | absent
+  [[ -e "$LAN_REQUEST_FILE" ]] || { printf 'absent'; return 0; }
+  local expires now
+  expires="$(lan_request_file_value expires)"
+  now="$(date +%s)"
+  if [[ -n "$expires" && "$expires" =~ ^[0-9]+$ ]] && (( now > expires )); then
+    printf 'expired'
+    return 0
+  fi
+  printf 'waiting'       # no expiry recorded = somebody asked on purpose
+}
+
+claim_lan_request() {   # 0 = this boot has taken the request
+  [[ "$(lan_request_state)" == "waiting" ]] || return 1
+  # One rename: a cut here leaves either the request (honoured next boot) or the
+  # .claimed marker (cleared before the decision), never both halves of a file.
+  mv -f "$LAN_REQUEST_FILE" "$LAN_REQUEST_FILE.claimed" 2>/dev/null || return 1
+  return 0
+}
+
+finish_lan_request() { rm -f "$LAN_REQUEST_FILE.claimed" 2>/dev/null || true; }
+
+drop_lan_request()  { rm -f "$LAN_REQUEST_FILE" "$LAN_REQUEST_FILE.claimed" 2>/dev/null || true; }
+
+# Which saved network the request named.  A request that names none means the
+# standing answer (HOME_WIFI_CONNECTION), so an older flag still behaves.
+lan_request_network() {
+  local net
+  net="$(lan_request_file_value network)"
+  printf '%s' "${net:-$LAN_WIFI_CONNECTION}"
+}
+
+lan_request_minutes_left() {   # whole minutes until it goes stale, or nothing
+  local expires now
+  expires="$(lan_request_file_value expires)"
+  [[ "$expires" =~ ^[0-9]+$ ]] || return 0
+  now="$(date +%s)"
+  (( expires > now )) || return 0
+  printf '%s' "$(( (expires - now + 59) / 60 ))"   # whole minutes, rounded up like the page
+}
+
+lan_request_words() {
+  local left net
+  case "$(lan_request_state)" in
+    waiting)
+      left="$(lan_request_minutes_left)"
+      net="$(lan_request_network)"
+      if [[ -n "$left" ]]; then
+        printf 'waiting — the next boot (within %s minutes) joins "%s"' "$left" "$net"
+      else
+        printf 'waiting — the next boot joins "%s"' "$net"
+      fi
+      ;;
+    expired) printf 'expired (a boot ignores it and broadcasts instead)' ;;
+    *)       printf 'none' ;;
+  esac
+}
 
 
 active_names() { nmcli -t -f NAME connection show --active 2>/dev/null | cut -d: -f1; }
@@ -70,6 +177,34 @@ hotspot_up() {
   is_active "$HOTSPOT_CONNECTION" || return 1
   set_mode hotspot
   return 0
+}
+
+# The profile carrying the Wi-Fi when it is not the Ark's own access point.  A
+# renamed home network is still a network, so this asks the radio rather than
+# matching one saved name.
+lan_link() {
+  nmcli -t -f NAME,TYPE connection show --active 2>/dev/null \
+    | awk -F: -v ap="$HOTSPOT_CONNECTION" '$2 ~ /wireless/ && $1 != ap { print $1; exit }'
+}
+
+# Administrative (LAN) mode: join the network the owner saved and record why the
+# box is there.  Prints the profile it joined; returns 1 when nothing came up, so
+# the caller can fall back to broadcasting.  <target> is the profile to bring up
+# when nothing suitable is already active; it comes from the request when one
+# exists, so the box joins the network the person actually named.
+lan_up() { # [target]
+  local link target="${1:-$LAN_WIFI_CONNECTION}"
+  link="$(lan_link)"
+  if [[ -z "$link" ]]; then
+    # A fresh boot's first scan can be minutes old; ask for a new one, ignore its
+    # exit status (the radio may be busy) and let the join below be the judge.
+    nmcli device wifi rescan >/dev/null 2>&1 || true
+    nmcli --wait "$HOME_WIFI_TIMEOUT" connection up "$target" >/dev/null 2>&1 || true
+    link="$(lan_link)"
+  fi
+  [[ -n "$link" ]] || return 1
+  set_mode lan
+  printf '%s\n' "$link"
 }
 
 cmd_auto() {
@@ -102,6 +237,106 @@ cmd_hotspot() { # [--auto]  — --auto means "Ark did this to itself", so no pin
   say "broadcasting \"${HOTSPOT_SSID:-The-Ark-Offline}\" — open http://$HOTSPOT_ADDRESS"
 }
 
+# Administrative (LAN) mode: the owner asked for it, so it is pinned like any
+# other answer — but it is the only mode a boot may reach by itself, and even
+# then only once.  No network ⇒ broadcast, never a box with nothing up.
+cmd_lan() { # [target]
+  local link target="${1:-$(lan_request_network)}"
+  is_active "$HOTSPOT_CONNECTION" && deactivate "$HOTSPOT_CONNECTION"
+  if link="$(lan_up "$target")"; then
+    pin lan
+    say "joined \"$link\" — the Ark answers at https://ark.local:8443 on your own network"
+    say "this lasts until the next restart; \"sudo ark-mode auto\" goes back to broadcasting"
+    return 0
+  fi
+  say "no saved network answered within ${HOME_WIFI_TIMEOUT}s for \"$target\" — broadcasting instead"
+  boot_hotspot
+}
+
+# Ask the box to restart a few seconds from now, so the page that asked can
+# finish answering first.  A transient systemd unit is used rather than a
+# background sleep: it outlives this script and cannot be forgotten.  The
+# command is a variable because the one thing a test must never do is restart
+# the machine it is running on.
+restart_now() { # [seconds]
+  local secs="${1:-$LAN_RESTART_DELAY}"
+  if [[ "${ARK_MODE_REHEARSAL:-0}" == "1" && -z "${SYSTEMD_RUN_COMMAND:-}" ]]; then
+    say "rehearsal: this machine was not restarted"
+    return 0
+  fi
+  "${SYSTEMD_RUN_COMMAND:-systemd-run}" --quiet --collect \
+    --on-active="$secs" --unit=ark-lan-restart systemctl reboot >/dev/null 2>&1 && return 0
+  return 1
+}
+
+# The one-time request itself: one writer (here), one reader (cmd_boot), one
+# consumer (cmd_boot again).  --cancel withdraws it, --restart does it now.
+cmd_request_lan() {
+  local minutes="$LAN_REQUEST_MINUTES" cancel=0 restart=0 network="" ssid="" by="unknown"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --cancel)    cancel=1 ;;
+      --restart)   restart=1 ;;
+      --minutes)   shift; minutes="${1:-$LAN_REQUEST_MINUTES}" ;;
+      --minutes=*) minutes="${1#*=}" ;;
+      --network)   shift; network="${1:-}" ;;
+      --network=*) network="${1#*=}" ;;
+      --ssid)      shift; ssid="${1:-}" ;;
+      --ssid=*)    ssid="${1#*=}" ;;
+      --by)        shift; by="${1:-unknown}" ;;
+      --by=*)      by="${1#*=}" ;;
+      *) die "usage: ark-mode request-lan [--minutes N] [--network PROFILE] [--ssid NAME] [--by WHO] [--cancel] [--restart]" ;;
+    esac
+    shift
+  done
+
+  if [[ "$cancel" == "1" ]]; then
+    drop_lan_request
+    say "cancelled — nothing is waiting, and the box has not changed"
+    return 0
+  fi
+
+  [[ "$minutes" =~ ^[0-9]+$ ]] && (( minutes > 0 )) \
+    || die "--minutes wants a whole number of minutes greater than zero (got \"$minutes\")"
+  [[ -n "$network" ]] || network="$LAN_WIFI_CONNECTION"
+
+  local dir tmp now expires requested
+  dir="$(dirname "$LAN_REQUEST_FILE")"
+  mkdir -p "$dir"
+  now="$(date +%s)"
+  expires="$(( now + minutes * 60 ))"
+  requested="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  # A temp file and one rename: the request is either absent or whole, never
+  # half of one — cmd_boot reads this file before it makes up its mind.
+  tmp="$dir/.lan-request.tmp"
+  {
+    printf 'requested=%s\n' "$requested"
+    printf 'expires=%s\n' "$expires"
+    printf 'minutes=%s\n' "$minutes"
+    printf 'network=%s\n' "$network"
+    printf 'ssid=%s\n' "$ssid"
+    printf 'by=%s\n' "$by"
+  } > "$tmp"
+  chmod 0644 "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$LAN_REQUEST_FILE"
+
+  if [[ -n "$ssid" ]]; then
+    say "asked: the next boot (within ${minutes} minutes) joins \"$ssid\" as \"$network\" — once"
+  else
+    say "asked: the next boot (within ${minutes} minutes) joins \"$network\" — once"
+  fi
+  say "if that network is not there, the box broadcasts as usual — this cannot lock it out"
+
+  if [[ "$restart" == "1" ]]; then
+    if restart_now "$LAN_RESTART_DELAY"; then
+      say "restarting in ${LAN_RESTART_DELAY}s — open https://ark.local:8443/admin from your own network when it is back"
+    else
+      say "the request is saved, but this box did not restart itself — restart it by hand (sudo reboot)"
+      return 1
+    fi
+  fi
+}
+
 # What a cold boot does.  The installer writes BOOT_MODE into /etc/ark/ark.env;
 # "hotspot" is the shipped default because the box is meant to broadcast with
 # nobody standing next to it.  It pins, so the watchdog does not walk the box
@@ -113,18 +348,48 @@ boot_hotspot() {
   say "the box stays here until someone runs: sudo ark-mode auto"
 }
 
+# What a boot would do with a given BOOT_MODE, in a person's words.
+boot_plan() { # <BOOT_MODE>
+  case "$1" in
+    hotspot) printf 'broadcast "%s" and stay there' "${HOTSPOT_SSID:-The-Ark-Offline}" ;;
+    auto)    printf 'try "%s", then broadcast' "$HOME_WIFI_CONNECTION" ;;
+    home)    printf 'try "%s", then broadcast if it is absent' "$LAN_WIFI_CONNECTION" ;;
+    lan)     printf 'join "%s" for administrative work, then broadcast if it is absent' "$LAN_WIFI_CONNECTION" ;;
+    *)       printf 'broadcast: "%s" is not an answer this box knows' "$1" ;;
+  esac
+}
+
 cmd_boot() {
-  local want="${BOOT_MODE:-hotspot}" dry="${1:-}"
+  local want="${BOOT_MODE:-hotspot}" dry="${1:-}" request
+  request="$(lan_request_state)"
   if [[ "$dry" == "--dry-run" ]]; then
-    case "$want" in
-      hotspot) say "boot would broadcast \"${HOTSPOT_SSID:-The-Ark-Offline}\" and stay there (BOOT_MODE=$want)" ;;
-      auto)    say "boot would try \"$HOME_WIFI_CONNECTION\", then broadcast (BOOT_MODE=$want)" ;;
-      home)    say "boot would try \"$HOME_WIFI_CONNECTION\", then broadcast if absent (BOOT_MODE=$want)" ;;
-      *)       say "boot would broadcast: BOOT_MODE=\"$want\" is not an answer this box knows" ;;
+    case "$request" in
+      waiting) say "boot would use the one-time administrative request: join \"$(lan_request_network)\" — and the boot after that would $(boot_plan "$want")" ;;
+      expired) say "boot would ignore an expired administrative request and $(boot_plan "$want")" ;;
+      *)       say "boot would $(boot_plan "$want") (BOOT_MODE=$want)" ;;
     esac
     say "nothing was changed ($(active_names | paste -sd ', ' -) is active now)"
     return 0
   fi
+
+  # The request is used up HERE — before the decision and before any radio call.
+  # If this box loses power a second from now it comes back broadcasting, which
+  # is the failure the household can live with; a box stuck on a network nobody
+  # is standing next to is not.  A .claimed marker left by an earlier boot that
+  # died mid-claim is cleared first, so an interrupted attempt is never repeated
+  # for ever.
+  finish_lan_request
+  if claim_lan_request; then
+    say "a one-time administrative request was waiting — using it for this boot only"
+    cmd_lan
+    finish_lan_request
+    return 0
+  fi
+  if [[ "$request" == "expired" ]]; then
+    drop_lan_request
+    say "an administrative request had expired — ignoring it"
+  fi
+
   case "$want" in
     auto)
       say "boot choice: auto (home network first, broadcasting if it is absent)"
@@ -141,6 +406,10 @@ cmd_boot() {
       say "no home network at boot — broadcasting instead"
       boot_hotspot
       ;;
+    lan)
+      say "boot choice: administrative (LAN) mode — BOOT_MODE=lan"
+      cmd_lan
+      ;;
     hotspot)
       say "boot choice: broadcast (BOOT_MODE=hotspot)"
       boot_hotspot
@@ -156,15 +425,20 @@ cmd_status() {
   local mode ip4 portal held
   mode="$(cat "$MODE_FILE" 2>/dev/null || echo unknown)"
   held="$(pinned)"
-  ip4="$(ip -4 -o addr show "$WIFI_DEV" 2>/dev/null | awk '{print $4}' | head -1)"
-  portal="$(curl -s -o /dev/null -m 5 -w '%{http_code}' "http://127.0.0.1/" 2>/dev/null || echo 000)"
+  # A question this machine cannot answer is "none"/"000", never a dead script:
+  # `ip` is absent on a Mac and `curl` writes 000 itself when the portal refuses,
+  # so an `|| echo 000` there printed "000000" (a rehearsal caught it).
+  ip4="$(ip -4 -o addr show "$WIFI_DEV" 2>/dev/null | awk '{print $4}' | head -1 || true)"
+  portal="$(curl -s -o /dev/null -m 5 -w '%{http_code}' "http://127.0.0.1/" 2>/dev/null || true)"
+  portal="${portal:-000}"
   printf '   mode          : %s\n' "$mode"
   printf '   chosen by     : %s\n' "$([[ -n "$held" ]] && echo "owner ($held)" || echo auto)"
   printf '   at boot       : %s (BOOT_MODE)\n' "${BOOT_MODE:-hotspot}"
+  printf '   lan request   : %s\n' "$(lan_request_words)"
   printf '   wifi address  : %s\n' "${ip4:-none}"
   printf '   portal        : HTTP %s on 127.0.0.1\n' "$portal"
   printf '   active links  : %s\n' "$(active_names | paste -sd ', ' -)"
-  printf '   internet      : %s\n' "$(ip -4 route show default | grep -q . && echo yes || echo no)"
+  printf '   internet      : %s\n' "$(ip -4 route show default 2>/dev/null | grep -q . && echo yes || echo no)"
 }
 
 cmd_test() {
@@ -177,8 +451,18 @@ cmd_test() {
   cmd_auto
 }
 
-# Reading needs no privilege: "status" and "boot --dry-run" touch nothing.
-if [[ "${1:-status}" == "boot" && "${2:-}" == "--dry-run" ]]; then
+# Reading needs no privilege: "status" — and no argument at all, which asks the
+# same question — and "boot --dry-run" touch nothing, so they are not gated.  The
+# gate was missing "status" until 31 Oct 2026, while this comment and
+# docs/ADMIN.md both said reading was free: a person following the paperwork got
+# "run this as root (sudo ark-mode status)" for a command that writes nothing.
+# ARK_MODE_REHEARSAL=1 is the test suite's door: it skips the root check so the
+# real script can be run end to end against a throwaway folder (the caller sets
+# MODE_FILE, PIN_FILE and LAN_REQUEST_FILE, and may put a fake nmcli first on
+# PATH) — no radio, no root, and no way to set it silently on the box.
+if [[ "${1:-status}" == "status" ]] \
+   || [[ "${1:-status}" == "boot" && "${2:-}" == "--dry-run" ]] \
+   || [[ "${ARK_MODE_REHEARSAL:-0}" == "1" ]]; then
   :
 else
   need_root "$*"
@@ -188,7 +472,9 @@ case "${1:-status}" in
   auto)    cmd_auto ;;
   home)    cmd_home ;;
   hotspot) cmd_hotspot "${2:-}" ;;
+  lan)     cmd_lan "${2:-}" ;;
+  request-lan) shift; cmd_request_lan "$@" ;;
   test)    cmd_test "${2:-180}" ;;
   status)  cmd_status ;;
-  *)       die "usage: ark-mode {boot [--dry-run]|auto|home|hotspot [--auto]|status|test [seconds]}" ;;
+  *)       die "usage: ark-mode {boot [--dry-run]|auto|home|hotspot [--auto]|lan [profile]|request-lan [--cancel|--restart|--minutes N|--network PROFILE|--ssid NAME]|status|test [seconds]}" ;;
 esac

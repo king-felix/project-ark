@@ -496,6 +496,128 @@ for a connection it does not need.
 
 ---
 
+## 17. Carry it to another house, and get it on their Wi-Fi (20 minutes, two people help)
+
+**Why it is unproven:** the **Network** page (`https://ark.local:8443/admin/network`) was written
+on 31 Oct 2026 and has **never been opened in a browser**, on any device. Saving a network and
+asking for one restart have both been proved by tests and by rehearsals on a laptop — never by a
+phone in a kitchen with somebody else's router password on a sticker.
+
+**Two things this test is really about**, and neither can be proved on a laptop:
+
+* the **passphrase** never comes back out — not on the page, not in the records, not in a log;
+* the **one restart** promise: the request is *used up*, not a change of habit. The start after
+  it broadcasts `The-Ark-Offline` again, and a request naming a network that is not there leaves
+  the box broadcasting instead of unreachable.
+
+**Before you start:** you need to be signed in to the owner's console already (`§12` is where
+that is set up), and you need a **second** Wi-Fi that the box can see — a phone hotspot is fine.
+
+1. Open `https://ark.local:8443/admin/network` **on the phone**. Tap *Network* in the console's
+   menu rather than typing the address if the menu has it.
+
+   **You should see:** four headings — *Where the box is now*, *Restart on my own network for a
+   while*, *Add a Wi-Fi network*, *Networks already saved* — and the first line under the first
+   heading says where the box is in ordinary words, with no service name, no port number and no
+   word you would have to look up.
+
+2. Type the name and password of the **phone's own hotspot**, wrong on purpose in one way
+   (seven characters, say) and save it.
+
+   **You should see:** **Nothing was saved.**, with the number that is missing in the sentence —
+   and the page still shows the form you filled in.
+
+3. Now do it properly, and watch the phone's browser address bar as you type.
+
+   **You should see:** the password characters as dots, and after saving, *Saved "…"* with the
+   name spelled the way the phone spells it. **The password must appear nowhere on the page** —
+   not in the form, not in the banner, nowhere.
+
+4. Over SSH (this is the one step that needs a keyboard), check what the box really wrote:
+
+   ```bash
+   sudo ls -l /etc/NetworkManager/system-connections/
+   sudo grep -E '^(ssid|autoconnect|autoconnect-retries|key-mgmt)=' /etc/NetworkManager/system-connections/<the new one>
+   ```
+
+   **You should see:** one file, **`-rw-------` and owned by `root`**, naming the network with
+   `autoconnect=false` and `autoconnect-retries=0`. That is the promise that a box in a bag does
+   not go looking for somebody else's router by itself. (The `psk` line is there too — that is
+   correct, and it is why the file is `0600`; do not paste it anywhere.)
+
+5. Back on the page, under *Restart on my own network for a while*: pick the network you just
+   saved, leave the minutes at 30, **untick** the box, and press **Ask for one restart on my
+   network**.
+
+   **You should see:** a green line beginning **asked:** — *the next boot … joins "…" — once* —
+   and then, lower down, *Waiting: …* with a **Take that request back** button.
+
+6. Restart the box (`sudo systemctl reboot`) with the phone's hotspot **on**.
+
+   **You should see:** after the reboot the box joins the hotspot instead of broadcasting, and
+   `https://ark.local:8443/admin/network` from the phone reaches it over that hotspot, with
+   *Where the box is now* saying it is on your network.
+
+7. **The important step.** Restart it a **second** time.
+
+   **You should see:** the hotspot back — `The-Ark-Offline` — and the page (once you are on it)
+   saying the request is not waiting any more. **The request must be used up.** If it joined the
+   hotspot again, the request has become a mode, which is the one thing this design must not do;
+   write down `sudo cat /etc/ark/lan-request` (it should not exist) and `sudo ark-mode status`.
+
+8. Ask for one restart naming a network that **is not there** — switch the phone's hotspot off
+   first — and restart.
+
+   **You should see:** the box broadcasting `The-Ark-Offline` after the boot, reachable the way
+   it always is. **It must never be dark**: this is the lock-out that cannot be allowed, and it
+   is why the request exists at all instead of a setting.
+
+9. On the box, the three checks a gate can make:
+
+   ```bash
+   /usr/local/sbin/ark-mode status            # the "lan request" line: waiting / expired / nothing
+   ls -l /usr/local/sbin/ark-wifi-add         # -rwxr-xr-x root root
+   sudo bash /srv/ark/src/install-ark.sh --only 90-verify | tail -20
+   ```
+
+   **You should see:** *nothing waiting* (or a request you meant to leave), the helper present,
+   and `90-verify`'s **Network page behind the sign-in** line green with *add a Wi-Fi network*
+   and *one-time restart* reported softly. Anything else in the verify output is its own item.
+
+**The one case a thumb cannot force, but you can read for:** if the box **cannot schedule its own
+restart**, it keeps the request — the page then opens with **The request is kept.** instead of
+**Nothing was asked.**, repeats the box's own reason (*restart it by hand*), and *Take that
+request back* is still there. You should only ever see that on a card where the reboot could not be
+arranged; three tests hold it either way (`docs/IMPLEMENTATION-LOG.md` §33.4). What must never
+happen is **Nothing was asked.** printed above a **Waiting:** block offering to take a request
+back — the banner denying what the page is offering to undo.
+
+**Write down if not:** the exact green or red sentence the page showed (it is the box's own
+wording), `sudo ark-mode status`, the contents of the page's own **Take that request back** line
+if one is waiting, and `journalctl -b -u NetworkManager -n 40` for a join that failed. A page
+that answers **Nothing was saved.** when the password was right is almost always the account the
+portal runs as not being allowed to run the helper without a password — the question to ask is
+whether **`pi`** can:
+
+```bash
+sudo -u pi sudo -n /usr/local/sbin/ark-wifi-add --ssid "test network" --check \
+  <<<"a-rehearsal-password"
+```
+
+(The password goes on **stdin**, never on the command line — that `<<<` is the rehearsal's.)
+
+That must print *would save …* and nothing about a password. If it refuses, the answer is the
+box's own passwordless sudo for `pi` (the image ships `pi ALL=(ALL) NOPASSWD:ALL`); nothing in
+this repo adds a rule of its own — phase `70-network` only **proves** this door, with exactly
+these two lines under `runuser -u pi --`, which is why it warns rather than fails.
+
+**What this proves that nothing else can:** a thumb on the page, a passphrase that does not come
+back, a real NetworkManager profile written by a real helper, and — the whole design in one
+sentence — **a box that is on your network for exactly one start, and never anywhere you cannot
+reach it.**
+
+---
+
 ## What is *not* on this list, on purpose
 
 * The v5 migration has run once, on the live database. It will be proved on a card that already

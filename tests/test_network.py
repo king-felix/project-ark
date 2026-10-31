@@ -109,6 +109,8 @@ def watch(tmp_path, radio, *, dry=True, mode="home", active="", visible="",
     (("home", 1, 0, 0, 0, 0, 0, 0, 0), "stay"),        # at home, nothing to do
     (("home", 0, 0, 0, 0, 0, 1, 0, 0), "stay"),        # one miss is a blink
     (("home", 0, 0, 0, 0, 0, 2, 0, 0), "to-hotspot"),  # two misses is a network
+    (("lan", 0, 0, 0, 0, 0, 1, 0, 0), "stay"),         # a network the owner asked for gets a blink too
+    (("lan", 0, 0, 0, 0, 0, 2, 0, 0), "to-hotspot"),   # ...and then the hotspot, because dark is worse
     (("hotspot", 0, 0, 0, 0, 0, 0, 0, 0), "to-hotspot"),   # the access point died
     (("unknown", 0, 0, 0, 0, 0, 0, 0, 0), "to-hotspot"),   # no record, nothing up
     (("hotspot", 0, 1, 1, 0, 0, 0, 3, 0), "to-home"),  # home back, nobody here

@@ -95,6 +95,14 @@ fi
 for b in ark-mode ark-boot-guard ark-net-watch; do
   ark_copy "$ARK_SRC/bin/$b" "/usr/local/bin/$b" 755 root:root
 done
+# The owner's Network page (phase 60) saves a Wi-Fi network through this helper.
+# It lives in sbin because it writes a NetworkManager profile, it reads the
+# passphrase from **stdin** (never argv, which every process can read), and it
+# writes nothing but that one profile.  The page reaches it with `sudo -n` as the
+# portal's own account — proved at the end of this phase, because a door nobody
+# has knocked on is not an installed door.
+ark_copy "$ARK_SRC/bin/ark-wifi-add" /usr/local/sbin/ark-wifi-add 755 root:root
+ark_ok "installed /usr/local/sbin/ark-wifi-add — how a network is saved from the owner's page"
 ark_install_unit ark-boot-guard.service
 systemctl enable ark-boot-guard.service >/dev/null 2>&1 \
   || ark_warn "could not enable ark-boot-guard.service"
@@ -149,6 +157,31 @@ esac
   || ark_warn "network watchdog timer is not enabled"
 [[ "$(systemctl is-active ark-net-watch.timer 2>/dev/null || true)" == "active" ]] \
   || ark_warn "network watchdog timer is not running"
+
+# ---- the owner's Network page, knocked on as the account that uses it -------
+# Neither probe changes the network or leaves a file behind: `--check` says what
+# it *would* write, and a request for zero minutes is refused before anything is
+# written.  What is proved is the door — that the account the portal runs as can
+# reach both helpers with no password prompt, which is the one thing that would
+# otherwise only be discovered by the owner, an hour later, with the page saying
+# "The box would not do that."
+wifi_check=""
+if wifi_check="$(runuser -u "$ARK_PI_USER" -- \
+      sudo -n /usr/local/sbin/ark-wifi-add --ssid "A network this box has never joined" --check \
+      <<<"ark-rehearsal-only-psk" 2>&1)"; then
+  ark_ok "the Network page can save a Wi-Fi network as $ARK_PI_USER (${wifi_check:-no words})"
+else
+  ark_warn "the Network page cannot reach ark-wifi-add as $ARK_PI_USER — saving a network will fail: ${wifi_check:-no output}"
+fi
+lan_check=""
+if lan_check="$(runuser -u "$ARK_PI_USER" -- \
+      sudo -n /usr/local/bin/ark-mode request-lan --minutes 0 2>&1)"; then
+  ark_warn "the Network page asked for zero minutes and the helper accepted it — that would be honoured at the next boot: $lan_check"
+elif grep -q 'greater than zero' <<<"$lan_check"; then
+  ark_ok "the Network page can ask for one restart on a saved network as $ARK_PI_USER (nothing was written)"
+else
+  ark_warn "the Network page cannot reach ark-mode request-lan as $ARK_PI_USER — the restart button will fail: ${lan_check:-no output}"
+fi
 
 ark_info "try it on purpose:  sudo ark-mode test 180   (SSH drops while it runs)"
 ark_info "hotspot on/off:     sudo ark-mode hotspot | sudo ark-mode auto"

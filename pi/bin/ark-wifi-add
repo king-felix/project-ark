@@ -1,0 +1,219 @@
+#!/usr/bin/env bash
+# =============================================================================
+#  ark-wifi-add — save ONE Wi-Fi network on the box, for the owner's own page.
+#
+#    sudo ark-wifi-add --ssid "NAME" [--autoconnect yes|no] [--check]
+#
+#  The passphrase is read from STANDARD INPUT, never from the command line: a
+#  command line is visible in `ps` to every account on the box and is remembered
+#  by shell history.  The profile this writes is 0600 root:root, which is where
+#  NetworkManager keeps every other password on the machine.
+#
+#  ONE NETWORK, ONE PROFILE.  The profile name is derived from the network name,
+#  so saving the same network twice REPLACES its password instead of leaving a
+#  stale second profile behind — press the button twice and the box uses the
+#  last password typed.
+#
+#  IT DOES NOT JOIN ANYTHING.  The profile is written with autoconnect=false and
+#  this script never touches the radio: it writes one file and asks
+#  NetworkManager to read its folder again.  The box joins that network only when
+#  a person asks for it — `ark-mode lan`, or one boot of administrative mode
+#  (`ark-mode request-lan`, which is what the owner's Network page runs).
+#
+#  A network with no password is deliberately not offered here: an open Wi-Fi is
+#  a rare thing for a household and it needs a person at the console.
+# =============================================================================
+set -Eeuo pipefail
+
+NM_DIR="${ARK_NM_DIR:-/etc/NetworkManager/system-connections}"
+HOTSPOT_CONNECTION="${HOTSPOT_CONNECTION:-ark-hotspot}"
+SSID_MAX=32
+PSK_MIN=8
+PSK_MAX=63
+
+say()  { printf '%s\n' "$*"; }
+die()  { printf 'Not done: %s\n' "$*" >&2; exit 1; }
+
+usage() {
+  cat <<'TXT'
+Save one Wi-Fi network so the Ark can join it when it is asked to.
+
+  sudo ark-wifi-add --ssid "NAME" [--autoconnect yes|no] [--check]
+
+The Wi-Fi password is read from standard input (not from the command line):
+
+  printf '%s\n' "$PASSWORD" | sudo ark-wifi-add --ssid "NAME"
+
+  --ssid NAME        the network's name, 1-32 characters (as a phone lists it)
+  --autoconnect yes  let NetworkManager pick this network by itself
+                     (default: no — adding a network never makes the box join it)
+  --check            say what would be written, and write nothing
+TXT
+}
+
+SSID=""
+AUTOCONNECT="no"
+CHECK=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --ssid)            shift; SSID="${1-}" ;;
+    --ssid=*)          SSID="${1#*=}" ;;
+    --autoconnect)     shift; AUTOCONNECT="${1-no}" ;;
+    --autoconnect=*)   AUTOCONNECT="${1#*=}" ;;
+    --check)           CHECK=1 ;;
+    -h|--help)         usage; exit 0 ;;
+    *)                 die "unknown option \"$1\" (try --help)" ;;
+  esac
+  shift
+done
+
+# ---- who may do this --------------------------------------------------------
+# ARK_WIFI_REHEARSAL=1 runs the whole thing into a throwaway folder as an
+# ordinary user, which is how the tests drive it; it can never be set silently
+# on the box, where the default is off.
+if [[ "${ARK_WIFI_REHEARSAL:-0}" != "1" && "${EUID:-$(id -u)}" -ne 0 ]]; then
+  die "this needs root, because it writes a network password: sudo ark-wifi-add --ssid \"NAME\""
+fi
+
+# ---- what a person typed ----------------------------------------------------
+[[ -n "$SSID" ]] || die "a network name is needed (--ssid \"NAME\") — it is the name the phone shows in its Wi-Fi list."
+(( ${#SSID} <= SSID_MAX )) || die "a network name is at most ${SSID_MAX} characters; that one is ${#SSID}."
+[[ "$SSID" != *[[:cntrl:]]* ]] || die "a network name cannot hold a control character (a line break, for instance)."
+[[ "$SSID" != " "* && "$SSID" != *" " ]] || die "a network name cannot begin or end with a space."
+
+case "$AUTOCONNECT" in
+  yes|no) ;;
+  *) die "--autoconnect takes \"yes\" or \"no\" (default no)." ;;
+esac
+
+PSK=""
+if [[ ! -t 0 ]]; then
+  # `|| true` because the last line of a pipe may arrive without a newline, and
+  # that is still the whole password.
+  IFS= read -r PSK || true
+fi
+(( ${#PSK} >= PSK_MIN )) || die "a Wi-Fi password is at least ${PSK_MIN} characters; that one is ${#PSK}."
+(( ${#PSK} <= PSK_MAX )) || die "a Wi-Fi password is at most ${PSK_MAX} characters; that one is ${#PSK}."
+[[ "$PSK" != *[[:cntrl:]]* ]] || die "a Wi-Fi password cannot hold a control character (a line break, for instance)."
+[[ "$PSK" != " "* && "$PSK" != *" " ]] || die "a Wi-Fi password cannot begin or end with a space — nothing was saved."
+
+
+# ---- one network, one profile ----------------------------------------------
+# The name is derived here and nowhere else, so pressing the button twice
+# replaces the profile instead of adding a second one that nobody will remember.
+slug="$(printf '%s' "$SSID" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-24)"
+if command -v sha256sum >/dev/null 2>&1; then
+  digest="$(printf '%s' "$SSID" | sha256sum | cut -c1-8)"
+elif command -v shasum >/dev/null 2>&1; then
+  digest="$(printf '%s' "$SSID" | shasum -a 256 | cut -c1-8)"
+else
+  digest="$(printf '%s' "$SSID" | cksum | awk '{print $1}')"
+fi
+NAME="ark-wifi-${slug}-${digest}"
+
+[[ "$NAME" =~ ^[A-Za-z0-9._-]{1,64}$ ]] \
+  || die "could not make a profile name out of \"$SSID\" — nothing was changed."
+[[ "$NAME" != "$HOTSPOT_CONNECTION" ]] \
+  || die "that name belongs to the box's own hotspot — nothing was changed."
+
+new_uuid() {
+  if command -v uuidgen >/dev/null 2>&1; then
+    uuidgen | tr 'A-F' 'a-f'
+  elif [[ -r /proc/sys/kernel/random/uuid ]]; then
+    cat /proc/sys/kernel/random/uuid
+  else
+    local hex
+    hex="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+    printf '%s-%s-%s-%s-%s\n' "${hex:0:8}" "${hex:8:4}" "${hex:12:4}" "${hex:16:4}" "${hex:20:12}"
+  fi
+}
+
+dest="$NM_DIR/$NAME.nmconnection"
+
+# Keeping the profile's own identifier is what makes saving the same network
+# twice an unchanged file rather than a new one every time.
+UUID=""
+if [[ -f "$dest" ]]; then
+  UUID="$(awk -F= '$1 == "uuid" { print $2; exit }' "$dest" 2>/dev/null || true)"
+fi
+[[ -n "$UUID" ]] || UUID="$(new_uuid)"
+[[ -n "$UUID" ]] || die "could not make an identifier for the profile — nothing was changed."
+
+if [[ $CHECK -eq 1 ]]; then
+  say "would save \"$SSID\" as profile \"$NAME\" (autoconnect=$AUTOCONNECT) in $NM_DIR"
+  exit 0
+fi
+
+# Only now: --check must leave the card exactly as it found it, folder and all.
+mkdir -p "$NM_DIR"
+
+# ---- the profile ------------------------------------------------------------
+# No interface name: NetworkManager decides which radio it means, which keeps
+# this working if the wireless device is renamed on a newer kernel.
+body="[connection]
+id=$NAME
+uuid=$UUID
+type=wifi
+autoconnect=$AUTOCONNECT
+autoconnect-retries=0
+permissions=
+
+[wifi]
+mode=infrastructure
+ssid=$SSID
+hidden=false
+
+[wifi-security]
+key-mgmt=wpa-psk
+psk=$PSK
+
+[ipv4]
+method=auto
+
+[ipv6]
+method=auto
+addr-gen-mode=stable-privacy"
+
+tmp="$NM_DIR/.$NAME.nmconnection.tmp.$$"
+# umask first, so the password is unreadable even during the moment it is written.
+( umask 077; printf '%s\n' "$body" > "$tmp" )
+chmod 600 "$tmp"
+if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+  chown root:root "$tmp" 2>/dev/null || true
+fi
+
+changed=1
+if [[ -f "$dest" ]] && cmp -s "$tmp" "$dest"; then
+  changed=0
+  rm -f "$tmp"
+else
+  mv -f "$tmp" "$dest"
+  chmod 600 "$dest"
+  if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+    chown root:root "$dest" 2>/dev/null || true
+  fi
+fi
+
+# Prove it by reading it back, rather than trusting the write.
+grep -qxF "ssid=$SSID" "$dest" \
+  || die "the profile was written but does not read back as \"$SSID\" — look in $NM_DIR by hand."
+
+if [[ $changed -eq 1 ]] && command -v nmcli >/dev/null 2>&1; then
+  # Best effort: a failure here is not a lost password, only a file that will be
+  # read the next time the network manager starts.
+  nmcli connection reload >/dev/null 2>&1 || true
+fi
+
+if [[ "$AUTOCONNECT" == "yes" ]]; then
+  tail_words="When the box looks for a network, it may now join this one by itself."
+else
+  tail_words="The box does not join it by itself: it joins when you ask it to, under \"Restart on my own network for a while\" on the Network page — once."
+fi
+
+if [[ $changed -eq 0 ]]; then
+  say "Already saved: \"$SSID\" is on the box as \"$NAME\", unchanged. $tail_words"
+else
+  say "Saved \"$SSID\" as \"$NAME\". $tail_words"
+fi
+

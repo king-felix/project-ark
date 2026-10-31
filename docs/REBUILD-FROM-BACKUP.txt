@@ -7,8 +7,12 @@ Read this before trusting an old copy: the tag above is exactly what is inside
 these files. Anything committed after v1.0.5 — the account and bootstrap work,
 the new shared-file path and the import ledger, the readiness pages
 ("What is working" and /api/ready), the network watchdog, the backup and
-restore tools with their printed recovery sheet, and ARK Arcade (the game
-shelf, player names and game saves) — is NOT in a folder built from that tag.
+restore tools with their printed recovery sheet, ARK Arcade (the game
+shelf, player names and game saves), the household layer (the emergency
+pages, the printed cards and the pack to carry away), Ask the Ark (a helper
+that answers from a model on the card), the power-cut repair pass, and the
+owner's Network page (save a Wi-Fi network, and ask for one restart on it) —
+is NOT in a folder built from that tag.
 Regenerate with section 5 before handing a folder to anyone, and check the
 date line at the top of REBUILD-ME-ARK.txt against the code you expect: it is
 revised whenever the box changes shape.

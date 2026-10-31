@@ -18,7 +18,11 @@ ADMIN_SITE=/etc/nginx/sites-available/ark-admin
 PLAYER_SITE=/etc/nginx/sites-available/ark-players
 
 # ---- code -------------------------------------------------------------------
-for f in ark_db.py ark_security.py ark_admin.py ark_recover.py; do
+# ark_network.py is not optional: ark_admin imports it for the owner's Network
+# page (the Wi-Fi a person saves, and the one-time restart on their own).  A
+# phase that installs the router without its modules leaves an ark-api that
+# cannot import at all, so `--only 65-admin` on its own has to bring it too.
+for f in ark_db.py ark_security.py ark_admin.py ark_network.py ark_recover.py; do
   ark_copy "$ARK_SRC/api/$f" "$API_DIR/$f" 644 "$ARK_PI_USER:$ARK_PI_GROUP"
 done
 ark_copy "$ARK_SRC/portal/assets/ark-admin.css" \

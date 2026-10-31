@@ -308,6 +308,37 @@ else
   say_soft "network watchdog" "no decision logged yet (first check 3 min after boot)"
 fi
 
+# ---- the owner's Network page: a Wi-Fi saved from the page, one restart asked for
+# The two hints can never fail the gate: a box with no helper still broadcasts and
+# is still reachable (that is the whole design), so a missing helper is a
+# "run the network phase" sentence.  The page itself is a door like any other and
+# must ask for a sign-in.
+if [[ -x /usr/local/sbin/ark-wifi-add ]]; then
+  wifi_helper="yes"
+  say_ok "add a Wi-Fi network" "the page can save one from the box (sudo -n ark-wifi-add)"
+else
+  wifi_helper="no"
+  say_soft "add a Wi-Fi network" "helper missing — run phase 70-network, or the page's button will refuse"
+fi
+lan_state="absent"
+lan_words="$(ark-mode status 2>/dev/null | awk -F': *' '/lan request/{print $2}' || true)"
+case "${lan_words:-}" in
+  waiting*) lan_state="waiting"
+            say_soft "one-time restart" "$lan_words" ;;
+  expired*) lan_state="expired"
+            say_soft "one-time restart" "$lan_words" ;;
+  *"none"*) : ;;
+esac
+if [[ "$lan_state" == "absent" ]]; then
+  say_ok "one-time restart" "nothing waiting — the next boot broadcasts as usual"
+fi
+net_page="$(ark_tls_code ark.lan:8443 /admin/network)"
+case "$net_page" in
+  303|302) say_ok "Network page behind the sign-in" "https://ark.lan:8443/admin/network asks to sign in" ;;
+  *)       say_bad "Network page behind the sign-in" \
+                 "HTTP ${net_page:-none} (expected 303; run phase 60-portal and 65-admin)" ;;
+esac
+
 # ---- how much room is left ---------------------------------------------------
 free_gib="$(awk -v b="$(ark_free_bytes /)" 'BEGIN{printf "%.1f", b/1073741824}')"
 root_use="$(df -h / | tail -1 | awk '{print $5}')"
@@ -485,6 +516,8 @@ cat > "$tmp" <<JSON
   "household": {"answered": ${household_read:-null}, "topics": ${household_total:-null},
                 "due": ${household_due:-null}, "missing_pages": ${household_missing:-null},
                 "pack": "${pack_state}"},
+  "network": {"wifi_helper": "${wifi_helper:-no}", "lan_request": "${lan_state:-absent}",
+              "owner_page": "${net_page:-none}"},
   "free_gib": ${free_gib:-0},
   "free_pct_used": "$root_use",
   "backup": {"copies": ${backup_copies:-0}, "newest": "$backup_newest", "made": "$backup_made"},

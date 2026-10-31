@@ -1,5 +1,5 @@
 ================================================================================
-  PROJECT ARK — BOOTSTRAP / ARCHITECT PROMPT          v1.1 · 2026-10-24
+  PROJECT ARK — BOOTSTRAP / ARCHITECT PROMPT          v1.2 · 2026-10-31
   A complete, model-agnostic brief for rebuilding this offline survival
   computer from nothing — or for making another one for a friend.
 ================================================================================
@@ -77,7 +77,9 @@ address, for whoever maintains the box.
 
   https://ark.lan:8443/admin   sign-in + accounts + audit + Community + Games +
                                Household (the emergency pages, the household's own
-                               answers, and one button that makes the pack)
+                               answers, and one button that makes the pack) +
+                               Network (save a Wi-Fi network, and ask for ONE
+                               restart on it — the carried-to-another-house page)
                                (404 on port 80); "What is working" — every part,
                                ready or not, with the plain reason and next step
   https://ark.lan:8445/arcade/ the player's own TLS origin: sign in for saves,
@@ -314,11 +316,14 @@ popup resolves to the portal instead of a "no internet" dead end.
                   :8445 answers /arcade/player and 404 for /admin.
   70  network     NM hotspot profile (ipv4.method shared, 10.42.0.1/24, ch 6),
                   dnsmasq-shared.d wildcard for ark.lan/ark.local, boot guard,
-                  ark-mode (auto|home|hotspot|test), and the watchdog
-                  (ark-net-watch + .timer, phase 70 enables and starts it).
+                  ark-mode (auto|home|hotspot|lan|test|status|boot|request-lan),
+                  ark-wifi-add (/usr/local/sbin, passphrase on stdin, autoconnect
+                  off so saving a network never makes the box join it), and the
+                  watchdog (ark-net-watch + .timer, phase 70 enables and starts it).
                   Proof: profile exists, guard active, timer enabled AND active,
-                  `ark-net-watch --dry-run` prints what it sees, and
-                  `ark-mode test` works when a human tries it.
+                  `ark-net-watch --dry-run` prints what it sees,
+                  `ark-mode test` works when a human tries it, and both helpers are
+                  knocked on as `pi` through `sudo -n` — the Network page's own path.
   95  backup      ark-backup + ark-restore on the shared ark_bundle.py,
                   /srv/ark/backup (0700), the recovery sheet at
                   /srv/ark/RECOVERY-SHEET.txt and /srv/ark/portal/recovery.txt,
@@ -687,8 +692,18 @@ popup resolves to the portal instead of a "no internet" dead end.
     autoconnect=no on purpose, and only ark-mode / ark-net-watch bring it up.)
     Fix: seed every network the box may ever live on, at build time, in
     WIFI_EXTRA_PROFILES (id|ssid|password|priority, priorities below the home
-    slots so home still wins at home). On a box that is already running, add one
-    without ever putting the password on a command line or into a shell history:
+    slots so home still wins at home). On a box that is already running, the
+    owner's **Network** page does both halves with no console at all:
+    https://ark.local:8443/admin/network → *Add a Wi-Fi network* (saves the
+    profile, never joins it) → *Ask for one restart on my network* (one boot uses
+    it, then the box broadcasts again; if that network is not there the box
+    broadcasts instead, so it can never end up somewhere nobody is standing next
+    to it; *Take that request back* withdraws it). The page reaches two helpers —
+    `ark-wifi-add` (passphrase on stdin, `autoconnect=false`) and
+    `ark-mode request-lan` (one `/etc/ark/lan-request` file, spent by one boot) —
+    through `sudo -n` as `pi`, so both must be reachable with no password prompt.
+    Without a phone to hand, add one without ever putting the password on a
+    command line or into a shell history:
       sudo nmcli connection add type wifi ifname wlan0 con-name rodclan \
            ssid Rodclan autoconnect yes wifi-sec.key-mgmt wpa-psk
       sudo nmcli connection edit rodclan     # `set wifi-sec.psk` prompts, masked
@@ -976,8 +991,18 @@ any failure. Categories:
     pi/bin/ark-import-books                 one file → shelf (debounced)
     pi/bin/ark-import-calibre-library       whole-library adopt, probe, rollback
     pi/bin/ark-html2pdf                     HTML → printable PDF (weasyprint)
-    pi/bin/ark-mode                         auto | home | hotspot | test N
-                                            (home/hotspot pin, auto unpins)
+    pi/bin/ark-mode                         auto | home | hotspot | lan | test N |
+                                            status | boot [--dry-run] |
+                                            request-lan [--minutes N]
+                                            [--network PROFILE] [--ssid NAME]
+                                            [--by WHO] [--cancel] [--restart]
+                                            (home/hotspot/lan pin, auto unpins;
+                                            one request is spent by one boot)
+    pi/bin/ark-wifi-add                     --ssid NAME [--autoconnect yes|no]
+                                            [--check]; the passphrase arrives on
+                                            stdin and never on argv, the profile is
+                                            0600 root:root and autoconnect=no, so
+                                            saving a network never joins it
     pi/bin/ark-boot-guard                   failsafe hotspot after timeout
     pi/bin/ark-net-watch                    the same question every minute:
                                             --dry-run | --decide (pure table)
@@ -1065,7 +1090,7 @@ any failure. Categories:
                                             box without --force (stage 6)
     pi/RECOVERY-SHEET.txt                   the printed page for a dead card,
                                             plain words, also /recovery.txt
-    tests/                                  231 pytest tests, throwaway DBs
+    tests/                                  567 pytest tests, throwaway DBs
     pi/systemd/*.service|*.path             the enable-and--now contract
     pi/portal/{index.html,help.html,assets} the dark, no-JS, 44 px UI
     pi/kiwix/catalog.tsv                    ~25 bundles in 3 tiers
@@ -1076,7 +1101,10 @@ any failure. Categories:
     bash scripts/03-provision.sh <ip> --only 90-verify   the gate
     sudo ark-mode test 180                               raise the hotspot 3 min
     sudo ark-mode auto                                   back to normal, no pin
-    sudo ark-mode status                                 mode + who chose it
+    sudo ark-mode status                                 mode + who chose it + any
+                                                         request waiting (no root)
+    printf '%s\n' "$PSK" | sudo ark-wifi-add --ssid "Home"   save a network (never joins)
+    sudo ark-mode request-lan --minutes 30 --restart      ONE boot on it, then broadcast
     sudo ark-net-watch --dry-run                         what the watchdog sees
     sudo tail -f /srv/ark/logs/net-watch.log             what the network did
     sudo cat /srv/ark/ark_status.json                    last receipt

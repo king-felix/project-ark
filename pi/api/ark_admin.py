@@ -37,6 +37,7 @@ import ark_security as sec
 import ark_storage
 import ark_arcade
 import ark_arcade_install
+import ark_network
 import ark_romdb
 import ark_rommeta
 
@@ -225,6 +226,7 @@ def shell(title: str, body: str, *, ctx: Ctx | None = None, status: int = 200,
     nav = ""
     if ctx is not None and ctx.admin is not None and not ctx.admin["must_change"]:
         links = [("/admin", "Overview"), ("/admin/health", "What is working"),
+                 ("/admin/network", "Network"),
                  ("/admin/household", "Household"),
                  ("/admin/arcade", "Games"),
                  ("/admin/community", "Community"),
@@ -1661,6 +1663,252 @@ def household_pack(request: Request, csrf: str = Form("")):
   <div class="nav"><a href="/admin/household">Back to the page</a></div>
 """, ctx=ctx, status=400)
     return _redirect("/admin/household?ok=pack")
+
+
+# ---------------------------------------------------------------------------
+#  the owner's network — one network saved, or one restart on it
+# ---------------------------------------------------------------------------
+NETWORK_MINUTES = 30
+
+STANDING_BOOT = {
+    "hotspot": "A cold start broadcasts the box's own Wi-Fi and stays there.",
+    "auto": "A cold start tries a saved network first, then broadcasts.",
+    "home": "A cold start tries your own network first, then broadcasts.",
+    "lan": "A cold start tries your own network for administrative work, then broadcasts.",
+}
+
+
+def _minutes_from(value) -> int:
+    """The minutes field as a whole number.  A refusal, never a guess."""
+    text = str(value or "").strip()
+    if not text:
+        return NETWORK_MINUTES
+    try:
+        return int(text)
+    except ValueError:
+        raise ark_network.NetworkRefused(
+            "The number of minutes has to be a whole number, like 30.") from None
+
+
+def _what_was_asked(text: str) -> str:
+    """The sentence that says what the box now expects, out of what a helper said.
+
+    ``ark-mode request-lan`` prints the request first and a reassurance second, so
+    a banner that showed only the last line would answer a question nobody asked.
+    Anything else a helper said falls through to its last line, as before.
+    """
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if line.lower().startswith("asked:"):
+            return line[:300]
+    return ark_network.last_words(text)
+
+
+def _network_choice(ctx, networks) -> str:
+    """The form that asks for ONE restart on a saved network."""
+    if networks:
+        options = "".join(
+            f'<option value="{esc(n["profile"])}">{esc(n["ssid"] or n["profile"])}</option>'
+            for n in networks)
+        picker = ('    <label for="network">Which saved network?</label>\n'
+                  f'    <select id="network" name="network">{options}</select>')
+    else:
+        picker = ('    <p class="note">No network of yours is saved yet, so this asks for '
+                  'the one the box already knows. Add a network below to name a different '
+                  'one.</p>')
+    restart = ('    <label class="switch">\n'
+               '      <input type="checkbox" name="restart" value="1">\n'
+               '      <span>Restart the box now, without waiting</span>\n'
+               '    </label>\n'
+               '    <p class="note">The restart happens a few seconds after this page has '
+               'answered, so this message is not lost under it.</p>')
+    return f"""<form method="post" action="/admin/network/lan">
+    {_csrf_field(ctx.csrf)}
+{picker}
+    <label for="minutes">How long should the request wait for a restart?</label>
+    <input id="minutes" name="minutes" type="number" inputmode="numeric" min="1"
+           max="{int(ark_network.LAN_MINUTES_MAX)}" value="{int(NETWORK_MINUTES)}">
+    <p class="note">In minutes, up to {int(ark_network.LAN_MINUTES_MAX)}. After that the
+       request lapses by itself and a restart broadcasts as usual.</p>
+{restart}
+    <button class="go-btn" type="submit">Ask for one restart on my network</button>
+  </form>"""
+
+
+def _network_add_form(ctx) -> str:
+    """Saving a network.  The password is never written back onto the page."""
+    return f"""<form method="post" action="/admin/network/add" autocomplete="off">
+    {_csrf_field(ctx.csrf)}
+    <label for="ssid">The name the phone shows for that Wi-Fi</label>
+    <input id="ssid" name="ssid" type="text" maxlength="{int(ark_network.SSID_MAX)}"
+           autocomplete="off" spellcheck="false" required>
+    <label for="password">Its password</label>
+    <input id="password" name="password" type="password"
+           maxlength="{int(ark_network.PSK_MAX)}" autocomplete="new-password" required>
+    <p class="note">At least {int(ark_network.PSK_MIN)} characters, exactly as it is written
+       on the router. It goes straight to the box and is never shown again, kept on this
+       page, or written into the records.</p>
+    <button class="go-btn" type="submit">Save this network</button>
+  </form>"""
+
+
+def _network_saved(networks) -> str:
+    """The networks the box already knows.  Unreadable is not empty (§8.7)."""
+    if networks is None:
+        return ('<p class="note">The box could not read its list of saved networks just now. '
+                'Nothing is wrong with the Wi-Fi because of that — you can still ask for a '
+                'restart, and a saved network is still usable.</p>')
+    if not networks:
+        return ('<p class="note">No networks of your own are saved on this box yet. While that '
+                'is true the box only ever broadcasts its own.</p>')
+    items = "".join(
+        f'<li>{esc(n["ssid"] or n["profile"])}'
+        f'<span class="sub">saved as &ldquo;{esc(n["profile"])}&rdquo;</span></li>'
+        for n in networks)
+    return f'<ul class="clean">{items}</ul>'
+
+
+def _network_body(ctx, *, flash: str = "") -> str:
+    """The whole page, so a refusal and a success render the same thing."""
+    state = ark_network.request_state()
+    networks = ark_network.saved_networks()
+    if state.get("state") == "waiting":
+        waiting = (_notice("good", esc(ark_network.request_words(state))) + "\n  "
+                   '<form method="post" action="/admin/network/cancel">\n'
+                   f'    {_csrf_field(ctx.csrf)}\n'
+                   '    <button class="go-btn" type="submit">Take that request back</button>\n'
+                   '  </form>')
+    else:
+        waiting = f'<p class="note">{esc(ark_network.request_words(state))}</p>'
+    standing = STANDING_BOOT.get(
+        ark_network.boot_mode(),
+        "A cold start broadcasts the box's own Wi-Fi and stays there.")
+    return f"""
+  {flash}
+  <h2>Where the box is now</h2>
+  <p>{esc(ark_network.mode_words())}</p>
+  <p class="note">{esc(standing)}</p>
+  <h2>Restart on my own network for a while</h2>
+  <p class="note">This is a request, not a change of habit. The next restart joins the
+     network you name — once — and the start after that broadcasts as usual. If the
+     network is not there, the box broadcasts instead, so this can never leave it
+     somewhere you cannot reach it.</p>
+  {waiting}
+  {_network_choice(ctx, networks)}
+  <h2>Add a Wi-Fi network</h2>
+  <p class="note">Saving a network does not make the box join it. It only means the box
+     can be asked to restart on it, here or later.</p>
+  {_network_add_form(ctx)}
+  <h2>Networks already saved</h2>
+  {_network_saved(networks)}
+"""
+
+
+@router.get("/network", response_class=HTMLResponse)
+def network_page(request: Request):
+    """Add a network, and ask for one restart on a saved one."""
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.tx() as conn:
+        ctx = _load_ctx(conn, request, ark_db.session_epoch(conn))
+        if (blocked := _need_session(ctx, request)) is not None:
+            return blocked
+    flash = ""
+    if request.query_params.get("ok"):
+        flash = _notice("good", esc(request.query_params["ok"][:300]))
+    elif request.query_params.get("err"):
+        flash = _notice("bad", esc(request.query_params["err"][:300]))
+    return shell("Network", _network_body(ctx, flash=flash), ctx=ctx,
+                 tagline="Where the box can be reached — and how to ask it for one "
+                         "restart on your own Wi-Fi.")
+
+
+@router.post("/network/add", response_class=HTMLResponse)
+def network_add(request: Request, ssid: str = Form(""), password: str = Form(""),
+                csrf: str = Form("")):
+    """Save one Wi-Fi network, so a restart can be asked for it later."""
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.tx() as conn:
+        ctx, blocked = _committed(request, conn, csrf)
+        if blocked is not None:
+            return blocked
+        actor_id, who = ctx.admin["id"], ctx.admin["username"]
+    try:
+        kept = ark_network.add_network(ssid, password)
+    except ark_network.NetworkRefused as exc:
+        return shell("Network", _network_body(ctx, flash=_notice(
+            "bad", f"<b>Nothing was saved.</b> {esc(exc)}")), ctx=ctx, status=400)
+    said = ark_network.last_words(kept.get("words", "")) or f'Saved "{kept["ssid"]}".'
+    with ark_db.tx() as conn:
+        ark_db.audit(conn, action="network-add", actor_id=actor_id, actor_name=who,
+                     result="ok", detail=f'saved a network called "{kept["ssid"]}"')
+    return _redirect("/admin/network?ok=" + urllib.parse.quote(said, safe=""))
+
+
+@router.post("/network/lan", response_class=HTMLResponse)
+def network_lan(request: Request, network: str = Form(""), minutes: str = Form(""),
+                restart: str = Form(""), csrf: str = Form("")):
+    """Ask for ONE restart on a saved network — at the next start, or now."""
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.tx() as conn:
+        ctx, blocked = _committed(request, conn, csrf)
+        if blocked is not None:
+            return blocked
+        actor_id, who = ctx.admin["id"], ctx.admin["username"]
+    try:
+        said = ark_network.request_lan(network, minutes=_minutes_from(minutes),
+                                       by=who, restart=bool(restart))
+    except ark_network.NetworkRefused as exc:
+        # `--restart` writes the request *first* and asks for the reboot second, so a
+        # refusal on that path usually means one thing only: the request is on the box
+        # and the restart is not.  Saying "Nothing was asked." there is answered by the
+        # page's own Waiting block, with its "Take that request back" button, two lines
+        # below — the banner denying what the page is offering to undo.  Three things
+        # must all be true to say otherwise: the person asked for the restart, the
+        # helper was really reached (`exc.ran` — a name with a space in it, or minutes
+        # of 0, is refused before anything runs and cannot have written a request), and
+        # the box's own clock still calls the request waiting.  So: the form says what
+        # was asked, `exc.ran` says whether the helper could have written it, and the
+        # request file itself says whether it is there.  Believe the box.
+        kept = (bool(restart) and getattr(exc, "ran", False)
+                and ark_network.request_state().get("state") == "waiting")
+        return shell("Network", _network_body(ctx, flash=_notice(
+            "bad", f"<b>{'The request is kept' if kept else 'Nothing was asked'}.</b> "
+                   f"{esc(exc)}")), ctx=ctx, status=400)
+    state = ark_network.request_state()
+    asked = state.get("network") or network or ark_network.default_network()
+    with ark_db.tx() as conn:
+        ark_db.audit(conn, action="network-request-lan", actor_id=actor_id, actor_name=who,
+                     result="ok",
+                     detail=(f'asked for one restart on "{asked}" within '
+                             f'{_minutes_from(minutes)} minutes'
+                             f'{" — and restarted the box now" if restart else ""}'))
+    words = _what_was_asked(said) or "The request is waiting for the next restart."
+    return _redirect("/admin/network?ok=" + urllib.parse.quote(words, safe=""))
+
+
+@router.post("/network/cancel", response_class=HTMLResponse)
+def network_cancel(request: Request, csrf: str = Form("")):
+    """Take a waiting request back.  The box itself was never changed by it."""
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.tx() as conn:
+        ctx, blocked = _committed(request, conn, csrf)
+        if blocked is not None:
+            return blocked
+        actor_id, who = ctx.admin["id"], ctx.admin["username"]
+    try:
+        said = ark_network.cancel_request()
+    except ark_network.NetworkRefused as exc:
+        return shell("Network", _network_body(ctx, flash=_notice(
+            "bad", f"<b>Nothing was changed.</b> {esc(exc)}")), ctx=ctx, status=400)
+    with ark_db.tx() as conn:
+        ark_db.audit(conn, action="network-cancel", actor_id=actor_id, actor_name=who,
+                     result="ok", detail="took the restart request back")
+    words = ark_network.last_words(said) or "Nothing is waiting any more."
+    return _redirect("/admin/network?ok=" + urllib.parse.quote(words, safe=""))
 
 
 @router.get("/arcade", response_class=HTMLResponse)

@@ -82,9 +82,11 @@ decide() { # mode link hotspot home_in_range clients pinned lost home_streak blo
 
   if (( link_active )); then printf 'stay'; return 0; fi
 
-  # Nothing is up.  A box that believes it is at home gets one more check
-  # before the radio is turned into an access point.
-  if [[ "$mode" == "home" ]] && (( lost_streak < LOST_STREAK )); then
+  # Nothing is up.  A box that believes it is at home — or was put on the
+  # owner's own network for administrative work — gets one more check before the
+  # radio is turned into an access point.  "lan" is the same bargain: the owner
+  # asked for a network, so give the link a minute before broadcasting.
+  if [[ "$mode" == "home" || "$mode" == "lan" ]] && (( lost_streak < LOST_STREAK )); then
     printf 'stay'
     return 0
   fi

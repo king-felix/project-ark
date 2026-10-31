@@ -67,6 +67,50 @@ Raised by itself, it goes back by itself; if you asked for a network (`sudo ark-
 `/srv/ark/logs/net-watch.log` is the record: one line per decision that did something, with the
 time. A quiet check writes nothing, so a short log means a quiet day.
 
+### Carrying it to another house
+
+A different house means a different Wi-Fi, and the box has to be told the name and the
+password without a keyboard plugged into it. That is what the owner's **Network** page is
+for (`https://ark.local:8443/admin/network`, or `https://ark.lan:8443/admin/network` from a
+phone on the hotspot):
+
+1. **Add a Wi-Fi network** — the name your phone shows under *Wi-Fi*, and the password, typed
+   exactly. Saving it does **not** make the box join it; it only writes it down.
+2. Then **Ask for one restart on my network**: pick that network, leave the minutes at 30, and
+   press the button. Tick **Restart the box now, without waiting** if you want it to happen
+   straight away — the box answers the page first and restarts five seconds later.
+
+The request is used by **one** start and then it is gone: the boot after that broadcasts
+`The-Ark-Offline` again. If the network is not there when the box starts, the box broadcasts
+instead of sitting there looking for it — that is deliberate, because a box in a cupboard
+that has gone looking for a router nobody switched on cannot be found. If you change your
+mind before the restart, **Take that request back** on the same page.
+
+A request lapses too: after the number of minutes you chose it is ignored, and the page says
+so in a sentence rather than showing a button that would do nothing.
+
+If the box could not restart itself (its own reason appears on the page), the request is
+**kept**: the page says **The request is kept.** and the next start — yours, by hand — uses it
+and joins that network. Nothing is lost; you only have to do the restarting.
+
+The same two things from a console, if you are already signed in over SSH. The password is
+read from **standard input** — never from the command line, which every process on the box can
+read and your shell remembers:
+
+```bash
+# 1. write the network down (this does not make the box join it)
+printf '%s\n' "$WIFI_PASSWORD" | sudo /usr/local/sbin/ark-wifi-add --ssid "Home Wi-Fi"
+sudo ls /etc/NetworkManager/system-connections/   # the profile it made, e.g. ark-wifi-Home-Wi-Fi-1a2b3c4d
+
+# 2. ask for one boot on that profile
+sudo ark-mode request-lan --minutes 30 --network ark-wifi-Home-Wi-Fi-1a2b3c4d --ssid "Home Wi-Fi"
+sudo ark-mode status                              # what is waiting, and for how many more minutes
+sudo ark-mode request-lan --cancel                # never mind
+```
+
+`ark-mode request-lan` with no `--network` means the standing home network the installer wrote
+down (`home-wifi`), which is the right one for the house the box already lives in.
+
 ### Make it feel like an app (recommended for phones)
 Open `http://ark.lan` in the phone browser → menu → **Add to Home Screen**. You now have an
 icon that opens the Ark in one tap, and it still works with no internet.

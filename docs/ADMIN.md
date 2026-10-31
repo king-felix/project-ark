@@ -22,7 +22,8 @@ application code; see the "Tested / not tested" section at the end.
 | Use a name for game saves; export/import them | yes, on the separate player origin (`:8445`) | yes |
 | Add a game of your own to the shelf | yes — `http://ark.lan/arcade/add`, no sign-in (§10) | yes |
 | Hide/show a game, allow player names, allow automatic additions, allow anyone to add a game | no | yes (§10) |
-| Change the box's settings | no | only the Community and Games switches so far (§7, §10) |
+| Save one of your own Wi-Fi networks, and ask the box for ONE restart on it | no | yes (§14) |
+| Change the box's settings | no | the Community and Games switches, and the one restart on your own Wi-Fi (§7, §10, §14) |
 | Keep a copy of the records, or put one back | no | yes, from the box's own console (§9) |
 
 The public portal never serves `/admin` at all: on port 80 it answers `404`.
@@ -1011,7 +1012,171 @@ would fail at the *end*, after the whole file had already crossed the network.
 
 ---
 
-## 14. Not in this release yet
+## 14. The network — one Wi-Fi saved, and one restart on it
+
+**Where it is:** `https://ark.local:8443/admin/network` — the **Network** link in the
+owner's bar, behind the same sign-in as every other owner page. It is served over
+HTTPS only, because it carries a Wi-Fi password.
+
+The page exists for one moment: the box is going to be carried somewhere else (a
+different house, a different router) and somebody has to write that Wi-Fi down
+without an SSH session and without a stack of NetworkManager commands. It does two
+small things and says no to everything bigger on purpose:
+
+1. **save a Wi-Fi network** so the box *can* be asked to join it, and
+2. **ask for one restart on it** — for one boot, not for ever.
+
+The rule underneath both is the one the whole network design rests on: **the box
+must never end up somewhere nobody is standing next to it.** A box in a cupboard
+that has decided to join a router that is switched off is a box that cannot be
+found. So a request *expires*, it is *used up by one boot*, and if the network is
+not there that boot broadcasts the box's own Wi-Fi instead.
+
+### Where the box is now
+
+One live sentence, read from what `ark-mode` last recorded (`/etc/ark/mode`) and
+from the owner's pin (`/etc/ark/mode.pinned`): broadcasting, on a saved network,
+looking for one, or *"has not recorded how it is reachable"* — which is what a box
+looks like before its first boot has finished, not a fault. It also says whether a
+**restart keeps it** (you chose this) or goes back to the standing choice.
+
+Under it, one line says what a **cold start** does, from `BOOT_MODE` in
+`/etc/ark/ark.env` — shipped as `hotspot`, so a box with no people around broadcasts.
+
+### Restart on my own network for a while
+
+*Pick the saved network* (or, if none is saved, the page says so and the request
+names the one the box already knows), *how many minutes it may wait* (1 to 1440;
+the field starts at 30), and press **Ask for one restart on my network**.
+
+* The next boot uses the request **once** — `ark-mode boot` reads
+  `/etc/ark/lan-request`, joins that network, and says so. The boot after that
+  broadcasts again: the request is gone, not remembered.
+* If the request lapsed (the minutes ran out) the boot **ignores it** and
+  broadcasts — and the page says the last request *has lapsed*, with no button,
+  because there is nothing left to take back.
+* If the named network is not there at that boot, the box broadcasts as usual.
+  That is checked in the interface code itself, not by hoping.
+* **Restart the box now, without waiting** is a second, separate decision: the same
+  request is written, and then a transient `systemd-run` unit (`ark-lan-restart`)
+  reboots the box **5 seconds later**, so the page has already answered and that
+  message is not lost under the restart. The box coming back on your own network
+  answers at `https://ark.local:8443`.
+* **If the box cannot schedule that restart, the request is kept** — the page says
+  **The request is kept.** and repeats the box's own reason (*restart it by hand
+  (`sudo reboot`)*), and **Take that request back** is still there if you change your
+  mind. The reboot is the only thing missing and the request costs one boot, so
+  throwing it away would be the worse failure. A refusal that wrote nothing — a space
+  in the name, minutes of `0` — still says **Nothing was asked.** (`tests/test_network_page.py`
+  holds all three cases: a kept request, a refusal that wrote nothing, and a `0` refused
+  while an older request was waiting.)
+* **Take that request back** appears while something is waiting, and only then. It
+  removes `/etc/ark/lan-request`; nothing else about the box changes, and the next
+  boot broadcasts as usual.
+
+### Add a Wi-Fi network
+
+The name the phone shows (`1`–`32` characters) and its password (`8`–`63`
+characters), exactly as written on the router, then **Save this network**. A refusal
+appears at the top of the page as **Nothing was saved.** followed by the reason, so
+nobody has to wonder afterwards whether half of it stuck.
+
+* **Saving does not join.** The profile is written with `autoconnect=no`
+  (`autoconnect-retries=0`), so NetworkManager never picks it by itself. Nothing
+  happens until a person asks for the one restart above.
+* **The password never goes on a command line.** It is passed to the root helper on
+  **stdin** — a command line is readable by every process on the box and lands in
+  shell history — and it is not written into the records, the audit log or the page.
+  The page never shows it back, not even in a "saved" message.
+* **A name or a password that cannot work is refused, with the limit named**, and
+  nothing is written. A stray space at either end is a refusal, not a quiet trim,
+  because a Wi-Fi name is a byte-for-byte thing: `" Home"` is a different network
+  from `"Home"`. A control character (a line break pasted in) is refused too.
+* **Saving the same name again replaces that profile** rather than leaving a stale
+  second copy — the helper derives the profile name from the network name, and there
+  is exactly one place that name is derived.
+* The helper reads the profile back after writing it and refuses if what came out is
+  not the network you named.
+
+### Networks already saved
+
+Every `.nmconnection` in `/etc/NetworkManager/system-connections` that is a Wi-Fi
+client profile, shown as the name the network answers to on the box, with the profile
+it is saved under underneath (`Wi-Fi name` / *saved as "home-wifi"*) — because a
+request names the profile. The box's own access point is **not** in the list: it is
+not somewhere to join.
+
+A folder that cannot be listed is not an empty folder: the page says *"could not
+read its list of saved networks just now"* and adds that nothing is wrong with the
+Wi-Fi because of that, rather than claiming no networks are saved (§8.7's `None`
+rule).
+
+### What it deliberately does not do
+
+* **No scan for nearby networks.** Listing what is in the air needs the radio in a
+  state that would take the hotspot away from whoever is reading — the one thing the
+  page must never do. You type the name your phone shows.
+* **No "join now and stay".** A standing answer is `ark-mode home` / `BOOT_MODE` in
+  `/etc/ark/ark.env`, and the watchdog's own failover; the page never sets either.
+  One page, one boot — that is the whole safety argument.
+* **No delete or forget, and no password change in place.** Saving the same name
+  again with a new password replaces the profile; removing one is still a console job
+  (`nmcli connection delete`, or remove the `.nmconnection` file).
+* **No schedule and no timer.** A request is one boot, and it lapses by itself.
+* **Nothing here switches the network.** `ark-mode` remains the only writer of
+  `/etc/ark/mode` and of the pin; `ark-wifi-add` remains the only writer of a
+  NetworkManager profile; `ark-mode request-lan` remains the only writer and the only
+  consumer of `/etc/ark/lan-request`. The page reads those files and shells out
+  through `sudo -n`.
+
+### Where it is kept, and what it leaves in the history
+
+| Path | What it is |
+|---|---|
+| `/etc/ark/lan-request` | the one request (`requested`, `expires`, `minutes`, `network`, `ssid`, `by`), `0644`, written as a temp file and one `mv` — a boot either sees no request or a whole one |
+| `/etc/NetworkManager/system-connections/<profile>.nmconnection` | a saved network, `0600 root:root`, written only by `/usr/local/sbin/ark-wifi-add` |
+| `/etc/ark/mode`, `/etc/ark/mode.pinned` | how the box is reachable now, and the owner's pin — as before, written only by `ark-mode` |
+
+Three audit actions, on the **History** page: `network-add` (*saved a network called
+…*), `network-request-lan` (*asked for one restart on "…" within 30 minutes*, with
+*— and restarted the box now* when that box was ticked), and `network-cancel`
+(*took the restart request back*). A Wi-Fi password never appears in any of them.
+
+### The same two things at a console
+
+```bash
+sudo ark-mode request-lan --minutes 30 --network home-wifi             # one boot, at the next restart
+sudo ark-mode request-lan --minutes 30 --network home-wifi --restart   # …and reboot in 5 s
+sudo ark-mode request-lan --cancel                                     # take it back
+ark-mode status                                                        # includes "lan request: …" — reads only
+sudo /usr/local/sbin/ark-wifi-add --ssid "Home Wi-Fi" --check          # what would be written
+sudo /usr/local/sbin/ark-wifi-add --ssid "Home Wi-Fi"                  # password read from stdin
+```
+
+`ark-mode status` is the one command here with no `sudo` in front of it, and that is
+deliberate: it reads the mode file, the pin, the request and the radio and writes
+nothing, so it is the one question anyone at an SSH prompt can ask without
+privilege (only `ark-mode boot --dry-run`, which predicts a boot and touches
+nothing, goes without as well — every other `ark-mode` word still needs root).
+
+The passphrase is read from **stdin**, and read *before* `--check` decides anything —
+both commands above want it piped in, and `--check` with nothing on stdin is refused
+as *"a Wi-Fi password is at least 8 characters; that one is 0."*:
+
+```bash
+printf '%s\n' "$WIFI_PASSWORD" | sudo /usr/local/sbin/ark-wifi-add --ssid "Home Wi-Fi" --check
+printf '%s\n' "$WIFI_PASSWORD" | sudo /usr/local/sbin/ark-wifi-add --ssid "Home Wi-Fi"
+```
+
+If the page says **"The part of the box that changes the network is not installed,
+so nothing was changed"**, phase `70-network` has not been run since this page was
+added: it installs `/usr/local/sbin/ark-wifi-add` and proves, as the portal's own
+account, that both helpers can be reached with no password prompt.
+
+
+---
+
+## 15. Not in this release yet
 
 Stated plainly, because a missing control is better than a fake one:
 
@@ -1026,9 +1191,10 @@ Stated plainly, because a missing control is better than a fake one:
   **What is working** can be changed from the page — it reports the state of the
   box, it does not alter it. The space breakdown says *where* the room went, not
   how to get it back.
-* No network controls in the page. Broadcasting the hotspot, going back to the
-  home network and reading what the box decided are still SSH jobs — the box
-  answers them itself the rest of the time:
+* The network page is deliberately small: **one saved Wi-Fi** and **one restart on
+  it** (§14), and nothing else. Switching the radio now, pinning a mode permanently,
+  listing what is in the air and reading what the watchdog decided are still console
+  jobs — the box answers most of them itself the rest of the time:
 
   ```bash
   sudo ark-mode status        # mode, address, portal answer, boot choice, and who chose
@@ -1082,9 +1248,9 @@ Community controls and the readiness page are complete and tested.
 
 ---
 
-## 15. Tested / not tested
+## 16. Tested / not tested
 
-**Tested** — 503 automated tests, disposable databases, `pytest` (the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md`):
+**Tested** — 567 automated tests, disposable databases, `pytest` (the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md`):
 
 * bootstrap account exists once; a wiped database becomes recovery-required
   instead of re-creating the default; the marker lives outside the database;
@@ -1150,6 +1316,17 @@ Community controls and the readiness page are complete and tested.
   leaves the box dark, and a failed return is not retried immediately; the
   observer, against a fake `nmcli`/`iw`; a dry run that writes nothing at all;
   and the real call to `ark-mode hotspot --auto` (recorded, logged, state filed);
+* the owner's network page (§14): a name or a password that cannot work is refused
+  with the number named and is never trimmed or shortened, the box's own access
+  point is not offered as somewhere to join, and a folder that cannot be listed is
+  not reported as empty; a request written from the page is used up by **exactly
+  one** boot through the real `ark-mode` in its rehearsal mode, the boot after it
+  broadcasts again, a network that will not join leaves the box broadcasting, a
+  lapsed request is thrown away rather than trusted, and taking a request back
+  leaves nothing waiting; the page itself is behind the sign-in, refuses plain HTTP,
+  never writes the password back onto the page, hands the helper one name and one
+  number and nothing else (the password travels on stdin), and shows the waiting
+  request with the way to take it back — and shows a lapsed one without a button;
 * arcade: a guest reaches no named save (401) and the game page carries no
   external address; a named player's save round-trips, a stale tab is refused
   with 409, another name sees 404, a missing page token is 403, export/import
@@ -1212,6 +1389,13 @@ Community controls and the readiness page are complete and tested.
   switched off to watch the hotspot come up, no pin has been set by a human, and
   the 3-minute first check and 30-minute back-off have never elapsed in real
   time. Everything above is a table, a fake `nmcli`/`iw`, and `bash -n`;
+* the **network page** on the box, which is newer than the rest of §14: no browser
+  has opened `/admin/network`, no Wi-Fi password typed into it has reached
+  NetworkManager, no request written by the page has been used by a real reboot, and
+  the checkbox that restarts the box now has only ever fired
+  `systemd-run --on-active=5` under the rehearsal seam — the box has never actually
+  been rebooted by it. `sudo -n` for the portal's account, and the `apt` packages
+  `ark-wifi-add` needs on the Pi itself, are proved there and nowhere else;
 * the backup tools on the box itself: no copy has ever been written there, no
   restore has ever been performed, `/recovery.txt` has never been opened in a
   browser, and the phase that installs them has only been syntax-checked. Both
