@@ -656,6 +656,11 @@ SWEEP_RULES: Tuple[Tuple[str, str, float], ...] = (
     ("drop/tmp", ".*.tmp", STALE_TEMP_HOURS),
     ("arcade/tmp", "rom-*.part", STALE_UPLOAD_HOURS),
     ("arcade/tmp", "upload-*", STALE_UPLOAD_HOURS),
+    #: A book on its way in from the owner's batch page (``ark_ingest.spool_book``).
+    #: The name keeps a leading dot AND a ``.part`` suffix, so the book importer and
+    #: the File Box ignore it; a cut in the middle of a 400 MB book therefore leaves
+    #: one hidden temp file that this rule takes away, never a half book on the shelf.
+    ("calibre-incoming", ".*.part", STALE_UPLOAD_HOURS),
     ("backup", "*.partial", STALE_PARTIAL_HOURS),
     ("essentials", "*.partial", STALE_TEMP_HOURS),
     ("kiwix", ".library-*", 1.0),

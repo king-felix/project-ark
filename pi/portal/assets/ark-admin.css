@@ -29,6 +29,29 @@ a:focus-visible {
 }
 .go-btn { width: 100%; min-height: 48px; }
 .go-btn.small { min-height: 44px; font-size: .95rem; width: auto; padding: 0 16px; }
+/* a file picker is a tap target too, and iOS zooms any control under 16px */
+input[type="file"] {
+  display: block;
+  width: 100%;
+  min-height: 48px;
+  padding: 12px 10px;
+  font-size: 16px;
+  color: var(--ink);
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+input[type="file"]::file-selector-button {
+  min-height: 40px;
+  margin-right: 10px;
+  padding: 8px 14px;
+  font: inherit;
+  font-weight: 700;
+  color: #04120a;
+  background: var(--go);
+  border: 0;
+  border-radius: 10px;
+}
 
 /* notices -------------------------------------------------------------- */
 .status.good .dot { background: var(--go); }

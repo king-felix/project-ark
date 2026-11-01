@@ -20,7 +20,7 @@ MODULES = ("main", "ark_admin", "ark_security", "ark_db", "ark_storage", "ark_he
            "ark_arcade", "ark_arcade_web", "ark_arcade_install",
            "ark_romdb", "ark_romdb_build", "ark_rommeta",
            "ark_household", "ark_qr", "ark_cards", "ark_review", "ark_essentials",
-           "ark_network", "ark_ai")
+           "ark_network", "ark_ai", "ark_ingest", "ark_doors")
 
 
 @pytest.fixture()

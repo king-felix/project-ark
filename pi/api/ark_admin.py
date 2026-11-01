@@ -24,14 +24,17 @@ import urllib.error
 import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import List, Optional
 
 from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 import ark_db
+import ark_doors
 import ark_essentials
 import ark_health
 import ark_household
+import ark_ingest
 import ark_review
 import ark_security as sec
 import ark_storage
@@ -226,12 +229,14 @@ def shell(title: str, body: str, *, ctx: Ctx | None = None, status: int = 200,
     nav = ""
     if ctx is not None and ctx.admin is not None and not ctx.admin["must_change"]:
         links = [("/admin", "Overview"), ("/admin/health", "What is working"),
+                 ("/admin/upload", "Add files"),
                  ("/admin/network", "Network"),
                  ("/admin/household", "Household"),
                  ("/admin/arcade", "Games"),
                  ("/admin/community", "Community"),
                  ("/admin/accounts", "Administrators"),
-                 ("/admin/password", "My password"), ("/admin/audit", "History")]
+                 ("/admin/password", "My password"), ("/admin/audit", "History"),
+                 ("/admin/doors", "Addresses")]
         nav = '<nav class="nav" aria-label="Administrator pages">' + "".join(
             f'<a href="{esc(href)}">{esc(label)}</a>' for href, label in links
         ) + "</nav>"
@@ -2280,3 +2285,258 @@ def arcade_suggestion_state(request: Request, candidate_id: int, action: str = F
                      detail=f"now {action}" if ok else "already installed; nothing changed")
     return _redirect("/admin/arcade")
 
+
+# ---------------------------------------------------------------------------
+#  books and games in one go — and every address on the box
+# ---------------------------------------------------------------------------
+def _picked_name(raw: str) -> str:
+    """The name a person sees for a file they picked: never a path, never empty."""
+    shown = str(raw or "").replace("\\", "/").rsplit("/", 1)[-1].strip()
+    shown = "".join(ch for ch in shown if ch.isprintable())
+    return shown[:120] or "a file"
+
+
+def _upload_rows(rows) -> str:
+    """What happened to each picked file, in the order it was picked."""
+    if not rows:
+        return ""
+    marks = {"ok": "✓", "wait": "…", "bad": "×"}
+    body = "".join(
+        f"""<tr>
+          <td>{esc(r["name"])}<span class="sub">{esc(r["kind_word"])}</span></td>
+          <td>{marks.get(r["state"], "×")} {esc(r["said"])}</td>
+        </tr>""" for r in rows)
+    return f"""<h2>What happened</h2>
+  <table class="plain"><thead><tr><th>File</th><th>What the box did</th></tr></thead>
+    <tbody>{body}</tbody></table>"""
+
+
+def _upload_body(ctx, rows=None, flash: str = "") -> str:
+    """The owner's one door for several files: pick them, press once, read the list."""
+    kinds = ark_ingest.kinds()
+    book_list = " ".join(kinds[ark_ingest.KIND_BOOK])
+    game_list = " ".join(kinds[ark_ingest.KIND_GAME])
+    return f"""
+  {flash}
+  <h2>Books and games, all at once</h2>
+  <p class="note">Choose one file or twenty. The box decides what each one is by its
+  kind, and puts it where it belongs: <b>a book</b> goes into the Book Library,
+  <b>a game</b> goes onto the games page. Nothing else on the card is touched.</p>
+  <form method="post" action="/admin/upload" enctype="multipart/form-data">
+    {_csrf_field(ctx.csrf)}
+    <label for="files">The files</label>
+    <input id="files" name="files" type="file" multiple required>
+    <button class="go-btn" type="submit">Put these files on the box</button>
+  </form>
+  <p class="note">One press carries up to <b>{ark_ingest.MAX_FILES} files</b> and at most
+  <b>{human_size(ark_ingest.MAX_BATCH)}</b> in total. A book may be up to
+  {human_size(ark_ingest.MAX_BOOK)} and a game up to
+  {human_size(ark_ingest.MAX_GAME)}; send the rest in a second go.</p>
+  <h2>What this page reads</h2>
+  <table class="plain"><thead><tr><th>Kind of file</th><th>What happens to it</th></tr></thead>
+    <tbody>
+      <tr><td><b>Books</b><span class="sub">{esc(book_list)}</span></td>
+          <td>Added to the Book Library and readable in the browser. A book the
+          library already holds is not added twice.</td></tr>
+      <tr><td><b>Games</b><span class="sub">{esc(game_list)}</span></td>
+          <td>Checked, then put on the games page. A file that is not a game the box
+          can play is refused, and the shelf is left exactly as it was.</td></tr>
+    </tbody></table>
+  <p class="hint">Anything else is refused by name: this page will not guess at a file.
+  A game takes a few seconds to check; a batch of books is handed to the box's own book
+  importer, so this page may say “still being added” and mean it — the Book Library page
+  shows the answer.</p>
+  {_upload_rows(rows)}"""
+
+
+
+@router.get("/upload", response_class=HTMLResponse)
+def upload_page(request: Request):
+    """The form, and nothing else: no file is read until it is chosen."""
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.read() as conn:
+        ctx = _load_ctx(conn, request, ark_db.session_epoch(conn))
+        if (blocked := _need_session(ctx, request)) is not None:
+            return blocked
+    return shell("Add files", _upload_body(ctx), ctx=ctx,
+                 tagline="Several books or games at once, each put where it belongs.")
+
+
+@router.post("/upload", response_class=HTMLResponse)
+def upload_files(request: Request, files: Optional[List[UploadFile]] = File(None),
+                 csrf: str = Form("")):
+    """Take every file in one press and route each one to its own normal path.
+
+    A route that reads a file must not be ``async def``: this is a plain function so
+    Starlette runs it in its thread pool instead of stalling the event loop for as
+    long as several files take to arrive.
+
+    A **book** is written into the folder the book importer already watches — this
+    page starts nothing and needs no root — and a **game** goes through the arcade's
+    own ``spool_upload`` → ``import_owner_file`` gate.  Nothing here is a second
+    write path, and a refusal changes nothing.
+    """
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.read() as conn:
+        ctx, blocked = _committed(request, conn, csrf)
+        if blocked is not None:
+            return blocked
+        me = ctx.admin
+
+    picked = [item for item in (files or []) if item is not None]
+    if not picked:
+        return shell("Add files", _upload_body(ctx, flash=_notice(
+            "bad", "<b>Nothing was added.</b> No file was chosen.")), ctx=ctx, status=400)
+    if len(picked) > ark_ingest.MAX_FILES:
+        return shell("Add files", _upload_body(ctx, flash=_notice(
+            "bad", f"<b>Nothing was added.</b> That is {len(picked)} files, and one "
+                   f"press carries {ark_ingest.MAX_FILES}. Send them in two goes.")),
+            ctx=ctx, status=400)
+
+    rows: List[dict] = []
+    waiting: List[tuple] = []          # (row, Book) — the importer has not answered yet
+    total = 0
+    for item in picked:
+        shown = _picked_name(item.filename)
+        kind = ark_ingest.classify(shown)
+        if not kind:
+            rows.append({"name": shown, "kind_word": "not a kind this page reads",
+                         "state": "bad",
+                         "said": "the box does not know what to do with that kind of file"})
+            continue
+        is_book = kind == ark_ingest.KIND_BOOK
+        kind_word = "book" if is_book else "game"
+        room = ark_ingest.MAX_BATCH - total
+        if room <= 0:
+            rows.append({"name": shown, "kind_word": kind_word, "state": "bad",
+                         "said": "this press is already as large as one upload may be"})
+            continue
+        try:
+            if is_book:
+                book = ark_ingest.spool_book(item.file.read, shown,
+                                             limit=min(ark_ingest.MAX_BOOK, room))
+                total += book.size
+                if ark_ingest.imported(book.sha256):
+                    ark_ingest.discard(book.path)
+                    rows.append({"name": shown, "kind_word": kind_word, "state": "ok",
+                                 "said": "already in the Book Library — not added twice"})
+                else:
+                    row = {"name": shown, "kind_word": kind_word, "state": "wait",
+                           "said": "handed to the Book Library"}
+                    rows.append(row)
+                    waiting.append((row, book))
+                continue
+            spooled = ark_arcade_install.spool_upload(
+                item.file, filename=shown, limit=min(ark_ingest.MAX_GAME, room))
+            total += spooled.stat().st_size
+            pre = ark_rommeta.prefill(spooled, filename=shown)
+            if not pre.get("playable"):
+                ark_arcade_install.discard_upload(spooled)
+                rows.append({"name": shown, "kind_word": kind_word, "state": "bad",
+                             "said": "the box could not tell which console that file is "
+                                     "for, so it did not guess — a game whose console it "
+                                     "cannot name is added from a console with "
+                                     "ark-arcade --import, where the console is named"})
+                continue
+            filled = ark_rommeta.apply({}, pre)
+            facts = {key: filled.get(key, "") for key in
+                     ("title", "system", "author", "release", "description")}
+            facts["filename"] = shown
+            try:
+                with ark_db.tx() as conn:
+                    result = ark_arcade_install.import_owner_file(conn, spooled, **facts)
+            finally:
+                ark_arcade_install.discard_upload(spooled)
+            title = filled.get("title") or result.get("slug") or shown
+            if result.get("installed"):
+                revision = int(result.get("revision") or 1)
+                said = (f"on the games page now as “{title}”" if revision <= 1 else
+                        f"replaced the copy already on the shelf as “{title}”, "
+                        f"now revision {revision}")
+            else:
+                said = result.get("reason") or "already on the shelf"
+            rows.append({"name": shown, "kind_word": kind_word, "state": "ok",
+                         "said": said})
+        except ark_storage.Refused as exc:
+            rows.append({"name": shown, "kind_word": kind_word, "state": "bad",
+                         "said": str(exc)})
+        except (ark_arcade_install.InstallRefused, OSError,
+                sqlite3.DatabaseError) as exc:
+            rows.append({"name": shown, "kind_word": kind_word, "state": "bad",
+                         "said": str(exc) or "the box could not add that one"})
+
+    if waiting:
+        found = ark_ingest.wait_for_library([book.sha256 for _row, book in waiting])
+        for row, book in waiting:
+            if book.sha256 in found:
+                row["state"] = "ok"
+                row["said"] = "in the Book Library now"
+            else:
+                row["state"] = "wait"
+                row["said"] = ("the box has it and is still adding it — open Books in a "
+                               "moment and it will be there")
+
+    with ark_db.tx() as conn:
+        for row in rows:
+            ark_db.audit(conn, action="upload", actor_id=me["id"],
+                         actor_name=me["username"], target=row["name"],
+                         result="failed" if row["state"] == "bad" else "ok",
+                         detail=f"{row['kind_word']}: {row['said']}")
+
+    done = sum(1 for r in rows if r["state"] == "ok")
+    bad = sum(1 for r in rows if r["state"] == "bad")
+    late = sum(1 for r in rows if r["state"] == "wait")
+    pieces = [f"<b>{done + late} of {len(rows)} file{'' if len(rows) == 1 else 's'} "
+              "went on the box.</b>"]
+    if late:
+        pieces.append(f"{late} of those is still being added — open Books in a moment.")
+    if bad:
+        pieces.append(f"{bad} refused — the reason is beside each one.")
+    kind = "good" if done and not bad else ("bad" if bad else "")
+    # 400 only when nothing at all was taken on: a book still being added was
+    # accepted, and calling that a client error would be a lie in a probe's mouth.
+    return shell("Add files", _upload_body(ctx, rows=rows, flash=_notice(kind, " ".join(pieces))),
+                 ctx=ctx, status=200 if (done or late) else 400,
+                 tagline="Several books or games at once, each put where it belongs.")
+
+
+
+
+@router.get("/doors", response_class=HTMLResponse)
+def doors_page(request: Request):
+    """Every address on this box, who may open it, and what it is for.
+
+    Generated from ``ark_doors.DOORS`` — one list the tests hold to the application,
+    so a page added to this area and not named here fails a test instead of becoming
+    a door nobody can find.
+    """
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.read() as conn:
+        ctx = _load_ctx(conn, request, ark_db.session_epoch(conn))
+        if (blocked := _need_session(ctx, request)) is not None:
+            return blocked
+    host = request.url.hostname or "ark.local"
+    parts = []
+    for title, rows in ark_doors.groups():
+        body = "".join(
+            f"""<tr>
+              <td><b>{esc(door["name"])}</b><span class="sub">{esc(door["address"].replace("{host}", host))}</span></td>
+              <td>{esc(door["who"])}</td>
+              <td>{esc(door["what"].replace("{host}", host))}</td>
+            </tr>""" for door in rows)
+        parts.append(f"""<h2>{esc(title)}</h2>
+  <table class="plain"><thead><tr><th>Address</th><th>Who</th><th>What it is for</th></tr></thead>
+    <tbody>{body}</tbody></table>""")
+    intro = f"""<p class="note">The box answers to more than one name. On its own Wi-Fi it
+  answers every name, so <b>ark.lan</b> always works there; on a home network use
+  <b>ark.local</b>, which the box answers wherever it is. The addresses below are
+  written for the name you are using now (<b>{esc(host)}</b>) — substitute the other
+  one and they work just the same.</p>
+  <p class="hint">The private pages are on the secure address, because a password must
+  never travel unencrypted. The box's certificate is its own, so your browser will ask
+  once to trust it.</p>"""
+    return shell("Addresses", intro + "".join(parts), ctx=ctx,
+                 tagline="Every address on this box, who may open it, and what it is for.")

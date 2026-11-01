@@ -432,7 +432,15 @@ No software, no commands, no login.
 That is it. Within a few seconds the book appears at **`http://ark.lan/books/`** with its title,
 author and cover. Nothing else to do.
 
+**A whole pile of books, or a pile of games, at once.** `https://ark.local:8443/admin/upload`
+(the owner's **Add files** page, behind the sign-in) takes up to twenty files in one
+press: the books go to the Book Library, the games go onto the games page, and a list
+under the button says what happened to each one. Anything the box cannot read is
+refused **by name** and nothing is written. If a book says *"still being added"*, give
+it a minute and open `/books/` — that sentence is the box being honest, not a failure.
+
 **If it does not appear:**
+
 
 - Give it 30 seconds and reload `/books/` — the watcher fires within seconds, but a busy box can lag.
 - Check the note under the File Box: a file that was refused (empty, or over 2 GB) says so.

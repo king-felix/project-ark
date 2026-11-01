@@ -3309,3 +3309,132 @@ request really cost exactly one boot?* and *does a box on somebody else's Wi-Fi 
 still unanswered. `docs/HUMAN-TEST-LIST.md` §17 is the walk-through. A power cut has still not been
 simulated.
 
+
+## 34. One button for a pile of files, and one page for every door — 1 Nov 2026
+
+Two small things an owner asks for after a week of using the box, and both of them turned
+out to be about **not building anything new**:
+
+1. *"I have forty books and thirty cartridges on a stick. Do I really have to add them one
+   at a time?"* — until now yes: a game through **Games → A game you already have** (which
+   shows its words and waits for you to agree), a book by `scp`ing it into
+   `/srv/ark/calibre-incoming`. There is an **Add files** page now, and it takes twenty
+   files in one press.
+2. *"Which address was the game shelf on again?"* — answered, until now, by four documents
+   that have each been wrong at least once (`README.md`, `docs/ADMIN.md`,
+   `docs/USING-THE-ARK.md`, and §8 of `.clinerules`). There is an **Addresses** page now,
+   generated from one list in the code, with a test that reads the application and fails if
+   a page is served that the list does not name.
+
+```
+https://ark.local:8443/admin/upload     ← Add files     (twenty files, one button)
+https://ark.local:8443/admin/doors      ← Addresses     (every door, in plain words)
+```
+
+### 34.1 The batch door is two old doors with a loop around them
+
+The whole feature is one new module (`pi/api/ark_ingest.py`) and two routes. It introduces
+**no ingest path at all**:
+
+| Kind | What the page does | Which existing thing does the work |
+|---|---|---|
+| a book | writes the bytes into `/srv/ark/calibre-incoming` under a name the box chose | `ark-book-import.path` fires, `ark-import-books` imports, the ledger records it — exactly what a drop into the File Box already did |
+| a game | `ark_arcade_install.spool_upload()` then `import_owner_file()` | `publish_candidate()`: the same shape proof, fingerprint, revision rule and single writer of `arcade/games` as `--import` and the one-at-a-time page |
+
+What is genuinely new is the **contract with the other program**: a book is written as
+`.upload-<32 hex><ext>.part` — a **leading dot and a `.part` suffix**, both of which
+`ark-import-books._is_book()` refuses — and is `os.link`ed to a real name only after every
+byte is on the card and `fsync`ed. The path unit may therefore fire as often as it likes
+during a 400 MB upload and can never read half a book. The published name is
+`<readable stem>-<8 hex><ext>`, so the Book Library shows a title a person recognises and two
+people uploading `Book.epub` in the same minute cannot overwrite each other.
+
+The other half of the contract is the **answer**: `ark_ingest.wait_for_library()` polls
+`calibre-incoming/.imported.json` — the ledger the importer writes *after* Calibre accepted
+the file — for up to 40 seconds. The page then says *"in the Book Library now"* or *"still
+being added — open Books in a moment"*. It never infers success from the file having left the
+folder, because a book the importer could not add is left exactly where it is, and those two
+states are the two things a person needs told apart.
+
+### 34.2 Five defects found by writing the tests, and one by reading the code again
+
+| What was wrong | How it showed | The fix |
+|---|---|---|
+| `spool_book(item.file, …)` passed the `SpooledTemporaryFile` **object** where the function wanted a `read` callable — `TypeError: 'SpooledTemporaryFile' object is not callable`, every book at once | the first run of the new tests: 13 failures, all of them books | pass `item.file.read`, matching `ark_storage.spool()`'s own convention |
+| A book handed over and still importing returned **HTTP 400**, because the status was `200 if done else 400` — so a healthy handover looked like a client error to any probe | `test_a_book_lands_in_the_importers_own_folder` asserting 200 | `200 if (done or late) else 400`: a book the box has *taken* was accepted, whatever the importer is still doing |
+| The summary read **"0 of 1 file went on the box. 1 still being added."** — a sentence that denies what the line under it says | the same test | the count is `done + late` ("went on the box"), and the waiting clause is separate |
+| A refusal could say **"larger than this page will take (0 MB)"** when a cap was below a megabyte | the batch-ceiling test | `ark_ingest._size_words()`, so the sentence never prints a zero unit |
+| A test that counted the staging folder counted the importer's own `.imported.json` as a book | `test_a_book_the_library_already_holds_is_not_added_twice` | the helper reads visible files; a second helper names the hidden ones |
+| The sweep had **no rule for `calibre-incoming` at all** — a cut in the middle of a book would leave a hidden `.part` file for ever, invisible to every cleanup | reading `SWEEP_RULES` after writing the writer | one rule, `("calibre-incoming", ".*.part", STALE_UPLOAD_HOURS)`, and a test that sweeps a stale half book and leaves a whole one alone |
+
+The first one is worth naming as a pattern: `ark_arcade_install.spool_upload(stream)` takes
+a **file object** and `ark_storage.spool(read)` takes a **callable**. Two functions in the
+same family, one word apart, and nothing but a test that uploads a book can tell them apart.
+
+
+### 34.3 The address list is data, and the test is the guard
+
+`pi/api/ark_doors.py` holds 30 doors in five groups (*The way in*, *Open to anyone on the
+box's Wi-Fi*, *Behind the sign-in*, *A name for keeping saves*, *For a monitor rather than a
+person*). Each is a name, an address, who may open it and one sentence of what it is for.
+`ark_admin.doors_page` renders it with **the host the reader actually used** substituted for
+`{host}` — `testserver` under the test client, `ark.local` on a home LAN, `ark.lan` on the
+hotspot — because a page that prints a name nobody can resolve is worse than no page.
+
+Three tests hold it:
+
+* every `@router.get` the owner's application serves is in the list (or in `ark_doors.STEPS`,
+  the two form pages inside the way in) — so a new administrator page that nobody can find
+  fails the suite;
+* every door has a name, a who and a what, starts with `http`, and belongs to a group the page
+  prints;
+* the page answers 303 without a sign-in, and 200 with one.
+
+`/api/ready` is described as *"the honest one"* and `/api/health` as *"Says only that the web
+program answered. It is not a verdict on the box."* The two sentences stage 4 was built on now
+live where an owner will meet them.
+
+### 34.4 What the proxy got, and why the numbers are the numbers
+
+`pi/nginx/ark-admin.conf` gains exactly one location — `= /admin/upload`, `client_max_body_size
+520m`, `client_body_timeout 1800s`, `proxy_request_buffering off`, `proxy_read_timeout 300s` —
+and the `^~ /admin` prefix underneath keeps the server's `128k`. 520 m is
+`ark_ingest.MAX_BATCH` (512 MiB) plus 8 MiB of multipart framing, so the proxy can never
+refuse a batch the page would take, and a body it does take waits on the **card**
+(`client_body_temp_path /srv/ark/tmp/nginx`, §13.2) rather than in the 256 MB tmpfs `/tmp`
+became in phase 15. `proxy_read_timeout` is longer than the page's own 40-second wait for the
+importer plus the time it takes to store the files — the one thing this box has already got
+wrong once (a 120 s proxy in front of a 150 s helper, §31).
+
+The caps are the box's own, not new opinions: `MAX_GAME` **is**
+`ark_arcade_install.MAX_DOWNLOAD`, `MIN_FREE_RESERVE` **is** `ark_storage.MIN_FREE_RESERVE`,
+and `GAME_EXT` **is** the union of `ark_arcade.SYSTEMS`' extensions. `BOOK_EXT` is the
+importer's own list — copied, because the page must not import a script that runs under a
+different Python — and **pinned by a test that parses `pi/bin/ark-import-books` with `ast` and
+compares the two sets**. A book kind Calibre takes and this page does not know would be a file
+the owner could not add; the other way round would be a file handed over that the importer then
+ignores, sitting in the staging folder for ever.
+
+### 34.5 The state of the box after this checkpoint
+
+**569 tests became 598 (2 skipped, 26 files)** — `tests/test_admin_upload.py` adds **29**:
+twenty-two route and module tests, three about the kinds and caps, two about the address list
+and one about the sweep. `python3 -m py_compile` is clean on `ark_ingest.py`, `ark_doors.py`,
+`ark_admin.py` and `ark_self_heal.py`; `bash -n` is clean on `60-portal.sh`, `65-admin.sh` and
+`90-verify.sh`.
+
+Deployed on the card on **1 Nov 2026** with `--only 60-portal,65-admin` then `--only
+90-verify`: both `ARK_INSTALL_COMPLETE`, **no migration** (schema `v6` before and after),
+rollback at `/root/ark-db-before-upload-*.db` and `/root/ark-before-upload-*.tgz`, and the
+verifier's two new lines:
+
+```
+✓ Add files page behind the sign-in        https://ark.lan:8443/admin/upload asks to sign in
+✓ Addresses page behind the sign-in        https://ark.lan:8443/admin/doors asks to sign in
+```
+
+**Not proved, and it cannot be by me:** no browser has picked a file on this page. The phone's
+picker, a slow batch over the hotspot, the importer firing while the request is still open, and
+whether a person understands *"still being added"* are `docs/HUMAN-TEST-LIST.md` §18 — ten
+minutes, two files, one of each kind.
+

@@ -618,7 +618,74 @@ reach it.**
 
 ---
 
+## 18. Twenty books and twenty cartridges, in one press (10 minutes, needs a phone)
+
+**Why it is unproven:** the **Add files** page (`https://ark.local:8443/admin/upload`) was
+written on 1 Nov 2026 and has **never had a file picked in it**, on any device. Everything
+underneath is proved — the routing, the caps, the two existing ingest paths, the refusals and
+the answer from the importer's own ledger (`tests/test_admin_upload.py`, 29 tests) — but a
+file picker is a piece of user interface, and no test can press it.
+
+**Two things this test is really about:**
+
+* **the book path is somebody else's program.** This page writes a file into the folder the
+  book importer watches and then *asks the importer's record* whether it worked. A passphrase
+  of a test cannot prove that a real Calibre accepted a real EPUB on a card with a full queue;
+* **the list answers in the right order.** Twenty files means twenty sentences, and a person
+  must be able to read them without asking what "rejected" meant.
+
+**Before you start:** a phone or laptop on the same Wi-Fi as the box, signed in to the owner's
+console (§12), and **one `.epub` and one game file** you do not mind having on the shelf (a
+`.gb` or `.gba` is easiest).
+
+1. Open `https://ark.local:8443/admin/upload` and tap **Add files** in the console's bar.
+
+   **You should see:** one *Choose files* control (your phone's own file picker, which should
+   let you pick **more than one**), one big button (*Put these files on the box*), and under
+   it the two lists — which kinds of book and which kinds of game this page reads — and the
+   limits in plain numbers.
+
+2. Pick the `.epub` **and** the game file in the same go, then tap the button once.
+
+   **You should see:** the same page again, with **"2 of 2 files went on the box"** and a row
+   for each file saying where it went. The book's row may say *still being added* — that is
+   the box telling the truth about another program's work, not a failure.
+
+3. Open `http://ark.lan/books/` in a second tab and reload it.
+
+   **You should see:** the book, with its title and cover, within a minute.
+
+4. Open `http://ark.lan/arcade/` and reload it.
+
+   **You should see:** the game on the shelf, under the name the box recognised. Tap it, tap
+   **START GAME**, and confirm it runs.
+
+5. Now do the wrong things on purpose, in one press: pick a photograph (`.jpg`), and an empty
+   file you have made with a `.epub` name.
+
+   **You should see:** **"0 of 2 files went on the box. 2 refused"**, each named, each with a
+   reason a person can read — *"the box does not know what to do with that kind of file"* and
+   *"That file was empty…"*. Nothing on the shelf changed, and the books page did not gain a
+   blank book.
+
+6. Open `https://ark.local:8443/admin/doors` (the **Addresses** link).
+
+   **You should see:** five groups of addresses with the name you reached the page by — every
+   one of them starts with `https://ark.local` (or `ark.lan`, if you are on the hotspot). Read
+   the *Open to anyone* group aloud: none of it should need a word looked up.
+
+**If step 2 says 400 and every row is refused with "kind of file",** the browser sent a name
+without an extension — a phone's "Take photo" style picker does that. Pick the files from a
+file manager instead; that is a real limitation and worth writing down if it bites.
+
+**What this proves that nothing else can:** a thumb on a file picker, a real book accepted by a
+real library, a real cartridge playing afterwards, and a page that refuses four kinds of wrong
+without a single thing changing on the card.
+
+---
+
 ## What is *not* on this list, on purpose
+
 
 * The v5 migration has run once, on the live database. It will be proved on a card that already
   holds v5 the first time a v6 exists — a migration that has never run on real old rows is a

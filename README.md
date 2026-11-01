@@ -164,7 +164,13 @@ when somebody last read each one (a topic is called due after a year), a space
 for a note, and one button that puts our own manuals, the quick card and the
 recovery sheet into a single file you can carry away. **Games** is where the shelf is
 managed: hide or show a game, see every licence and suggestion, allow player
-names, and choose whether newly found games are added without asking. The
+names, and choose whether newly found games are added without asking. **Add
+files** takes a pile at once: pick up to twenty books and games in one go, press
+one button, and read a line per file saying where each one went — a book into the
+Book Library, a game onto the shelf, anything else refused by name with nothing
+written. **Addresses** prints every door on the box — public pages, the owner's
+pages, the player origin and the two monitoring answers — with who may open it and
+what it is for, written with the name your browser is using. The
 player's sign-in is a separate HTTPS origin (`https://ark.lan:8445/arcade/`) and
 is not an administrator account. **What is working** is the page
 to open when something feels off: every part of the box, whether it answered

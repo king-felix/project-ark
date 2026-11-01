@@ -339,6 +339,25 @@ case "$net_page" in
                  "HTTP ${net_page:-none} (expected 303; run phase 60-portal and 65-admin)" ;;
 esac
 
+# ---- the owner's newest two pages: books and games in one go, and the addresses
+# Neither is a visitor's door, but both are doors: a stranger must be sent to the
+# sign-in.  A 200 here would mean the batch form or the map of the box is readable
+# without one, which is why this is a failure and not a hint.
+upload_page="$(ark_tls_code ark.lan:8443 /admin/upload)"
+case "$upload_page" in
+  303|302) say_ok "Add files page behind the sign-in" \
+                  "https://ark.lan:8443/admin/upload asks to sign in" ;;
+  *)       say_bad "Add files page behind the sign-in" \
+                  "HTTP ${upload_page:-none} (expected 303; run phase 60-portal and 65-admin)" ;;
+esac
+doors_page="$(ark_tls_code ark.lan:8443 /admin/doors)"
+case "$doors_page" in
+  303|302) say_ok "Addresses page behind the sign-in" \
+                  "https://ark.lan:8443/admin/doors asks to sign in" ;;
+  *)       say_bad "Addresses page behind the sign-in" \
+                  "HTTP ${doors_page:-none} (expected 303; run phase 60-portal and 65-admin)" ;;
+esac
+
 # ---- how much room is left ---------------------------------------------------
 free_gib="$(awk -v b="$(ark_free_bytes /)" 'BEGIN{printf "%.1f", b/1073741824}')"
 root_use="$(df -h / | tail -1 | awk '{print $5}')"
@@ -518,6 +537,7 @@ cat > "$tmp" <<JSON
                 "pack": "${pack_state}"},
   "network": {"wifi_helper": "${wifi_helper:-no}", "lan_request": "${lan_state:-absent}",
               "owner_page": "${net_page:-none}"},
+  "owner_pages": {"upload": "${upload_page:-none}", "doors": "${doors_page:-none}"},
   "free_gib": ${free_gib:-0},
   "free_pct_used": "$root_use",
   "backup": {"copies": ${backup_copies:-0}, "newest": "$backup_newest", "made": "$backup_made"},

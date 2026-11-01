@@ -22,6 +22,8 @@ application code; see the "Tested / not tested" section at the end.
 | Use a name for game saves; export/import them | yes, on the separate player origin (`:8445`) | yes |
 | Add a game of your own to the shelf | yes — `http://ark.lan/arcade/add`, no sign-in (§10) | yes |
 | Hide/show a game, allow player names, allow automatic additions, allow anyone to add a game | no | yes (§10) |
+| Add several books **and** games at once, in one press | no | yes (§15) |
+| See every address on the box, with who may open it | no | yes (§16) |
 | Save one of your own Wi-Fi networks, and ask the box for ONE restart on it | no | yes (§14) |
 | Change the box's settings | no | the Community and Games switches, and the one restart on your own Wi-Fi (§7, §10, §14) |
 | Keep a copy of the records, or put one back | no | yes, from the box's own console (§9) |
@@ -1176,7 +1178,127 @@ account, that both helpers can be reached with no password prompt.
 
 ---
 
-## 15. Not in this release yet
+## 15. Add files — several books and games in one press
+
+**Where it is:** `https://ark.local:8443/admin/upload` — the **Add files** link at the
+top of the owner's bar, behind the same sign-in as every other owner page, and over
+HTTPS only (this origin serves nothing else).
+
+The page exists because the two ways of putting a file on the box were one at a time:
+a game through **Games → A game you already have** (which shows its words first and
+waits for you to agree), and a book by dropping it into a folder over SSH. This page
+does the same two things for a batch: **choose one file or twenty, press one button,
+read a list of what happened to each one.**
+
+It is not a second ingest path, and that is the whole design:
+
+| What you picked | Where it goes | What puts it there |
+|---|---|---|
+| a book (`.epub`, `.pdf`, `.mobi`, … 23 kinds) | `/srv/ark/calibre-incoming` | the **same** `ark-book-import.path` unit and `ark-import-books` that a book dropped in the File Box already triggers. The page starts nothing and needs no root |
+| a game (`.gb`, `.gbc`, `.gba`, `.nes`, `.sfc`/`.smc`, `.md`/`.gen`/`.bin`) | the game shelf | `ark_arcade_install.spool_upload()` → `import_owner_file()` → `publish_candidate()` — one file at a time, exactly the gate the one-at-a-time door and `ark-arcade --import` use |
+
+A game is checked by the arcade itself: its shape, its console and its fingerprint.
+The title, console, year, maker and one-line description are filled from the box's
+own offline catalogue when it knows those bytes, and from the file name when it does
+not. A cartridge already on the shelf is named, not added twice; the same bytes under
+another name are refused with the name they already have.
+
+One honest exception: a `.bin` file is ambiguous (two consoles use that extension) and
+the box will not guess. It refuses the file and says so; add it at a console with
+`ark-arcade --import FILE --system genesis`, which is the one place the console can be
+named. Every other extension on the list names its own console.
+
+A book is **not** read by this page at all. It is written into the staging folder the
+book importer watches, under a hidden `.upload-…part` name first and linked to a real
+name only once every byte is on the card — so the importer, which may fire the moment
+the folder changes, can never pick up half a book. The page then reads
+`calibre-incoming/.imported.json` (the importer's own record, written only after the
+library accepted the file) for up to 40 seconds and says one of two true things:
+*"in the Book Library now"*, or *"still being added — open Books in a moment."*
+Anything else would be this page guessing about another program's work.
+
+### The limits, and why they are these numbers
+
+| Limit | Value | Where it comes from |
+|---|---|---|
+| files in one press | 20 | this page (`ark_ingest.MAX_FILES`) |
+| one press, in total | 512 MiB | this page (`ark_ingest.MAX_BATCH`) |
+| one book | 512 MiB | this page — the File Box's 2 GiB door is still the place for a huge file |
+| one game | 64 MiB | the arcade's own `MAX_DOWNLOAD` |
+| the proxy | 520 m | `pi/nginx/ark-admin.conf`, one exact-match location, 8 MiB of multipart framing over the app's number |
+
+A refused file writes nothing: not a partial book, not a waiting game, not a row. The
+batch is audited one line per file (action `upload`, with the file's name and what
+happened), so **History** shows a refused `.exe` as plainly as an added game.
+
+### What it deliberately does not do
+
+* **No review step for games.** The one-at-a-time door shows the words before it
+  publishes, on purpose. Here the words come from the file itself and the game is
+  published straight away, because a batch of twenty review screens is not a batch.
+  Nothing can be typed wrong, and nothing is overwritten without the reason being in
+  the result list.
+* **No progress bar of its own and no JavaScript.** The browser's own upload indicator
+  is the progress; the page is a form, like every other page here. The one visible
+  consequence is that a big batch shows nothing until it is done.
+* **No folder picker, no zip, no drag-and-drop, no cover art, no delete, no pause.**
+  A zip would have to be unpacked into a folder that two other programs own.
+* **No waiting forever.** If the book importer has not answered in 40 seconds the page
+  says so and leaves the book where it is — the importer will take it, and the Book
+  Library page is the answer after that. `journalctl -u ark-book-import` is the console
+  view of a book that never arrived.
+* **No root.** Neither kind needs it: the API runs as `pi`, the staging folder and the
+  game folder are `pi`'s, and both services that write them run as `pi` too.
+
+### The same two things at a console
+
+```bash
+sudo -u pi /usr/local/sbin/ark-arcade --import FILE --slug NAME --title "Title" --system gb
+sudo cp --no-preserve=ownership "A Book.epub" /srv/ark/calibre-incoming/   # the importer runs itself
+sudo ark-import-books                                                      # …or run it now, by hand
+ark-import-books --status                                                  # how many books are there?
+```
+
+A book put in `/srv/ark/calibre-incoming` by hand is treated exactly like one this page
+wrote: same watcher, same ledger, same `done/` folder afterwards.
+
+---
+
+## 16. Addresses — every door on the box, in one list
+
+**Where it is:** `https://ark.local:8443/admin/doors` — the **Addresses** link, behind
+the sign-in (the list is a map of the box; a stranger has no use for it).
+
+It answers the question an owner asks a month later — *what is that address again?* —
+for every door there is: the front page, the search box, the message board, the File
+Box, the household page and its cards, the pack, the recovery sheet, Ask the Ark, the
+games shelf and its public **Add a game** door, the books, the offline collections, all
+the administrator pages, the player origin that keeps a game's saves, and the three
+answers a monitoring script reads.
+
+Two rules on the page:
+
+* **it prints the name you reached it by.** `ark.lan` answers every name while the box
+  is broadcasting; `ark.local` is the name a home network can resolve; the page
+  substitutes whichever one your browser used, and says in a sentence that the other
+  one works the same way.
+* **it is generated from one list.** `pi/api/ark_doors.py` is that list, and
+  `tests/test_admin_upload.py` reads every `@router.get` in the owner's application and
+  fails if a page is served that the list does not name. A door nobody can find is a
+  defect; a page in the paperwork that does not answer is a worse one.
+
+`/api/ready` is listed with the words *"This is the honest one"*, and `/api/health` with
+*"Says only that the web program answered. It is not a verdict on the box."* — because
+that distinction is the whole of stage 4, and this page is where an owner will meet it.
+
+It deliberately does **not** list the internal service ports (`8081`, `8083`, `8085`,
+`8089`): they are bound to loopback and are not doors; the proxy is the only way in.
+
+---
+
+## 17. Not in this release yet
+
+
 
 Stated plainly, because a missing control is better than a fake one:
 

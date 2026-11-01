@@ -99,6 +99,20 @@ case "$code" in
   *)           ark_die "https://ark.lan:8443/admin/household returned '$code'" ;;
 esac
 
+# The two newest pages: the batch door for books and games, and the list of every
+# address on the box.  Both are doors like any other — a stranger must be sent to
+# the sign-in, never shown a form or the map of the box.  The batch door is also
+# the one page on this origin that accepts a big body, so it is worth proving
+# from outside nginx as well as in the unit tests.
+for page in /admin/upload /admin/doors; do
+  code="$(tls_code ark.lan:8443 "$page")"
+  case "$code" in
+    303|401|403) say "$(printf '\033[1;32m✓\033[0m')" "$page behind the sign-in" "$code" ;;
+    200)         ark_die "https://ark.lan:8443$page returned 200 without a sign-in" ;;
+    *)           ark_die "https://ark.lan:8443$page returned '$code'" ;;
+  esac
+done
+
 # The page pack is the one non-/admin path on this origin: a visitor who follows
 # the link without a pack on the card gets a readable refusal, never an nginx 404
 # page (which is what an unlisted location would give).  Both answers are honest;

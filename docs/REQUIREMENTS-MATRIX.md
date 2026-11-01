@@ -302,6 +302,8 @@ That is the gap this requirement names, and it is not closed.
 | Account management, last-admin protection, audit, enable/disable/reset | **done + tested** |
 | Community switches, board moderation, password-confirmed delete | **done + tested** |
 | Games page: shelf, licences, hide/show, suggestions, both arcade switches | **done + tested** |
+| **Add files**: several books and games in one press, each routed to its own existing path (a book to the importer's staging folder, a game through the arcade's publish gate), with a per-file answer and an audit line | **done + tested** (`test_admin_upload.py`, 29 tests); never picked in a browser |
+| **Addresses**: every door on the box, generated from one list, with the reader's own host name substituted and held to the application by a test | **done + tested** (`test_admin_upload.py`); never opened in a browser |
 | "What is working" health page, readiness reasons, storage breakdown | **done + tested** |
 | Player names: the on/off switch | **done** |
 | Per-player management (reset, delete, disable, quota) | **absent** |
@@ -582,6 +584,40 @@ and a real folder, not against a plug being pulled mid-write.
 `docs/HUMAN-TEST-LIST.md` **§15** is the cut-the-power walk-through (pull the plug, wait,
 read `logs/self-heal.json`, then confirm the forced check is gone and the second boot is
 fast) and **§16** is the boot with nothing to connect to.
+
+---
+
+## R12 — the owner can add a pile of files at once, and every door is written down
+
+**Status: DONE + TESTED inside the box; untouched by a human hand.**
+
+The two ways of getting content onto the card were one file at a time, and the list of
+addresses lived in four documents that had each been wrong at least once. `/admin/upload`
+adds many files in one press without inventing a second ingest path, and `/admin/doors`
+prints the list from the code.
+
+| Acceptance sentence | What does it | The test that proves it |
+|---|---|---|
+| One press carries several files and routes each by its kind — a book to the Book Library, a game to the games page | `ark_admin.upload_files`, `ark_ingest.classify`/`kinds` | `test_admin_upload.py::test_one_press_carries_both_kinds_and_keeps_them_apart` |
+| A book is written into the folder the book importer already watches, under a hidden `.upload-…part` name first and linked to a readable name only when it is whole | `ark_ingest.spool_book` | `test_admin_upload.py::test_a_book_lands_in_the_importers_own_folder` |
+| A game goes through the arcade's own `spool_upload` → `import_owner_file` gate and is on the shelf with its fingerprint | `ark_arcade_install` (unchanged) | `test_admin_upload.py::test_a_game_lands_on_the_shelf_through_the_arcade_gate`; `::test_the_same_cartridge_offered_twice_is_named_not_added_again` |
+| A kind the box does not read is refused **by name** and nothing is written | `ark_ingest.classify` returns `""` | `::test_a_kind_the_box_does_not_read_is_refused_by_name` |
+| An empty file, a file that is not really a game, more files than one press carries, and a press over its ceiling are each refused and leave no partial file | `spool_book`, `spool_upload`, `MAX_FILES`, `MAX_BATCH` | `::test_an_empty_file_is_refused_and_leaves_nothing_behind`; `::test_a_file_that_is_not_really_a_game_is_refused_and_the_shelf_is_unchanged`; `::test_more_files_than_one_press_carries_is_refused_before_anything_is_written`; `::test_a_press_larger_than_one_upload_may_be_stops_and_leaves_no_partial_file` |
+| A name typed into the form cannot reach a folder outside the staging area | `_picked_name`, `ark_storage.display_name`, `os.link` into one folder | `::test_a_name_in_the_form_cannot_reach_a_folder_outside_the_staging_area` |
+| A book the library already holds is not added twice — decided by the importer's own record, not by the folder | `ark_ingest.imported`/`read_ledger` | `::test_a_book_the_library_already_holds_is_not_added_twice` |
+| "In the library" is said only when the importer has recorded it; otherwise the book stays where it is and the page says so | `ark_ingest.wait_for_library` → `calibre-incoming/.imported.json` | `::test_the_page_says_in_the_library_only_when_the_importer_has_recorded_it`; `::test_a_book_the_importer_has_not_answered_for_is_left_where_it_is` |
+| A cut in the middle of a book leaves one hidden temp file, which the repair pass takes away — never a half book | `ark_self_heal.SWEEP_RULES` (`calibre-incoming`, `.*.part`) | `::test_a_half_written_book_is_swept_and_never_counted_as_a_book` |
+| The door is behind the sign-in **and** the form token, and writes nothing without them | `_gate_tls`, `_committed` | `::test_the_page_is_behind_the_sign_in`; `::test_the_upload_door_needs_a_sign_in_and_writes_nothing`; `::test_the_upload_door_needs_the_form_token` |
+| Reading several files never stalls the event loop (the route is not `async def`) | `ark_admin.upload_files` | `::test_the_upload_route_is_never_async` |
+| The book kinds are the importer's own list, the game kinds are the arcade's own consoles, and the caps are the box's own numbers | `ark_ingest.BOOK_EXT`/`GAME_EXT`/`MAX_GAME`/`MIN_FREE_RESERVE` | `::test_every_kind_the_book_importer_reads_is_a_kind_this_page_reads`; `::test_every_console_the_shelf_can_play_is_a_kind_this_page_carries`; `::test_the_caps_are_the_ones_the_rest_of_the_box_already_uses` |
+| The proxy allows exactly the batch the application accepts, streams it, and parks it on the card | `pi/nginx/ark-admin.conf` `= /admin/upload` (520 m) | `::test_the_batch_door_allows_the_batch_the_page_accepts_and_no_more` |
+| Every administrator page the application serves is named in the address list, and the list prints the host the reader used | `ark_doors.DOORS`, `ark_admin.doors_page` | `::test_every_administrator_page_is_named_in_the_addresses`; `::test_the_address_list_really_describes_every_door`; `::test_the_addresses_page_names_the_doors_in_plain_words`; `::test_the_addresses_page_is_behind_the_sign_in` |
+| The boxes' own proof: nginx serves both pages and neither answers without a sign-in | `65-admin` / `90-verify` | the two `tls_code ark.lan:8443 /admin/upload|/admin/doors` cases (proved on the card at deploy, log §34) |
+
+**What is not proved by any test, and cannot be:** a person picking files in a browser.
+The behaviour of a phone's file picker, a slow upload over the hotspot, and the moment
+`ark-book-import` fires while the request is still open are all one human's thumb away —
+`docs/HUMAN-TEST-LIST.md` §18.
 
 ---
 
