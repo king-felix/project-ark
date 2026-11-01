@@ -7,11 +7,11 @@
 #  and pulls the final receipt.
 #
 #  Usage: bash scripts/03-provision.sh [host] [--only 50-kiwix] [--skip 40]
-#         ARK_HOST=192.168.1.42 bash scripts/03-provision.sh
+#         ARK_HOST=192.0.2.42 bash scripts/03-provision.sh
 # =============================================================================
 set -Eeuo pipefail
 
-ROOT="/Users/basestar/Survival-Pi"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 KEY="$HOME/.ssh/id_ed25519"
 LOG_DIR="$ROOT/logs"
 TIMEOUT="${TIMEOUT:-14400}"          # 4 h: background collections keep going

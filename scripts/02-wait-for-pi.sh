@@ -6,6 +6,9 @@
 # =============================================================================
 set -Eeuo pipefail
 
+# Repo root from this script's own location — no hardcoded workstation path.
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 TIMEOUT="${1:-1500}"          # 25 minutes: first boot + apt-less provisioning
 KEY="$HOME/.ssh/id_ed25519"
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new
@@ -89,5 +92,5 @@ ssh "${SSH_OPTS[@]}" "pi@${resolved}" '
 
 echo
 echo "ARK_HOST=${resolved}"
-echo "$resolved" > /Users/basestar/Survival-Pi/logs/ark_host.txt
-ok "Host saved to /Users/basestar/Survival-Pi/logs/ark_host.txt — now run 03-provision.sh"
+echo "$resolved" > "$ROOT/logs/ark_host.txt"
+ok "Host saved to $ROOT/logs/ark_host.txt — now run 03-provision.sh"

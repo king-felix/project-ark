@@ -8,7 +8,7 @@ from types import SimpleNamespace
 # The management listener (nginx :8443) sets these; the API only believes them
 # from a loopback peer, which in tests is the TestClient itself.
 HTTPS = {"x-forwarded-proto": "https"}
-LAN = {**HTTPS, "x-real-ip": "192.168.1.50"}
+LAN = {**HTTPS, "x-real-ip": "192.0.2.50"}
 SETUP = {**LAN, "x-ark-setup-channel": "loopback"}
 
 BIG_PASSWORD = "correct horse battery staple 42"

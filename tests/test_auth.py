@@ -254,11 +254,11 @@ def test_forged_forwarding_headers_do_not_claim_the_box(ark):
 
     # A stranger may send anything it likes; the peer address decides.
     assert ark.admin.setup_channel(
-        request("192.168.1.9", {"x-ark-setup-channel": "loopback"})) is False
+        request("192.0.2.9", {"x-ark-setup-channel": "loopback"})) is False
     assert ark.admin.setup_channel(
         request("127.0.0.1", {"x-ark-setup-channel": "loopback"})) is True
     assert ark.admin.over_tls(
-        request("192.168.1.9", {"x-forwarded-proto": "https"})) is False
+        request("192.0.2.9", {"x-forwarded-proto": "https"})) is False
     assert ark.admin.over_tls(
         request("127.0.0.1", {"x-forwarded-proto": "http"})) is False
     assert ark.admin.over_tls(

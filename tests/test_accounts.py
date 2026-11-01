@@ -160,18 +160,18 @@ def test_throttling_counts_the_account_and_the_address_separately(ark):
     now = time.time()
     with ark.db.tx() as conn:
         for n in range(ark_security.FREE_ATTEMPTS):
-            ark_security.record_login(conn, "target", f"10.0.0.{n}", False, now=now)
+            ark_security.record_login(conn, "target", f"192.0.2.{n}", False, now=now)
     with ark.db.read() as conn:
-        assert ark_security.login_backoff(conn, "target", "192.168.1.1", now=now) > 0
-        assert ark_security.login_backoff(conn, "someone-else", "192.168.1.1", now=now) == 0
+        assert ark_security.login_backoff(conn, "target", "192.0.2.1", now=now) > 0
+        assert ark_security.login_backoff(conn, "someone-else", "192.0.2.1", now=now) == 0
 
     with ark.db.tx() as conn:
         conn.execute("DELETE FROM login_attempts")
         for n in range(ark_security.FREE_ATTEMPTS):
-            ark_security.record_login(conn, f"name{n}", "10.0.0.9", False, now=now)
+            ark_security.record_login(conn, f"name{n}", "192.0.2.9", False, now=now)
     with ark.db.read() as conn:
-        assert ark_security.login_backoff(conn, "unrelated", "10.0.0.9", now=now) > 0
-        assert ark_security.login_backoff(conn, "unrelated", "10.0.0.10", now=now) == 0
+        assert ark_security.login_backoff(conn, "unrelated", "192.0.2.9", now=now) > 0
+        assert ark_security.login_backoff(conn, "unrelated", "192.0.2.10", now=now) == 0
 
 
 def test_wrong_passwords_are_generic_throttled_and_audited(ark, client):

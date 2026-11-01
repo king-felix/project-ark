@@ -327,7 +327,7 @@ NETWORK_STEP = REPO / "pi" / "steps" / "70-network.sh"
 # A stand-in for NetworkManager that answers the two questions the decision asks
 # and nothing else: what a saved profile is *for*, and what is joined right now.
 # Entries are separated by ";" — never by a space — because a Wi-Fi name may hold
-# spaces ("House of Leaves-5G-1"), and a fake that split on whitespace would make
+# spaces ("Home Network-5G-1"), and a fake that split on whitespace would make
 # a real network name untestable.
 #   FAKE_PROFILES = "name:mode;name:mode"   "ap" is this box broadcasting
 #   FAKE_ACTIVE   = "name:type;name:type"   what `connection show --active` lists
@@ -488,12 +488,12 @@ def test_a_renamed_profile_that_is_up_now_is_still_a_home_network(tmp_path, home
     env_file = ark_env(tmp_path, home="ark-hotspot")
 
     said = record(env_file, "ark-hotspot", home_radio,
-                  profiles="ark-hotspot:ap;House of Leaves-5G-1:infrastructure",
-                  active="House of Leaves-5G-1:802-11-wireless")
+                  profiles="ark-hotspot:ap;Home Network-5G-1:infrastructure",
+                  active="Home Network-5G-1:802-11-wireless")
 
     assert said["result"] == "recorded", said
-    assert said["name"] == "House of Leaves-5G-1", said
-    assert ('HOME_WIFI_CONNECTION="House of Leaves-5G-1"'
+    assert said["name"] == "Home Network-5G-1", said
+    assert ('HOME_WIFI_CONNECTION="Home Network-5G-1"'
             in env_file.read_text(encoding="utf-8"))
 
 

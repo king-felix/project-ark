@@ -709,15 +709,15 @@ popup resolves to the portal instead of a "no internet" dead end.
     through `sudo -n` as `pi`, so both must be reachable with no password prompt.
     Without a phone to hand, add one without ever putting the password on a
     command line or into a shell history:
-      sudo nmcli connection add type wifi ifname wlan0 con-name rodclan \
-           ssid Rodclan autoconnect yes wifi-sec.key-mgmt wpa-psk
-      sudo nmcli connection edit rodclan     # `set wifi-sec.psk` prompts, masked
+      sudo nmcli connection add type wifi ifname wlan0 con-name <PROFILE-ID> \
+           ssid <OTHER-NETWORK-SSID> autoconnect yes wifi-sec.key-mgmt wpa-psk
+      sudo nmcli connection edit <PROFILE-ID>     # `set wifi-sec.psk` prompts, masked
     or write the file yourself through stdin (chmod 600 root:root, then
     `nmcli connection reload`) — never `nmcli ... wifi-sec.psk <password>`,
     which lands in history and in `ps`.
     The profile appears in /etc/NetworkManager/system-connections/ at 0600
     root:root. Prove it with
-      nmcli -f 802-11-wireless.ssid,connection.autoconnect,connection.autoconnect-priority connection show rodclan
+      nmcli -f 802-11-wireless.ssid,connection.autoconnect,connection.autoconnect-priority connection show <PROFILE-ID>
       ls -l /etc/NetworkManager/system-connections/
     — NOT by connecting, which moves the radio off the network you are testing
     over and can cut your own SSH session.

@@ -6,9 +6,11 @@
 #  Usage: bash scripts/fix-pi-shell.sh
 # =============================================================================
 set -Eeuo pipefail
-source "/Users/basestar/Survival-Pi/scripts/lib-disk-guard.sh"
 
-ROOT="/Users/basestar/Survival-Pi"
+# Repo root from this script's own location — no hardcoded workstation path.
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/scripts/lib-disk-guard.sh"
+
 PIFIX="$ROOT/pi/bootfix/pifix.sh"
 
 [[ -f "$PIFIX" ]] || ark_die "missing $PIFIX"

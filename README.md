@@ -81,6 +81,33 @@ Phases: `10-base` `20-storage` `30-calibre` `40-vault` `50-kiwix` `60-portal`
 
 ---
 
+## Before you commit — this tree is public
+
+So it carries no household detail: not a Wi-Fi network's name, not a passphrase,
+not the address the box holds on somebody's home network, and not the account on
+the workstation it was built from. Paperwork writes placeholders instead —
+`<HOUSEHOLD-SSID>`, `<HOUSEHOLD-PSK>`, `<PROFILE-ID>`, `<OTHER-NETWORK-SSID>`,
+`<OTHER-NETWORK-PSK>`, `<HOME-IP>`, `<CABLE-IP>`, `<ACCOUNT>` — and the key to
+them is the table at the top of [`docs/ADMIN.md`](docs/ADMIN.md). The real values
+live in `staging/wifi.env` (0600, never committed), in the generated
+`staging/firstrun.sh` (0700, never committed) and on the box itself.
+
+Check the tree by hand, or let git check every commit for you:
+
+```bash
+bash scripts/ark-secrets-check.sh                  # every tracked file
+bash scripts/ark-secrets-check.sh --staged         # exactly what a commit would add
+bash scripts/ark-secrets-check.sh --install-hook   # .git/hooks/pre-commit, refusing a leak
+```
+
+It looks for **shapes** — a private address, a passphrase written as a literal, a
+network name written as a literal — never for a remembered value, so it keeps
+working when the household changes, and it prints *where* a leak is and never
+*what* it was. A line that legitimately has to hold a shape (a fixture, a
+template) carries `# ark-secrets-ok: <why>`.
+
+---
+
 ## How the Pi finds a network
 
 A cold boot comes up **broadcasting** `The-Ark-Offline`: `ark-mode boot` reads

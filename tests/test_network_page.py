@@ -79,7 +79,7 @@ exit 0
 
 FAKE_IP = r"""#!/usr/bin/env bash
 if [[ "${1:-}" == -4 ]]; then
-  printf '2: wlan0    inet 192.168.1.50/24 brd 192.168.1.255 scope global wlan0\n'
+  printf '2: wlan0    inet 192.0.2.50/24 brd 192.0.2.255 scope global wlan0\n'
   exit 0
 fi
 if [[ "${1:-}" == route ]]; then
@@ -327,7 +327,7 @@ def test_a_request_that_is_waiting_says_where_and_for_how_much_longer(network, h
     helpers.request.write_text(
         "requested=2026-10-31T09:00:00Z\n"
         f"expires={int(time.time()) + 1500}\n"
-        "minutes=25\nnetwork=home-wifi\nssid=Rosebank Road\nby=owner\n",
+        "minutes=25\nnetwork=home-wifi\nssid=Rosebank Road\nby=owner\n",  # ark-secrets-ok: a street nobody lives on, in a request file nobody wrote
         encoding="utf-8")
     state = network.request_state()
     assert state["state"] == "waiting"
@@ -341,7 +341,7 @@ def test_a_lapsed_request_is_said_out_loud_and_not_promised(network, helpers):
     helpers.request.write_text(
         "requested=2026-10-31T09:00:00Z\n"
         f"expires={int(time.time()) - 120}\n"
-        "minutes=30\nnetwork=home-wifi\nssid=Rosebank Road\nby=owner\n",
+        "minutes=30\nnetwork=home-wifi\nssid=Rosebank Road\nby=owner\n",  # ark-secrets-ok: a street nobody lives on, in a request file nobody wrote
         encoding="utf-8")
     state = network.request_state()
     assert state["state"] == "expired"
@@ -357,7 +357,7 @@ def test_nothing_waiting_is_said_plainly(network, helpers):
 
 
 def test_a_request_with_no_expiry_is_still_one_restart_and_no_promise_of_time(network, helpers):
-    helpers.request.write_text("network=home-wifi\nssid=Rosebank Road\n", encoding="utf-8")
+    helpers.request.write_text("network=home-wifi\nssid=Rosebank Road\n", encoding="utf-8")  # ark-secrets-ok: a street nobody lives on, in a request file nobody wrote
     state = network.request_state()
     assert state["state"] == "waiting"
     assert state["minutes_left"] is None
@@ -455,7 +455,7 @@ def test_a_lapsed_request_is_thrown_away_and_the_box_broadcasts(wired, radio):
     radio.request.write_text(
         "requested=2026-01-01T00:00:00Z\n"
         f"expires={int(time.time()) - 120}\n"
-        "minutes=30\nnetwork=home-wifi\nssid=Rosebank Road\nby=owner\n",
+        "minutes=30\nnetwork=home-wifi\nssid=Rosebank Road\nby=owner\n",  # ark-secrets-ok: a street nobody lives on, in a request file nobody wrote
         encoding="utf-8")
     done = run_mode(radio, "boot")
     assert "expired" in said(done)
@@ -678,7 +678,7 @@ def test_a_restart_that_failed_while_the_request_was_kept_says_so_first(
     """
     helpers.request.write_text(
         f"requested=2026-10-31T00:00:00Z\nexpires={int(time.time()) + 1200}\n"
-        "minutes=20\nnetwork=home-wifi\nssid=Rosebank Road\nby=admin\n",
+        "minutes=20\nnetwork=home-wifi\nssid=Rosebank Road\nby=admin\n",  # ark-secrets-ok: a street nobody lives on, in a request file nobody wrote
         encoding="utf-8")
     monkeypatch.setenv("FAKE_SAY", "the request is saved, but this box did not restart "
                                    "itself — restart it by hand (sudo reboot)")
@@ -724,7 +724,7 @@ def test_a_refusal_made_before_anything_runs_does_not_claim_the_old_request(
     required and not just the third.
     """
     waiting = (f"requested=2026-10-31T00:00:00Z\nexpires={int(time.time()) + 1200}\n"
-               "minutes=20\nnetwork=home-wifi\nssid=Rosebank Road\nby=admin\n")
+               "minutes=20\nnetwork=home-wifi\nssid=Rosebank Road\nby=admin\n")  # ark-secrets-ok: a street nobody lives on, in a request file nobody wrote
     helpers.request.write_text(waiting, encoding="utf-8")
     page = _page(client, owner)
     done = post(client, "/admin/network/lan",

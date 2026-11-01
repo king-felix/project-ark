@@ -5,9 +5,12 @@
 #  Usage: bash scripts/01-flash.sh
 # =============================================================================
 set -Eeuo pipefail
-source "/Users/basestar/Survival-Pi/scripts/lib-disk-guard.sh"
 
-ROOT="/Users/basestar/Survival-Pi"
+# The repo root comes from this script's own location — never a hardcoded path,
+# so the tree runs from any clone and the repo leaks no workstation account.
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/scripts/lib-disk-guard.sh"
+
 IMG="$ROOT/staging/raspios_lite_arm64.img.xz"
 FIRSTRUN="$ROOT/staging/firstrun.sh"
 IMAGER="/Applications/Raspberry Pi Imager.app/Contents/MacOS/rpi-imager"

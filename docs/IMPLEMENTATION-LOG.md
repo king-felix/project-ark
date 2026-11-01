@@ -1104,17 +1104,17 @@ no longer needs the SSH tunnel.
 
 **First, the question that started this:** `The-Ark-Offline` is not on the air
 because the box is not in hotspot mode. It is on the home network
-(`House of Leaves-5G-1`, `192.168.1.26/24`, wifi link `home-wifi`), which is why
+(`<HOUSEHOLD-SSID>-5G-1`, `<HOME-IP>/24`, wifi link `home-wifi`), which is why
 anything on the same LAN reaches the portal at `http://ark.local`. The hotspot
 profile `ark-hotspot` still exists — SSID `The-Ark-Offline`, `mode=ap`,
 `ipv4.method=shared`, `autoconnect=no` — and only `ark-mode hotspot` or
 `ark-net-watch` bring it up. `autoconnect=no` is the design (`.clinerules` §8.7:
 the watchdog acts only through `ark-mode`), not a defect.
 
-**What was added.** Two networks the household also uses, `Rodclan` and
-`Rodclan-fast`, now exist as NetworkManager profiles on the box:
-`/etc/NetworkManager/system-connections/rodclan.nmconnection` and
-`rodclan-fast.nmconnection`, both `0600 root:root`, `autoconnect=yes`,
+**What was added.** Two networks the household also uses, `<OTHER-NETWORK-SSID>` and
+`<OTHER-NETWORK-SSID>-fast`, now exist as NetworkManager profiles on the box:
+`/etc/NetworkManager/system-connections/<PROFILE-ID>.nmconnection` and
+`<PROFILE-ID>-fast.nmconnection`, both `0600 root:root`, `autoconnect=yes`,
 `autoconnect-retries=0`, priorities **7** (2.4 GHz name) and **8** (5 GHz name),
 so the home router's 20/10/5 still wins whenever home is in range. They were
 written through **stdin** into a `0600` temp file and installed with
@@ -1124,7 +1124,7 @@ or in a shell history; the reload was `nmcli connection reload`. Verified by
 by the stored secret's **length only** (10 characters) — the key itself was
 never printed.
 
-**Nothing was activated on purpose.** `nmcli connection up rodclan` would move
+**Nothing was activated on purpose.** `nmcli connection up <PROFILE-ID>` would move
 the radio off the network the box is being tested over and could cut the SSH
 session doing the test; neither network is in range here anyway. The first real
 join is still ahead of us (recorded under *not proven* below).
@@ -1138,14 +1138,14 @@ is not filename-safe, an SSID over 32 characters, a password under 8 characters,
 a non-numeric priority, an SSID already used by a home slot, or a character
 (`"`, `$`, backtick, `\`) that could not survive the double-quoted bash string it
 is substituted into. A good render was proved on this Mac: 9 850 bytes, LF only,
-`bash -n` clean, `0700`, and five `WIFI_PROFILES` lines with `rodclan-fast|…|8`
-and `rodclan|…|7` last. `docs/REBUILD-ME-ARK.txt` gains the field in the build
+`bash -n` clean, `0700`, and five `WIFI_PROFILES` lines with `<PROFILE-ID>-fast|…|8`
+and `<PROFILE-ID>|…|7` last. `docs/REBUILD-ME-ARK.txt` gains the field in the build
 order, a line in "making copies for other people", and **trap 31** — the box
 carried to a second house it had never heard of, with the no-password-on-the-
 command-line way to add one to a box that is already running.
 
 **Not proven:** neither new profile has ever been used. No join, no DHCP lease,
-no portal page from `Rodclan`. The guard's negative cases were re-run on 25 Oct
+no portal page from `<OTHER-NETWORK-SSID>`. The guard's negative cases were re-run on 25 Oct
 2026 in one batch — uppercase id, duplicate SSID, short password, a `$`, and a
 missing priority each refused with their own `✗` sentence (`rc=1`), and the good
 two-network case rendered both lines with `rc=0` at `-rwx------`. That re-run is
@@ -1214,10 +1214,10 @@ was run again (the first run had been interrupted by the wedge) and the rendered
 `staging/firstrun.sh` was *read*, not just counted. Its own header read:
 
 ```
-#  Placeholders: House of Leaves-5G-1 … House of Leaves perfectballoon089
-#                House of Leaves-5G-2 perfectballoon089
-rodclan-fast|Rodclan-fast|rodriguez6|8
-rodclan|Rodclan|rodriguez6|7
+#  Placeholders: <HOUSEHOLD-SSID>-5G-1 … <HOUSEHOLD-SSID> <HOUSEHOLD-PSK>
+#                <HOUSEHOLD-SSID>-5G-2 <HOUSEHOLD-PSK>
+<PROFILE-ID>-fast|<OTHER-NETWORK-SSID>-fast|<OTHER-NETWORK-PSK>|8
+<PROFILE-ID>|<OTHER-NETWORK-SSID>|<OTHER-NETWORK-PSK>|7
 #                US ssh-ed25519 …
 ```
 
@@ -1253,10 +1253,10 @@ fresh card that would have written two `command not found` errors into
 | `bash -n scripts/make-firstrun.sh` | clean |
 | re-render | *“rendered … (9781 bytes)”*, `✓ +x, LF-only, syntax OK`, `-rwx------`, 0 CR LF lines |
 | header of the render | four `#` comment lines, then the template — no bare profile lines |
-| `WIFI_PROFILES` | exactly 5 lines: `home-wifi` 20, `home-wifi-2` 10, `home-wifi-3` 5, `rodclan-fast` 8, `rodclan` 7 |
+| `WIFI_PROFILES` | exactly 5 lines: `home-wifi` 20, `home-wifi-2` 10, `home-wifi-3` 5, `<PROFILE-ID>-fast` 8, `<PROFILE-ID>` 7 |
 | summary numbering | `1.` … `5.`, sequential (the earlier draft repeated `4.`) |
 | guard, negatives (§16.6 harness) | 5 × `rc=1` with the expected `✗`; `good-two` `rc=0` |
-| guard, the regression itself | token re-inserted into a copy of the template → *“the extra network 'rodclan' appears 2 times in the render, not once inside WIFI_PROFILES”*, `rc=1` |
+| guard, the regression itself | token re-inserted into a copy of the template → *“the extra network '<PROFILE-ID>' appears 2 times in the render, not once inside WIFI_PROFILES”*, `rc=1` |
 
 The 9781 characters are 9793 bytes because the template carries six em-dashes:
 `len(text)` counts characters, `wc -c` counts bytes. Both are correct.
@@ -1342,10 +1342,10 @@ resolution** fact, not nginx. Measured from the Mac:
 | Probe | Result |
 |---|---|
 | `dscacheutil -q host -a name ark.lan` | no answer |
-| `dscacheutil -q host -a name ark.local` | `192.168.1.26` (mDNS, via the box's avahi) |
+| `dscacheutil -q host -a name ark.local` | `<HOME-IP>` (mDNS, via the box's avahi) |
 | `curl -k https://ark.local:8443/admin` | **303** → `/admin/login` |
 | `curl -k https://ark.local:8445/arcade/player` | **200** |
-| `curl -k https://192.168.1.26:8443/admin` | `000` — no SNI, so nginx serves the management listener's default server, which rejects the handshake on purpose |
+| `curl -k https://<HOME-IP>:8443/admin` | `000` — no SNI, so nginx serves the management listener's default server, which rejects the handshake on purpose |
 
 `.lan` is not a special-use name: nothing asks mDNS about it. So `ark.lan` resolves only
 while the box is broadcasting (its own dnsmasq wildcard answers every name) or where a
@@ -1913,7 +1913,7 @@ restarted, deployed or written.
 | `/srv/ark/romdb.sqlite` 25,120,768 B `pi:pi 0644` | **25,120,768 B**, owner `pi:pi`, `56448` names |
 | one copy, made 25 Oct | **1** bundle (`ark-backup-20261025-093643`), 15 hours old |
 | the recovery sheet is the same file in three places | sha256 begins `81cb5362be9093bf` at `pi/RECOVERY-SHEET.txt`, `/srv/ark/RECOVERY-SHEET.txt` and `/srv/ark/portal/recovery.txt` — **identical** |
-| `BOOT_MODE=hotspot`; the box is home **now**; no pin | `/etc/ark/ark.env` has `BOOT_MODE="hotspot"`; `ark-mode status` → `mode: home`, `chosen by: auto`, `at boot: hotspot (BOOT_MODE)`, `192.168.1.26/24`, portal 200; **no** `/etc/ark/mode.pinned` |
+| `BOOT_MODE=hotspot`; the box is home **now**; no pin | `/etc/ark/ark.env` has `BOOT_MODE="hotspot"`; `ark-mode status` → `mode: home`, `chosen by: auto`, `at boot: hotspot (BOOT_MODE)`, `<HOME-IP>/24`, portal 200; **no** `/etc/ark/mode.pinned` |
 | the switches are open on a fresh box | `public_board_post=1`, `public_uploads=1`, `arcade_players=1`, `arcade_auto_install=0`, `session_epoch=12` |
 | the watchdog is ticking | `net-watch.state` rewritten at 00:18; **no `net-watch.log`** — because no decision has ever acted, which is what its own header says would happen |
 
@@ -3234,7 +3234,7 @@ not on the Pi, not on a phone. Specifically, in `docs/HUMAN-TEST-LIST.md` **§17
 
 The four phases went onto the card the way §33.3 describes, after the box was reachable again:
 its Ethernet port was plugged into the household router and came up as an ordinary client
-(`192.168.1.33`) **while wlan0 stayed an access point** (`10.42.0.1`). Nothing was switched, no
+(`<CABLE-IP>`) **while wlan0 stayed an access point** (`10.42.0.1`). Nothing was switched, no
 reboot was taken and the hotspot never dropped, so the radio was never a question.
 
 | | |
@@ -3762,12 +3762,12 @@ house Wi-Fi** with the Ethernet cable left in place as a life-line:
    line, which is exactly what the 31 Oct file could not say. `ark.env` is still `644 root:root`
    (`ark_home_record()` keeps the file's own mode), and `BOOT_MODE` was still `hotspot` at this point;
 3. nothing had to be saved — the house network was already there as the build-time profile
-   `home-wifi` (SSID `House of Leaves-5G-1`), so `ark-wifi-add` was **not** run;
-4. `sudo ark-mode home` joined it: `wlan0` took **192.168.1.26/24** with a default route, `active
+   `home-wifi` (SSID `<HOUSEHOLD-SSID>-5G-1`), so `ark-wifi-add` was **not** run;
+4. `sudo ark-mode home` joined it: `wlan0` took **<HOME-IP>/24** with a default route, `active
    links: Wired connection 1,home-wifi lo`;
 5. everything was then proved **over that Wi-Fi address**, so no answer can be the Ethernet cable
-   (`ark.local` resolves to both): `ssh pi@192.168.1.26` (hostname `ark`), `ping -c2 -I wlan0
-   192.168.1.1`, `http://192.168.1.26/` 200, `/api/ready` 200, and both name-doors forced at the
+   (`ark.local` resolves to both): `ssh pi@<HOME-IP>` (hostname `ark`), `ping -c2 -I wlan0
+   192.168.1.1`, `http://<HOME-IP>/` 200, `/api/ready` 200, and both name-doors forced at the
    radio with `--resolve` — `http://ark.local/` **200**, `https://ark.local:8443/admin` **303** (the
    sign-in). The two bare-`ark.local` answers recorded at this step were **not** a proof of anything
    and are corrected in §36.6: with the cable still in, that name resolved to the box's `eth0`
@@ -3805,7 +3805,7 @@ all** — the watchdog has had nothing to decide, and a quiet log is a healthy o
 wireless profiles for three networks, two of which (`home-wifi` and `preconfigured`) name the *same*
 SSID with `autoconnect=yes`, so NetworkManager has more than one answer to one question — `ark-mode`
 settles it by naming `home-wifi` explicitly, and `ark-net-watch` keeps watching afterwards; and the
-older `House of Leaves` / `-5G-2` profiles (`home-wifi-2`, `home-wifi-3`) are left over from earlier
+older `<HOUSEHOLD-SSID>` / `-5G-2` profiles (`home-wifi-2`, `home-wifi-3`) are left over from earlier
 attempts. Deleting a profile is the owner's decision, not the installer's, so none were touched.
 
 ### 36.5 What the card's radio actually holds, 1 Nov 2026
@@ -3816,12 +3816,12 @@ carry the same name for different networks and the reverse:
 
 | Profile | SSID | autoconnect | What it is |
 |---|---|---|---|
-| `home-wifi` | `House of Leaves-5G-1` | yes | the build-time profile, and the one `HOME_WIFI_CONNECTION` names — the box is **on** this one |
-| `preconfigured` | `House of Leaves-5G-1` | yes | the image's own copy of the same network: a second answer to one question |
-| `home-wifi-3` | `House of Leaves-5G-2` | yes | an earlier attempt, kept |
-| `home-wifi-2` | `House of Leaves` | yes | an earlier attempt, kept (2.4 GHz) |
-| `rodclan` | `Rodclan` | yes | another network this box has been on |
-| `rodclan-fast` | `Rodclan-fast` | yes | the same, 5 GHz |
+| `home-wifi` | `<HOUSEHOLD-SSID>-5G-1` | yes | the build-time profile, and the one `HOME_WIFI_CONNECTION` names — the box is **on** this one |
+| `preconfigured` | `<HOUSEHOLD-SSID>-5G-1` | yes | the image's own copy of the same network: a second answer to one question |
+| `home-wifi-3` | `<HOUSEHOLD-SSID>-5G-2` | yes | an earlier attempt, kept |
+| `home-wifi-2` | `<HOUSEHOLD-SSID>` | yes | an earlier attempt, kept (2.4 GHz) |
+| `<PROFILE-ID>` | `<OTHER-NETWORK-SSID>` | yes | another network this box has been on |
+| `<PROFILE-ID>-fast` | `<OTHER-NETWORK-SSID>-fast` | yes | the same, 5 GHz |
 | `ark-hotspot` | `The-Ark-Offline` | **no** | the access point; `autoconnect=no` on purpose, because `ark-mode` decides |
 
 The one thing that could bite is the duplicate: after a link blip NetworkManager may bring up
@@ -3844,20 +3844,20 @@ Found by asking the box the same questions again afterwards, from the Mac, over 
 just called "Wi-Fi":
 
 ```bash
-ping -c2 ark.local                                  # PING ark.local (192.168.1.33) — eth0, not wlan0
-ssh pi@192.168.1.26 'ip -4 -br addr show'           # eth0 UP 192.168.1.33/24 · wlan0 UP 192.168.1.26/24
-ssh pi@192.168.1.26 'ip route show default'         # default dev eth0 metric 100 · default dev wlan0 metric 600
+ping -c2 ark.local                                  # PING ark.local (<CABLE-IP>) — eth0, not wlan0
+ssh pi@<HOME-IP> 'ip -4 -br addr show'           # eth0 UP <CABLE-IP>/24 · wlan0 UP <HOME-IP>/24
+ssh pi@<HOME-IP> 'ip route show default'         # default dev eth0 metric 100 · default dev wlan0 metric 600
 curl -s -o /dev/null -w '%{http_code}\n' http://ark.local/                    # 200 — over the CABLE
-curl -s -o /dev/null -w '%{http_code}\n' http://192.168.1.26/                 # 200 — over the radio
-curl -sk -o /dev/null -w '%{http_code}\n' https://192.168.1.26:8443/admin     # 000 — no SNI, correct
+curl -s -o /dev/null -w '%{http_code}\n' http://<HOME-IP>/                 # 200 — over the radio
+curl -sk -o /dev/null -w '%{http_code}\n' https://<HOME-IP>:8443/admin     # 000 — no SNI, correct
 curl -sk -o /dev/null -w '%{http_code}\n' https://ark.local:8443/admin \
-     --resolve ark.local:8443:192.168.1.26                                     # 303 — over the radio
+     --resolve ark.local:8443:<HOME-IP>                                     # 303 — over the radio
 ```
 
 The box has **two** addresses on the house network while the cable is in, mDNS answers with both, and
 the resolver hands back whichever it likes — it handed back `eth0`'s. So a green `ark.local` says
 nothing about `wlan0`, and the step that was recorded as "proved over Wi-Fi" was, for those two
-lines, proved over the cable. It changes no conclusion (`192.168.1.26` and both `--resolve` answers
+lines, proved over the cable. It changes no conclusion (`<HOME-IP>` and both `--resolve` answers
 stand on their own, and `eth0` and `wlan0` share a default route to the same gateway), but it is the
 same defect class as §8.7's *"an HTTP 200 is not evidence that a page works"*: **a proof must name the
 thing it is a proof of** — the radio's own address, or `--resolve` when the answer has to come from a

@@ -6,7 +6,7 @@
 # =============================================================================
 set -Eeuo pipefail
 
-ROOT="/Users/basestar/Survival-Pi"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="$ROOT/staging/wifi.env"
 TMPL="$ROOT/staging/firstrun.sh.tmpl"
 OUT="$ROOT/staging/firstrun.sh"

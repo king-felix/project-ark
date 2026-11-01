@@ -13,7 +13,7 @@
 # =============================================================================
 set -Eeuo pipefail
 
-ROOT="/Users/basestar/Survival-Pi"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TOKEN_FILE="${TOKEN_FILE:-$HOME/.config/ark/gh.token}"
 REPO_NAME="${REPO_NAME:-project-ark}"
 DESC="Project ARK — an offline survival computer on a Raspberry Pi: 20 offline collections, 1290 books, 11 printable guides, captive-portal library."

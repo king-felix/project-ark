@@ -412,7 +412,7 @@ def test_an_import_cannot_walk_out_of_the_save_folder(public):
 def test_a_player_name_is_not_an_administrator(public):
     token, _ = _register(public.client, "Ada")
     admin = public.client.get("/admin/login",
-                              headers={"x-forwarded-proto": "https", "x-real-ip": "192.168.1.50",
+                              headers={"x-forwarded-proto": "https", "x-real-ip": "192.0.2.50",
                                        "x-ark-setup-channel": "loopback"},
                               cookies={"ark_player": token})
     # Either the management door refuses a plain portal peer outright, or it

@@ -4,6 +4,25 @@ How to claim the box, sign in, add people, recover access, and what is still
 missing. Everything here was tested on the development machine against the real
 application code; see the "Tested / not tested" section at the end.
 
+**The placeholders in this paperwork.** This repository is public, so it never prints the
+household's own network name, its passphrase, or the addresses the box holds on a home
+network. Where a command needs one it shows a placeholder — substitute your own before you
+paste it, and the command will fail loudly rather than quietly reach the wrong machine:
+
+| Placeholder | What to put there |
+|---|---|
+| `<HOME-IP>` | the address the box took on your own Wi-Fi — **on the box**, `ip -4 addr show wlan0` |
+| `<CABLE-IP>` | the address it holds on the cable, when the cable is in — `ip -4 addr show eth0` |
+| `<HOUSEHOLD-SSID>` | the name of your Wi-Fi network |
+| `<HOUSEHOLD-PSK>` | that network's passphrase — it belongs in `staging/wifi.env` (0600, never committed), never on a command line |
+| `<OTHER-NETWORK-SSID>` | the name of a second network the box has also been on (a relative's, a neighbour's) |
+| `<OTHER-NETWORK-PSK>` | that network's passphrase, in the same 0600 file and nowhere else |
+| `<PROFILE-ID>` | a saved connection's own name — `nmcli connection show` |
+| `<ACCOUNT>` | the account you are signed in to the workstation as — the `/Users/<ACCOUNT>/…` in a path |
+
+`10.42.0.1`, `ark.lan` and `ark.local` are **not** placeholders: those are the same on every
+box, and `recovery.txt` / the printed sheet never contain anything else.
+
 ---
 
 ## 0. The overview — where you land
@@ -105,7 +124,7 @@ unclaimed a second listener on `127.0.0.1:8444` is the only way in.
    answered by the box's mDNS service on every modern phone and computer), and
    `ark.lan` from a device joined to **The-Ark-Offline** — while broadcasting, the
    box answers every name itself. A Mac on a home network cannot resolve `ark.lan`
-   without help, and a name typed by its number (`https://192.168.1.26:8443`) is
+   without help, and a name typed by its number (`https://<HOME-IP>:8443`) is
    refused on purpose, because the management door only answers a known name.
 
 While the box is unclaimed, step 4 only works through the tunnel — a stranger
@@ -1260,13 +1279,13 @@ ark-mode status                                 # mode / chosen by / home networ
 
 # 3. join it, and prove the box is really on it (this does not touch the cable)
 sudo ark-mode home
-ip -4 addr show wlan0                           # 192.168.1.26/24, and a default route
+ip -4 addr show wlan0                           # <HOME-IP>/24, and a default route
 nmcli -t -f NAME,DEVICE connection show --active # home-wifi:wlan0
 
 # 4. ask the box over the Wi-Fi address, NOT over ark.local — ark.local resolves to both
-ssh pi@192.168.1.26 'hostname; ip -4 -br addr show wlan0'
+ssh pi@<HOME-IP> 'hostname; ip -4 -br addr show wlan0'
 ping -c2 -I wlan0 192.168.1.1
-curl -s -o /dev/null -w '%{http_code}\n' http://192.168.1.26/     # 200
+curl -s -o /dev/null -w '%{http_code}\n' http://<HOME-IP>/     # 200
 
 # 5. only now say what a cold boot does — and choose "auto", not a pin
 sudo cp -a /etc/ark/ark.env /root/ark.env.before-bootmode
@@ -1294,27 +1313,27 @@ cable — and note that neither the installer nor the owner's page will ever del
 you (see `docs/IMPLEMENTATION-LOG.md` §36.5 for the full list on this card).
 
 **The cable:** leave the Ethernet in until step 4 has answered over the Wi-Fi address.
-After that it can be pulled, and pulling it is the real proof — `ssh pi@192.168.1.26`,
-`http://192.168.1.26/` and `https://ark.local:8443/admin` must all still answer with no
+After that it can be pulled, and pulling it is the real proof — `ssh pi@<HOME-IP>`,
+`http://<HOME-IP>/` and `https://ark.local:8443/admin` must all still answer with no
 wire in the box. If they stop, put the cable back: the box is still serving on it, and
 `ark-net-watch` will have taken the radio home again within a minute either way.
 
 **While the cable is still in, `ark.local` is not a proof of anything.** The box then has
-two addresses on the house network (`wlan0` `192.168.1.26`, `eth0` `192.168.1.33`), mDNS
+two addresses on the house network (`wlan0` `<HOME-IP>`, `eth0` `<CABLE-IP>`), mDNS
 answers with **both**, and the Mac picks one — on 1 Nov 2026 it picked the Ethernet one, so
 `curl http://ark.local/` was answering over the cable while the run looked like a Wi-Fi
 proof. Ask by the Wi-Fi address, or force the name at it:
 
 ```bash
 ping -c2 -I wlan0 192.168.1.1                                         # on the box
-curl -s -o /dev/null -w '%{http_code}\n' http://192.168.1.26/          # 200
+curl -s -o /dev/null -w '%{http_code}\n' http://<HOME-IP>/          # 200
 curl -s -o /dev/null -w '%{http_code}\n' http://ark.local/ \
-     --resolve ark.local:80:192.168.1.26                               # 200, over the radio
+     --resolve ark.local:80:<HOME-IP>                               # 200, over the radio
 curl -sk -o /dev/null -w '%{http_code}\n' https://ark.local:8443/admin \
-     --resolve ark.local:8443:192.168.1.26                             # 303, over the radio
+     --resolve ark.local:8443:<HOME-IP>                             # 303, over the radio
 ```
 
-`https://192.168.1.26:8443/admin` answers **`000`** and that is correct: an address literal
+`https://<HOME-IP>:8443/admin` answers **`000`** and that is correct: an address literal
 sends no name, so the management listener's default server hangs up on purpose. A door
 that needs a name must be asked by name — `--resolve` is how to do that from the Mac
 without editing `hosts`.
