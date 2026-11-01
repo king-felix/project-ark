@@ -125,6 +125,68 @@ ul.health .state {
 ul.health .state.no { border-color: #4a1f1a; background: #170a08; color: #ff9f92; }
 ul.health .fix { display: block; margin-top: 6px; color: #ffe6ae; font-size: .92rem; }
 
+/* the dashboard --------------------------------------------------------- */
+/* Four figures measured when the page was opened.  The number is the thing a
+   person reads first, so it is big; the words under it say what was counted, and
+   a figure the box could not measure arrives as words, never as a zero. */
+ul.stats {
+  margin: 12px 0 6px;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 12px;
+}
+@media (min-width: 620px) { ul.stats { grid-template-columns: 1fr 1fr; } }
+ul.stats li {
+  padding: 14px 16px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+ul.stats b {
+  display: block;
+  font-size: 1.45rem;
+  font-weight: 800;
+  letter-spacing: -.02em;
+  font-variant-numeric: tabular-nums;
+}
+ul.stats .sub { display: block; color: var(--dim); font-size: .92rem; margin-top: 4px; }
+ul.stats .sub + .sub { font-size: .86rem; margin-top: 8px; color: #9a9aa2; }
+/* the way in, big enough to hit with a thumb (§5: 44 px) */
+a.more {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  margin-top: 6px;
+  color: var(--go);
+  font-size: .95rem;
+  font-weight: 600;
+}
+
+/* cards that hold a button rather than being one ------------------------ */
+.card .sub { display: block; color: var(--dim); font-size: .95rem; margin-top: 4px; }
+/* `.go-btn` is a <button> on the forms and an <a> here, so the look lives on
+   both: a link has to be told what a button already knows. */
+a.go-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  margin-top: 14px;
+  padding: 0 16px;
+  border-radius: 12px;
+  border: 0;
+  background: var(--go);
+  color: #04120a;
+  font-size: .95rem;
+  font-weight: 800;
+  text-decoration: none;
+}
+a.go-btn:active { transform: scale(.995); }
+
+/* signing out sits under the name, not beside it ------------------------ */
+.signout { margin: 0 0 18px; }
+
 /* where the room went — measured folder by folder, storage row only ------- */
 ul.breakdown {
   margin: 10px 0 6px;

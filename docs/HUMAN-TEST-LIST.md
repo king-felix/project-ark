@@ -684,6 +684,82 @@ without a single thing changing on the card.
 
 ---
 
+## 19. The first page after signing in, and the way out (10 minutes, needs a phone)
+
+**Why it is unproven:** the owner's console was rebuilt on 1 Nov 2026 — a front page that
+measures four things, a navigation bar on every page, a way back to the reader pages, a
+**Sign out** button, and one sentence on the public pages naming the owner's door. Every piece
+of it is proved from the outside (`tests/test_admin_dashboard.py`, 19 tests; `tests/test_public.py`),
+and **nobody has looked at it in a browser.** A shell can say the four figures are in the HTML;
+it cannot say whether they read as sentences.
+
+**Two things this test is really about:**
+
+* **the figures are the truth, not a decoration.** The free space on that page is the one number
+  an owner checks before adding a film or a shelf of books, and it must match what the machine
+  says;
+* **a person can get out.** Signing out is a `POST` with a form token, which is invisible to
+  whoever presses it — the only question a browser can answer is whether the button is where a
+  thumb expects it, and whether pressing it really ends the session on *every* device.
+
+**Before you start:** a phone on the same Wi-Fi as the box, signed in to the owner's console
+(§12), and an SSH session on the box for one comparison.
+
+1. Open `https://ark.local:8443/admin` (or `https://ark.lan:8443/admin` on the hotspot).
+
+   **You should see:** a bar across the top with eleven pages in it — *Overview, What is
+   working, Add files, Network, Household, Games, Community, Administrators, My password,
+   History, Addresses* — with the page you are on drawn as chosen, then **four figures** with a
+   label under each, then **Put something on the box** with two buttons, then **Sign out**.
+
+2. Read the four figures aloud, in order.
+
+   **You should hear:** *"How long the box has been on"*, *"Room left on the card"*,
+   *"Anyone can open these in the File Box"*, *"On the Message Board"* — no product names, no
+   service names, nothing you have to look up.
+
+3. On the box, run `df -h /srv/ark` and compare it with **Room left on the card**.
+
+   **You should see:** the same number, to the nearest whole unit. The line under it says how
+   much is in use and what percentage is free — and that percentage must never say *100 %*
+   while the card has something on it.
+
+4. Tap **Where the room went** under that figure.
+
+   **You should see:** **What is working**, and the folders listed with measured sizes. Then tap
+   the bar's **Overview** to come back.
+
+5. Open `http://ark.lan/` in a new tab and scroll to the bottom of the page.
+
+   **You should see:** one sentence naming `https://ark.local:8443/admin` and the word
+   *password*. It must **not** be a tappable link: `/admin` on a plain page is refused on
+   purpose, and a link there would be a dead end.
+
+6. Go back to the console and press **Sign out**. Then press the browser's back button and try
+   to reach `https://ark.local:8443/admin/doors` directly.
+
+   **You should see:** the sign-in form, not the pages. A page that had been open before still
+   shows what it had drawn, but nothing new is served and every button on it is refused.
+
+7. On the *other* device (the laptop you were signed in on), reload any owner page.
+
+   **You should see:** the sign-in form there too. Signing out on one device ends the session
+   itself, not just the browser that pressed the button.
+
+8. Sign in again, and on the phone press the bar's **Back to the reading pages**.
+
+   **You should see:** `http://ark.lan/` — by the name you came in on, not by a number.
+
+**If step 1 shows a bar with a page missing,** that page is reachable but not on offer; note
+which one and check it against the *Addresses* page, which names every door and must name that
+one too.
+
+**What this proves that nothing else can:** four figures a person trusts, a bar a thumb can
+find its way around, a way back to the reading pages, and a sign-out that ends a session
+everywhere — on the device it was pressed on and on the one in the kitchen.
+
+---
+
 ## What is *not* on this list, on purpose
 
 

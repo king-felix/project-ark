@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 
 def test_public_pages_answer(public):
     client = public.client
@@ -60,5 +63,25 @@ def test_the_public_portal_cannot_reach_administration(public):
 
 
 def test_administration_is_never_in_the_public_navigation(public):
-    assert "/admin" not in public.client.get("/").text
-    assert "/admin" not in public.client.get("/board").text
+    """Nothing on a public page is one tap from the owner's area.
+
+    `/admin` on `:80` is refused twice over — nginx answers 404 and the app answers
+    403 — so a link to it would be a dead end wearing a button's clothes.  The one
+    mention the portal carries is the sentence for whoever looks after the box
+    (§5): in words, naming the secure address, and never an anchor.
+    """
+    for path in ("/board", "/files", "/household", "/search?q=water"):
+        page = public.client.get(path)
+        assert page.status_code == 200, path
+        body = page.text
+        assert 'href="/admin' not in body, f"{path} links this origin's /admin"
+        assert not re.search(r'href="[^"]*/admin', body), f"{path} links an /admin page"
+        assert not re.search(r'href="[^"]*:8443', body), f"{path} links the owner's door"
+        if "/admin" in body:
+            # The mention, where it is there, is the owner's own address in words.
+            assert "https://ark.local:8443/admin" in body, path
+            assert "password" in body, path
+    # The front page is a static file nginx serves, so it is read from the repo.
+    front = (Path(__file__).resolve().parents[1] / "pi/portal/index.html").read_text(
+        encoding="utf-8")
+    assert not re.search(r'href="[^"]*/admin', front)

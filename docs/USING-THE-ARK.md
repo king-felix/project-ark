@@ -608,7 +608,10 @@ Do this after any power cut, and before you rely on the box for a trip.
 
 For whoever looks after the box, one more: `https://ark.local:8443/admin` shows a
 sign-in page (and `https://ark.lan:8443/admin` does the same from a phone joined to
-The-Ark-Offline). That is the owner's door — it changes the machine, it is never
+The-Ark-Offline). Once you are in, the first page says how long the box has been
+on, how much room is left on the card, how many files anyone can open and how many
+messages are on the board — each measured at that moment — and its navigation ends
+in **Sign out**. That is the owner's door — it changes the machine, it is never
 part of what a visitor sees, and on a box that has never been claimed it stays
 shut on purpose (`docs/ADMIN.md` explains the one-time claim).
 

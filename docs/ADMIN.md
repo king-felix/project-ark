@@ -6,6 +6,40 @@ application code; see the "Tested / not tested" section at the end.
 
 ---
 
+## 0. The overview — where you land
+
+**Where it is:** `https://ark.local:8443/admin` — the first page after you sign in.
+
+It answers four questions in figures measured **when the page is drawn**, never remembered
+from yesterday:
+
+| Figure | Where it comes from |
+|---|---|
+| **How long the box has been on** | the machine's own uptime, in words — and the line under it says that a power cut starts the count again |
+| **Room left on the card** | the filesystem's free space. The library, the books, the games and the File Box share one card, and the line under it says how much of how much is already used |
+| **Files anyone can open in the File Box** | the shared **folder**, not the records about it — a leftover row with no file behind it is never counted as something on offer (§8, §7) |
+| **Messages on the Message Board** | the board, with one tap straight to **Community** where they are looked after |
+
+A figure the box could not measure says *"not measured yet"* and the reason on the same
+line. It never prints `0`, because *nothing there* and *I could not look* are different
+answers.
+
+Under the figures, **Put something on the box** carries the two ways a person actually
+uses — **Add books and games** (a pile in one press, §15) and **Add one game** (the owner's
+Games page, §10). The navigation names all eleven pages — Overview, What is working, Add
+files, Network, Household, Games, Community, Administrators, My password, History,
+Addresses — and marks the page you are reading for a screen reader
+(`aria-current="page"`), so a phone announces where you are.
+
+**Sign out** sits at the end of that navigation on every page, and it is a **form rather
+than a link**: ending a session changes something, so it is a `POST` carrying the page's own
+token. The session is deleted on the box and a line saying so goes into the history, then the
+page returns to the sign-in form. A second press is harmless (it simply lands on the form
+again), and a `POST` carrying a token that is not this session's own changes **nothing** —
+the person stays signed in and the page says *Nothing was changed*.
+
+---
+
 ## 1. What is public and what is not
 
 | | Public reader (no account) | Administrator |
@@ -1276,16 +1310,23 @@ games shelf and its public **Add a game** door, the books, the offline collectio
 the administrator pages, the player origin that keeps a game's saves, and the three
 answers a monitoring script reads.
 
-Two rules on the page:
+Three rules on the page:
 
 * **it prints the name you reached it by.** `ark.lan` answers every name while the box
   is broadcasting; `ark.local` is the name a home network can resolve; the page
   substitutes whichever one your browser used, and says in a sentence that the other
   one works the same way.
+* **every door is a tap, not a sentence to copy.** An address that answers on the name you
+  reached the box by is drawn as a link, so nobody retypes a port number. One door is
+  printed in full and deliberately not linked: the first-claim listener
+  (`127.0.0.1:8444`), which answers on the box itself and nowhere else — tapping it from a
+  phone would try the phone.
 * **it is generated from one list.** `pi/api/ark_doors.py` is that list, and
   `tests/test_admin_upload.py` reads every `@router.get` in the owner's application and
-  fails if a page is served that the list does not name. A door nobody can find is a
-  defect; a page in the paperwork that does not answer is a worse one.
+  fails if a page is served that the list does not name. The other direction is held too:
+  `tests/test_admin_dashboard.py` fails if a page in the navigation is not on this page. A
+  door nobody can find is a defect; a page in the paperwork that does not answer is a worse
+  one.
 
 `/api/ready` is listed with the words *"This is the honest one"*, and `/api/health` with
 *"Says only that the web program answered. It is not a verdict on the box."* — because

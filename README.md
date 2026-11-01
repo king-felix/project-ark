@@ -154,9 +154,14 @@ management listener:
   ```
 
 The first sign-in asks for your own password (12+ characters, passphrases
-welcome) and the temporary one stops working immediately. After that you can
-add other administrators, reset or switch off their accounts, read the audit
-history, and use the **Community** page — two switches that pause new notes and
+welcome) and the temporary one stops working immediately. You land on
+**Overview**, which answers in four figures measured at that moment — how long the
+box has been on, how much room is left on the card, how many files anyone can open
+in the File Box, and how many messages are on the board — each of them saying
+*not measured yet* rather than `0` when the box could not look. **Sign out** is at
+the end of the navigation on every page, and it ends the session on the box, not
+just in your browser. After that you can add other administrators, reset or switch
+off their accounts, read the audit history, and use the **Community** page — two switches that pause new notes and
 new uploads, plus pin / sorted-out / hide for messages, hide for files, and a
 delete that asks for your own password again. **Household** is where the
 emergency pages are looked after: which topics the card still has no page for,
@@ -170,7 +175,8 @@ one button, and read a line per file saying where each one went — a book into 
 Book Library, a game onto the shelf, anything else refused by name with nothing
 written. **Addresses** prints every door on the box — public pages, the owner's
 pages, the player origin and the two monitoring answers — with who may open it and
-what it is for, written with the name your browser is using. The
+what it is for, written with the name your browser is using and each one a tap
+rather than a port number to copy. The
 player's sign-in is a separate HTTPS origin (`https://ark.lan:8445/arcade/`) and
 is not an administrator account. **What is working** is the page
 to open when something feels off: every part of the box, whether it answered

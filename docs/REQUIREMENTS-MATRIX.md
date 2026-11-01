@@ -1,8 +1,8 @@
 # Project ARK — requirements matrix
 
-**Date:** 31 October 2026  
+**Date:** 1 November 2026  
 **Branch:** `feature/admin-hardening`  
-**Suite:** `567 passed, 2 skipped` (25 files; `python -m pytest -o addopts='--strict-markers' -q`, Mac, throwaway databases) — the two skips are QR cross-checks that need `qrcode` / `opencv-python-headless` on the machine  
+**Suite:** `617 passed, 2 skipped` (27 files; `python -m pytest -o addopts='--strict-markers' -q`, Mac, throwaway databases) — the two skips are QR cross-checks that need `qrcode` / `opencv-python-headless` on the machine  
 **Hardware:** **deployed 25 Oct 2026** — `90-verify` green, `/api/ready` 200, the doors, the book
 route rules, a bundle and the arcade origin all answered on the Pi (`docs/IMPLEMENTATION-LOG.md`
 §15), `ark-arcade --import` answered honestly three times on the box (§18.4), and the name-from-the-
@@ -73,6 +73,10 @@ box.
 | Security headers on every admin page, CSRF on every POST | `ark_admin`, templates | `test_auth.py::test_security_headers_on_every_admin_page`; `test_post_without_csrf_changes_nothing` |
 | Passwords good, sessions revocable, throttling by account and address | `ark_security.py` | `test_auth.py::test_setup_changes_password_and_revokes_the_old_session`; `test_accounts.py::test_wrong_passwords_are_generic_throttled_and_audited`; `test_accounts.py::test_throttling_counts_the_account_and_the_address_separately`; `test_db.py` password vector |
 | No root login, key + password auth unchanged, secrets out of git | `staging/firstrun.sh.tmpl`, `.gitignore` | `test_config.py::test_ssh_stays_key_and_password_without_root_and_secrets_stay_out_of_git` |
+| The front page of the desk measures rather than decorates: how long the box has been on, how much room is left, how many files a reader can open, how many notes are waiting — and a figure nobody could measure says *not measured yet*, never `0` | `ark_admin._dashboard`/`_stat`, `ark_health.card_room`/`uptime_seconds`/`uptime_words` | `test_admin_dashboard.py::test_the_overview_shows_what_an_owner_opens_it_for`; `::test_the_room_left_is_the_filesystems_own_answer`; `::test_a_page_that_could_not_measure_says_so_and_never_says_zero`; `::test_uptime_is_read_from_what_the_machine_says`; `::test_a_machine_that_will_not_say_how_long_it_has_been_on_is_not_a_zero` |
+| Signing out is a deliberate press (`POST` + form token), ends the session on every device at once, and a forged token changes nothing | `ark_admin.logout`/`_sign_out`, `ark_security.drop_session` | `test_admin_dashboard.py::test_signing_out_is_a_post_with_the_form_token`; `::test_signing_out_really_ends_the_session`; `::test_a_sign_out_without_the_form_token_leaves_the_session_alone` |
+| Every administrator page is one tap away, the page being read is marked, and the address list names every page on offer | `ark_admin.ADMIN_NAV`/`nav_here`, `pi/api/ark_doors.py` | `test_admin_dashboard.py::test_the_navigation_marks_the_page_being_read`; `::test_a_page_deeper_inside_a_section_belongs_to_that_section`; `::test_every_navigation_item_is_a_page_the_application_really_serves`; `::test_every_page_in_the_navigation_is_also_named_in_the_address_list`; `::test_the_addresses_page_makes_every_reachable_door_a_link`; `test_admin_upload.py::test_every_administrator_page_is_named_in_the_addresses` |
+| A public page says where the owner's door is in plain words, and never as a link (that door refuses plain HTTP) | `pi/api/main.py` footer, `pi/portal/index.html` | `test_admin_dashboard.py::test_the_public_pages_say_where_the_owner_pages_are`; `::test_the_front_page_the_box_serves_has_the_same_sentence`; `::test_the_public_footer_still_explains_itself_in_plain_words` |
 
 The `curl` trap is fixed at its root: `curl` exits zero on a completed HTTP 400, so the old
 installer check could pass on a listener that served the page in clear text. The helpers now
@@ -305,6 +309,9 @@ That is the gap this requirement names, and it is not closed.
 | **Add files**: several books and games in one press, each routed to its own existing path (a book to the importer's staging folder, a game through the arcade's publish gate), with a per-file answer and an audit line | **done + tested** (`test_admin_upload.py`, 29 tests); never picked in a browser |
 | **Addresses**: every door on the box, generated from one list, with the reader's own host name substituted and held to the application by a test | **done + tested** (`test_admin_upload.py`); never opened in a browser |
 | "What is working" health page, readiness reasons, storage breakdown | **done + tested** |
+| **Home**: four measured figures (time on, room left, files a reader can open, notes waiting) with *not measured yet* where the box could not look, and the two ways to put something on the box | **done + tested** (`test_admin_dashboard.py`, 19 tests); never opened in a browser |
+| **Sign out**: a `POST` behind the form token that ends the session everywhere and lands on the sign-in form even on a second press | **done + tested** (`test_admin_dashboard.py`); never pressed in a browser |
+| **Navigation**: one eleven-page bar, the page being read marked, a deeper route belonging to its section, and the same list behind the address map (both directions held by tests) | **done + tested** (`test_admin_dashboard.py`, `test_admin_upload.py`); never drawn in a browser |
 | Player names: the on/off switch | **done** |
 | Per-player management (reset, delete, disable, quota) | **absent** |
 | Service controls (restart, stop, pause/resume) | **absent** — no buttons, on purpose |

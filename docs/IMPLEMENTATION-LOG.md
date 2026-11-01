@@ -3458,3 +3458,118 @@ library through this page, and whether a person reads *"still being added"* as p
 deploy — the only files written by these proofs were in a throwaway folder that was removed.
 
 
+
+## 35. The owner's front page — four figures, and a way out — 1 Nov 2026, later the same day
+
+Signed in, the owner landed on a page that counted **administrators**, **messages** and
+**`files` rows**. Two of those are not questions anybody asks, and the third was a count of
+records rather than of anything a person could open — the §16.2 defect, still standing on the
+one page an owner looks at most. The page also had no way out of it: the session ended when
+the browser was closed, or when an idle timeout fired, and nowhere else.
+
+Two more things were wrong the moment anyone looked:
+
+* **the room on the card was only on another page.** It is the single fact an owner opens
+  this box to check — the card is the whole machine — and it was two taps away, in the middle
+  of a long readiness list.
+* **the public pages said nothing at all about the owner's door.** `README.md`,
+  `docs/ADMIN.md` and `docs/USING-THE-ARK.md` each name it; the portal a person actually
+  reads did not.
+
+```
+https://ark.local:8443/admin            ← four figures measured now, and Sign out
+```
+
+### 35.1 What the page measures, and what each figure is careful about
+
+| Figure | Where it comes from | The care taken |
+|---|---|---|
+| **How long the box has been on** | `/proc/uptime` — the machine's own answer | `ark_health.uptime_seconds()` answers `None` on a machine with no such file (the Mac the tests run on), and the page prints *not measured yet* with the reason. The note says a power cut starts the count again, because on this box it does (§26) |
+| **Room left on the card** | `shutil.disk_usage()` on `/srv/ark` — the filesystem's `free`, **not** `total - used` | ext4 keeps a slice back for root, and the question is *what can I still put on this?* The percentage is **floored**: 99.6 % free on a card that has something on it must never be printed as *100 % is free* |
+| **Files anyone can open in the File Box** | `ark_health.files_section()`'s `files` — the folder, through `ark_storage.present_names()` | a leftover row with no file behind it is **not** a file on offer (the §16.2 defect), and when the records and the folder disagree the line says how many are in that state. A folder that cannot be listed gives `None`, printed as *not measured yet* |
+| **Messages on the Message Board** | `SELECT COUNT(*) FROM notes` | one tap to **Community**, which is where they are looked after |
+
+Every one of the four is measured while the page is drawn. `None` never reaches the screen as
+`0`: `_stat()` prints *not measured yet* and the sentence that explains it, so *there is
+nothing there* and *I could not look* stay different answers (§8.7 of `.clinerules`).
+
+Under the figures, **Put something on the box** carries the two doors a person actually uses
+— **Add books and games** (§34) and **Add one game** — because the one thing an owner does
+in the first week is put things on it.
+
+### 35.2 Signing out is a POST, and it is worth nothing to a forger
+
+`/admin/logout` is a `POST` behind `_gate_tls()` and the form's own token:
+
+* the **session row is deleted** (`sec.drop_session`), so the cookie stops meaning anything
+  everywhere at once — not merely in the browser that pressed the button;
+* a line goes into the history, `action="sign-out"`, `result="ok"`, because *who signed in*
+  is only half of an access record;
+* **a second press is harmless**: the honest answer to *sign out* from a page whose session is
+  already gone is the sign-in form, not *that form expired*. It clears both cookies and lands
+  on `/admin/login`;
+* **a forged press gains nothing**: a token that is not this session's own changes nothing,
+  answers `403`, and the person stays signed in — so an image tag on somebody else's page
+  cannot end an owner's session. A `GET` would have been exactly that hole.
+
+### 35.3 One tuple is the navigation, the *you are here* mark, and the map
+
+`ark_admin.ADMIN_NAV` is the eleven pages in the order they are offered. `_admin_nav()` draws
+them and marks the page being read (`aria-current="page"`), `nav_here()` decides which item a
+deeper route belongs to (`/admin/accounts/create` → **Administrators**), and nothing is marked
+when nothing matches — the sign-in form is not one of these pages. Three tests hold it: every
+item is a route the application serves, every item is a page `ark_doors` names (so a new page
+cannot be reachable and unlookupable), and a deeper route belongs to its section.
+
+On **Addresses** the host is now the name the reader actually typed (`ctx.host`) rather than a
+second reading of the request, and `_door_link()` draws every door that answers on that name as
+a **link**. The first-claim listener (`127.0.0.1:8444`) is printed in full and never linked: it
+answers on the box itself, so a phone tapping it would be asking the phone.
+
+
+### 35.4 The public pages now name the owner's door — in words, never as a link
+
+Every page the application renders carries one sentence in its footer:
+
+> Looking after this box? The owner's own pages are at
+> **https://ark.local:8443/admin** — they ask for a password.
+
+`pi/portal/index.html` — a static file nginx serves, so it can drift from the app — carries the
+same sentence. It is **not a link**: `/admin` on `:80` is refused twice over (nginx `404`, the
+app `403`), so a link there would be a dead end wearing a button's clothes.
+`tests/test_public.py` reads `/board`, `/files`, `/household`, `/search?q=water` and the front
+page and asserts that no public page carries a link to `/admin` **or to `:8443`**, and that
+where the sentence appears it names that address and the word *password*;
+`tests/test_admin_dashboard.py` holds the footer itself in the rendered page and checks it
+against the banned-words list in `.clinerules` §5.
+
+### 35.5 Tests, and what is not proved
+
+`tests/test_admin_dashboard.py` — **19 tests**: the four figures on the page; the room coming
+from the filesystem's own `free`; a page that could not measure saying *not measured yet* and
+never `0` (both `card_room()` and `uptime_seconds()` stubbed to `None`); uptime read from a
+file the test writes; the *you are here* mark, and a deeper route belonging to its section;
+every navigation item being a page the app serves, and being named by `ark_doors`; sign-out as
+a token-carrying `POST`, ending the session for real, a second press landing on the form, and a
+forged token leaving the session intact; the way back to the reader pages using the typed name;
+every reachable door on **Addresses** drawn as a link and the setup door not; and the public
+sentence — on the pages the app renders, on the static front page, and in plain words.
+
+**617 passed, 2 skipped** over **27 files** — it was 598 + 2 skipped over 26 files at §34, so
+the whole of this section is 19 tests and one file.
+
+**Not proved, and no shell can prove it:** nobody has *looked* at this page. `curl` can say the
+four figures are in the HTML; it cannot say whether *"4 days, 7 hours"* and *"47.2 GB free"*
+beside *"67.0 GB of 114.2 GB is in use, so 41% is free"* read as sentences a person trusts,
+whether the sign-out button looks like a button, or whether the footer sentence reads as an
+invitation rather than a warning. `docs/HUMAN-TEST-LIST.md` §19 is the walk-through: sign in,
+read the four figures aloud, compare the free space with `df -h /srv/ark`, press **Sign out** on
+a phone, and confirm the reader pages still open afterwards.
+
+**Still not deployed.** The code is on `feature/admin-hardening`; `60-portal.sh` and
+`65-admin.sh` are unchanged by this section (no unit, no schema, no nginx change — the
+navigation, the footer and the sign-out route all live in `ark_admin.py`, `main.py` and two
+static files), so the deploy is `--only 60-portal,65-admin` then `--only 90-verify`. The
+stylesheet needs no cache-busting: `/assets/` on `:8443` already answers `Cache-Control:
+no-cache` (`pi/nginx/ark-admin.conf`), so a browser asks again and picks the new classes up.
+

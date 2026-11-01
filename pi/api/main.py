@@ -185,6 +185,8 @@ def page(title: str, body: str, here: str = "", tagline: str = "",
 </main>
   <footer>
     <p><b>Project Ark</b> — the library that lives on a small computer. No accounts, no tracking.</p>
+    <p>Looking after this box? The owner's own pages are at
+      <b>https://ark.local:8443/admin</b> — they ask for a password.</p>
   </footer>
 </div>
 </body>

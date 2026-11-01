@@ -135,6 +135,8 @@ class Ctx:
     session: sqlite3.Row | None = None
     admin: sqlite3.Row | None = None
     csrf: str = ""
+    host: str = ""           # the name the reader typed, for the way back out
+    here: str = ""           # the path being answered, for *you are here*
 
 
 def _peer(request: Request) -> str:
@@ -186,7 +188,8 @@ def _load_ctx(conn: sqlite3.Connection, request: Request, epoch: int,
               cookie: str = sec.COOKIE_NAME) -> Ctx:
     token = request.cookies.get(cookie, "")
     row = sec.load_session(conn, token, epoch) if token else None
-    ctx = Ctx(conn=conn, epoch=epoch, session=row, csrf=row["csrf"] if row else "")
+    ctx = Ctx(conn=conn, epoch=epoch, session=row, csrf=row["csrf"] if row else "",
+              host=request.url.hostname or "", here=request.url.path)
     if row is not None and row["admin_id"] is not None:
         ctx.admin = conn.execute("SELECT * FROM admins WHERE id = ?",
                                  (row["admin_id"],)).fetchone()
@@ -224,25 +227,72 @@ def ago(iso: str) -> str:
     return f"{int(secs // 31536000)} years ago"
 
 
+#: The administrator's pages, in the order the navigation offers them.  The
+#: navigation, the *you are here* mark and the address list are built from this
+#: one tuple, so a page added here is a page reachable everywhere it should be.
+ADMIN_NAV = (
+    ("/admin", "Overview"),
+    ("/admin/health", "What is working"),
+    ("/admin/upload", "Add files"),
+    ("/admin/network", "Network"),
+    ("/admin/household", "Household"),
+    ("/admin/arcade", "Games"),
+    ("/admin/community", "Community"),
+    ("/admin/accounts", "Administrators"),
+    ("/admin/password", "My password"),
+    ("/admin/audit", "History"),
+    ("/admin/doors", "Addresses"),
+)
+
+
+def nav_here(path: str) -> str:
+    """Which navigation item the reader is standing on.
+
+    A route deeper inside a section (``/admin/accounts/create``) belongs to that
+    section's item.  Nothing is marked when nothing matches: the sign-in form is
+    not one of these pages, and marking one would point a person at a page they
+    cannot open yet.
+    """
+    path = (path or "").rstrip("/") or "/"
+    for href, _label in ADMIN_NAV:
+        if path == href:
+            return href
+    best = ""
+    for href, _label in ADMIN_NAV:
+        if href != "/admin" and path.startswith(href + "/") and len(href) > len(best):
+            best = href
+    return best
+
+
+def _admin_nav(ctx: Ctx) -> str:
+    """Every page on offer, with the one being read marked for a screen reader."""
+    here = nav_here(ctx.here)
+    links = "".join(
+        f'<a href="{esc(href)}"' + (' aria-current="page"' if href == here else "") +
+        f'>{esc(label)}</a>' for href, label in ADMIN_NAV)
+    return f'<nav class="nav" aria-label="Administrator pages">{links}</nav>'
+
+
+def _sign_out(ctx: Ctx) -> str:
+    """A way out, as a form: signing out changes something, so it is a POST."""
+    return (f'<form class="signout" action="/admin/logout" method="post">'
+            f'{_csrf_field(ctx.csrf)}'
+            '<button class="go-btn small" type="submit">Sign out</button></form>')
+
+
 def shell(title: str, body: str, *, ctx: Ctx | None = None, status: int = 200,
           tagline: str = "") -> HTMLResponse:
-    nav = ""
+    nav = who = ""
     if ctx is not None and ctx.admin is not None and not ctx.admin["must_change"]:
-        links = [("/admin", "Overview"), ("/admin/health", "What is working"),
-                 ("/admin/upload", "Add files"),
-                 ("/admin/network", "Network"),
-                 ("/admin/household", "Household"),
-                 ("/admin/arcade", "Games"),
-                 ("/admin/community", "Community"),
-                 ("/admin/accounts", "Administrators"),
-                 ("/admin/password", "My password"), ("/admin/audit", "History"),
-                 ("/admin/doors", "Addresses")]
-        nav = '<nav class="nav" aria-label="Administrator pages">' + "".join(
-            f'<a href="{esc(href)}">{esc(label)}</a>' for href, label in links
-        ) + "</nav>"
-        who = f'<p class="hint">Signed in as <b>{esc(ctx.admin["username"])}</b></p>'
-    else:
-        who = ""
+        nav = _admin_nav(ctx)
+        who = (f'<p class="hint">Signed in as <b>{esc(ctx.admin["username"])}</b></p>'
+               + _sign_out(ctx))
+    # The way back to what a reader sees.  The owner's pages sit on one name and a
+    # password; the portal sits on the same name over plain HTTP, so the link is
+    # built from the name this person actually typed.
+    host = (ctx.host if ctx is not None and ctx.host else "ark.lan")
+    back = (f'<p><a href="http://{esc(host)}/">Open the pages a reader sees</a>'
+            ' — the sign-in does not follow you there.</p>')
     sub = f'<p class="tagline">{esc(tagline)}</p>' if tagline else ""
     doc = f"""<!DOCTYPE html>
 <html lang="en">
@@ -269,7 +319,8 @@ def shell(title: str, body: str, *, ctx: Ctx | None = None, status: int = 200,
 <main id="main">
 {body}
 </main>
-  <footer><p><b>Private area.</b> Public readers never see this page or these settings.</p></footer>
+  <footer><p><b>Private area.</b> Public readers never see this page or these settings.</p>
+  {back}</footer>
 </div>
 </body>
 </html>"""
@@ -592,15 +643,31 @@ def _csrf_field(csrf: str) -> str:
 
 @router.post("/logout", response_class=HTMLResponse)
 def logout(request: Request, csrf: str = Form("")):
+    """The way out, as a POST with the form token.
+
+    It changes something — the session is ended on the server, not merely
+    forgotten by the browser — so it is a POST and it is token-checked.  A GET
+    that ends a session can be fired by an image tag on somebody else's page; a
+    POST with a token cannot.  A forged request therefore gains nothing: the
+    session is left exactly as it was and the person stays signed in.
+    """
     if (blocked := _gate_tls(request)) is not None:
         return blocked
     with ark_db.tx() as conn:
         ctx = _load_ctx(conn, request, ark_db.session_epoch(conn))
-        if ctx.session is not None and sec.csrf_ok(ctx.csrf, csrf):
-            sec.drop_session(conn, ctx.session["id"])
-            if ctx.admin is not None:
-                ark_db.audit(conn, action="sign-out", actor_id=ctx.admin["id"],
-                             actor_name=ctx.admin["username"], result="ok")
+        if ctx.session is None:
+            # Already signed out (a second press, or a page left open): the honest
+            # answer is the sign-in form, not "that form expired".
+            response = _redirect("/admin/login")
+            _clear_cookie(response, sec.COOKIE_NAME)
+            _clear_cookie(response, sec.PREAUTH_COOKIE)
+            return response
+        if (blocked := _need_csrf(ctx, csrf)) is not None:
+            return blocked
+        sec.drop_session(conn, ctx.session["id"])
+        if ctx.admin is not None:
+            ark_db.audit(conn, action="sign-out", actor_id=ctx.admin["id"],
+                         actor_name=ctx.admin["username"], result="ok")
     response = _redirect("/admin/login")
     _clear_cookie(response, sec.COOKIE_NAME)
     _clear_cookie(response, sec.PREAUTH_COOKIE)
@@ -610,6 +677,86 @@ def logout(request: Request, csrf: str = Form("")):
 # ---------------------------------------------------------------------------
 #  overview
 # ---------------------------------------------------------------------------
+def _stat(value: str, label: str, *, note: str = "", link: str = "",
+          link_label: str = "") -> str:
+    """One figure on the dashboard: the number, what it counts, and the way in.
+
+    A figure the box could not measure arrives here as *not measured yet* and is
+    printed as words — never as a zero, which would be a claim (the `None` rule).
+    """
+    footnote = f'<span class="sub">{esc(note)}</span>' if note else ""
+    way_in = (f'<a class="more" href="{esc(link)}">{esc(link_label)}</a>'
+              if link and link_label else "")
+    return (f'<li><b>{esc(value)}</b><span class="sub">{esc(label)}</span>'
+            f'{footnote}{way_in}</li>')
+
+
+def _dashboard(health: dict, messages: int) -> str:
+    """The four figures the owner opens this page for.
+
+    Each one is measured here and now: how long the box has been awake, how much
+    room is left on the card, what a reader can open in the File Box, and what is
+    written on the board.  Everything else on this page points at the page that
+    explains it.
+    """
+    room = ark_health.card_room()
+    free, used, total = room["free_bytes"], room["used_bytes"], room["total_bytes"]
+    if free is None or total is None:
+        room_stat = _stat(
+            "not measured yet", "Room left on the card",
+            note="The card did not answer.  Nothing already on it has been touched.")
+    else:
+        # Rounded down, never up: 99.6% free must not be printed as "100% is
+        # free" on a card that has something on it.
+        share = int(100.0 * free / total) if total else 0
+        room_stat = _stat(
+            f"{ark_health.human_size(free)} free",
+            "Room left on the card — the library, the books, the games and the File Box "
+            "all share it",
+            note=f"{ark_health.human_size(used)} of {ark_health.human_size(total)} is in "
+                 f"use, so {share}% is free.",
+            link="/admin/health", link_label="Where the room went")
+
+    awake = ark_health.uptime_seconds()
+    if awake is None:
+        uptime_stat = _stat(
+            "not measured yet", "How long the box has been on",
+            note="This page could not ask the machine how long it has been awake.")
+    else:
+        uptime_stat = _stat(
+            ark_health.uptime_words(awake), "How long the box has been on",
+            note="It counts from the last time the box was switched on or restarted — a "
+                 "power cut starts it again.")
+
+    facts = next((s["facts"] for s in health["sections"] if s["key"] == "files"), {})
+    openable = facts.get("files")
+    if openable is None:
+        files_stat = _stat(
+            "not measured yet", "Files anyone can open in the File Box",
+            note="The shared folder could not be read, so there is no number to give.")
+    else:
+        gone = facts.get("files_missing")
+        if gone is None:
+            note = ("The folder could not be listed, so this counts the records, not the "
+                    "files behind them.")
+        elif gone:
+            note = (f"{gone} record{'s' if gone != 1 else ''} in the list "
+                    f"{'have' if gone != 1 else 'has'} no file behind "
+                    f"{'them' if gone != 1 else 'it'} any more.")
+        else:
+            note = ""
+        files_stat = _stat(
+            f"{openable} file{'' if openable == 1 else 's'}",
+            "Anyone can open these in the File Box", note=note,
+            link="/admin/community", link_label="Look after shared files")
+
+    notes_stat = _stat(
+        f"{messages} message{'' if messages == 1 else 's'}", "On the Message Board",
+        note="Newest last, and every note can be hidden or deleted here.",
+        link="/admin/community", link_label="Community settings")
+    return uptime_stat + room_stat + files_stat + notes_stat
+
+
 @router.get("", response_class=HTMLResponse)
 @router.get("/", response_class=HTMLResponse)
 def overview(request: Request):
@@ -626,7 +773,6 @@ def overview(request: Request):
             " FROM admins ORDER BY id"
         ).fetchall()
         notes = int(conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0])
-        files = int(conn.execute("SELECT COUNT(*) FROM files").fetchone()[0])
         events = conn.execute("SELECT ts, actor_name, action, result FROM audit_log"
                               " ORDER BY id DESC LIMIT 5").fetchall()
         active = sum(1 for a in admins if a["enabled"] and not a["must_change"])
@@ -659,13 +805,21 @@ def overview(request: Request):
         f"<span class=\"sub\">{esc(ago(e['ts']))} · {esc(e['result'])}</span></li>"
         for e in events
     ) or '<li>No recorded activity yet.</li>'
+    stats = _dashboard(health, notes)
     body = f"""
   {_notice("good", f"<b>You are the administrator.</b> {active} enabled "
                    f"account{'s' if active != 1 else ''} on this box.")}
-  <div class="grid">
-    <div class="card"><b>{len(admins)}</b><span class="sub">administrators</span></div>
-    <div class="card"><b>{notes}</b><span class="sub">messages on the board</span></div>
-    <div class="card"><b>{files}</b><span class="sub">shared files</span></div>
+  <h2>This box right now</h2>
+  <p class="note">Measured when you opened this page — not remembered from yesterday.</p>
+  <ul class="stats">{stats}</ul>
+  <h2>Put something on the box</h2>
+  <div class="grid two">
+    <div class="card"><b>Books and games</b>
+      <span class="sub">Choose several files at once and press one button.</span>
+      <a class="go-btn small" href="/admin/upload">Add books and games</a></div>
+    <div class="card"><b>One game of your own</b>
+      <span class="sub">The box reads the file and shows you its words first.</span>
+      <a class="go-btn small" href="/admin/arcade">Add one game</a></div>
   </div>
   <h2>Administrators</h2>
   <table class="plain"><thead><tr><th>Name</th><th>Shown as</th><th>Enabled</th>
@@ -2504,6 +2658,20 @@ def upload_files(request: Request, files: Optional[List[UploadFile]] = File(None
 
 
 
+def _door_link(address: str, host: str) -> str:
+    """The address as something a person can tap, or as words when it cannot be.
+
+    Every door that answers on the name this person is using is a link: the point
+    of this page is that nobody has to type a port number again.  The setup door is
+    printed in full but never linked — it answers on the box itself and nowhere
+    else, so tapping it from a phone would try the phone.
+    """
+    shown = address.replace("{host}", host)
+    if "{host}" not in address or not shown.startswith(("http://", "https://")):
+        return esc(shown)
+    return f'<a href="{esc(shown)}">{esc(shown)}</a>'
+
+
 @router.get("/doors", response_class=HTMLResponse)
 def doors_page(request: Request):
     """Every address on this box, who may open it, and what it is for.
@@ -2518,12 +2686,12 @@ def doors_page(request: Request):
         ctx = _load_ctx(conn, request, ark_db.session_epoch(conn))
         if (blocked := _need_session(ctx, request)) is not None:
             return blocked
-    host = request.url.hostname or "ark.local"
+    host = ctx.host or "ark.local"
     parts = []
     for title, rows in ark_doors.groups():
         body = "".join(
             f"""<tr>
-              <td><b>{esc(door["name"])}</b><span class="sub">{esc(door["address"].replace("{host}", host))}</span></td>
+              <td><b>{esc(door["name"])}</b><span class="sub">{_door_link(door["address"], host)}</span></td>
               <td>{esc(door["who"])}</td>
               <td>{esc(door["what"].replace("{host}", host))}</td>
             </tr>""" for door in rows)

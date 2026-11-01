@@ -75,7 +75,12 @@ page and every admin page still work without it.
 And one door that is NOT on the portal: the owner's door, on its own TLS
 address, for whoever maintains the box.
 
-  https://ark.lan:8443/admin   sign-in + accounts + audit + Community + Games +
+  https://ark.lan:8443/admin   first page: Overview — four figures measured now
+                               (awake for, room on the card, files anyone can
+                               open, messages on the board) and Sign out; then
+                               sign-in + accounts + audit + Community + Games +
+                               Add files (a whole pile of books and games in one
+                               press) + Addresses (every door on the box, linked) +
                                Household (the emergency pages, the household's own
                                answers, and one button that makes the pack) +
                                Network (save a Wi-Fi network, and ask for ONE

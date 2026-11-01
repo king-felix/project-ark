@@ -185,17 +185,68 @@ def tree_bytes(folder: Path) -> int:
     return total
 
 
+def card_room() -> dict:
+    """Free, used and total room on the card, as the filesystem reports it.
+
+    ``free`` is the filesystem's own answer, not ``total - used``: ext4 keeps a
+    slice back for root, and a person asking *how much can I still put on this?*
+    should be told what they can still put on it.  ``None`` anywhere means
+    "could not ask", which every page must print as *not measured yet* rather
+    than as zero.
+    """
+    try:
+        usage = shutil.disk_usage(str(ark_root()))
+    except OSError:
+        return {"free_bytes": None, "used_bytes": None, "total_bytes": None}
+    return {"free_bytes": usage.free, "used_bytes": usage.used, "total_bytes": usage.total}
+
+
 def card_facts() -> dict:
     """What the whole card holds, as the filesystem reports it.
 
     ``None`` means "could not ask", which the pages must show as *not measured
     yet* rather than as zero.
     """
+    room = card_room()
+    return {"card_total_bytes": room["total_bytes"], "card_used_bytes": room["used_bytes"]}
+
+
+def uptime_path() -> Path:
+    """Where the machine says how long it has been awake."""
+    return Path(os.environ.get("ARK_UPTIME_FILE", "/proc/uptime"))
+
+
+def uptime_seconds():
+    """Seconds since the box was switched on, or ``None`` where nothing says.
+
+    ``/proc/uptime`` starts with them.  A machine without the file (the Mac the
+    tests run on) answers ``None``, and the page prints *not measured yet* rather
+    than inventing a figure — the same `None` rule as every other measurement.
+    """
     try:
-        usage = shutil.disk_usage(str(ark_root()))
-    except OSError:
-        return {"card_total_bytes": None, "card_used_bytes": None}
-    return {"card_total_bytes": usage.total, "card_used_bytes": usage.used}
+        first = uptime_path().read_text(encoding="utf-8").split()[0]
+        return max(0, int(float(first)))
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def uptime_words(seconds) -> str:
+    """"3 days, 4 hours" — the two largest parts, in words a person says aloud."""
+    if seconds is None:
+        return "not measured yet"
+    left = max(0, int(seconds))
+    if left < 60:
+        return "less than a minute"
+    parts = []
+    for size, one, many in ((86400, "day", "days"), (3600, "hour", "hours"),
+                            (60, "minute", "minutes")):
+        count = left // size
+        if count:
+            parts.append(f"{count} {one if count == 1 else many}")
+            left -= count * size
+        if len(parts) == 2:
+            break
+    return ", ".join(parts)
 
 
 def storage_breakdown() -> list[dict]:
