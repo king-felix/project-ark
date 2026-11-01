@@ -3655,3 +3655,119 @@ person trusts, whether the button looks like a button on a phone, or whether the
 reads as an invitation rather than a warning. `docs/HUMAN-TEST-LIST.md` §19 is that
 walk-through — ten minutes, a phone, and one **Sign out** press.
 
+
+## 36. The Ark recorded its own hotspot as the home network — 1 Nov 2026
+
+`/etc/ark/ark.env` on the card said:
+
+```
+HOME_WIFI_CONNECTION="ark-hotspot"        ← this box's own broadcast
+BOOT_MODE="hotspot"
+```
+
+So *home* and *the Ark's own access point* were the same profile, and `ark-mode home` did exactly
+this:
+
+1. take the access point down (`nmcli connection down ark-hotspot`);
+2. bring *the access point* back up and call it home;
+3. report success.
+
+The box announced a home network it had never been on, while broadcasting on channel 6 with nobody
+standing next to it — **and it could not be moved onto the house Wi-Fi at all**. Nothing was logged,
+no page said anything, and what the wire shows (a box on its own hotspot, no lease from the router)
+is exactly what a box with **no** home network saved shows. That is why it survived the 31 Oct cold
+boot and a green `90-verify`: no check was ever wrong, and the wrong fact was in a file nothing
+questioned.
+
+The name was written by **phase 7 guessing**. `70-network.sh` used to ask NetworkManager whichever
+wireless profile happened to be up while the installer ran and store it as the network to join at
+home. On 31 Oct 2026 the box was broadcasting, so the observation was `ark-hotspot` — an
+observation turned into a setting. A box cannot join its own broadcast; the question was never one
+NetworkManager could answer from the live link.
+
+### 36.1 Which Wi-Fi is home is a setting, and one library decides it
+
+`pi/lib/home-network.sh` (sourced by phase 7, never executed directly) holds the whole decision, so
+a test can drive it with a stand-in `nmcli`, no root and no radio:
+
+| Function | The question it answers, and what it refuses |
+|---|---|
+| `ark_home_mode(profile)` | what NetworkManager says the profile is *for*: `ap` = this box broadcasting, `infrastructure` = a network to join, nothing at all = a profile this box does not have. A question, not an action — a missing `nmcli` answers `""` |
+| `ark_home_joinable(profile, hotspot)` | **could `ark-mode home` really join it?** The profile exists, it is a station, and it is not the Ark's own access point. The **name check comes first**, so the broadcast is refused even on a machine where `nmcli` cannot answer about its mode |
+| `ark_home_choose(configured, hotspot)` | the name worth recording: the configured one when it can be joined → the build-time profile `home-wifi` → any station profile that is up now (a box whose profile was renamed still has the right network saved). One name, or **nothing at all** — an empty answer is a fact to say out loud, never a name to invent |
+| `ark_home_record(env, configured, hotspot)` | writes `HOME_WIFI_CONNECTION` into `ark.env` and answers `kept` / `recorded` / `none` / `no-file` / `unwritable` in `ARK_HOME_RESULT`. Temp file → read back → **only then** `mv` into place, with the original mode preserved, so a cut can never leave `ark.env` half-written (§8.8 rule 17) and a wrong answer is never believed before it is proved |
+
+Phase 7 now sources it and ends on one of three sentences: *home network: "…" (a network this box
+can join)*; *home network repaired in `/etc/ark/ark.env`: was "ark-hotspot" (not a network this box
+can join — the Ark's own access point is never home), now "home-wifi"*; or *no saved Wi-Fi this box
+could join — it keeps broadcasting until one is saved*, naming the owner's own page and
+`ark-wifi-add`. **A refusal therefore happens at install time, on the console, instead of a month
+later on a hotspot.** `none` is not a failure: a box with no saved Wi-Fi is a supported state, and
+nothing is written for it.
+
+Staging still makes the first branch the usual one: `staging/firstrun.sh` saves the build-time Wi-Fi
+as the profile **`home-wifi`**, and phase 2 writes that name into `ark.env`. Nothing in the library
+switches the radio and nothing there writes anything but `ark.env`.
+
+### 36.2 What the console does with a name it cannot use
+
+| Situation | Before | Now |
+|---|---|---|
+| `ark-mode home`, home is the AP | took the AP down, brought the AP back up, reported success | `home_problem()` returns one sentence and `cmd_home` dies on it **before the radio is touched**: *"\"ark-hotspot\" is the Ark's own access point, so there is no home network to join — set HOME_WIFI_CONNECTION in /etc/ark/ark.env to the Wi-Fi this box should join (the profile saved at build time is \"home-wifi\"), or save one on the owner's Network page"*. The only unusable answer that gets a sentence of its own is *this name is the box's own broadcast* — a name this machine has no profile for is caught by the join failing (the next row), so nothing has to guess about `nmcli` to refuse |
+| `ark-mode home`, the join fails | left the box dark — AP down, nothing up | the AP is **re-raised** before the failure is reported, because the box may never end up somewhere nobody is standing next to it |
+| `ark-mode hotspot --auto` (the watchdog's rescue) while home is the AP | `nmcli connection down ark-hotspot` — it took down the very access point it was bringing up, and dropped whoever was reading | the AP is **not** deactivated when home is the AP: one profile, one action |
+| `ark-mode auto` with an unusable home name | *"looking for home…"* and then nothing | the search is **suppressed** and the reason printed — a sentence about a network that cannot exist is a lie with a delay |
+| `ark-mode status` | `home network` printed whatever was in the file, including the AP, with no hint | prints `home network` **and** `cannot join` beside it when the stored name is this box's own access point, and stays silent when it is not. A name with no profile is printed as it stands: the console does not invent a verdict it cannot prove (`ark_home_joinable()` in `lib/home-network.sh` is what asks the radio, and it is the installer's question, not the status line's) |
+
+The watchdog is unchanged and still right: a pin suppresses only the **return home**, and
+`ark-mode hotspot --auto` deliberately leaves no pin, so *the box did this* stays distinguishable
+from *the owner said so* (§5, §8.7).
+
+### 36.3 What proves it
+
+`tests/test_network.py` gained two sections: the library driven against a fake radio, and the
+**real** `ark-mode` driven with a stand-in `nmcli` first on `PATH` (`ARK_MODE_REHEARSAL=1`, a
+throwaway `MODE_FILE`/`PIN_FILE`, so no real profile and no radio is touched) — eleven new test
+functions, **15 collected** (one is parametrized five ways), so that file is **47 collected** where
+it was **32** and the whole suite is **632 passed, 2 skipped**.
+
+| Test | Holds |
+|---|---|
+| `test_a_network_the_box_could_not_join_is_never_called_home` (parametrized: the right network, the AP named as an AP, the AP named as a station, an empty name, a profile that has never been saved) | `ark_home_joinable()`'s answers, including the box's own broadcast however `nmcli` describes it |
+| `test_the_installer_repairs_a_home_network_that_is_the_boxes_own_hotspot` | the 31 Oct 2026 file exactly: `ark-hotspot` in, `home-wifi` out, `kept`/`recorded` reported honestly |
+| `test_a_home_network_that_is_already_right_is_left_exactly_as_it_was` | a correct file is byte-identical afterwards — no rewrite, no churn |
+| `test_a_box_with_nothing_it_could_join_records_nothing_and_invents_no_name` | `none`: nothing written, no name made up |
+| `test_a_renamed_profile_that_is_up_now_is_still_a_home_network` | the fallback that saves a renamed box |
+| `test_a_file_that_never_held_a_home_network_gets_the_line_kept_beside_the_rest` | the append path, and the rest of `ark.env` untouched |
+| `test_the_installer_asks_the_library_and_never_guesses_from_the_radio` | phase 7 calls `ark_home_record` and holds **no** `nmcli … --active` guess of its own any more |
+| `test_going_home_where_home_is_the_boxes_own_hotspot_is_refused_before_the_radio` | the refusal **and** that no `nmcli` command ran |
+| `test_the_rescue_never_takes_down_the_access_point_it_is_bringing_up` | `hotspot --auto` when home is the AP: no `down`, nobody dropped |
+| `test_a_home_network_that_does_not_answer_puts_the_access_point_back` | the failed join re-raises the AP and still exits non-zero |
+| `test_a_status_line_names_the_home_network_and_says_when_it_cannot_join_it` | `status` says `cannot join`, and says nothing when it can |
+
+`bash -n` is clean on `pi/lib/home-network.sh`, `pi/steps/70-network.sh` and `pi/bin/ark-mode`, and
+`python3 -m py_compile` on the test file.
+
+### 36.4 What is still not proved, and what the card still needs
+
+No box has run the corrected phase. The fix is on `feature/admin-hardening`; the live card still
+carries `HOME_WIFI_CONNECTION="ark-hotspot"`, written by the 31 Oct install. What has to happen on
+the card, in this order — **and the Ethernet cable must not come out before step 5 answers a DHCP
+lease**:
+
+1. deploy the branch (`--only 70-network,60-portal`, then `--only 90-verify`) — phase 7 repairs the
+   file and says *home network repaired in /etc/ark/ark.env: was "ark-hotspot" … now "home-wifi"*;
+2. read it back: `grep HOME_WIFI_CONNECTION /etc/ark/ark.env` and `ark-mode status` (the
+   `cannot join` line must be gone);
+3. if the house network is not already saved as `home-wifi`, save it —
+   `printf '%s\n' 'the passphrase' | sudo ark-wifi-add --ssid "House of Leaves-5G-1"` — **saving
+   never joins** (`autoconnect=no`), which is deliberate;
+4. `sudo ark-mode home` and watch `nmcli -t -f NAME,DEVICE connection show --active`;
+5. `ip -4 addr show wlan0`, and answer an SSH session over that address, before anything is
+   unplugged;
+6. only then decide what a cold boot does (`BOOT_MODE`, or `sudo ark-mode home` to pin it). A plain
+   reboot with `BOOT_MODE="hotspot"` and a pin puts the box back on the hotspot — that trap is the
+   reason this section exists.
+
+**Unproved by any test:** that a real NetworkManager joins what this code chose (step 4), and that
+the box comes back after a power cut on somebody else's Wi-Fi (`docs/HUMAN-TEST-LIST.md` §17).

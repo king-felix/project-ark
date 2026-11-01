@@ -71,6 +71,7 @@ WIFI_DEV="${WIFI_DEV:-wlan0}"
 
 say()  { printf '%s\n' "$*"; }
 die()  { printf 'ark-mode: %s\n' "$*" >&2; exit 1; }
+warn() { printf 'ark-mode: %s\n' "$*" >&2; }
 
 need_root() { [[ "${EUID:-$(id -u)}" -eq 0 ]] || die "run this as root (sudo ark-mode $*)"; }
 
@@ -164,7 +165,30 @@ activate() { # <profile> -> 0 when it comes up
 
 deactivate() { nmcli connection down "$1" >/dev/null 2>&1 || true; }
 
+# The Ark's own access point can never be "home": a box cannot join its own
+# broadcast.  Phase 7 used to work out which network "home" was by looking at
+# whatever wireless profile happened to be up while it ran — and on 31 Oct 2026
+# the box was broadcasting, so it recorded "ark-hotspot" as the home network.
+# Every `ark-mode home` after that then "joined the home network" by bringing the
+# access point back up: the box said it was home, was not, and could not be moved
+# onto the house Wi-Fi at all — with nothing logged and nothing on any page saying
+# so (docs/IMPLEMENTATION-LOG.md §36).  One sentence, in one place, so the
+# console, the watchdog and the status line all say the same thing.
+home_problem() {
+  # HOME_WIFI_CONNECTION is defaulted to the build-time profile at the top of this
+  # file, so the only unusable answer left is the one that cannot be joined at
+  # all: a name that is this box's own broadcast.  A profile that is *missing*
+  # needs no sentence of its own — nmcli fails, home_up returns 1, and the caller
+  # says which name it could not join, which is the useful thing to know.
+  if [[ "$HOME_WIFI_CONNECTION" == "$HOTSPOT_CONNECTION" ]]; then
+    printf '%s' "\"$HOME_WIFI_CONNECTION\" is the Ark's own access point, so there is no home network to join — set HOME_WIFI_CONNECTION in $ENV_FILE to the Wi-Fi this box should join (the profile saved at build time is \"home-wifi\"), or save one on the owner's Network page"
+  fi
+}
+
 home_up() {
+  local problem
+  problem="$(home_problem)"
+  if [[ -n "$problem" ]]; then warn "$problem"; return 1; fi
   is_active "$HOME_WIFI_CONNECTION" && { set_mode home; return 0; }
   nmcli --wait "$HOME_WIFI_TIMEOUT" connection up "$HOME_WIFI_CONNECTION" >/dev/null 2>&1 || true
   if is_active "$HOME_WIFI_CONNECTION"; then set_mode home; return 0; fi
@@ -172,7 +196,10 @@ home_up() {
 }
 
 hotspot_up() {
-  deactivate "$HOME_WIFI_CONNECTION"
+  # Never take the access point down to bring the access point up: when a stored
+  # home network is (wrongly) the hotspot's own name, the old line here bounced
+  # the AP on every rescue and dropped whoever was reading (§36).
+  [[ "$HOME_WIFI_CONNECTION" != "$HOTSPOT_CONNECTION" ]] && deactivate "$HOME_WIFI_CONNECTION"
   activate "$HOTSPOT_CONNECTION" || return 1
   is_active "$HOTSPOT_CONNECTION" || return 1
   set_mode hotspot
@@ -209,7 +236,9 @@ lan_up() { # [target]
 
 cmd_auto() {
   unpin                       # "auto" is the box deciding for itself
-  say "looking for the home network \"$HOME_WIFI_CONNECTION\" (up to ${HOME_WIFI_TIMEOUT}s)"
+  if [[ -z "$(home_problem)" ]]; then
+    say "looking for the home network \"$HOME_WIFI_CONNECTION\" (up to ${HOME_WIFI_TIMEOUT}s)"
+  fi
   if home_up; then
     is_active "$HOTSPOT_CONNECTION" && deactivate "$HOTSPOT_CONNECTION"
     say "joined the home network — the Ark is reachable at its usual address"
@@ -221,8 +250,20 @@ cmd_auto() {
 }
 
 cmd_home() {
+  local problem
+  # Refuse BEFORE the access point is touched.  With nothing to join, "going
+  # home" would close the hotspot and leave the box dark — a reader on the Wi-Fi
+  # with nowhere to go, and a person at the console with no way back but a reboot.
+  problem="$(home_problem)"
+  [[ -z "$problem" ]] || die "$problem"
   is_active "$HOTSPOT_CONNECTION" && deactivate "$HOTSPOT_CONNECTION"
-  home_up || die "could not join \"$HOME_WIFI_CONNECTION\" — is it saved on this machine?"
+  if ! home_up; then
+    # Nothing answered: the access point goes back up rather than the box going
+    # dark.  §8.8 rule 10 is about the watchdog, and it applies to a console
+    # command for exactly the same reason.
+    hotspot_up || die "could not join \"$HOME_WIFI_CONNECTION\" and could not start the hotspot either (check: journalctl -u NetworkManager)"
+    die "could not join \"$HOME_WIFI_CONNECTION\" — is it saved on this machine? Broadcasting again instead."
+  fi
   pin home
   say "back on \"$HOME_WIFI_CONNECTION\" — the watchdog will keep it that way"
 }
@@ -422,7 +463,7 @@ cmd_boot() {
 }
 
 cmd_status() {
-  local mode ip4 portal held
+  local mode ip4 portal held home_note
   mode="$(cat "$MODE_FILE" 2>/dev/null || echo unknown)"
   held="$(pinned)"
   # A question this machine cannot answer is "none"/"000", never a dead script:
@@ -434,6 +475,11 @@ cmd_status() {
   printf '   mode          : %s\n' "$mode"
   printf '   chosen by     : %s\n' "$([[ -n "$held" ]] && echo "owner ($held)" || echo auto)"
   printf '   at boot       : %s (BOOT_MODE)\n' "${BOOT_MODE:-hotspot}"
+  printf '   home network  : %s\n' "${HOME_WIFI_CONNECTION:-none}"
+  # The one fault that used to be silent: a home network this box cannot join,
+  # because the stored name is this box's own access point (§36).
+  home_note="$(home_problem)"
+  [[ -z "$home_note" ]] || printf '   cannot join   : %s\n' "$home_note"
   printf '   lan request   : %s\n' "$(lan_request_words)"
   printf '   wifi address  : %s\n' "${ip4:-none}"
   printf '   portal        : HTTP %s on 127.0.0.1\n' "$portal"

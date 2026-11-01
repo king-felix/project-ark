@@ -11,6 +11,14 @@ ways the answer must never cost a reader anything:
 The decision is a shell function, so these tests run the real script under
 ``bash`` rather than re-implementing it: ``--decide`` needs no radio, no root and
 no NetworkManager, and the observer is driven by a fake ``nmcli``/``iw``.
+
+The last section is the other question the same subject asks, and it is the one
+that went wrong on 31 Oct 2026: **which Wi-Fi is "home"?**  Phase 7 used to answer
+it from whichever wireless link was up while the installer ran, so a box that was
+broadcasting recorded its own access point as the network to go home to
+(``docs/IMPLEMENTATION-LOG.md`` §36).  ``pi/lib/home-network.sh`` is the one place
+that decides now, and it is driven here through a stand-in ``nmcli`` — the same
+script the phase sources, no root and no radio.
 """
 
 from __future__ import annotations
@@ -298,4 +306,362 @@ def test_the_watchdog_writes_its_counters_in_one_move():
     assert '>"$tmp"' in body, "the bytes go to the temp file"
     assert 'mv -f "$tmp" "$STATE"' in body, "and are published by one rename"
     assert '>"$STATE"' not in body, "nothing writes the real file in place"
+
+
+# ---------------------------------------------------------------------------
+#  ...and the other half of the same subject: which Wi-Fi is "home"?
+#
+#  "Home" is a network the Ark JOINS, so the box's own access point can never be
+#  it — however the radio happens to be configured while an installer runs.  Phase
+#  7 used to guess from the active link, and on 31 Oct 2026 it recorded
+#  "ark-hotspot" as the network to go home to, after which `ark-mode home`
+#  "joined" the home network by bringing the access point back up
+#  (docs/IMPLEMENTATION-LOG.md §36).
+#
+#  The decision lives in pi/lib/home-network.sh, which the phase sources; these
+#  tests source the same file and drive it with a stand-in nmcli.
+# ---------------------------------------------------------------------------
+HOME_LIB = REPO / "pi" / "lib" / "home-network.sh"
+NETWORK_STEP = REPO / "pi" / "steps" / "70-network.sh"
+
+# A stand-in for NetworkManager that answers the two questions the decision asks
+# and nothing else: what a saved profile is *for*, and what is joined right now.
+# Entries are separated by ";" — never by a space — because a Wi-Fi name may hold
+# spaces ("House of Leaves-5G-1"), and a fake that split on whitespace would make
+# a real network name untestable.
+#   FAKE_PROFILES = "name:mode;name:mode"   "ap" is this box broadcasting
+#   FAKE_ACTIVE   = "name:type;name:type"   what `connection show --active` lists
+FAKE_NMCLI_HOME = """#!/bin/sh
+if [ "${1:-}" = "-g" ]; then
+  IFS=';'
+  for pair in ${FAKE_PROFILES:-}; do
+    if [ "${pair%%:*}" = "${5:-}" ]; then
+      printf '%s\\n' "${pair#*:}"
+      exit 0
+    fi
+  done
+  printf "Error: unknown connection '%s'.\\n" "${5:-}" >&2
+  exit 10
+fi
+if [ "${1:-}" = "-t" ]; then
+  IFS=';'
+  for pair in ${FAKE_ACTIVE:-}; do
+    printf '%s\\n' "$pair"
+  done
+  exit 0
+fi
+exit 0
+"""
+
+# ark.env as the box really holds it, and the shape phase 7 repairs.
+ARK_ENV = '''# Project ARK — settings the phases and services read.
+HOTSPOT_SSID="The-Ark-Offline"
+HOTSPOT_CONNECTION="ark-hotspot"
+HOME_WIFI_CONNECTION="{home}"
+BOOT_MODE="hotspot"
+'''
+
+JOINABLE = '''if ark_home_joinable "$1" "$2"; then echo joinable; else echo no; fi
+'''
+
+RECORD = '''rc=0
+ark_home_record "$1" "$2" "$3" || rc=$?
+printf 'result=%s\\nname=%s\\nrc=%s\\n' "$ARK_HOME_RESULT" "$ARK_HOME_NAME" "$rc"
+'''
+
+
+@pytest.fixture()
+def home_radio(tmp_path):
+    """A stand-in nmcli on disk: the decision is asked for real, by name."""
+    folder = tmp_path / "homebin"
+    folder.mkdir()
+    nmcli = folder / "nmcli"
+    nmcli.write_text(FAKE_NMCLI_HOME, encoding="utf-8")
+    nmcli.chmod(0o755)
+    return folder
+
+
+def run_home(script, radio, *, profiles="", active="", args=()):
+    """Run a snippet with the library sourced, the way phase 7 runs it."""
+    env = {**os.environ,
+           "PATH": f"{radio}:{os.environ.get('PATH', '')}",
+           "FAKE_PROFILES": profiles,
+           "FAKE_ACTIVE": active}
+    for name in ("HOME_WIFI_CONNECTION", "HOTSPOT_CONNECTION", "ARK_HOME_PROFILE",
+                 "ARK_HOTSPOT_AP"):
+        env.pop(name, None)          # the shell this runs in is not this box
+    body = 'set -Eeuo pipefail\n. "%s"\n%s' % (HOME_LIB, script)
+    return subprocess.run(["bash", "-c", body, "home", *[str(a) for a in args]],
+                          capture_output=True, text=True, env=env, timeout=60)
+
+
+def ark_env(tmp_path, *, home="ark-hotspot"):
+    """A throwaway ark.env whose home network is wrong, as the box's was."""
+    path = tmp_path / "ark.env"
+    path.write_text(ARK_ENV.format(home=home), encoding="utf-8")
+    return path
+
+
+def record(env_file, configured, radio, *, profiles="", active="", hotspot="ark-hotspot"):
+    """One `ark_home_record`, and the two facts it leaves for its caller."""
+    done = run_home(RECORD, radio, profiles=profiles, active=active,
+                    args=(env_file, configured, hotspot))
+    assert done.returncode == 0, f"{done.stdout}\n{done.stderr}"
+    return dict(line.split("=", 1) for line in done.stdout.strip().splitlines())
+
+
+@pytest.mark.parametrize("profile, mode, expected", [
+    ("home-wifi", "infrastructure", True),      # the build-time network
+    ("ark-hotspot", "ap", False),               # this box's own broadcast
+    ("ark-hotspot", "infrastructure", False),   # the NAME refuses it even so
+    ("", "infrastructure", False),              # nothing is not a network
+    ("never-saved", "", False),                 # no such profile on the machine
+])
+def test_a_network_the_box_could_not_join_is_never_called_home(home_radio, profile, mode,
+                                                               expected):
+    """One rule, shared by the phase and `ark-mode home`: a profile this box really
+    has, that is a station, and that is not the Ark's own access point."""
+    profiles = f"{profile}:{mode}" if profile else ""
+    done = run_home(JOINABLE, home_radio, profiles=profiles, args=(profile, "ark-hotspot"))
+    assert done.stdout.strip() == ("joinable" if expected else "no"), done.stderr
+
+
+def test_the_installer_repairs_a_home_network_that_is_the_boxes_own_hotspot(tmp_path,
+                                                                          home_radio):
+    """The defect, end to end: the box is broadcasting, ark.env says "ark-hotspot",
+    and the phase records the network this box can really join instead."""
+    env_file = ark_env(tmp_path, home="ark-hotspot")
+    env_file.chmod(0o644)
+
+    said = record(env_file, "ark-hotspot", home_radio,
+                  profiles="ark-hotspot:ap;home-wifi:infrastructure",
+                  active="ark-hotspot:802-11-wireless")
+
+    assert said["result"] == "recorded", said
+    assert said["name"] == "home-wifi", said
+    text = env_file.read_text(encoding="utf-8")
+    assert 'HOME_WIFI_CONNECTION="home-wifi"' in text
+    assert 'HOME_WIFI_CONNECTION="ark-hotspot"' not in text
+    # ...and nothing else in the file was rewritten on the way past.
+    assert 'BOOT_MODE="hotspot"' in text
+    assert 'HOTSPOT_CONNECTION="ark-hotspot"' in text
+    assert env_file.stat().st_mode & 0o777 == 0o644, "the mode the box reads it with"
+    assert not list(tmp_path.glob("ark.env.ark-home.*")), "no half-written copy left behind"
+
+
+def test_a_home_network_that_is_already_right_is_left_exactly_as_it_was(tmp_path,
+                                                                      home_radio):
+    """A phase that is re-run must not rewrite a correct answer — that is how an
+    installer turns a setting into a habit."""
+    env_file = ark_env(tmp_path, home="home-wifi")
+    before = env_file.read_text(encoding="utf-8")
+
+    said = record(env_file, "home-wifi", home_radio,
+                  profiles="ark-hotspot:ap;home-wifi:infrastructure",
+                  active="home-wifi:802-11-wireless")
+
+    assert said["result"] == "kept", said
+    assert said["name"] == "home-wifi"
+    assert env_file.read_text(encoding="utf-8") == before
+
+
+def test_a_box_with_nothing_it_could_join_records_nothing_and_invents_no_name(tmp_path,
+                                                                           home_radio):
+    """A wrong name is a fact to report, never a hole to fill with a guess: with only
+    the access point saved, the file keeps saying so and the phase says it out loud."""
+    env_file = ark_env(tmp_path, home="ark-hotspot")
+    before = env_file.read_text(encoding="utf-8")
+
+    said = record(env_file, "ark-hotspot", home_radio,
+                  profiles="ark-hotspot:ap",
+                  active="ark-hotspot:802-11-wireless")
+
+    assert said["result"] == "none", said
+    assert said["name"] == "", said
+    assert env_file.read_text(encoding="utf-8") == before
+
+
+def test_a_renamed_profile_that_is_up_now_is_still_a_home_network(tmp_path, home_radio):
+    """The build-time profile may be gone and the house network saved under another
+    name — a station that is up is somewhere this box can join, whatever it is
+    called, so a box set up by hand is not left broadcasting for ever."""
+    env_file = ark_env(tmp_path, home="ark-hotspot")
+
+    said = record(env_file, "ark-hotspot", home_radio,
+                  profiles="ark-hotspot:ap;House of Leaves-5G-1:infrastructure",
+                  active="House of Leaves-5G-1:802-11-wireless")
+
+    assert said["result"] == "recorded", said
+    assert said["name"] == "House of Leaves-5G-1", said
+    assert ('HOME_WIFI_CONNECTION="House of Leaves-5G-1"'
+            in env_file.read_text(encoding="utf-8"))
+
+
+def test_a_file_that_never_held_a_home_network_gets_the_line_kept_beside_the_rest(tmp_path,
+                                                                                home_radio):
+    """An older ark.env has no such line; the repair adds one and keeps every other."""
+    env_file = tmp_path / "ark.env"
+    env_file.write_text('BOOT_MODE="hotspot"\nHOTSPOT_CONNECTION="ark-hotspot"\n',
+                        encoding="utf-8")
+
+    said = record(env_file, "", home_radio, profiles="home-wifi:infrastructure")
+
+    assert said["result"] == "recorded", said
+    assert said["name"] == "home-wifi"
+    text = env_file.read_text(encoding="utf-8")
+    assert 'HOME_WIFI_CONNECTION="home-wifi"' in text
+    assert 'BOOT_MODE="hotspot"' in text and 'HOTSPOT_CONNECTION="ark-hotspot"' in text
+
+
+def test_the_installer_asks_the_library_and_never_guesses_from_the_radio():
+    """The regression itself: the phase must not go back to reading the active link.
+
+    `connection show --active` is the observation that recorded "ark-hotspot" as the
+    home network.  It belongs in the library's fallback for a *renamed* profile, and
+    nowhere in the phase."""
+    step = NETWORK_STEP.read_text(encoding="utf-8")
+    assert '. "$ARK_SRC/lib/home-network.sh"' in step
+    assert 'ark_home_record "$ENV_FILE"' in step
+    assert "connection show --active" not in step
+    assert "sed -i" not in step           # ark.env is repaired by the library, in one move
+    assert HOME_LIB.is_file()
+    lib = HOME_LIB.read_text(encoding="utf-8")
+    for name in ("ark_home_mode", "ark_home_joinable", "ark_home_choose", "ark_home_record"):
+        assert name in lib, name
+
+
+# ---------------------------------------------------------------------------
+#  ...and the console side of the same fault.
+#
+#  Recording the wrong name was half of it; the other half was what the script did
+#  with it.  `ark-mode home` took the access point down first and then "joined the
+#  home network" by bringing the access point back up, and `hotspot_up()` (the
+#  watchdog's own rescue) deactivated "$HOME_WIFI_CONNECTION" before activating the
+#  AP — which, with home (wrongly) the AP's own name, bounced the access point on
+#  every rescue and dropped whoever was reading it (§36).
+#
+#  These drive the real pi/bin/ark-mode: ARK_MODE_REHEARSAL=1 is the script's own
+#  door (it skips only the root check), the state files are throwaway, and the
+#  nmcli first on PATH is a stand-in that records every word it is given.
+# ---------------------------------------------------------------------------
+FAKE_NMCLI_MODE = """#!/bin/sh
+printf '%s\\n' "$*" >> "$FAKE_LOG"
+case "${1:-}" in
+  -t) cat "$FAKE_ACTIVE_STATE" 2>/dev/null; exit 0 ;;
+  --wait)
+     shift 2
+     if [ "${1:-}" = "connection" ] && [ "${2:-}" = "up" ] && [ -n "${3:-}" ]; then
+       if [ "${FAKE_FAIL_UP:-0}" = "1" ] && [ "${3:-}" != "$FAKE_AP" ]; then exit 10; fi
+       printf '%s\\n' "$3" >> "$FAKE_ACTIVE_STATE"
+     fi
+     exit 0 ;;
+  connection)
+     if [ "${2:-}" = "down" ] && [ -n "${3:-}" ]; then
+       grep -Fxv "$3" "$FAKE_ACTIVE_STATE" > "$FAKE_ACTIVE_STATE.tmp" 2>/dev/null || true
+       [ -e "$FAKE_ACTIVE_STATE.tmp" ] && mv -f "$FAKE_ACTIVE_STATE.tmp" "$FAKE_ACTIVE_STATE"
+     fi
+     exit 0 ;;
+esac
+exit 0
+"""
+
+
+def run_mode(tmp_path, *args, home="ark-hotspot", active="", fail_up=False):
+    """Run the real `ark-mode` against a stand-in radio and throwaway state files."""
+    radio = tmp_path / "modebin"
+    radio.mkdir(parents=True, exist_ok=True)
+    nmcli = radio / "nmcli"
+    nmcli.write_text(FAKE_NMCLI_MODE, encoding="utf-8")
+    nmcli.chmod(0o755)
+    log = tmp_path / "nmcli.log"
+    log.write_text("", encoding="utf-8")
+    state = tmp_path / "active.txt"
+    state.write_text(active, encoding="utf-8")
+    mode_file = tmp_path / "mode"
+    mode_file.write_text("hotspot\n", encoding="utf-8")
+    pin_file = tmp_path / "mode.pinned"
+    env = {**os.environ,
+           "PATH": f"{radio}:{os.environ.get('PATH', '')}",
+           "ARK_MODE_REHEARSAL": "1",
+           "FAKE_LOG": str(log),
+           "FAKE_ACTIVE_STATE": str(state),
+           "FAKE_AP": "ark-hotspot",
+           "FAKE_FAIL_UP": "1" if fail_up else "0",
+           "HOME_WIFI_CONNECTION": home,
+           "HOTSPOT_CONNECTION": "ark-hotspot",
+           "HOTSPOT_SSID": "The-Ark-Offline",
+           "HOTSPOT_ADDRESS": "10.42.0.1",
+           "HOME_WIFI_TIMEOUT": "1",
+           "MODE_FILE": str(mode_file),
+           "PIN_FILE": str(pin_file),
+           "LAN_REQUEST_FILE": str(tmp_path / "lan-request"),
+           "WIFI_DEV": "wlan0"}
+    done = subprocess.run(["bash", str(MODE), *[str(a) for a in args]],
+                          capture_output=True, text=True, env=env, timeout=60)
+    said = log.read_text(encoding="utf-8").splitlines()
+    return SimpleNamespace(done=done, calls=[line for line in said if line],
+                           mode=mode_file, pin=pin_file, state=state)
+
+
+def test_going_home_where_home_is_the_boxes_own_hotspot_is_refused_before_the_radio(tmp_path):
+    """The defect in one command: with "ark-hotspot" stored as home, `ark-mode home`
+    took the access point down, brought it back up, and then reported "back on
+    »home«" about a network the box had never joined.  It answers with a sentence
+    now — and touches nothing on its way to saying no."""
+    said = run_mode(tmp_path, "home", home="ark-hotspot", active="ark-hotspot\n")
+
+    assert said.done.returncode == 1, f"{said.done.stdout}\n{said.done.stderr}"
+    assert "own access point" in said.done.stderr, said.done.stderr
+    assert said.calls == [], f"nothing was asked of the radio: {said.calls}"
+    assert not said.pin.exists(), "a refusal must not pin the box anywhere"
+    assert said.mode.read_text(encoding="utf-8") == "hotspot\n", "nor claim a mode it is not in"
+    assert said.state.read_text(encoding="utf-8") == "ark-hotspot\n", "the AP was left alone"
+
+
+def test_the_rescue_never_takes_down_the_access_point_it_is_bringing_up(tmp_path):
+    """`hotspot_up()` deactivated "$HOME_WIFI_CONNECTION" first.  With home (wrongly)
+    the AP's own name that was a bounce of the access point on every rescue — which
+    drops a reader mid-page — so the line is skipped when the two are one name."""
+    said = run_mode(tmp_path, "hotspot", "--auto", home="ark-hotspot",
+                    active="ark-hotspot\n")
+
+    assert said.done.returncode == 0, said.done.stderr
+    assert not [c for c in said.calls if c.startswith("connection down")], said.calls
+    assert said.mode.read_text(encoding="utf-8") == "hotspot\n"
+    assert not said.pin.exists(), "--auto is the Ark doing it to itself, so it leaves no pin"
+
+
+def test_a_home_network_that_does_not_answer_puts_the_access_point_back(tmp_path):
+    """Nothing answered the join, so the box must not be left dark: the hotspot comes
+    back up and the console says what failed and what happened instead (§8.8 rule 10,
+    which applies to a console command exactly as it does to the watchdog)."""
+    said = run_mode(tmp_path, "home", home="home-wifi", active="ark-hotspot\n", fail_up=True)
+
+    assert said.done.returncode == 1, f"{said.done.stdout}\n{said.done.stderr}"
+    assert '"home-wifi"' in said.done.stderr, said.done.stderr
+    assert "Broadcasting again instead" in said.done.stderr, said.done.stderr
+    up = said.state.read_text(encoding="utf-8").strip()
+    assert up == "ark-hotspot", f"the access point is up again: {up!r}"
+    assert said.mode.read_text(encoding="utf-8") == "hotspot\n"
+    assert not said.pin.exists(), "a failed join must not pin the box to home"
+
+
+def test_a_status_line_names_the_home_network_and_says_when_it_cannot_join_it(tmp_path):
+    """The console and the owner's page must not disagree about an unusable answer:
+    the status says which name is stored and, in one plain sentence, why it is no
+    use — and stays silent about the second line when the answer is fine.  `status`
+    needs no root (§33.4)."""
+    broken = run_mode(tmp_path / "broken", "status", home="ark-hotspot",
+                      active="ark-hotspot\n")
+    assert broken.done.returncode == 0, broken.done.stderr
+    out = broken.done.stdout
+    assert "home network  : ark-hotspot" in out, out
+    assert "cannot join   : " in out, out
+    assert "own access point" in out, out
+
+    fine = run_mode(tmp_path / "fine", "status", home="home-wifi", active="ark-hotspot\n")
+    assert fine.done.returncode == 0, fine.done.stderr
+    assert "home network  : home-wifi" in fine.done.stdout, fine.done.stdout
+    assert "cannot join" not in fine.done.stdout, fine.done.stdout
+
 

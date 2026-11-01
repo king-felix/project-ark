@@ -30,21 +30,6 @@ ark_apt_install network-manager dnsmasq-base iw
 rfkill unblock wifi >/dev/null 2>&1 || true          # a soft block survives reboots
 ark_ok "wifi radio present and unblocked ($WIFI_DEV)"
 
-# ---- remember which network we are actually on ------------------------------
-# The Pi was provisioned with the home Wi-Fi; its NetworkManager profile has a
-# name nobody would guess, so store it for ark-mode to use.
-home="$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null \
-        | awk -F: '$2 ~ /wireless/ {print $1; exit}')"
-if [[ -n "${home:-}" && "$home" != "${HOME_WIFI_CONNECTION:-}" ]]; then
-  if [[ "${HOME_WIFI_CONNECTION:-home-wifi}" == "home-wifi" ]]; then
-    sed -i "s|^HOME_WIFI_CONNECTION=.*|HOME_WIFI_CONNECTION=\"$home\"|" "$ENV_FILE"
-    HOME_WIFI_CONNECTION="$home"
-    ark_ok "home network recorded as \"$home\" in $ENV_FILE"
-  else
-    ark_info "keeping the home network already configured: $HOME_WIFI_CONNECTION"
-  fi
-fi
-
 # ---- the access point -------------------------------------------------------
 if ! nmcli -t -f NAME connection show 2>/dev/null | grep -Fxq "$HOTSPOT_CONNECTION"; then
   ark_info "creating the hotspot profile \"$HOTSPOT_CONNECTION\""
@@ -66,6 +51,37 @@ nmcli connection modify "$HOTSPOT_CONNECTION" \
   ipv6.method               ignore \
   connection.autoconnect    no
 ark_ok "hotspot profile ready: ssid \"$HOTSPOT_SSID\", $HOTSPOT_ADDRESS/24, channel $HOTSPOT_CHANNEL"
+
+# ---- remember which network this box joins at home --------------------------
+# "Home" is a network the Ark JOINS, so it can never be the Ark's own access
+# point.  This block used to store whichever wireless profile happened to be up
+# while the phase ran — and on 31 Oct 2026 that was "ark-hotspot", because the
+# box was broadcasting.  Every `ark-mode home` after that "joined the home
+# network" by bringing the access point back up: the box reported a home network
+# it was never on, and it could not be moved onto the house Wi-Fi at all —
+# silently (docs/IMPLEMENTATION-LOG.md §36).  Which network to join is a
+# *setting*, not an observation: staging/firstrun.sh saves the build-time Wi-Fi
+# as "home-wifi", phase 2 writes that name into ark.env, and the owner's Network
+# page saves more.  The decision itself lives in lib/home-network.sh so a test
+# can drive it against a stand-in nmcli with no root and no radio.
+# shellcheck source=../lib/home-network.sh
+. "$ARK_SRC/lib/home-network.sh"
+
+configured="${HOME_WIFI_CONNECTION:-$ARK_HOME_PROFILE}"
+if ! ark_home_record "$ENV_FILE" "$configured" "$HOTSPOT_CONNECTION"; then
+  ark_die "$ENV_FILE could not be written with the home network (${ARK_HOME_RESULT}) — fix HOME_WIFI_CONNECTION by hand before going on"
+fi
+case "$ARK_HOME_RESULT" in
+  kept)
+    HOME_WIFI_CONNECTION="$ARK_HOME_NAME"
+    ark_ok "home network: \"$HOME_WIFI_CONNECTION\" (a network this box can join)" ;;
+  recorded)
+    HOME_WIFI_CONNECTION="$ARK_HOME_NAME"
+    ark_warn "home network repaired in $ENV_FILE: was \"$configured\" (not a network this box can join — the Ark's own access point is never home), now \"$HOME_WIFI_CONNECTION\"" ;;
+  *)
+    HOME_WIFI_CONNECTION="$configured"
+    ark_warn "no saved Wi-Fi this box could join — it keeps broadcasting until one is saved (https://ark.local:8443/admin/network, or: sudo ark-wifi-add --ssid NAME)" ;;
+esac
 
 # ---- every name points at the Ark while broadcasting ------------------------
 # dnsmasq (started by NetworkManager in "shared" mode) reads this directory, so
@@ -148,6 +164,18 @@ case "${BOOT_MODE:-hotspot}" in
   hotspot|auto|home) ;;
   *) ark_warn "BOOT_MODE=\"${BOOT_MODE:-}\" is not hotspot, auto or home — a boot would broadcast instead" ;;
 esac
+# Which network this box joins is a setting, so prove what is *written* — not
+# what this run believes it wrote.  A home network the box cannot join is a fault
+# worth saying at install time: the only other place it shows is
+# `ark-mode status`, and it cost a day of the box being stuck on its own hotspot
+# with nothing logged and no page saying so (docs/IMPLEMENTATION-LOG.md §36).
+recorded_home="$(sed -n 's|^HOME_WIFI_CONNECTION="\(.*\)"$|\1|p' "$ENV_FILE" 2>/dev/null | head -n1 || true)"
+printf '   home network  %s (HOME_WIFI_CONNECTION in %s)\n' "${recorded_home:-none}" "$ENV_FILE"
+if [[ -z "$recorded_home" ]]; then
+  ark_warn "$ENV_FILE records no home network — this box keeps broadcasting until one is saved"
+elif ! ark_home_joinable "$recorded_home" "$HOTSPOT_CONNECTION"; then
+  ark_warn "\"$recorded_home\" is not a network this box can join — it will broadcast instead (the Ark's own access point is never home)"
+fi
 [[ "${mode_shown:-}" == "ap" ]] || ark_warn "hotspot profile is not in access-point mode"
 [[ "${method_shown:-}" == "shared" ]] || ark_warn "hotspot profile is not sharing its connection"
 [[ -f /etc/NetworkManager/dnsmasq-shared.d/ark-wildcard.conf ]] || ark_warn "wildcard DNS file is missing"

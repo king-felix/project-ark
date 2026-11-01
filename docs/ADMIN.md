@@ -1209,6 +1209,42 @@ so nothing was changed"**, phase `70-network` has not been run since this page w
 added: it installs `/usr/local/sbin/ark-wifi-add` and proves, as the portal's own
 account, that both helpers can be reached with no password prompt.
 
+### If the box's own hotspot was recorded as "home"
+
+A box cannot join its own broadcast, so `ark-hotspot` can never be the home network.
+On 31 Oct 2026 phase 7 recorded it anyway — it guessed "home" from whichever wireless
+profile happened to be up while the installer ran, and the box was broadcasting — so
+`ark-mode home` "joined the home network" by bringing the access point back up: the box
+reported a home it was never on, and it could not be moved onto the house Wi-Fi at all.
+Nothing was logged and no page said anything.
+
+Three things changed, and any of them tells you the state of the box:
+
+```bash
+grep HOME_WIFI_CONNECTION /etc/ark/ark.env   # the name the box believes is home
+ark-mode status                              # home network: … and, if it is the AP, "cannot join: …"
+sudo ark-mode home                           # refuses to take the access point down for a name it cannot use
+```
+
+* phase `70-network` no longer observes; it **decides** — the configured name if it is a
+  profile this box could join, otherwise the build-time profile `home-wifi`, otherwise any
+  station profile that is up — and it rewrites `HOME_WIFI_CONNECTION` when the stored one
+  cannot be joined, saying so on the console (*home network repaired in
+  `/etc/ark/ark.env`: was "ark-hotspot" … now "home-wifi"*). A box with no saved Wi-Fi at
+  all is left alone and says *no saved Wi-Fi this box could join — it keeps broadcasting*;
+* `ark-mode home` refuses **before** touching the radio when the stored name is the Ark's
+  own access point, and if the join fails it puts the access point back up before
+  reporting the failure, so the box is never left dark;
+* `sudo ark-mode hotspot --auto` (the watchdog's own rescue) no longer deactivates
+  `"$HOME_WIFI_CONNECTION"` when that name *is* the access point — it used to bounce the
+  AP it was bringing up and drop whoever was reading.
+
+**A plain reboot still broadcasts** while `BOOT_MODE="hotspot"`, and a pin set with
+`ark-mode home`/`hotspot` survives it. Moving the box onto the house Wi-Fi therefore
+happens in this order: save the network, run `sudo ark-mode home`, confirm `wlan0` has a
+lease (`ip -4 addr show wlan0`) and that the box answers over it, and only then decide
+what a cold boot should do.
+
 
 ---
 
