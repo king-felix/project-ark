@@ -125,7 +125,7 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 
 ## 8. PROJECT STATE — read this before touching anything
 
-**Last updated:** 2026-10-26 · **Read `docs/IMPLEMENTATION-LOG.md` next** (status table, decisions D1–D25, defects, test evidence, next step). This section is the digest; that file is the record.
+**Last updated:** 2026-11-01 · **Read `docs/IMPLEMENTATION-LOG.md` next** (status table, decisions D1–D25, defects, test evidence, next step). This section is the digest; that file is the record. **Newest: the Network-page phases were deployed on 1 Nov 2026** (log §33.7) — schema unchanged at **v6**, receipt `network.wifi_helper: yes` / `owner_page: 303` / `lan_request: absent`, readiness `ok`, `blocking: []` — and the deploy proved something the list had been carrying for a week: **the box cold-booted on 31 Oct**, so the forced card check ran and was withdrawn, and the memory folders and the offline ordering came from a real boot.
 
 | | |
 |---|---|
@@ -745,12 +745,14 @@ phase arranges is in place and was read back from the box (log §29): tmpfs `/tm
 in `/etc/fstab` with `nofail` and `findmnt --verify` ok, `fake-hwclock`'s three units enabled,
 write-behind 1500 / swappiness 10 / `kernel.panic=10`, `Storage=volatile`, `RuntimeWatchdogUSec=15s`,
 `Restart=always` drop-ins on five units, Calibre's two databases in WAL with `synchronous=FULL`, a
-real repair pass (`healed: 0`, `problems: []`) and its timer enabled + active. **What has never
-happened:** a reboot (`fsck.mode=force` has never checked that card, the tmpfs mounts have never come
-from `fstab`, the watchdog has never reset anything) and **no power cut has been simulated on
-hardware**. `docs/HUMAN-TEST-LIST.md` §15 is the walk-through (reboot once, then pull the plug twice,
-once mid-upload). §26.1 is the defect this work already found on paper (the counters were being filed
-back as JSON on every boot).
+real repair pass (`healed: 0`, `problems: []`) and its timer enabled + active. **What has now
+happened, on 31 Oct 2026:** the box cold-booted, `fsck.mode=force` **checked that card and was then
+withdrawn** (`cmdline.txt` is one line with no `fsck.*` on it), the tmpfs `/tmp` and `/var/tmp` came
+from `/etc/fstab`, and the serving units came up ordered after `local-fs.target` — three of the four
+things this item was carrying as never run. **What has not:** no power cut has been simulated on
+hardware and the 15 s hardware watchdog has never reset anything. `docs/HUMAN-TEST-LIST.md` §15 is
+what is left (pull the plug twice, once mid-upload). §26.1 is the defect this work already found on
+paper (the counters were being filed back as JSON on every boot).
 
 **0f. §27 and §28 — a save, an offline boot and a big upload — half proved on the box, 26 Oct 2026.**
 Proved on the card (log §29): schema **v6** on the live database, a **save round trip** through
@@ -758,16 +760,18 @@ Proved on the card (log §29): schema **v6** on the live database, a **save roun
 byte-identical, a second revision as a **second** file, 409 on a stale page, 401 with no cookie), a
 **300 MiB** upload through `/files` with `/tmp` at **+0 MiB** and the card at +600 MiB, `/srv/ark/tmp`
 and `tmp/nginx` on the card with `client_body_temp_path` in all three listeners and
-`TMPDIR=/srv/ark/tmp` on the unit. **Not proved:** `ark-fsck-once` has never withdrawn the forced
-check (the line is waiting on the card), the `local-fs.target` ordering has never been seen from a
-cold boot, and no 2 GiB body has crossed the proxy. `tests/test_durability.py` (15) plus log §29 is
-the proof so far; `docs/HUMAN-TEST-LIST.md` §15 covers the reboot half (steps 6–7).
+`TMPDIR=/srv/ark/tmp` on the unit. **Proved since, on 31 Oct 2026:** `ark-fsck-once` **did** withdraw
+the forced check (the boot line carries no `fsck.*` and is one line) and the `local-fs.target`
+ordering **has** been seen from a cold boot. **Still not proved:** no 2 GiB body has crossed the
+proxy. `tests/test_durability.py` (15) plus log §29 and §33.7 is the proof so far;
+`docs/HUMAN-TEST-LIST.md` §15 covers the power cut.
 
-**0g. The owner's Network page (§33) — code, docs, installer proofs and rehearsals re-checked green
-on 31 Oct 2026; never opened in a browser, and no card has carried a saved network into another
-house.** `tests/test_network_page.py` (**37 test functions, 41 collected**) and
+**0g. The owner's Network page (§33) — DEPLOYED 1 Nov 2026 and green on the card; never opened in a
+browser, and no card has carried a saved network into another house.** Code, docs, installer proofs
+and rehearsals were re-checked green on 31 Oct 2026; `tests/test_network_page.py`
+(**39 test functions, 43 collected** — two more since the deploy, see below) and
 `tests/test_network.py` (**17 functions, 32 collected** — the 16-case decision table plus the
-counters) pass, and the whole suite is **567 passed, 2 skipped** over **25 files**;
+counters) pass, and the whole suite is **569 passed, 2 skipped** over **25 files**;
 `python3 -m py_compile` and `bash -n` are clean on `ark_network.py`, `ark_admin.py`,
 `test_network_page.py`, `ark-mode`, `ark-wifi-add`, `ark-net-watch` and the four phases named in
 §33.3. The rehearsals drove the **real** scripts end to end against a throwaway folder with no
@@ -787,10 +791,22 @@ the page then offered to take that same request back two lines below — the ban
 refusal that wrote nothing and still says *Nothing was asked.*, and a request refused **before**
 any helper ran (`--minutes 0`) that must not claim an older request already waiting.
 
+**Deployed 1 Nov 2026** with `--only 70-network,60-portal,65-admin` then `--only 90-verify`: both
+runs `ARK_INSTALL_COMPLETE`, the verifier green (*"everything a visitor touches is working"*), schema
+**v6 before and after** (no migration), rollback at `/root/ark-db-before-network-20261101-062506.db`
++ `/root/ark-before-network-20261101-062506.tgz`. The receipt reads `network.wifi_helper: "yes"`,
+`network.owner_page: "303"`, `network.lan_request: "absent"`, readiness `ok: true`, `blocking: []`;
+`:8443/admin/network` answers **303** from the LAN, and `sudo -n ark-wifi-add --check` as `pi` on the
+card now prints *would save "ark rehearsal network" as profile … (autoconnect=no)*. **The deploy
+found a defect in the phase's own proof** — the rehearsal SSID was 35 characters against the helper's
+limit of 32, so the helper refused its own rehearsal and the phase printed *"the Network page cannot
+reach ark-wifi-add"* about a door that had just answered; the name is `ark rehearsal network` now and
+a refusal in the helper's own words counts as having reached it (log §33.7, `.clinerules` §8.7).
+
 **Not proved:** no browser has drawn or clicked the page, no
-real NetworkManager has read a profile this page wrote, `sudo -n` has never been exercised by `pi`
-on the card for either helper, nothing has been deployed (no phase has run on the box since
-26 Oct 2026), and the two questions only a card can answer — *does a request really cost one boot?*
+real NetworkManager has read a profile this page wrote, `sudo -n` has been exercised by `pi` on the
+card **by the phase** (`✓ add a Wi-Fi network`) but never from the page's own code path under a
+request, and the two questions only a card can answer — *does a request really cost one boot?*
 and *does a box on somebody else's Wi-Fi come back?* — are unanswered.
 `docs/HUMAN-TEST-LIST.md` §17 is the walk-through (two people, 20 minutes).
 
@@ -808,7 +824,7 @@ and *does a box on somebody else's Wi-Fi come back?* — are unanswered.
    ```
 
    Use `.backup`, not `cp` — the live database is WAL (`PRAGMA journal_mode=WAL`), so a plain copy can miss committed data.
-2. **Reboot it once, before the phone walk-through.** The card check is armed on the box right now (`fsck.mode=force panic=10` on the boot line, `ark-fsck-once` enabled to withdraw it): the first reboot will check the whole card (minutes, a blank screen, no messages — that is normal for one boot only), and `journalctl -b -u ark-fsck-once` afterwards must say *"Withdrew …"* while the second boot must be fast and say *"nothing to withdraw."*. This is also the only way to see the tmpfs folders mounted from `/etc/fstab` and the three serving units come up without a network. `docs/HUMAN-TEST-LIST.md` §15 has the steps. Nothing else on this list depends on it.
+2. **~~Reboot it once, before the phone walk-through~~ — DONE: the box cold-booted on 31 Oct 2026 at 22:18.** The forced card check ran and `ark-fsck-once` took it back off the boot line: `fsck.mode=force`/`fsck.repair=yes` are **gone from `/boot/firmware/cmdline.txt`, which is still exactly one line**, and `journalctl -b -u ark-fsck-once` shows it starting and finishing on that boot (its stamp reads 22:00:05 — `fake-hwclock` handing the box a stale clock until NTP arrives, which is §26 doing its job). `/tmp` and `/var/tmp` are now tmpfs **mounted from `/etc/fstab`** (both lines carry `nofail`), and `ark-api`/`ark-kiwix`/`ark-calibre` each carry `local-fs.target` in `After=` — so the offline ordering has been seen from a real cold boot, not from `systemctl show`. What is left in `docs/HUMAN-TEST-LIST.md` §15 is the power cut itself: pull the plug twice, once mid-upload.
 3. **Walk through it on a phone** — claim through the tunnel, open **What is working** and read one reason aloud (it must be plain English, not a service name), stop `ark-kiwix` on purpose and watch that row turn to *Not ready* with a fix, post a note, upload two files with the same name, drop an `.epub` in the File Box and watch it reach the shelf without a command, try a file over 2 GiB, hide/restore, password-confirmed delete, switch both Community switches off and confirm reading and downloads still work, then switch them back on, read the storage breakdown aloud and check it matches `du -sh`, then **play a game with the internet unplugged**, make a player name, save/export/import on a second browser, and confirm `:8445` serves the same certificate as `:8443`; then **pull the home Wi-Fi out from under it** and watch the hotspot come up by itself within two minutes (and go back once the router returns and nobody is connected), then take a copy (`sudo ark-backup --to /srv/ark/backup`), verify it, and open `http://ark.lan/recovery.txt` on the phone and print it. None of this has been done by a human yet.
 4. **A real 2 GiB upload over the wire** — nginx and the app now agree on the number, and since §28
    the body waits on the **card** (`/srv/ark/tmp/nginx`, `TMPDIR=/srv/ark/tmp`) rather than in the
