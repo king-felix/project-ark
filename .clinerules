@@ -838,14 +838,23 @@ suite is **598 passed, 2 skipped** over **26 files**; `python3 -m py_compile` is
 `--only 90-verify`: both `ARK_INSTALL_COMPLETE`, verifier green, **schema v6 before and after** (no
 migration), rollback at `/root/ark-db-before-upload-*.db` + `/root/ark-before-upload-*.tgz`. The
 receipt reads `owner_pages.upload: "303"`, `owner_pages.doors: "303"`, readiness `ok: true`,
-`blocking: []`. **Not proved:** a phone's file picker; a real EPUB accepted by a real library
-through this door (the route-level proof is a stub importer and the importer's own ledger); a
-slow batch over the hotspot; twenty files in one press; and whether *"still being added"* reads
-as patience rather than as an error. `docs/HUMAN-TEST-LIST.md` §18 is the walk-through (ten
-minutes, one `.epub`, one cartridge). **Two limits worth repeating:** the page has no
-drag-and-drop, no zip and no progress bar of its own (a form with the browser's own indicator),
-and it caps a press at 20 files / 512 MiB — the File Box's 2 GiB door is still the place for one
-huge file.
+`blocking: []`. **The box was then rebooted (07:11:40) and the whole gate re-run at 07:13:41:**
+`90-verify` green, `ready.ok: true`, `blocking: []`, `owner_pages 303/303`, `mode hotspot`,
+`card_check withdrawn`, hotspot answering 200 at `http://10.42.0.1/`, `/tmp` and `/var/tmp` tmpfs
+from `/etc/fstab`, `ark-fsck-once` with nothing to withdraw, `ark-mode status` as `pi` with no root.
+Proved on the card besides: both modules import under the box's Python 3.9 (`doors 30`, `books 23`,
+`games 9`); `spool_book()` wrote `Proof Book-329db313.epub` (`0644`, one file, no `.part`, then
+removed); the 512 MiB reserve refused a `/tmp` folder (a 256 MB tmpfs) with *"The card is nearly
+full"*; `nginx -T` shows `client_max_body_size 520m` on `= /admin/upload`; and **two real 200 KB
+bodies** proved both caps — `/admin/upload` **403** (the app saying "not signed in"), `/admin/network`
+**413** (the prefix's 128k). Nothing was added to the live shelf or library. **Not proved:** a
+phone's file picker; a real EPUB accepted by a real library through this door (the route-level proof
+is a stub importer plus the importer's own ledger); a slow batch over the hotspot; twenty files in
+one press; and whether *"still being added"* reads as patience rather than as an error.
+`docs/HUMAN-TEST-LIST.md` §18 is the walk-through (ten minutes, one `.epub`, one cartridge). **Two
+limits worth repeating:** the page has no drag-and-drop, no zip and no progress bar of its own (a
+form with the browser's own indicator), and it caps a press at 20 files / 512 MiB — the File Box's
+2 GiB door is still the place for one huge file.
 
 0. **~~Deploy~~ — DONE 25 Oct 2026**, green, see §8.12a. Everything below was
    deployed with `--only 20-storage,30-calibre,60-portal,65-admin,70-network,95-backup`

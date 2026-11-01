@@ -3423,18 +3423,38 @@ and one about the sweep. `python3 -m py_compile` is clean on `ark_ingest.py`, `a
 `ark_admin.py` and `ark_self_heal.py`; `bash -n` is clean on `60-portal.sh`, `65-admin.sh` and
 `90-verify.sh`.
 
-Deployed on the card on **1 Nov 2026** with `--only 60-portal,65-admin` then `--only
-90-verify`: both `ARK_INSTALL_COMPLETE`, **no migration** (schema `v6` before and after),
-rollback at `/root/ark-db-before-upload-*.db` and `/root/ark-before-upload-*.tgz`, and the
-verifier's two new lines:
+Deployed on the card on **1 Nov 2026** with `--only 60-portal,65-admin` (25 s) then `--only
+90-verify` (5 s): both `ARK_INSTALL_COMPLETE`, **no migration** (schema `v6` before and after),
+rollback at `/root/ark-db-before-upload-20261101-070909.db` and
+`/root/ark-before-upload-20261101-070909.tgz` (the source tree and the live database, 20 MB), and
+the verifier's two new lines:
 
 ```
 ✓ Add files page behind the sign-in        https://ark.lan:8443/admin/upload asks to sign in
 ✓ Addresses page behind the sign-in        https://ark.lan:8443/admin/doors asks to sign in
 ```
 
-**Not proved, and it cannot be by me:** no browser has picked a file on this page. The phone's
-picker, a slow batch over the hotspot, the importer firing while the request is still open, and
-whether a person understands *"still being added"* are `docs/HUMAN-TEST-LIST.md` §18 — ten
-minutes, two files, one of each kind.
+### 34.6 What was proved on the card, and what was not
+
+The box was **rebooted at 07:11:40** and every check below was taken again at 07:12–07:14, so
+none of it is a statement about a machine that had been running since the last deploy:
+
+| Proved on the card | How |
+|---|---|
+| both modules import and behave under the box's own Python 3.9 | `/srv/ark/venv/bin/python -c "import ark_ingest, ark_doors"` → `doors 30`, `books 23`, `games 9`, `batch 536870912`, `files 20` |
+| the book writer really writes: a readable name, `0644`, no `.part` left | `spool_book()` against a throwaway folder on the card → `Proof Book-329db313.epub`, 1,400 B, one file, `pi:pi` |
+| an unknown kind is classified as nothing, not guessed | the same call: `.epub` → `book`, `.gb` → `game`, `.exe` → `''` |
+| the 512 MiB reserve refuses a nearly-full folder | the first attempt with `ARK_INCOMING` under `/tmp` (a 256 MB tmpfs) was refused with *"The card is nearly full"* — the check doing its job, on a real filesystem |
+| nginx has the exact location, with the number from the module | `nginx -T` → `location = /admin/upload { client_max_body_size 520m; client_body_timeout 1800s; …` |
+| the door passes a real 200 KB body to the app, and **the rest of `/admin` still refuses one** | `POST` 200 KB → `/admin/upload` **403** (the app saying "not signed in"); the same body → `/admin/network` **413** (the prefix's 128k). Two bodies, two limits, one listener |
+| both pages ask for a sign-in, before and after the reboot | `/admin/upload` **303**, `/admin/doors` **303** |
+| the whole gate after the reboot | `90-verify` at **07:13:41**: `ok: true`, `problems: ""`, `ready.ok: true`, `blocking: []`, `owner_pages {upload: 303, doors: 303}`, `mode hotspot`, `card_check withdrawn`, 116.7 GiB free — and the hotspot answering `200` at `http://10.42.0.1/` |
+| the box still does what §28/§33 promised, on the same boot | `ark-fsck-once` ran and had nothing to withdraw (`cmdline.txt` is one line, no `fsck.*`); `/tmp` and `/var/tmp` are **tmpfs from `/etc/fstab`**; `ark-api` still carries `local-fs.target` in `After=`; `ark-mode status` ran as `pi` with no root |
+
+**Not proved, and no shell can prove it:** no file has been picked in `Add files` in a browser.
+The phone's file picker, a twenty-file batch over the hotspot, a real EPUB accepted by the real
+library through this page, and whether a person reads *"still being added"* as patience are
+`docs/HUMAN-TEST-LIST.md` §18. Nothing was added to the live shelf or the live library by this
+deploy — the only files written by these proofs were in a throwaway folder that was removed.
+
 
