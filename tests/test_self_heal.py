@@ -373,6 +373,132 @@ def test_a_database_is_not_copied_into_a_wal_missing_its_commits(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+#  a journal that belongs to the database that was there
+# ---------------------------------------------------------------------------
+def bodies_in(path: Path):
+    conn = sqlite3.connect(str(path))
+    try:
+        return [row[0] for row in conn.execute("SELECT body FROM notes ORDER BY id;")]
+    finally:
+        conn.close()
+
+
+def a_card_with_an_old_journal(tmp_path: Path):
+    """Four rows in the file, 47 more only in its ``-wal``, and a copy of the four.
+
+    Answers ``(root, previous, journal)``.  ``previous`` is the file as it was when it
+    held four rows — the shape ``ark_atomic`` keeps as ``.bak`` and the shape
+    ``heal_sqlite`` puts back — and ``journal`` is the ``-wal`` carrying the 47 commits
+    made *after* that copy was taken, so it describes rows the copy has never held.
+
+    The journal is copied **while the writer still holds it**, and that ordering is the
+    point: measured on this shape (1 November 2026) the journal is **4,152 B** while the
+    writer is open and still **4,152 B** after a second connection has read all 51 rows,
+    but when the **last** connection closes SQLite checkpoints those frames into the
+    main file and truncates the journal to **0 B** — so a copy taken after the close is
+    empty, and a test built that way would "prove" that replaying a journal is harmless.
+    The size assertion below is what stops this helper from quietly becoming that test.
+    """
+    root = make_box(tmp_path)
+    db = root / "api/data/ark.db"
+    make_database(db, rows=4)
+    previous = root / "api/data/ark.db.bak"
+    shutil.copyfile(str(db), str(previous))
+    writer = sqlite3.connect(str(db))
+    writer.executemany("INSERT INTO notes (body) VALUES (?)",
+                       [("written after the copy %d" % n,) for n in range(47)])
+    writer.commit()
+    journal = root / "api/data/kept-journal"
+    shutil.copyfile(str(db) + "-wal", str(journal))
+    writer.close()
+    assert journal.stat().st_size > 0, "those rows have to be in the journal to test a replay"
+    return root, previous, journal
+
+
+def test_a_journal_beside_a_database_replays_rows_that_file_never_held(tmp_path):
+    """Why the journal has to go: it is the rest of the database, not a scratch file.
+
+    Measured on this shape (1 November 2026): a main file holding **4** rows reads as
+    **51** once the old journal is beside it — every row the old database committed
+    after that copy was taken, replayed into a file that never held them.  Nothing about
+    the file's name, its size or its own fingerprint would say so, which is what makes
+    this the one thing a put-back must not leave behind.
+    """
+    _root, previous, journal = a_card_with_an_old_journal(tmp_path)
+    put_back = tmp_path / "put-back.db"
+    shutil.copyfile(str(previous), str(put_back))
+    shutil.copyfile(str(journal), str(put_back) + "-wal")
+
+    assert bodies_in(put_back) == (
+        ["note %d" % n for n in range(4)]
+        + ["written after the copy %d" % n for n in range(47)])
+
+
+def test_the_put_back_takes_the_old_journal_with_it(tmp_path):
+    """``_copy_over`` is the shipped put-back, and it drains before and after the write.
+
+    Measured: it answers ``True``, neither sidecar is left beside the file afterwards,
+    and the file reads as its own **4** rows rather than the 51 the journal carried.
+    """
+    _root, previous, journal = a_card_with_an_old_journal(tmp_path)
+    put_back = tmp_path / "put-back.db"
+    index = tmp_path / "put-back.db-shm"
+    shutil.copyfile(str(previous), str(put_back))
+    shutil.copyfile(str(journal), str(put_back) + "-wal")
+    index.write_bytes(b"an index of a journal that is about to go")
+
+    assert heal._copy_over(previous, put_back) is True
+    assert not Path(str(put_back) + "-wal").exists()
+    assert not index.exists(), "the index means nothing without the journal it describes"
+    assert bodies_in(put_back) == ["note %d" % n for n in range(4)]
+
+
+def test_a_journal_that_will_not_go_stops_the_put_back_and_changes_nothing(tmp_path):
+    """A repair that cannot be finished is worse than one that did not start.
+
+    Measured: with something in the way where the journal is, ``_copy_over`` answers
+    ``False``, the database is byte-for-byte what it was, and the thing in the way is
+    still there — so a card that cannot give up its journal is left alone and reported,
+    never half-repaired.
+    """
+    root, previous, _journal = a_card_with_an_old_journal(tmp_path)
+    db = root / "api/data/ark.db"
+    db.write_bytes(b"ruined" * 100)
+    was = db.read_bytes()
+    stuck = root / "api/data/ark.db-wal"
+    if stuck.exists():
+        stuck.unlink()                              # the writer's own journal, gone with it
+    stuck.mkdir()                                   # a folder where a journal would be
+
+    assert heal._copy_over(previous, db) is False
+    assert db.read_bytes() == was, "nothing half-done"
+    assert stuck.is_dir(), "nothing was forced through"
+
+
+def test_a_database_put_back_beside_an_old_journal_does_not_replay_it(tmp_path):
+    """The whole pass, on the card as a cut really leaves it: a ruined file and a journal.
+
+    Measured (1 November 2026): the main file is ``damaged``, the pass answers
+    ``restored``, and afterwards the card reads as its own **4** rows with no ``-wal``
+    and no ``-shm`` beside it — the copy that came back is the copy that was kept, not
+    that copy with 47 rows the old database committed played back into it.
+    """
+    root, previous, journal = a_card_with_an_old_journal(tmp_path)
+    db = root / "api/data/ark.db"
+    db.write_bytes(b"this main file is not a database" * 200)
+    shutil.copyfile(str(journal), str(db) + "-wal")
+    shutil.copyfile(str(previous), str(db) + ".good.bak")
+
+    assert heal.quick_check_state(db)[0] == "damaged"
+    state, said = heal.heal_sqlite(db)
+
+    assert state == "restored", said
+    assert not Path(str(db) + "-wal").exists(), "the old journal would have replayed 47 rows"
+    assert not Path(str(db) + "-shm").exists()
+    assert bodies_in(db) == ["note %d" % n for n in range(4)]
+
+
+# ---------------------------------------------------------------------------
 #  half-written things
 # ---------------------------------------------------------------------------
 def test_old_temp_files_are_swept_and_fresh_ones_are_left(tmp_path):

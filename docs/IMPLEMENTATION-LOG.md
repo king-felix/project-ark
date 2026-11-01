@@ -4037,3 +4037,150 @@ Deleting a file does not delete a blob, and editing a line does not edit a commi
 of §37.6, stated as evidence rather than as a worry. What a new clone of this repository inherits
 today is the tree of `08e8f9b`, not the tree of `a926296` — and that is the sentence to keep in front
 of the owner when the five decisions above are put to them.
+
+---
+
+## 38. A put-back must not carry the old database's journal with it — 1 Nov 2026
+
+`ark_self_heal.heal_sqlite()` is the one program on this box allowed to replace `ark.db`, and §26
+already proved the half of that which matters most: a damaged file is replaced **only** by a copy
+that passes the same `quick_check`, and a database with no good copy is left exactly where it is.
+This checkpoint asked the question next door — *what does the repair leave **beside** the file?* —
+because a SQLite database is not one file. `ark.db` in WAL mode is three: the file, `ark.db-wal`
+(the commits not yet in it) and `ark.db-shm` (the index of those commits). A cut leaves all three.
+
+So the put-back has to answer for two things at once, and only the first had ever been tested:
+the bytes that come back, and the journal that was already there when they arrived.
+
+### 38.1 The hazard, measured
+
+The shape is an ordinary one on this box: a card whose database is ruined, a good copy taken by
+`ark_atomic` earlier (`.bak`), and the ruined database's own journal still sitting in the folder.
+
+Built and read, not imagined (`tests/test_self_heal.py::a_card_with_an_old_journal`): a main file
+holding **4** rows, a copy of it taken, then **47** more rows committed by a writer so they exist
+only in the journal — **4,152 B** of journal. Put that journal beside the 4-row copy and the file
+reads as **51** rows:
+
+| what is in the folder | rows the file answers |
+|---|---|
+| the 4-row copy, alone | **4** |
+| the 4-row copy **plus the old journal** | **51** |
+
+Nothing about that is a corruption. The 51 rows are a valid database; 47 of them are commits from
+*a different database*, played back into a file that never held them. `quick_check` passes, the page
+count is healthy, and the repair reports `restored`. That is what makes this worth a test rather
+than a comment: the failure is silent, and it is the one failure mode a repair must not have —
+coming back with **more** than the copy it was given.
+
+### 38.2 Why the journal has to be copied before anything reads it
+
+The obvious way to write this test is to build the card, read it, then snapshot the journal. That
+test would be worthless, and measuring why took one probe (`/tmp/ark-wal-probe11.py`, 1 Nov 2026):
+
+| moment | `ark.db-wal` |
+|---|---|
+| writer open, 47 commits made | **4,152 B** |
+| a second connection has read all 51 rows | **4,152 B** — a read does **not** take it |
+| the **last** connection closes | **0 B** — SQLite checkpoints the frames into the file and truncates |
+| a copy of the journal taken then | **0 B** → beside the 4-row copy, **4 rows** ("replaying it is harmless") |
+| a copy taken while the writer held it | **4,152 B** → beside the 4-row copy, **51 rows** |
+
+So the ordering is load-bearing, and the first version of the helper's own explanation was wrong:
+a *read* is innocent, the **close** is what empties the journal. `a_card_with_an_old_journal()` now
+copies while the writer still holds it and asserts `journal.stat().st_size > 0` afterwards, which is
+the guard against this helper quietly becoming the test that proves nothing — the same family as
+*"a fixture that is not the real file's shape tests the fixture"* (§26.1).
+
+### 38.3 What the shipped put-back really promises
+
+`_copy_over()` was measured as it ships, not as it reads. On that card:
+
+* it answers **`True`**;
+* **neither** `-wal` nor `-shm` is beside the file afterwards, including an `-shm` the test handed
+  it deliberately (the index means nothing once the journal it describes is gone);
+* the file reads its own **4** rows — not the 51 the journal carried.
+
+That is a narrower promise than "nothing is ever replayed", and the tests say the narrow one:
+**the journal does not survive the put-back**. The drain is what carries the guarantee, and a test
+that claimed more would be describing SQLite rather than this box.
+
+### 38.4 A repair that cannot be finished, and the whole pass
+
+Two more shapes, both measured:
+
+* **Refusal.** With a *folder* where `ark.db-wal` would be, `_copy_over()` answers **`False`**, the
+  database's bytes are unchanged, and the obstruction is still exactly where it was — nothing was
+  forced through to get the new file in. A repair that cannot be finished is worse than one that
+  did not start, so this is asserted rather than inferred from the return value.
+* **The whole pass.** A main file that really is not a database (`quick_check` → `damaged`), the
+  old journal beside it, and the kept copy staged as `.good.bak`: `heal_sqlite()` answers
+  **`restored`**, and the folder afterwards holds no `-wal`, no `-shm`, and a database reading
+  **4** rows. That is the end-to-end version of §38.3 on a card as a cut really leaves it.
+
+### 38.5 What the tests hold — and proof that they would notice
+
+Four tests and two helpers (`bodies_in()`, `a_card_with_an_old_journal()`) in
+`tests/test_self_heal.py`, beside the existing "plain `cp` would have missed this row" block:
+
+| test | what it asserts |
+|---|---|
+| `test_a_journal_beside_a_database_replays_rows_that_file_never_held` | the hazard itself — 4 rows read as 51 (§38.1) |
+| `test_the_put_back_takes_the_old_journal_with_it` | `_copy_over` → `True`, both sidecars gone, the file's own 4 rows |
+| `test_a_journal_that_will_not_go_stops_the_put_back_and_changes_nothing` | `False`, bytes unchanged, obstruction still present |
+| `test_a_database_put_back_beside_an_old_journal_does_not_replay_it` | the whole pass: `damaged` → `restored`, no sidecars, 4 rows |
+
+**Sensitivity, measured rather than assumed.** A green suite has to mean the drain is doing the
+work, so the shipped function was patched out (`_drain_journal = lambda target: True`, which is the
+defect exactly — a put-back that removes nothing) and the file re-run:
+
+```
+FAILED tests/test_self_heal.py::test_the_put_back_takes_the_old_journal_with_it
+FAILED tests/test_self_heal.py::test_a_journal_that_will_not_go_stops_the_put_back_and_changes_nothing
+FAILED tests/test_self_heal.py::test_a_database_put_back_beside_an_old_journal_does_not_replay_it
+3 failed, 2 passed, 68 deselected
+```
+
+Three of four. The fourth still passes on purpose: it measures the **hazard**, not the fix, so it
+must pass whatever the code does. `tests/test_self_heal.py` is **73 passed** (was 69) and the whole
+suite is **653 passed, 2 skipped** over **28 files**; `python3 -m py_compile` is clean on
+`pi/api/ark_self_heal.py` and the new test file, `bash -n` on the secrets guard, and
+`scripts/ark-secrets-check.sh` reads **186 tracked files and answers clean, rc 0**. No production
+line changed — this is evidence about code that was already on the card.
+
+### 38.6 What this does not prove
+
+* **No power cut has ever been simulated on hardware.** These are the shapes a cut leaves, built in
+  a temp folder; `docs/HUMAN-TEST-LIST.md` §15 is still the item that would turn them into a
+  measurement on the card.
+* The put-back has never run **in anger on the box** (§8.9 item 0e) — the only repair pass that has
+  run there found nothing to repair (`repaired: 0`).
+* Measured on the Mac's **SQLite 3.51.0** under Python 3.9.6; the card runs its own SQLite, whose
+  version this pass did not read. Checkpoint-on-last-close is the engine's behaviour rather than
+  Python's, but "the same promise on that build" is a claim nobody has taken yet.
+* Nothing here says the box's `ark.db` ever *is* in this shape. It says that if it is, the repair
+  now has a test that notices when the journal is left behind.
+
+### 38.7 A correction to what §37's digest said about the rewrite window
+
+Found while committing this checkpoint, and it matters because it changes what the owner's five
+decisions cost: the digest said the rewrite window was open *only until the next push*, because
+`a926296` was committed and **not pushed** with `origin/feature/admin-hardening` at `08e8f9b`.
+
+**That window has closed.** Read locally on 1 Nov 2026:
+
+```
+$ git for-each-ref --format='%(refname) %(objectname:short)' refs/remotes/origin/
+refs/remotes/origin/feature/admin-hardening 1f5a872
+refs/remotes/origin/main dd3336c
+$ git merge-base --is-ancestor a926296 refs/remotes/origin/feature/admin-hardening && echo IN
+IN
+```
+
+So `a926296` — the commit that replaced the household's own details with placeholders — is part of
+the **published** history, and three commits have gone out on top of it (`5b6ddef`, `03b41b4`,
+`1f5a872`). `origin/main` is still at `dd3336c` (`v1.0.5`, unmoved, never force-pushed). The
+practical effect: the five decisions in §37.6 are now a **history rewrite plus a force-push** — which
+the rules forbid without the owner's explicit yes — rather than something a fast-forward could still
+have avoided. Nothing here decides that for them; §37.6 is where the ranking lives.
+
