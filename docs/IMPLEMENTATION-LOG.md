@@ -3566,10 +3566,92 @@ invitation rather than a warning. `docs/HUMAN-TEST-LIST.md` §19 is the walk-thr
 read the four figures aloud, compare the free space with `df -h /srv/ark`, press **Sign out** on
 a phone, and confirm the reader pages still open afterwards.
 
-**Still not deployed.** The code is on `feature/admin-hardening`; `60-portal.sh` and
-`65-admin.sh` are unchanged by this section (no unit, no schema, no nginx change — the
-navigation, the footer and the sign-out route all live in `ark_admin.py`, `main.py` and two
-static files), so the deploy is `--only 60-portal,65-admin` then `--only 90-verify`. The
-stylesheet needs no cache-busting: `/assets/` on `:8443` already answers `Cache-Control:
-no-cache` (`pi/nginx/ark-admin.conf`), so a browser asks again and picks the new classes up.
+### 35.6 The deploy — and 28 questions put to the box's own code
+
+`60-portal.sh` and `65-admin.sh` are unchanged by this section (no unit, no schema, no nginx
+change — the navigation, the footer and the sign-out route all live in `ark_admin.py`,
+`main.py` and two static files), so the deploy was the pair of phases that install them and
+then the gate:
+
+```
+sudo bash /srv/ark/src/install-ark.sh --only 60-portal,65-admin   → ARK_INSTALL_COMPLETE
+sudo bash /srv/ark/src/install-ark.sh --only 90-verify            → green, ok: true
+```
+
+| | |
+|---|---|
+| When | **1 Nov 2026** — files written `15:52:13`, the verifier's receipt `15:55:41` |
+| Rollback | `/root/ark-db-before-dashboard-20261101-155206.db` (SQLite `.backup`) and `/root/ark-src-before-dashboard-20261101-155206.tgz`, beside the earlier pair from `15:51` — that pair was taken and then retaken a minute later, and both are kept |
+| Schema | **v6 before and after** — this section adds no table, no column and no migration |
+| Receipt | `mode hotspot`, `ok: true`, `problems: ""`, `ready.ok: true`, `blocking: []`, `owner_pages.upload: 303`, `owner_pages.doors: 303`, `network.wifi_helper: yes`, `card_check: withdrawn`, 20 collections / 1291 books / 61 games / 11 guide pages / 8 package members / 56,448 game names, **116.4 GiB free**, two copies kept (`ark-backup-20261101-155529`) |
+| Live door | `http://10.42.0.1/api/ready` → **200** |
+| Stylesheet | no cache-busting needed: `/assets/` on `:8443` already answers `Cache-Control: no-cache`, so a browser asks again and picks the new classes up |
+
+**Then the page was asked, not assumed.** `logs/arksmoke-dashboard-20261101.py` (gitignored,
+beside `arksmoke-proof-20261025.py`) starts a throwaway `uvicorn` on `127.0.0.1:18099` from
+`/srv/ark/api` — the box's own deployed modules — with `ARK_DB` pointed at a **SQLite `.backup`
+of the live records** in `/tmp/arksmoke` and `ARK_ROOT=/srv/ark`, so the four figures are
+measured from this Ark and the File Box, the shelf and the collections are the ones a reader
+would see, while nothing on the live database is written. A session is minted directly
+(`sec.create_session`) and every request carries `Host: ark.lan`, `X-Forwarded-Proto: https`
+and `X-Real-IP: 127.0.0.1`, through an opener whose `redirect_request` returns `None` — a `303`
+must come back as a `303`, because following it hides a refusal behind a form (§8.7 of
+`.clinerules`). On the card, `16:01`:
+
+```
+PASS front page answers for a signed-in owner :: HTTP 200
+PASS the bar carries all 11 pages
+PASS every page in the bar is a link :: 11 of 11
+PASS the front page is a figure list, not a form
+PASS it says how long the box has been on
+PASS it says how much room is left
+PASS it counts what a reader can open
+PASS it counts the Message Board
+PASS every figure is measured or says so
+PASS the way into each figure is offered
+PASS signing out is a form, not a link
+PASS the sign-out form carries the token
+PASS the public pages are one tap from here
+PASS Addresses answers for a signed-in owner :: HTTP 200
+PASS Addresses offers taps rather than typing :: 41 links
+PASS the door is a tap: https://ark.lan:8443/admin/health
+PASS the door is a tap: https://ark.lan:8443/admin/upload
+PASS the door is a tap: http://ark.lan/ask
+PASS the door is a tap: https://ark.lan:8445/arcade/player
+PASS the setup door is printed, never linked
+PASS every group of doors is on the page
+PASS a forged sign-out is refused :: HTTP 403
+PASS and the session is untouched :: HTTP 200
+PASS signing out answers with the sign-in form :: HTTP 303 -> /admin/login
+PASS the session is gone from the server :: HTTP 303 -> /admin/login
+PASS a second press is not an error :: HTTP 303 -> /admin/login
+PASS a plain-HTTP request is refused :: HTTP 403
+PASS no cookie means the sign-in form :: HTTP 303 -> /admin/login
+
+RESULT 28 checks, 28 passed, 0 failed
+SMOKE_RESULT PASS
+```
+
+So on the card: the eleven-page bar is drawn and every item is a link, the front page is the
+four figures and not a form, **Sign out is a `POST` carrying the session's own token**, a
+**forged** token is `403` and leaves the session usable, the real one ends it (`303 →
+/admin/login`) and a **second** press is not an error, a plain-HTTP request is refused, and
+**Addresses offers 41 taps** — the four sampled doors are links, the loopback setup door is
+printed and never linked, and every group `ark_doors` knows about is on the page.
+
+Three things were wrong **in the probe** before it passed, and all three are the same mistake
+in different clothes — asserting on the page through a guess rather than through the page's own
+contract: the CSRF token was sent as a **header** when the form sends it as a body field
+(`csrf=…`, form-encoded), so every sign-out read `403`; `ADMIN_NAV` was unpacked as three
+items after it had become `(href, label)` pairs; and the door-group titles were compared raw
+when the page renders them through `esc()` — `html.escape(title, quote=True)` is what the
+markup actually holds. A probe that fails for a reason of its own looks exactly like a page
+that is broken, which is why it is now checked in before it is believed.
+
+**What is still not proved, and no shell can prove it:** nobody has *looked* at this page with
+their eyes. `curl` and this probe can say the four figures are in the HTML and the button is a
+form; they cannot say whether *"4 days, 7 hours"* beside *"116.4 GB free"* reads as a sentence a
+person trusts, whether the button looks like a button on a phone, or whether the footer sentence
+reads as an invitation rather than a warning. `docs/HUMAN-TEST-LIST.md` §19 is that
+walk-through — ten minutes, a phone, and one **Sign out** press.
 
