@@ -132,6 +132,20 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 * Scripts must be idempotent — re-running a phase must not corrupt state.
 * `set -Eeuo pipefail` at the top of every bash script; `|| true` only with an explanatory comment.
 * Line endings: everything in `pi/` and `staging/` is **LF**. Never CRLF (breaks shebangs on Linux).
+* **THREE ATTEMPTS, THEN REPORT — the owner's standing order (1 Nov 2026, permanent).** Do not
+  attempt to solve one problem more than **three times** without making progress. An attempt is
+  one honest try at the *same* failing thing (the same test, the same command, the same defect)
+  with the same class of idea. Progress means the evidence moved: a test that failed now passes, a
+  new reason printed where there was none, a different error instead of the same one. If the third
+  attempt leaves the situation where it started, **stop**, and report: what the problem is, the
+  three things tried and exactly what each answered, what is now believed and what is only
+  guessed, and the decision the owner has to make (with the options, ranked). Then wait. A fourth
+  identical swing is not persistence, it is a guess with the owner's time — and a loop that keeps
+  retrying also hides the moment it should have asked. Corollaries: a *different* error after a
+  real change is a new attempt under a new heading (say so); a long run that keeps printing new
+  evidence is not a loop; and if the next step needs a decision that is the owner's (a rewrite, a
+  deploy, a delete, spending money, touching the live box), stop **before** the third attempt
+  rather than using it up.
 * Any file executed as a script gets `chmod +x`. Re-verify it **by its own language**: `bash -n` for the bash ones, `python3 -m py_compile` for the Python ones — and **`pi/bin/` is a mixed bag**, so look at the shebang first (`ark-essentials`, `ark-arcade`, `ark-backup`, `ark-restore`, `ark-romdb-build`, `ark-zim-resolve`, `ark-html2pdf`, `ark-self-heal`, `ark-build-ai-brief`, `ark-import-books`, `ark_bundle.py` are Python; `ark-mode`, `ark-net-watch`, `ark-tls-cert`, `ark-kiwix-library`, `ark-boot-guard`, `ark-admin-recover`, `ark-import-calibre-library`, `ark-zim-download`, `ark-ai-serve`, `ark-ai-model-fetch` are bash). `bash -n pi/bin/ark-essentials` reports `syntax error near unexpected token '('` on a perfectly good file — that is the check being wrong, not the script.
 
 ---

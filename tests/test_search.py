@@ -134,3 +134,79 @@ def test_a_book_without_a_file_name_still_gets_asked(public, monkeypatch):
     monkeypatch.setattr(main, "_kiwix_one", lambda handle, pattern: asked.append(handle) or [])
     main.search_library("water")
     assert asked == ["b00"]
+
+
+# ---------------------------------------------------------------------------
+#  the words a hit carries
+# ---------------------------------------------------------------------------
+#: A real answer, shaped the way the library really writes one: the matched word is
+#: wrapped in ``<b>`` **inside** the description, which is where the old reader stopped.
+FEED = b"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel>
+  <item>
+    <title>Water filter</title>
+    <link>http://127.0.0.1:8081/kiwix/content/b00/A/Water_filter</link>
+    <description>How do you <b>make water</b> safe while touring? Do you carry a filter?</description>
+  </item>
+</channel></rss>
+"""
+
+
+def test_a_snippet_is_the_words_of_a_hit_not_the_stop_before_the_highlight(public):
+    """Every hit on the live box answered with a snippet of exactly ``"..."``.
+
+    ``node.text`` is only the text *before the first child element*, and the library
+    wraps the matched word in ``<b>`` — so a perfectly good answer was read as the
+    three characters in front of the highlight and nothing else.  ``itertext()`` walks
+    into the children, which is what a reader means by "the words in this element".
+    """
+    hits = public.app._parse_feed(FEED)
+
+    assert len(hits) == 1
+    assert hits[0]["snippet"].startswith("How do you make water safe")
+    assert "carry a filter" in hits[0]["snippet"], hits[0]["snippet"]
+
+
+def test_the_highlight_is_not_shown_to_the_reader_as_a_tag(public):
+    hits = public.app._parse_feed(FEED)
+
+    assert "<b>" not in hits[0]["snippet"], hits[0]["snippet"]
+    assert "make water safe" in hits[0]["snippet"]
+
+
+def test_a_title_with_a_highlight_in_it_keeps_its_words(public):
+    raw = (b'<?xml version="1.0"?><rss><channel><item>'
+           b'<title>Water <b>sterilising</b> tablets</title>'
+           b'<link>/kiwix/content/b00/A/Tablets</link>'
+           b'<description>Two tablets per litre.</description></item></channel></rss>')
+
+    hits = public.app._parse_feed(raw)
+
+    assert hits[0]["title"] == "Water sterilising tablets"
+
+
+def test_a_description_that_carries_escaped_markup_is_read_as_words(public):
+    """The feed escapes HTML twice; the reader must still get sentences, not tags."""
+    raw = (b'<?xml version="1.0"?><rss><channel><item>'
+           b'<title>Boiling water</title><link>/kiwix/content/b00/A/Boiling</link>'
+           b'<description>&lt;p&gt;Bring it to a &lt;b&gt;rolling boil&lt;/b&gt; '
+           b'for one minute.&lt;/p&gt;</description></item></channel></rss>')
+
+    hits = public.app._parse_feed(raw)
+
+    assert hits[0]["snippet"] == "Bring it to a rolling boil for one minute."
+
+
+def test_the_words_a_collection_answers_with_reach_the_page(public, monkeypatch):
+    """A snippet nobody can read is the same as no snippet, so prove the whole way."""
+    main = public.app
+    monkeypatch.setattr(main, "library_books",
+                        lambda: [{"id": "b00", "stem": "b00", "title": "Bicycles Q&A",
+                                  "size": 1}])
+    monkeypatch.setattr(main, "_kiwix_one",
+                        lambda handle, pattern: main._parse_feed(FEED))
+
+    page = public.client.get("/search?q=water", headers=LAN)
+
+    assert page.status_code == 200
+    assert "Do you carry a filter?" in page.text, "the words a hit carries reach the person"

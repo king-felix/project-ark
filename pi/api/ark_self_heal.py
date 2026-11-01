@@ -20,9 +20,13 @@ this module is the one place that knows about all three:
   back if it is readable (``heal_json``).  The network watchdog's counters are
   **not** JSON — three numbers as ``key=value`` lines — so they get their own
   shape check (``heal_state``): reading them as JSON would call a perfectly
-  healthy file broken and throw the counters away on every boot.  A broken
-  database is opened read-only and checked with SQLite's own ``quick_check``, and
-  is only ever replaced by a copy that passes the same check (``heal_sqlite``).
+  healthy file broken and throw the counters away on every boot.  A database is
+  asked with SQLite's own ``quick_check`` and is only ever replaced by a copy that
+  passes the same check (``heal_sqlite``).  **A database that could not be asked is
+  not a damaged one**: a lock is not corruption, and reading one as the other
+  replaces a perfectly good file with an older copy — losing every row committed
+  since that copy was taken.  ``quick_check_state()`` keeps those answers apart
+  (``ok``/``damaged``/``unasked``/``absent``) so nothing downstream has to guess.
 
 Two things this module deliberately does **not** do: it never deletes a database,
 and it never touches a file it does not recognise.  A row and its file can
@@ -414,12 +418,52 @@ def heal_state(root: Optional[Path] = None, *, dry_run: bool = False
 # ---------------------------------------------------------------------------
 #  a database
 # ---------------------------------------------------------------------------
-def quick_check(path: Any) -> Tuple[bool, str]:
-    """Ask SQLite whether it can read this file.  Never raises.
+#: How long a check waits for a lock before giving up.  Deliberately small: the question
+#: is "may I look?", and a database another process is holding must be *reported*, not
+#: waited on.  Kept apart from the ``5.0`` a writer uses, because the two are different
+#: questions.
+CHECK_TIMEOUT = 5.0
 
-    ``quick_check`` is the cheap one: it finds the damage that matters after a power
-    cut (a broken b-tree, a torn page) without the minutes a full ``integrity_check``
-    takes on a shelf of a thousand books.
+#: Words that mean SQLite *found* something wrong, as opposed to "I could not look".
+#: ``sqlite3.DatabaseError`` is already the corruption class; this is the belt beside it
+#: for a driver that reports a damaged image as an operational error.
+CORRUPTION_WORDS = ("malformed", "not a database", "corrupt", "encrypted",
+                    "file is encrypted")
+
+
+def _looks_corrupt(text: Any) -> bool:
+    """Does this message describe damage rather than a lock?  Never raises."""
+    lowered = str(text or "").lower()
+    return any(word in lowered for word in CORRUPTION_WORDS)
+
+
+def quick_check_state(path: Any) -> Tuple[str, str]:
+    """Ask SQLite whether it can read this file, and say *which* answer that was.
+
+    Returns one of four states with a sentence beside it:
+
+    ``ok``
+        SQLite answered ``ok``.
+    ``damaged``
+        SQLite found damage — ``DatabaseError``, or a message that says so.
+    ``unasked``
+        The file could not be asked: locked, busy, or a driver that refused for some
+        other reason.  **This is not damage** (see ``heal_sqlite``).
+    ``absent``
+        There is no such file.
+
+    Getting ``damaged`` and ``unasked`` apart is the whole difference between a repair
+    and a data loss.  A database a live writer is holding answers *"database is locked"*,
+    which is not corruption — but a pass that reads it as corruption replaces a perfectly
+    good file with an older copy, and every row committed since that copy was taken is
+    gone.  That is not a theory: it was measured against the live records on
+    1 November 2026, where a locked database plus a stale ``.good.bak`` cost one
+    committed row.  SQLite already tells the two apart — ``OperationalError`` is a lock
+    or a busy file, ``DatabaseError`` is corruption — so nothing here has to guess.
+
+    ``quick_check`` is the cheap check on purpose: it finds the damage that matters
+    after a power cut (a broken b-tree, a torn page) without the minutes a full
+    ``integrity_check`` takes on a shelf of a thousand books.
 
     The connection is **read-write on purpose**, and that is not a slip: every
     database here is in WAL mode, a cut leaves the ``-shm`` file missing with
@@ -432,22 +476,44 @@ def quick_check(path: Any) -> Tuple[bool, str]:
     """
     target = Path(path)
     if not target.is_file():
-        return False, "no such file"
+        return "absent", "no such file"
     try:
-        conn = sqlite3.connect(str(target), timeout=5.0)
-    except sqlite3.Error as exc:
-        return False, str(exc)
+        conn = sqlite3.connect(str(target), timeout=CHECK_TIMEOUT)
+    except sqlite3.OperationalError as exc:
+        # A lock is not damage; a driver reporting a malformed image is.
+        return ("damaged" if _looks_corrupt(exc) else "unasked"), str(exc)
+    except sqlite3.DatabaseError as exc:
+        return "damaged", str(exc)
+    except (sqlite3.Error, ValueError) as exc:
+        return "unasked", str(exc)
     try:
         row = conn.execute("PRAGMA quick_check;").fetchone()
         answer = str((row or [""])[0] or "").strip()
-        return answer.lower() == "ok", answer or "no answer"
+    except sqlite3.OperationalError as exc:
+        return ("damaged" if _looks_corrupt(exc) else "unasked"), str(exc)
+    except sqlite3.DatabaseError as exc:
+        return "damaged", str(exc)
     except (sqlite3.Error, ValueError) as exc:
-        return False, str(exc)
+        return "unasked", str(exc)
     finally:
         try:
             conn.close()
         except sqlite3.Error:                 # pragma: no cover - already closed
             pass
+    if answer.lower() == "ok":
+        return "ok", "ok"
+    return "damaged", answer or "no answer"
+
+
+def quick_check(path: Any) -> Tuple[bool, str]:
+    """Is this database readable?  ``True`` only when SQLite answered ``ok``.
+
+    Kept for callers that want one yes/no — the offline catalogue's check and the
+    installer's own proof.  ``False`` therefore covers both "damaged" and "could not
+    look"; anything that may *act* on the answer must ask ``quick_check_state``.
+    """
+    state, answer = quick_check_state(path)
+    return state == "ok", answer
 
 
 def writer_busy(path: Any) -> bool:
@@ -568,17 +634,54 @@ def snapshot(path: Any, *, hours: float = GOOD_COPY_HOURS,
         return False
 
 
+def _drain_journal(target: Path) -> bool:
+    """Take the *old* database's ``-wal`` and ``-shm`` away from beside ``target``.
+
+    A database file is not the whole database.  In WAL mode the committed pages can
+    live in ``<name>-wal`` beside it, and those frames belong to the database that was
+    there, not to the copy about to be put in its place: SQLite replays a journal it
+    finds into whatever main file it is opened with, so a good copy put back beside the
+    old journal is corrupted again by the first process that opens it.  The ``-shm`` is
+    only that journal's index and means nothing without it.  Both go, and nothing else
+    does.
+
+    Answers ``False`` only when a sidecar is there and cannot be removed — the caller
+    then changes nothing at all, which is the honest outcome: a repair that cannot be
+    finished is worse than one that did not start.
+    """
+    for suffix in ("-wal", "-shm"):
+        sidecar = target.with_name(target.name + suffix)
+        try:
+            sidecar.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError:                       # pragma: no cover - read-only folder
+            return False
+    return True
+
+
 def _copy_over(source: Path, target: Path) -> bool:
-    """Put a checked copy back in place, atomically."""
+    """Put a checked copy back in place, atomically, and take the old journal away.
+
+    Order matters in both directions.  The journal is drained **before** the main file
+    is replaced, so a card that cannot give up the sidecar leaves the database exactly
+    as it was (nothing half-done), and it is drained **again after** the replace,
+    because a writer that slipped in between the two would otherwise leave a fresh
+    ``-wal`` describing rows that are no longer in the file.  ``put_database()`` in
+    ``ark-restore`` does the same thing for the same reason; the two are the only
+    programs that replace a database here.
+    """
     try:
         data = source.read_bytes()
     except OSError:
         return False
+    if not _drain_journal(target):
+        return False
     try:
         ark_atomic.save_bytes(target, data, keep_backup=False)
-        return True
     except OSError:                           # pragma: no cover - card full
         return False
+    return _drain_journal(target)
 
 
 def heal_sqlite(path: Any, *, dry_run: bool = False,
@@ -586,11 +689,12 @@ def heal_sqlite(path: Any, *, dry_run: bool = False,
     """Check one database, keep a good copy of it, and put one back if it is broken.
 
     Answers ``(state, sentence)`` with ``state`` one of ``fine``, ``absent``,
-    ``in use``, ``restored``, ``busy``, ``left`` or ``would``.  A database with no
-    good copy is **left exactly where it is** and reported: replacing it would empty
-    the box, and the owner has ``ark-restore`` and a bundle for that decision.
+    ``unchecked``, ``in use``, ``restored``, ``busy``, ``left`` or ``would``.  A
+    database with no good copy is **left exactly where it is** and reported: replacing
+    it would empty the box, and the owner has ``ark-restore`` and a bundle for that
+    decision.
 
-    Three rules, and each one is here because of a way this can go wrong:
+    Four rules, and each one is here because of a way this can go wrong:
 
     * **a dry run writes nothing** — no journal-mode change, no copy.  The phase runs
       ``--dry-run`` to prove itself, and a proof that alters the card is not a proof.
@@ -598,19 +702,31 @@ def heal_sqlite(path: Any, *, dry_run: bool = False,
       daily pass runs while the portal is serving pages, and a repair must never
       replace or re-mode a file another process holds.  ``in_use`` lets a test say so
       without arranging a real lock.
+    * **a database that could not be asked is not a damaged one** (``unchecked``).
+      ``quick_check_state`` keeps "locked" and "corrupt" apart, and only corruption may
+      put an older copy back — otherwise a pass running beside a live writer replaces
+      good records with yesterday's copy and silently loses every row committed since.
+      The lock is asked again immediately before a copy goes back, because the first
+      answer is a moment old by then.
     * **the boot pass is the one that repairs**, because nothing is writing yet.
     """
     target = Path(path)
     if not target.is_file():
         return "absent", ""
-    ok, answer = quick_check(target)
+    state, answer = quick_check_state(target)
+    if state == "absent":
+        return "absent", ""
     if dry_run:
-        if ok:
+        if state == "ok":
             return "fine", ""
+        if state != "damaged":
+            return ("unchecked",
+                    "%s could not be checked (%s); nothing would be changed." % (
+                        target.name, answer))
         return "would", "%s cannot be read (%s); a good copy would be put back." % (
             target.name, answer)
     busy = bool(in_use) if in_use is not None else writer_busy(target)
-    if ok:
+    if state == "ok":
         if busy:
             return ("in use",
                     "%s is being written right now, so it was only checked — nothing "
@@ -622,23 +738,47 @@ def heal_sqlite(path: Any, *, dry_run: bool = False,
         if taken:
             return "fine", "%s is sound; a good copy of it was kept." % target.name
         return "fine", ""
+    if state != "damaged":
+        # Locked, busy, or a driver that refused for another reason: not damage, so
+        # nothing is put back and nothing is re-moded.
+        return ("unchecked",
+                "%s could not be checked (%s), so nothing was changed — a database "
+                "that could not be asked is not a damaged one." % (target.name, answer))
     if busy:
         return ("busy",
                 "%s cannot be read (%s) and the box is writing to it, so nothing was "
                 "changed — stop the pages and run the pass again when the box is "
                 "quiet." % (target.name, answer))
+    # The check above took a moment; ask the lock again before anything goes back, because
+    # a writer that arrived in between would be overwritten mid-commit.
+    if in_use is None and writer_busy(target):
+        return ("busy",
+                "%s cannot be read (%s) and something began writing it while it was "
+                "being looked at, so nothing was changed — run the pass again when the "
+                "box is quiet." % (target.name, answer))
+    # A copy that reads but could not be put back is a different sentence from "there is
+    # no copy": the older file is sitting right there, and the reason it stayed is
+    # worth saying (something still holds the old journal, or the card is full).
+    refused = ""
     for candidate in (Path(str(target) + ".good.bak"),
                       Path(str(target) + ark_atomic.BACKUP_SUFFIX)):
         if not candidate.is_file():
             continue
-        sound, _ = quick_check(candidate)
-        if not sound:
+        good_state, good_said = quick_check_state(candidate)
+        if good_state != "ok":
             continue
         if not _copy_over(candidate, target):
+            refused = candidate.name
             continue
         return ("restored",
                 "%s came back unreadable (%s); the good copy from before it was "
                 "put back." % (target.name, answer))
+    if refused:
+        return ("left",
+                "%s came back unreadable (%s) and its good copy (%s) could not be put "
+                "back — something still holds the old journal, or the card is full. "
+                "%s was left exactly where it is." % (target.name, answer, refused,
+                                                      target.name))
     return ("left",
             "%s came back unreadable (%s) and there is no good copy of it on the "
             "card — it was left where it is." % (target.name, answer))

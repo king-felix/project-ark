@@ -17,6 +17,11 @@ The order of the checks is the whole design:
    imported twice only makes sense next to the shelf it describes.  If the shelf
    is empty, it is left beside the real list with ``.from-backup`` on the end, so
    re-adding the books imports them once instead of never.
+5. **Take the old journal away before the new file goes in.**  A ``-wal`` holds
+   committed pages belonging to the database it was written for, so a copy put
+   down beside a stale one is a copy SQLite will replay the old rows into — and a
+   drain that cannot be done refuses the restore *before* anything is written
+   (``drain_sidecars`` says why, and what it measured).
 
 This is the one deliberate exception to "a backup only reads": putting records
 back means writing them.  It writes only what the manifest lists, only inside the
@@ -56,6 +61,14 @@ def stop(text: str, code: int = 1) -> int:
     return code
 
 
+class RestoreRefused(Exception):
+    """A file could not be put back safely, so nothing of it was changed.
+
+    Raised *before* the write, never after: a refusal is only useful when the box is
+    exactly as it was when the sentence is printed.
+    """
+
+
 # ---------------------------------------------------------------------------
 #  what is already here
 # ---------------------------------------------------------------------------
@@ -92,9 +105,14 @@ def occupancy(paths: dict) -> str | None:
 # ---------------------------------------------------------------------------
 #: Every unit that can hold the database or write it.  Timers and the path unit
 #: come first so they cannot start a job between the stops and the copy.
+#: Every unit that writes the records, so a restore stops them all before it publishes
+#: anything.  ``ark-self-heal`` belongs here: since 26 Oct 2026 the daily pass at 04:17
+#: writes while the box is serving (a journal-mode change, a repair, the sweep), so a
+#: restore that started beside it would have two programs writing one card.
 WRITERS = ("ark-book-import.path", "ark-book-import.service",
            "ark-arcade-discover.timer", "ark-arcade-discover.service",
-           "ark-zim-downloader.service", "ark-api.service")
+           "ark-zim-downloader.service", "ark-self-heal.timer",
+           "ark-self-heal.service", "ark-api.service")
 
 
 def _systemctl(*args: str) -> subprocess.CompletedProcess:
@@ -159,21 +177,80 @@ def resume(units: list[str]) -> None:
 # ---------------------------------------------------------------------------
 #  putting things back
 # ---------------------------------------------------------------------------
+def drain_sidecars(target: Path) -> list[str]:
+    """Take the *old* database's journal away from beside ``target``.
+
+    A ``-wal`` is not a scratch file: it holds committed pages that belong to the
+    database it was written for.  A copy put down *beside* one is therefore a copy
+    SQLite will replay somebody else's commits into the first time anything opens
+    it, and the restored file is then wrong in a way nothing has written down.
+    That is not a theory — measured on 1 November 2026: a four-row database
+    restored beside a stale journal came back with **51 rows**, and the same
+    restore with the journal drained first came back with 4.
+
+    So the journal goes **before** the new file, and any journal that appears
+    afterwards (a writer that slipped in between) is taken away too.  The old
+    journal is never moved or kept: it describes rows that are being replaced, and
+    keeping it would only invite somebody to put it back later.
+
+    Returns the sidecars that were actually removed; raises ``OSError`` when one
+    cannot be, because that is the caller's cue to write nothing at all.
+    """
+    gone = []
+    for suffix in ("-wal", "-shm"):
+        sidecar = target.with_name(target.name + suffix)
+        try:
+            sidecar.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise OSError(
+                f"the old records' journal beside {target.name} could not be taken "
+                f"away ({exc.strerror or exc}); a copy put back next to it would "
+                f"replay the old rows into the new file.  Nothing of the records "
+                f"was changed — close anything that is reading the card and try "
+                f"again.") from exc
+        gone.append(sidecar.name)
+    return gone
+
+
 def put_database(source: Path, target: Path, dry: bool) -> dict:
-    """Replace the records in one atomic step; a stale WAL must not survive."""
+    """Replace the records in one atomic step; a stale WAL must not survive.
+
+    The order matters and is the whole point of this function:
+
+    1. the old journal is drained (``drain_sidecars`` — see there for why, with the
+       measurement), and a drain that cannot be done stops the restore **before**
+       anything is written, so a refusal is never a half-restored box;
+    2. the copy is made beside the target, fsynced and renamed into place in one
+       move, so no reader can see a partial database;
+    3. the drain is repeated, because a writer that slipped in between 1 and 2
+       would otherwise leave a fresh journal describing rows the file no longer
+       holds.
+
+    ``ark_self_heal._copy_over()`` does exactly the same, in the same order, for
+    the same reason: those two are the only programs on the box that replace a
+    database, and they must not disagree about what "put back" means.
+    """
     if dry:
         return {"what": "records", "action": "would replace", "path": str(target)}
     target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        drain_sidecars(target)              # 1. the old journal must not survive
+    except OSError as exc:
+        raise RestoreRefused(str(exc)) from exc
     staging = target.with_name(target.name + ".restoring")
-    shutil.copyfile(source, staging)
+    shutil.copyfile(source, staging)        # 2. the copy lands, then one rename
     with open(staging, "rb+") as handle:
         os.fsync(handle.fileno())
     os.chmod(staging, 0o640)
     os.replace(staging, target)
-    for sidecar in (target.with_name(target.name + "-wal"),
-                    target.with_name(target.name + "-shm")):
-        if sidecar.exists():
-            sidecar.unlink()        # written by the *old* database; now meaningless
+    try:
+        drain_sidecars(target)              # 3. nothing written by the old database
+    except OSError as exc:
+        raise RestoreRefused(
+            f"the records were put back, but {exc}  Do not start the box until "
+            f"{target.name}-wal is gone: it holds rows that are not in the file.") from exc
     return {"what": "records", "action": "put back", "path": str(target)}
 
 
@@ -241,6 +318,32 @@ def put_ledger(source: Path, paths: dict, dry: bool, mode: str) -> dict:
             "path": str(wanted)}
 
 
+def give_to_box(results: list[dict], *, keep_owner: bool, dry: bool) -> None:
+    """Hand everything just written to the account the box's pages run as.
+
+    ``ark-restore`` is run with ``sudo``, so without this the records and the shared
+    files come back ``root:root`` and the owner's page cannot read them — the same
+    fault as the root-made backup bundle (§16.3).  ``--keep-owner`` keeps whatever
+    the bundle carried, and a read-only card is not a restore failure.
+    """
+    if dry or keep_owner:
+        return
+    try:
+        account = pwd.getpwnam(os.environ.get("ARK_PI_USER", "pi"))
+    except KeyError:
+        say("(There is no 'pi' account on this machine, so file ownership was"
+            " left as it is.)")
+        return
+    owner = (account.pw_uid, account.pw_gid)
+    for result in results:
+        path = Path(result["path"])
+        if path.exists():
+            try:
+                os.chown(path, owner[0], owner[1])
+            except OSError:
+                pass            # a read-only card is not a restore failure
+
+
 # ---------------------------------------------------------------------------
 #  the run
 # ---------------------------------------------------------------------------
@@ -275,6 +378,7 @@ def restore(bundle_path: Path, *, force: bool, dry: bool, no_files: bool,
         say("Leaving the services alone because you said --no-service.")
 
     results = []
+    refusal = ""
     try:
         for entry in data["entries"]:
             to = entry.get("to")
@@ -295,30 +399,21 @@ def restore(bundle_path: Path, *, force: bool, dry: bool, no_files: bool,
                                                     replace=force))
             elif not no_files:
                 results.append(put_file(source, target, dry))
-
-        if not dry and not keep_owner:
-            owner = None
-            try:
-                account = pwd.getpwnam(os.environ.get("ARK_PI_USER", "pi"))
-                owner = (account.pw_uid, account.pw_gid)
-            except KeyError:
-                say("(There is no 'pi' account on this machine, so file ownership was"
-                    " left as it is.)")
-            if owner is not None:
-                for result in results:
-                    path = Path(result["path"])
-                    if path.exists():
-                        try:
-                            os.chown(path, owner[0], owner[1])
-                        except OSError:
-                            pass        # a read-only card is not a restore failure
+    except RestoreRefused as refused:
+        # A refusal is only worth what it protects: everything already written keeps
+        # its owner, the file it refused is untouched, and the box is started again.
+        refusal = str(refused)
     finally:
+        give_to_box(results, keep_owner=keep_owner, dry=dry)
         if paused:
             resume(paused)
 
     say("")
     for result in results:
         say(f"  {result['action']:<28} {result['path']}")
+    if refusal:
+        return stop(f"{refusal}\n  Everything written before it is listed above; the"
+                    " file it refused was not touched.")
     if dry:
         say("\nNothing was written (--dry-run).")
         return 0

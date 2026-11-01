@@ -319,6 +319,31 @@ def _public_link(raw: str) -> str:
     return raw
 
 
+#: Markup a search answer carries: the words that matched are wrapped in ``<b>``, and a
+#: description can hold escaped HTML besides.  Neither is a word, so both are taken out
+#: *after* the element has been read (see ``_feed_text``).
+_FEED_MARKUP = re.compile(r"</?[a-zA-Z][^>]*>")
+
+
+def _feed_text(node) -> str:
+    """Every word inside one element of the feed, at any depth.  Never raises.
+
+    ``node.text`` is only the text *before the first child element*, and a real answer
+    puts the highlight inside the description::
+
+        <description>...<b>water</b> during touring? Do you carry it in panniers…</description>
+
+    so reading ``.text`` gave a snippet of exactly ``"..."`` — the three characters
+    ahead of the tag — for every hit on the live box on 1 November 2026, while the feed
+    itself was perfectly good.  ``itertext()`` walks into the children, which is what a
+    reader means by "the words in this element".
+    """
+    text = "".join(node.itertext())
+    text = html.unescape(_FEED_MARKUP.sub(" ", text))
+    # Twice, because unescaping can uncover markup the feed had escaped twice.
+    return re.sub(r"\s+", " ", _FEED_MARKUP.sub(" ", text)).strip()
+
+
 def _parse_feed(raw: bytes) -> list[dict]:
     """The library answers in a simple XML feed; take title/link/snippet from it."""
     try:
@@ -333,16 +358,14 @@ def _parse_feed(raw: bytes) -> list[dict]:
         for child in node:
             tag = child.tag.lower()
             if tag in ("title", "name") and not title:
-                title = (child.text or "").strip()
+                title = _feed_text(child)
             elif tag == "link" and not link:
-                link = (child.text or "").strip() or (child.get("href") or "")
+                link = _feed_text(child) or (child.get("href") or "").strip()
             elif tag in ("description", "summary", "snippet") and not snippet:
-                snippet = re.sub(r"<[^>]+>", " ", child.text or "").strip()
+                snippet = _feed_text(child)
         if title and link:
-            snippet = html.unescape(re.sub(r"<[^>]+>", " ", snippet))
-            snippet = re.sub(r"\s+", " ", snippet)[:220]
-            hits.append({"title": html.unescape(title), "link": _public_link(link),
-                         "snippet": snippet})
+            hits.append({"title": title, "link": _public_link(link),
+                         "snippet": snippet[:220]})
     return hits
 
 
