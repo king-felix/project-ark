@@ -1245,6 +1245,59 @@ happens in this order: save the network, run `sudo ark-mode home`, confirm `wlan
 lease (`ip -4 addr show wlan0`) and that the box answers over it, and only then decide
 what a cold boot should do.
 
+**This was done on the box on 1 Nov 2026, so it is a runbook rather than a plan.** The
+order below is the one that was used, and the reason it is in this order is that every
+step before the last is reversible from the cable:
+
+```bash
+# 1. deploy the fix, in two runs (phase 7 repairs HOME_WIFI_CONNECTION itself)
+sudo bash /srv/ark/src/install-ark.sh --only 70-network,60-portal
+sudo bash /srv/ark/src/install-ark.sh --only 90-verify
+
+# 2. read the answer back — the "cannot join" line must now be gone
+grep HOME_WIFI_CONNECTION /etc/ark/ark.env      # HOME_WIFI_CONNECTION="home-wifi"
+ark-mode status                                 # mode / chosen by / home network, no "cannot join"
+
+# 3. join it, and prove the box is really on it (this does not touch the cable)
+sudo ark-mode home
+ip -4 addr show wlan0                           # 192.168.1.26/24, and a default route
+nmcli -t -f NAME,DEVICE connection show --active # home-wifi:wlan0
+
+# 4. ask the box over the Wi-Fi address, NOT over ark.local — ark.local resolves to both
+ssh pi@192.168.1.26 'hostname; ip -4 -br addr show wlan0'
+ping -c2 -I wlan0 192.168.1.1
+curl -s -o /dev/null -w '%{http_code}\n' http://192.168.1.26/     # 200
+
+# 5. only now say what a cold boot does — and choose "auto", not a pin
+sudo cp -a /etc/ark/ark.env /root/ark.env.before-bootmode
+#    edit BOOT_MODE="hotspot" -> BOOT_MODE="auto" through a temp file, then:
+sudo install -m 0644 -o root -g root /tmp/ark.env.new /etc/ark/ark.env
+sudo ark-mode auto
+ark-mode boot --dry-run          # "boot would try \"home-wifi\", then broadcast (BOOT_MODE=auto)"
+ls /etc/ark/mode.pinned          # must not exist: nothing is being held
+```
+
+**`auto` and not `sudo ark-mode home`** (which pins `home`): a pin is an owner's standing
+order and the watchdog honours it, so a router that is switched off — or a box carried to
+another house — would be left with nothing to join and no way back to broadcasting.
+`auto` tries home first and still falls back to the hotspot, which is the property that
+makes a box in a cupboard safe. Use a pin only for a box that must stay on one network,
+and remember `sudo ark-mode auto` releases it.
+
+Two things only the card could answer, learned this way: `ark.env` keeps its own mode
+(`644 root:root` — the repair writes a temp file, copies the mode, then `mv`s), and the
+box was carrying **two** profiles for the same house SSID (`home-wifi` and
+`preconfigured`). A boot is deterministic anyway, because `ark-mode` names `home-wifi`
+explicitly; only an unattended re-join can pick the other one. If you tidy that up, delete
+a profile with `sudo nmcli connection delete <name>` and only while the box is on the
+cable — and note that neither the installer nor the owner's page will ever delete one for
+you (see `docs/IMPLEMENTATION-LOG.md` §36.5 for the full list on this card).
+
+**The cable:** leave the Ethernet in until step 4 has answered over the Wi-Fi address.
+After that it can be pulled, and pulling it is the real proof — `ssh pi@192.168.1.26`,
+`http://192.168.1.26/` and `https://ark.local:8443/admin` must all still answer with no
+wire in the box. If they stop, put the cable back: the box is still serving on it, and
+`ark-net-watch` will have taken the radio home again within a minute either way.
 
 ---
 

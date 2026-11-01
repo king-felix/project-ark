@@ -3748,26 +3748,89 @@ it was **32** and the whole suite is **632 passed, 2 skipped**.
 `bash -n` is clean on `pi/lib/home-network.sh`, `pi/steps/70-network.sh` and `pi/bin/ark-mode`, and
 `python3 -m py_compile` on the test file.
 
-### 36.4 What is still not proved, and what the card still needs
+### 36.4 Run on the card, 1 Nov 2026 — and what it left unproved
 
-No box has run the corrected phase. The fix is on `feature/admin-hardening`; the live card still
-carries `HOME_WIFI_CONNECTION="ark-hotspot"`, written by the 31 Oct install. What has to happen on
-the card, in this order — **and the Ethernet cable must not come out before step 5 answers a DHCP
-lease**:
+The phase ran on the box the same day it was written, in this order, and **the box is now on the
+house Wi-Fi** with the Ethernet cable left in place as a life-line:
 
-1. deploy the branch (`--only 70-network,60-portal`, then `--only 90-verify`) — phase 7 repairs the
-   file and says *home network repaired in /etc/ark/ark.env: was "ark-hotspot" … now "home-wifi"*;
-2. read it back: `grep HOME_WIFI_CONNECTION /etc/ark/ark.env` and `ark-mode status` (the
-   `cannot join` line must be gone);
-3. if the house network is not already saved as `home-wifi`, save it —
-   `printf '%s\n' 'the passphrase' | sudo ark-wifi-add --ssid "House of Leaves-5G-1"` — **saving
-   never joins** (`autoconnect=no`), which is deliberate;
-4. `sudo ark-mode home` and watch `nmcli -t -f NAME,DEVICE connection show --active`;
-5. `ip -4 addr show wlan0`, and answer an SSH session over that address, before anything is
-   unplugged;
-6. only then decide what a cold boot does (`BOOT_MODE`, or `sudo ark-mode home` to pin it). A plain
-   reboot with `BOOT_MODE="hotspot"` and a pin puts the box back on the hotspot — that trap is the
-   reason this section exists.
+1. `--only 70-network,60-portal`, then `--only 90-verify`
+   (`logs/deploy-home-20261101-094307.log`, `logs/verify-home-20261101-094430.log`). Phase 7 said the
+   sentence the test had predicted, word for word: *"home network repaired in /etc/ark/ark.env: was
+   \"ark-hotspot\" (not a network this box can join — the Ark's own access point is never home), now
+   \"home-wifi\""*;
+2. read it back — `HOME_WIFI_CONNECTION="home-wifi"`, and `ark-mode status` with **no** `cannot join`
+   line, which is exactly what the 31 Oct file could not say. `ark.env` is still `644 root:root`
+   (`ark_home_record()` keeps the file's own mode), and `BOOT_MODE` was still `hotspot` at this point;
+3. nothing had to be saved — the house network was already there as the build-time profile
+   `home-wifi` (SSID `House of Leaves-5G-1`), so `ark-wifi-add` was **not** run;
+4. `sudo ark-mode home` joined it: `wlan0` took **192.168.1.26/24** with a default route, `active
+   links: Wired connection 1,home-wifi lo`;
+5. everything was then proved **over that Wi-Fi address**, so no answer can be the Ethernet cable
+   (`ark.local` resolves to both): `ssh pi@192.168.1.26` (hostname `ark`), `ping -c2 -I wlan0
+   192.168.1.1`, `http://192.168.1.26/` 200, `http://ark.local/` 200,
+   `https://ark.local:8443/admin` 303 (the sign-in), `/api/ready` 200;
+6. **what a cold boot does was then changed deliberately.** `BOOT_MODE="auto"` was written into
+   `/etc/ark/ark.env` through a temp file and `install -m 0644 -o root -g root` (the file's own mode,
+   read back with `grep -qx` before the swap), `sudo ark-mode auto` was run, and
+   `/etc/ark/mode.pinned` was confirmed **absent** — nothing is being held. `ark-mode boot --dry-run`
+   now answers *"boot would try \"home-wifi\", then broadcast (BOOT_MODE=auto)"*.
 
-**Unproved by any test:** that a real NetworkManager joins what this code chose (step 4), and that
-the box comes back after a power cut on somebody else's Wi-Fi (`docs/HUMAN-TEST-LIST.md` §17).
+**`auto`, not a `home` pin, on purpose.** A pin is an owner's standing order and the watchdog honours
+it, so a house router that is switched off — or a box carried to another house — would be left with
+nothing. `auto` tries home first and still falls back to broadcasting, which is the property that
+makes a box in a cupboard safe.
+
+`--only 90-verify` was then run again with the box **on Wi-Fi**
+(`logs/verify-home-wifi-20261101.log`): `ARK_INSTALL_COMPLETE`, **69 ✓ and not one warning**,
+`→ network mode: home`, and the receipt reading `mode: home`, `ready.ok: true`, `blocking: []`,
+`card_check: withdrawn`, `network.wifi_helper: yes` / `owner_page: 303` / `lan_request: absent`. Every
+row the plan named as needing the card answered: 20 collections, 1291 books, 61 games, 56448 game
+names, one copy 0 h old, 116.4 GiB free, both new owner pages asking to sign in. And
+`/srv/ark/logs/net-watch.state` reads `lost_streak=0 home_streak=0` with **no `net-watch.log` at
+all** — the watchdog has had nothing to decide, and a quiet log is a healthy one (§8.7).
+
+**Unproved, and it must be said out loud:**
+
+* **no reboot has been taken since `BOOT_MODE="auto"` was written.** The boot path is proved by
+  `ark-mode boot --dry-run` only, so the first real cold boot is still the moment it is tested;
+* the box has not yet been **seen** reaching the house Wi-Fi with **no cable in it** — it is proved
+  serving over `wlan0`, with the Ethernet still present;
+* a power cut, and a house network that is *not* there at boot (does it broadcast as it should?) —
+  `docs/HUMAN-TEST-LIST.md` §17.
+
+**Two things noticed on the card, neither of them a fault** (log §36.5): the box carries seven
+wireless profiles for three networks, two of which (`home-wifi` and `preconfigured`) name the *same*
+SSID with `autoconnect=yes`, so NetworkManager has more than one answer to one question — `ark-mode`
+settles it by naming `home-wifi` explicitly, and `ark-net-watch` keeps watching afterwards; and the
+older `House of Leaves` / `-5G-2` profiles (`home-wifi-2`, `home-wifi-3`) are left over from earlier
+attempts. Deleting a profile is the owner's decision, not the installer's, so none were touched.
+
+### 36.5 What the card's radio actually holds, 1 Nov 2026
+
+Read with `nmcli -t -f NAME,TYPE,AUTOCONNECT connection show`, and the SSID of each asked for
+separately (`nmcli -t -f 802-11-wireless.ssid connection show "<name>"`), because two profiles can
+carry the same name for different networks and the reverse:
+
+| Profile | SSID | autoconnect | What it is |
+|---|---|---|---|
+| `home-wifi` | `House of Leaves-5G-1` | yes | the build-time profile, and the one `HOME_WIFI_CONNECTION` names — the box is **on** this one |
+| `preconfigured` | `House of Leaves-5G-1` | yes | the image's own copy of the same network: a second answer to one question |
+| `home-wifi-3` | `House of Leaves-5G-2` | yes | an earlier attempt, kept |
+| `home-wifi-2` | `House of Leaves` | yes | an earlier attempt, kept (2.4 GHz) |
+| `rodclan` | `Rodclan` | yes | another network this box has been on |
+| `rodclan-fast` | `Rodclan-fast` | yes | the same, 5 GHz |
+| `ark-hotspot` | `The-Ark-Offline` | **no** | the access point; `autoconnect=no` on purpose, because `ark-mode` decides |
+
+The one thing that could bite is the duplicate: after a link blip NetworkManager may bring up
+`preconfigured` rather than `home-wifi` (same SSID, so the box is still on the house network — the
+watchdog sees a home link and stays), but if that copy's passphrase is stale the join fails and NM
+tries the next candidate. `ark-mode boot` and `ark-mode home` both name `home-wifi` **explicitly**,
+so a boot is deterministic; only an unattended re-join is a race. Tidying it is one command and the
+owner's call:
+
+```bash
+sudo nmcli connection delete preconfigured home-wifi-2 home-wifi-3   # only after the box is on the cable
+```
+
+Nothing in this repo deletes a profile: `ark-wifi-add` writes one, `ark-mode` names one, and the
+owner's Network page lists them without offering to remove any.
