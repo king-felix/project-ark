@@ -20,6 +20,7 @@ Three layers, each checked its own way:
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import time
 import urllib.parse
@@ -807,4 +808,63 @@ def test_a_lapsed_request_is_read_from_the_clock_not_from_its_own_words(
     assert "has lapsed" in page.text
     assert "Waiting:" not in page.text
     assert 'action="/admin/network/cancel"' not in page.text
+
+
+# ---------------------------------------------------------------------------
+#  the installer's own knock on that door
+#
+#  Phase 70 proves the page can reach the helper by running it as `pi` with a
+#  rehearsal name.  That proof can lie in one direction only — it can say "the
+#  door is shut" about a door that answered — and it did, on the card, on
+#  1 Nov 2026: the rehearsal asked to save "A network this box has never joined"
+#  (35 characters), `ark-wifi-add` refused it at its own limit of 32, and a
+#  perfectly good door was reported as unreachable:
+#
+#      ! the Network page cannot reach ark-wifi-add as pi — saving a network
+#        will fail: Not done: a network name is at most 32 characters; that
+#        one is 35.
+#
+#  Two things keep it honest, and both are held here: the name is one the
+#  helper would accept, and a sentence in the helper's own words ("Not done:")
+#  counts as having reached it, because a door nobody can knock on says
+#  "sudo: a password is required" or "No such file", never "Not done:".
+# ---------------------------------------------------------------------------
+NETWORK_PHASE = REPO / "pi" / "steps" / "70-network.sh"
+
+
+def _phase_rehearsal() -> str:
+    text = NETWORK_PHASE.read_text(encoding="utf-8")
+    match = re.search(r'ark-wifi-add --ssid "([^"]*)" --check', text)
+    assert match, "phase 70 no longer knocks on ark-wifi-add at all"
+    return match.group(1)
+
+
+def test_the_installer_rehearses_a_network_name_the_helper_would_accept():
+    """A rehearsal the helper refuses proves nothing about the door."""
+    import ark_network
+
+    name = _phase_rehearsal()
+    assert ark_network.SSID_MIN <= len(name) <= ark_network.SSID_MAX, (
+        f"the rehearsal asks to save a {len(name)}-character network name, which "
+        f"ark-wifi-add refuses (its limit is {ark_network.SSID_MAX}) — the proof "
+        "would then report a working door as a missing one"
+    )
+
+
+def test_the_installer_counts_the_helpers_own_refusal_as_having_reached_it():
+    """`Not done:` is a sentence only the helper writes, so it proves the knock."""
+    text = NETWORK_PHASE.read_text(encoding="utf-8")
+    assert "Not done:" in text, (
+        "a refusal in the helper's own words must not be reported as "
+        "'cannot reach ark-wifi-add'"
+    )
+    lines = [line for line in text.splitlines()
+             if not line.lstrip().startswith("#")]      # the words in the comment too
+    cannot = [i for i, line in enumerate(lines) if "cannot reach ark-wifi-add" in line]
+    assert len(cannot) == 1, "the 'cannot reach' sentence should exist exactly once"
+    assert lines[cannot[0] - 1].strip() == "else", (
+        "the 'cannot reach' sentence must be the last resort, after the "
+        "helper's own refusal has been considered"
+    )
+
 

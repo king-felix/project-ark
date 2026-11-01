@@ -165,11 +165,21 @@ esac
 # reach both helpers with no password prompt, which is the one thing that would
 # otherwise only be discovered by the owner, an hour later, with the page saying
 # "The box would not do that."
-wifi_check=""
-if wifi_check="$(runuser -u "$ARK_PI_USER" -- \
-      sudo -n /usr/local/sbin/ark-wifi-add --ssid "A network this box has never joined" --check \
-      <<<"ark-rehearsal-only-psk" 2>&1)"; then
+# The rehearsal name has to be one the helper would ACCEPT, or the proof proves
+# the wrong thing.  It used to be "A network this box has never joined" — 35
+# characters, while `ark-wifi-add` refuses anything over 32 — so on 1 Nov 2026
+# this line announced "cannot reach ark-wifi-add as pi" about a helper that had
+# just answered in its own words.  And a refusal in the helper's own words is
+# still proof the account reached it: a door nobody can knock on says
+# "sudo: a password is required" or "No such file", never "Not done:".
+wifi_check=""; wifi_rc=0
+wifi_check="$(runuser -u "$ARK_PI_USER" -- \
+      sudo -n /usr/local/sbin/ark-wifi-add --ssid "ark rehearsal network" --check \
+      <<<"ark-rehearsal-only-psk" 2>&1)" || wifi_rc=$?
+if (( wifi_rc == 0 )); then
   ark_ok "the Network page can save a Wi-Fi network as $ARK_PI_USER (${wifi_check:-no words})"
+elif grep -q 'Not done:' <<<"$wifi_check"; then
+  ark_warn "the Network page reached ark-wifi-add as $ARK_PI_USER but the rehearsal itself was refused (the door works): ${wifi_check:-no words}"
 else
   ark_warn "the Network page cannot reach ark-wifi-add as $ARK_PI_USER — saving a network will fail: ${wifi_check:-no output}"
 fi

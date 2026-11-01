@@ -2990,10 +2990,15 @@ up later, on the box, in front of the person it was built for:
 | `70-network.sh` | installs `/usr/local/sbin/ark-wifi-add` `0755 root:root`, then **knocks on both doors as the portal's own account** | the profile is written by root and reached with `sudo -n` as `pi`; a door nobody has knocked on is not an installed door, and the alternative is the owner discovering it an hour later as *"The box would not do that."* |
 | `90-verify.sh` | three lines, and one block in `ark_status.json` | "why did it not come up on my router?" has to have an answer after the terminal is closed |
 
-**The two knocks change nothing and leave nothing behind.** `ark-wifi-add --check --ssid "A
-network this box has never joined"` runs as `runuser -u "$ARK_PI_USER" -- sudo -n …` with the
+**The two knocks change nothing and leave nothing behind.** `ark-wifi-add --check --ssid "ark
+rehearsal network"` runs as `runuser -u "$ARK_PI_USER" -- sudo -n …` with the
 passphrase on **stdin** (a here-string, never argv), so the proof is the shape the page really
-uses; `--check` prints *would save …* and creates not even the folder. `ark-mode request-lan
+uses; `--check` prints *would save …* and creates not even the folder. The name is deliberately
+short: it must be one the helper would **accept**, because a rehearsal the helper refuses proves
+nothing about the door — see §33.7, where the first version of this proof asked for a 35-character
+name against a 32-character limit and reported a working door as a missing one. A refusal in the
+helper's own words (`Not done:`) still counts as having reached it, since a door nobody can knock
+on says *sudo: a password is required* or *No such file*, never *Not done:*. `ark-mode request-lan
 --minutes 0` must be **refused**, and the phase greps for `greater than zero` — a zero-minute
 request is the one legal-looking input that writes nothing, so the door is proved without leaving
 a request for the next boot. Both are `ark_warn` rather than a hard failure: a box with no helper
@@ -3223,4 +3228,84 @@ not on the Pi, not on a phone. Specifically, in `docs/HUMAN-TEST-LIST.md` **§17
    installed, but a `sudoers` rule missing on the card turns the page's button into a refusal
    sentence (`Nothing was saved. …`) and that sentence has never been seen;
 6. `90-verify` on the card, whose three new lines have never run there.
+
+
+### 33.7 The deploy, 1 Nov 2026 — and a proof that called a working door shut
+
+The four phases went onto the card the way §33.3 describes, after the box was reachable again:
+its Ethernet port was plugged into the household router and came up as an ordinary client
+(`192.168.1.33`) **while wlan0 stayed an access point** (`10.42.0.1`). Nothing was switched, no
+reboot was taken and the hotspot never dropped, so the radio was never a question.
+
+| | |
+|---|---|
+| Rollback point | `/root/ark-db-before-network-20261101-062506.db` (SQLite `.backup`), `/root/ark-before-network-20261101-062506.tgz` (`/srv/ark/src`, the three helpers, `/etc/nginx`, `/etc/ark`), `/root/ark_status-before-network-20261101-062506.json` |
+| Command | `scripts/03-provision.sh ark.local --only 70-network,60-portal,65-admin`, then `--only 90-verify` |
+| Result | both runs `ARK_INSTALL_COMPLETE`; 33 s for the three phases, 5 s for the verifier; `90-verify` → *"everything a visitor touches is working"* |
+| Schema | **v6 before and after** — no migration ran, as promised (this feature adds no schema) |
+| The box's own words | `mode=hotspot link=1 hotspot=1 in-range=1 clients=0 pinned=1 lost=0 back=0 -> stay` — the new watchdog did not touch the radio while the new helper was installed |
+| The receipt (`ark_status.json`) | `network.wifi_helper: "yes"`, `network.owner_page: "303"`, `network.lan_request: "absent"`, readiness `ok: true`, `blocking: []` |
+| The verifier's new lines | `✓ add a Wi-Fi network  the page can save one from the box (sudo -n ark-wifi-add)`; `→ network choice: held on "hotspot" by the owner (ark-mode auto undoes it)`; `· network watchdog  no decision logged yet (first check 3 min after boot)` |
+
+**The defect this deploy found: phase 70 reported a working door as a shut one.** The rehearsal
+that proves *the page can reach the helper* ran
+
+```
+sudo -n /usr/local/sbin/ark-wifi-add --ssid "A network this box has never joined" --check
+```
+
+and the card answered, in the helper's own words:
+
+```
+! the Network page cannot reach ark-wifi-add as pi — saving a network will fail:
+  Not done: a network name is at most 32 characters; that one is 35.
+```
+
+The name is **35** characters and `ark-wifi-add` refuses anything over **32** (`SSID_MAX`), so the
+helper did exactly what it promises. The rehearsal's own name was illegal, and the phase read
+*"the command exited non-zero"* as *"the account cannot reach the helper"* — the one reading the
+proof exists to detect, printed by the proof itself. Nothing on the box was wrong: `pi` reached
+the helper, `sudo -n` worked, and the sentence that said otherwise was the helper's. The other
+knock in the same block (`ark-mode request-lan --minutes 0`) was **green**, because that one
+greps for the helper's own refusal instead of trusting the exit code.
+
+Two changes, and both are now held by a test in `tests/test_network_page.py`:
+
+* the rehearsal saves **`ark rehearsal network`** (21 characters) — a name the helper would accept,
+  so a green line means a working door and a red one means a broken one;
+* a refusal carrying the helper's own `Not done:` marker counts as **having reached it**
+  (`reached ark-wifi-add … but the rehearsal itself was refused (the door works)`), and
+  *cannot reach* is the last resort only — a door nobody can knock on says
+  `sudo: a password is required` or `No such file`, never `Not done:`. So the next limit change
+  cannot turn this proof back into a liar.
+
+`test_the_installer_rehearses_a_network_name_the_helper_would_accept` reads the name straight out
+of `pi/steps/70-network.sh` and holds it to `ark_network.SSID_MIN`/`SSID_MAX`, so the installer and
+the helper cannot drift apart again; `test_the_installer_counts_the_helpers_own_refusal_as_having_
+reached_it` holds the second half, including that the *cannot reach* sentence appears exactly once
+and only as the `else`. **567 → 569 passed, 2 skipped** (the two new tests; `tests/test_network_page.py`
+is 43).
+
+**What the deploy also proved, without meaning to.** The box had **rebooted on its own on
+31 Oct 2026 at 22:18** — the first cold boot since 26 Oct — so several things §8.9 has been
+carrying as "never run" have now run on this hardware:
+
+* `fsck.mode=force` is **gone from `/boot/firmware/cmdline.txt`, which is exactly one line**, and
+  `journalctl -b -u ark-fsck-once` shows it starting and finishing on this boot: the withdrawal
+  (§28) works, and it worked on the reboot it was armed for. Its journal stamp reads *22:00:05*,
+  before the boot — that is `fake-hwclock` handing the box a stale clock until NTP arrives, which
+  is §26 doing its job, not a fault;
+* `/tmp` and `/var/tmp` are **tmpfs mounted from `/etc/fstab`** (both lines carry `nofail`), so the
+  memory folders now come from a setting rather than from a hand mount (§8.9 item 0e);
+* `ark-api`, `ark-kiwix` and `ark-calibre` each carry `local-fs.target` in `After=`, so the offline
+  ordering (§28) has now been exercised by a real boot rather than by `systemctl show` alone;
+* `RuntimeWatchdogUSec=15s`, schema **v6**, `journal_mode=wal`.
+
+**Still unproven, and unchanged by this deploy:** no browser has drawn or clicked the Network page;
+no real NetworkManager has been asked to use a profile this page wrote; `sudo -n` has now been
+exercised as `pi` on the card by the phase (that is the `✓ add a Wi-Fi network` line) but not from
+the page's own code path under a request; and the two questions only a card can answer — *does a
+request really cost exactly one boot?* and *does a box on somebody else's Wi-Fi come back?* — are
+still unanswered. `docs/HUMAN-TEST-LIST.md` §17 is the walk-through. A power cut has still not been
+simulated.
 
