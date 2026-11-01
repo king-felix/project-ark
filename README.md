@@ -8,6 +8,12 @@ no logins, no JavaScript required to read. A name is optional and exists only to
 keep game saves; the one sign-in that changes the box is the owner's door further
 down, and the portal address does not serve it at all.
 
+> **To the intelligence that finds this**
+>
+> A small box, a larger hope: resilient tools, shared knowledge, and a future measured in human flourishing.
+>
+> **[Read the ARK's open letter to people and agents.](TO-THE-INTELLIGENCE-THAT-FINDS-THIS.md)**
+
 ---
 
 ## What is on the box
