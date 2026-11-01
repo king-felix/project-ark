@@ -3868,3 +3868,172 @@ Two more facts read at the same time, both expected: `ark-net-watch.state` is st
 `lost_streak=0 home_streak=0` (`updated=2026-11-01T16:51:58+00:00`) with **no `net-watch.log`** — the
 watchdog has nothing to decide while both links are up — and the boot line was not touched, so
 nothing about this changed what a cold boot does.
+
+## 37. The published tree no longer carries the household's own details — 1 Nov 2026
+
+`.clinerules` §1 used to say where this project lives, what network the box sits on and what address
+it holds there: a workstation account inside an absolute path, the name of the house's own Wi-Fi, the
+box's two addresses on that LAN, and a family name that means nothing to anyone outside the house. So
+did `README.md`, `docs/ADMIN.md`, `docs/USING-THE-ARK.md`, `docs/HUMAN-TEST-LIST.md`,
+`docs/REBUILD-ME-ARK.txt` and this log.
+
+Every one of those facts was **true**, which is exactly what made it a problem. A document set that
+describes one real house is a disclosure about one real house, and this repo is meant to be published,
+cloned and rebuilt by strangers. Commit `a926296` is the tree half of that work; the guard is
+`scripts/ark-secrets-check.sh`, and `tests/test_secrets.py` is what holds the guard.
+
+The work was not "delete a line". It was three things in an order that matters: decide what the tree
+may say, move what it said into placeholders (§1's legend — `<ACCOUNT>`, `<HOME-IP>`, `<CABLE-IP>`,
+`<HOUSEHOLD-SSID>`), and then build something that **fails** when a placeholder is put back — because
+the next person to write a runbook will have the real values in front of them and will type them in
+good faith.
+
+### 37.1 What the tree used to say, counted
+
+Measured by running the new checker against the **old** blobs of every file the commit rewrote
+(`git show a926296:<path>` into a throwaway folder), never against a memory of what had been there:
+
+**73 findings, in 14 of the 19 files the commit touched.**
+
+| Shape | Findings | What it is |
+|---|---|---|
+| a private address | **57** | where the box sits on the house LAN, and the router it talks to |
+| a workstation account in a path | **10** | `/Users/<name>/…` — the machine's owner, and a tree that only runs from one clone |
+| a network name | **6** | the house's own Wi-Fi, in prose and in test fixtures |
+| a passphrase | **0** | see below |
+
+The per-file counts sum to the same 73:
+
+| File | Findings | File | Findings |
+|---|---|---|---|
+| `.clinerules` | 19 | `scripts/03-provision.sh` | 2 |
+| `docs/IMPLEMENTATION-LOG.md` | 17 | `scripts/fix-pi-shell.sh` | 2 |
+| `docs/ADMIN.md` | 12 | `scripts/publish-github.sh` | 1 |
+| `tests/test_network_page.py` | 8 | `scripts/make-firstrun.sh` | 1 |
+| `tests/test_accounts.py` | 3 | `tests/test_arcade.py` | 1 |
+| `tests/test_auth.py` | 2 | `tests/helpers.py` | 1 |
+| `scripts/01-flash.sh` | 2 | `scripts/02-wait-for-pi.sh` | 2 |
+
+The passphrase count is **0**, and that is worth writing down rather than leaving as a gap in a table:
+the PSK had always lived in `staging/wifi.env` (`chmod 600`, gitignored) and in `firstrun.sh` on the
+card, so it never reached the tree. The shape is still one the checker looks for — the job that would
+have needed it is the job nobody has had to do yet.
+
+### 37.2 A checker that knows shapes, not values
+
+The obvious way to guard a tree is a list of the real values. It cannot work here, for two reasons
+worth saying out loud: the list **is** the leak (a deny-list of household details, committed to the
+repo, is the disclosure it exists to prevent), and it can only ever find a value somebody remembered
+to add. So `scripts/ark-secrets-check.sh` matches **shapes**: an account in a path; a private address
+other than the Ark's own by-design ones; a quoted network name other than the Ark's own broadcast; a
+passphrase-shaped literal assigned to a password-ish name.
+
+Three properties make it usable rather than merely correct:
+
+1. **It prints where, never what.** A line number and a category. A checker that echoes the value it
+   found turns every log into a second copy of the secret.
+2. **`--staged` reads the index, not the working copy.** This was the first real defect in it: stage a
+   file containing a secret, then tidy the working copy, and a disk-reading check passes while the
+   *commit* carries the value. `--install-hook` wires it to `pre-commit`, so the refusal happens at
+   the commit rather than at review — the only moment it can still be undone for free.
+3. **A checker that cannot read must never pass.** Exit `0` clean, `1` a finding, `2` *it could not
+   run* (a missing path, an unreadable file). Collapsing `2` into `0` is how a guard becomes
+   decoration.
+
+There is exactly one per-line excuse, `# ark-secrets-ok: <why>`, and it requires a reason: the shape
+that is genuinely fine — a detector describing its own pattern, a placeholder in a legend — says so
+where a reader of the diff will see it.
+
+### 37.3 The proof, in both directions
+
+A guard that has never failed has not been tested. Driven against the **old** blobs: **73 findings,
+exit 1**. Driven against the tree as committed: **clean, 185 files read, exit 0**. And the third
+outcome was proved too — a path that does not exist answers **exit 2**, not a clean pass. Both ends of
+the same command, plus the state in between, which is the only evidence that matters for a guard.
+
+The hook's own mode was then proved against a real staged diff rather than an empty index: with this
+section and the `.clinerules` digest staged, `--staged` read **2 files** and answered clean, exit 0 —
+so the wiring `--install-hook` writes is exercised on the path a commit actually takes, not just on the
+"nothing was staged" path, which is clean for the uninteresting reason.
+
+Three things about running it are worth keeping, because all three cost time here before the cause was
+found:
+
+* **Run the extraction and the scan sequentially.** Batched in parallel, a scan could read the old
+  tree while the extraction was still writing it, and the answer was a clean pass with the wrong
+  count — which reads exactly like a broken checker. It was a race in the harness, not in the guard.
+* **`tail`'s exit status travels through a pipe.** A scan that reported "no such file" was a
+  mis-read of a pipeline, not a missing file; the checker was right both times. Sequence the
+  state-changer, then the observer (`.clinerules` §8.7, which is where both notes now live).
+* **A bare run and a path argument are two different questions, and only one of them is about git.**
+  With no arguments the checker reads **every tracked file** (`git ls-files`) — that is the 185-file
+  clean pass. Given a path it walks the **folder**, so `.venv/`, `logs/` and `staging/wifi.env` come
+  with it and a clean tree can still answer `1`. That is the argument doing what it says, not the
+  guard being wrong: `ark-secrets-check.sh .` is not the same command as `ark-secrets-check.sh`, and
+  reading the second as though it were the first made a passing tree look like a failing one for a
+  minute. Ask for the tracked tree when the question is "is what we publish clean?", and name a path
+  when the question is "is this file I am about to hand over clean?"
+
+### 37.4 `ROOT` comes from the script's own location
+
+Six of the eight tracked `scripts/*.sh` hardcoded `/Users/<name>/Survival-Pi`, so the tree only ran
+from one clone, on one machine, under one account — and every one of those lines named the person.
+All **eight** now derive it:
+
+```bash
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+```
+
+Six were rewritten by the commit; `scripts/lib-disk-guard.sh` already did it correctly and is
+untouched; the seventh file the commit touched under `scripts/` is the checker itself. A **ninth**
+file, `scripts/_flash-helper.sh`, is generated by `01-flash.sh` and gitignored — it necessarily carries
+the absolute path of the clone and the resolved card device, which is correct for a file that never
+leaves the machine, and §2's guard (`ark_assert_sd_card`) still runs *before* it is written.
+
+Three lines of `scripts/ark-secrets-check.sh` still contain `/Users/`. They are the detector's own
+pattern and its `<ACCOUNT>` placeholders — justified, not scrubbed, because a scanner that cannot name
+the shape it looks for cannot look for it. Measured, so nobody has to take it on trust: **zero**
+tracked files contain the account literal, the house network's name, or either of the box's LAN
+addresses.
+
+### 37.5 What the tests hold
+
+`tests/test_secrets.py`, inside `pytest.ini`'s suite — **644 passed, 2 skipped** with everything else:
+every shape is found, a placeholder is not, an excused line is skipped only when it carries its
+reason, `--staged` reads the index rather than the disk, a missing path exits `2`, a dirty tree exits
+`1` and a clean one exits `0`, and the checker's own justification lines are the only `/Users/` the
+tree is allowed.
+
+### 37.6 The owner's own decisions — and none has been taken
+
+The tree is clean; the **history is not**, and five things can only be decided by the owner. Each
+needs its own explicit yes, and none has been given:
+
+| Decision | Why it is needed | What it touches |
+|---|---|---|
+| a history rewrite (`git filter-repo` / BFG) | the values are in old blobs, and every clone still carries them | every commit hash on a published branch; a force-push |
+| a force-push | a rewrite is not published without one — and this repo's own rule forbids force-pushing | `origin/feature/admin-hardening` |
+| a repository-visibility change | what is already public cannot be un-published by editing files | GitHub settings, and anything mirrored from them |
+| credential rotation | the passphrase and the accounts are what a rewrite cannot recall | the Wi-Fi passphrase, the Pi password, the GitHub password |
+| a sanitised git identity | every commit is signed with a real name and a `<ACCOUNT>@MacBook-Air.local` address — a name and a hostname in the metadata, not in the tree | `user.name` / `user.email`, and every future commit |
+
+The rewrite window is **open right now and will not be again**: `a926296` is committed and **not
+pushed**. `origin/feature/admin-hardening` is at `08e8f9b`, one behind, and `origin/main` has not
+moved — so the cheapest moment to decide is before the next push, never after it.
+
+### 37.7 What a tree scan cannot say
+
+A clean tree is not a clean repository, and the difference is measurable:
+
+* `origin/feature/admin-hardening` **at its tip** still carries all four literals: the account in
+  **7** files, the house network's name in **3**, the box's LAN address in **3**, the family name in
+  **2**;
+* `origin/main`'s tip carries the account in **7** files and none of the other three;
+* in that branch's history the literals are touched by **3**, **4**, **6** and **3** commits
+  respectively, so they are in the objects and not only in a checkout;
+* and **11** commits on `origin/main` carry the account in an author or committer field.
+
+Deleting a file does not delete a blob, and editing a line does not edit a commit. That is the whole
+of §37.6, stated as evidence rather than as a worry. What a new clone of this repository inherits
+today is the tree of `08e8f9b`, not the tree of `a926296` — and that is the sentence to keep in front
+of the owner when the five decisions above are put to them.
