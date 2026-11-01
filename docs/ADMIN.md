@@ -1299,6 +1299,26 @@ After that it can be pulled, and pulling it is the real proof — `ssh pi@192.16
 wire in the box. If they stop, put the cable back: the box is still serving on it, and
 `ark-net-watch` will have taken the radio home again within a minute either way.
 
+**While the cable is still in, `ark.local` is not a proof of anything.** The box then has
+two addresses on the house network (`wlan0` `192.168.1.26`, `eth0` `192.168.1.33`), mDNS
+answers with **both**, and the Mac picks one — on 1 Nov 2026 it picked the Ethernet one, so
+`curl http://ark.local/` was answering over the cable while the run looked like a Wi-Fi
+proof. Ask by the Wi-Fi address, or force the name at it:
+
+```bash
+ping -c2 -I wlan0 192.168.1.1                                         # on the box
+curl -s -o /dev/null -w '%{http_code}\n' http://192.168.1.26/          # 200
+curl -s -o /dev/null -w '%{http_code}\n' http://ark.local/ \
+     --resolve ark.local:80:192.168.1.26                               # 200, over the radio
+curl -sk -o /dev/null -w '%{http_code}\n' https://ark.local:8443/admin \
+     --resolve ark.local:8443:192.168.1.26                             # 303, over the radio
+```
+
+`https://192.168.1.26:8443/admin` answers **`000`** and that is correct: an address literal
+sends no name, so the management listener's default server hangs up on purpose. A door
+that needs a name must be asked by name — `--resolve` is how to do that from the Mac
+without editing `hosts`.
+
 ---
 
 ## 15. Add files — several books and games in one press

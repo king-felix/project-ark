@@ -3767,8 +3767,11 @@ house Wi-Fi** with the Ethernet cable left in place as a life-line:
    links: Wired connection 1,home-wifi lo`;
 5. everything was then proved **over that Wi-Fi address**, so no answer can be the Ethernet cable
    (`ark.local` resolves to both): `ssh pi@192.168.1.26` (hostname `ark`), `ping -c2 -I wlan0
-   192.168.1.1`, `http://192.168.1.26/` 200, `http://ark.local/` 200,
-   `https://ark.local:8443/admin` 303 (the sign-in), `/api/ready` 200;
+   192.168.1.1`, `http://192.168.1.26/` 200, `/api/ready` 200, and both name-doors forced at the
+   radio with `--resolve` — `http://ark.local/` **200**, `https://ark.local:8443/admin` **303** (the
+   sign-in). The two bare-`ark.local` answers recorded at this step were **not** a proof of anything
+   and are corrected in §36.6: with the cable still in, that name resolved to the box's `eth0`
+   address;
 6. **what a cold boot does was then changed deliberately.** `BOOT_MODE="auto"` was written into
    `/etc/ark/ark.env` through a temp file and `install -m 0644 -o root -g root` (the file's own mode,
    read back with `grep -qx` before the swap), `sudo ark-mode auto` was run, and
@@ -3834,3 +3837,34 @@ sudo nmcli connection delete preconfigured home-wifi-2 home-wifi-3   # only afte
 
 Nothing in this repo deletes a profile: `ark-wifi-add` writes one, `ark-mode` names one, and the
 owner's Network page lists them without offering to remove any.
+
+### 36.6 The name answered twice, and one of the two answers was the cable — 1 Nov 2026
+
+Found by asking the box the same questions again afterwards, from the Mac, over a link the run had
+just called "Wi-Fi":
+
+```bash
+ping -c2 ark.local                                  # PING ark.local (192.168.1.33) — eth0, not wlan0
+ssh pi@192.168.1.26 'ip -4 -br addr show'           # eth0 UP 192.168.1.33/24 · wlan0 UP 192.168.1.26/24
+ssh pi@192.168.1.26 'ip route show default'         # default dev eth0 metric 100 · default dev wlan0 metric 600
+curl -s -o /dev/null -w '%{http_code}\n' http://ark.local/                    # 200 — over the CABLE
+curl -s -o /dev/null -w '%{http_code}\n' http://192.168.1.26/                 # 200 — over the radio
+curl -sk -o /dev/null -w '%{http_code}\n' https://192.168.1.26:8443/admin     # 000 — no SNI, correct
+curl -sk -o /dev/null -w '%{http_code}\n' https://ark.local:8443/admin \
+     --resolve ark.local:8443:192.168.1.26                                     # 303 — over the radio
+```
+
+The box has **two** addresses on the house network while the cable is in, mDNS answers with both, and
+the resolver hands back whichever it likes — it handed back `eth0`'s. So a green `ark.local` says
+nothing about `wlan0`, and the step that was recorded as "proved over Wi-Fi" was, for those two
+lines, proved over the cable. It changes no conclusion (`192.168.1.26` and both `--resolve` answers
+stand on their own, and `eth0` and `wlan0` share a default route to the same gateway), but it is the
+same defect class as §8.7's *"an HTTP 200 is not evidence that a page works"*: **a proof must name the
+thing it is a proof of** — the radio's own address, or `--resolve` when the answer has to come from a
+**name**, because `:8443` needs SNI and an IP literal is refused on purpose (`000`, correctly).
+`docs/ADMIN.md` §14 carries the receipt; `.clinerules` §8.7 carries the rule.
+
+Two more facts read at the same time, both expected: `ark-net-watch.state` is still
+`lost_streak=0 home_streak=0` (`updated=2026-11-01T16:51:58+00:00`) with **no `net-watch.log`** — the
+watchdog has nothing to decide while both links are up — and the boot line was not touched, so
+nothing about this changed what a cold boot does.
