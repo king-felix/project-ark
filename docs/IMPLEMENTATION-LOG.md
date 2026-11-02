@@ -4021,6 +4021,11 @@ The rewrite window is **open right now and will not be again**: `a926296` is com
 pushed**. `origin/feature/admin-hardening` is at `08e8f9b`, one behind, and `origin/main` has not
 moved — so the cheapest moment to decide is before the next push, never after it.
 
+> **Superseded the same day — see §38.7.** `a926296` was pushed, so that window has **closed** and
+> the five decisions above are now a rewrite **plus a force-push** rather than a fast-forward that
+> could still have avoided one. The ranking and the ownership of each decision are unchanged; this
+> paragraph is left as it was written so the record of what was believed when stays honest.
+
 ### 37.7 What a tree scan cannot say
 
 A clean tree is not a clean repository, and the difference is measurable:
