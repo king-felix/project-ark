@@ -1648,9 +1648,13 @@ Community controls and the readiness page are complete and tested.
   save written before this change is still read;
 * the repair pass: a dry run writes nothing at all — not a journal mode, not a copy,
   not a report line — a database another process is writing to is diagnosed and
-  never replaced, a file stamped years in the future is not trusted with the clock,
-  and a repair is counted as a repair while only what is left for a person is a
-  fault;
+  never replaced, **two passes can never repair one database at once** (a repair lock
+  beside the file, never SQLite's own, which lives in the sidecar the repair removes;
+  the pass that loses the race changes nothing, says so, and raises no alarm about a
+  file that is being repaired at that second), the old **journal** is drained before
+  and after a put-back while a leftover **index** is best effort, a file stamped years
+  in the future is not trusted with the clock, and a repair is counted as a repair
+  while only what is left for a person is a fault;
 * one forced card check: the boot line loses `fsck.mode=force` exactly once, a later
   boot has nothing to withdraw and writes nothing, a line that is already two lines or
   would lose `root` is refused, and the phase enables the unit without ever starting

@@ -4042,6 +4042,10 @@ of the owner when the five decisions above are put to them.
 
 ## 38. A put-back must not carry the old database's journal with it — 1 Nov 2026
 
+> **Corrected in §39.5:** every hazard and measurement below stands, but the put-back treats the
+> `-shm` as best effort and only the `-wal` as mandatory — and §39 wired in the repair lock this
+> checkpoint left uncalled.
+
 `ark_self_heal.heal_sqlite()` is the one program on this box allowed to replace `ark.db`, and §26
 already proved the half of that which matters most: a damaged file is replaced **only** by a copy
 that passes the same `quick_check`, and a database with no good copy is left exactly where it is.
@@ -4183,4 +4187,112 @@ the **published** history, and three commits have gone out on top of it (`5b6dde
 practical effect: the five decisions in §37.6 are now a **history rewrite plus a force-push** — which
 the rules forbid without the owner's explicit yes — rather than something a fast-forward could still
 have avoided. Nothing here decides that for them; §37.6 is where the ranking lives.
+
+
+## 39. One repair pass at a time — and an index that is only an index — 1 Nov 2026
+
+### 39.1 What was found in the working tree
+
+§38 was committed as evidence about code that was **already on the card**. The working tree at that
+commit held two edits that were never finished, and neither could be seen by any test:
+
+* `lock_path()`, `LOCK_SUFFIX`, `LOCK_WAIT` and `_repair_lock()` — a complete `flock` guard **that
+  nothing called.** Phase `15-resilience.sh` installs `ark_self_heal.py` onto the box, so the only
+  copy a person would ever read there was a lock nothing took. A guard that is written and not
+  wired is worse than one never written: it reads as protection in review and protects nothing.
+* `_drain_journal()` had been changed so the `-wal` stayed **mandatory** and the `-shm` became
+  **best effort**, while §38's prose and the function's own docstring still described both sidecars
+  as required — and nothing measured either half.
+
+The choice was to finish the work or throw it away. It was finished, because the hazard the lock
+exists for is real and the `-shm` rule is measurable. This entry is the record of both halves.
+
+### 39.2 The hazard: two put-backs of one database
+
+A repair pass can meet another one. The boot pass runs `Before=ark-api.service`; the daily timer
+fires at 04:17 ±20 m (`Persistent=true`, so a missed run happens at the next boot); and a person can
+run `sudo ark-self-heal` by hand while either is going. Each pass puts its copy back through
+`_copy_over()`: read the candidate, drain the old journal, replace atomically, drain again. Let two
+of those interleave and the file left in place is assembled from both — the one program on this box
+that must never be able to lose anything becomes the program that mixes two whole files into one
+that neither pass wrote. Nothing in the receipt would say so: both passes would have answered
+`restored` about a file that is now neither copy.
+
+### 39.3 What changed
+
+* **`_repair_lock(target)`** holds `flock` on a file beside the database and answers `True` while
+  held, `False` if it cannot be taken within `LOCK_WAIT = 10 s`. A repair is a handful of file
+  operations, so a second pass normally waits milliseconds; past ten seconds the survivor reports
+  the wait rather than guessing what the other writer is doing. The kernel drops the lock if the
+  process dies, which a lock file written by hand cannot promise. On a platform with no `flock`
+  (`fcntl is None`) it yields `True`: the lock guards against two passes at once, it is not a
+  condition for repairing anything, and refusing every repair there would be the worse failure.
+* **`lock_path()`** is `<name>.repair.lock`, beside the database and deliberately **not** SQLite's
+  own lock — that one lives in the `-shm` sidecar, which is one of the files a repair removes, and a
+  lock a repair can delete is not a lock. No rule in `SWEEP_RULES` can match it, so an old one is
+  never swept and a leftover one means nothing.
+* **`heal_sqlite()`** takes the lock around the whole decision-and-replacement step — the candidate
+  list, each `quick_check`, and `_copy_over()` — and returns a new state, **`locked`**, when it
+  cannot be had. `locked` is neither a repair nor a fault: `run()` prints its sentence and does
+  **not** put it in `problems`, so a pass that lost the race cannot make the receipt exit 1 about a
+  database that is being repaired at that very second. The pass that wins keeps the record.
+* **`_drain_journal()`** keeps the `-wal` mandatory and treats the `-shm` as best effort, with the
+  measurement written down in its docstring: a junk `-shm` with no `-wal` still answers
+  `quick_check ok`, because the index describes a journal and means nothing without it. A card that
+  refuses to give up the index is no longer a reason to abandon an otherwise good repair; a card
+  that refuses to give up the **journal** still is, and still changes nothing at all.
+
+
+### 39.4 What the tests hold — seven new ones, and what they would notice
+
+| test | what it asserts |
+|---|---|
+| `test_two_passes_cannot_repair_the_same_database_at_once` | with the lock held by a second open of the same file, `heal_sqlite` answers `locked`, the bytes are unchanged, and the file is still `damaged` |
+| `test_a_database_another_pass_owns_is_not_a_problem_to_look_at` | the whole pass reports it with its own state, puts nothing back, `problems == []`, and no *Still to look at* line |
+| `test_the_lock_is_given_back_when_the_pass_is_done` | after a put-back the next pass takes the lock with no wait, and the file reads its own 4 rows |
+| `test_a_lock_beside_one_database_does_not_hold_up_another` | a held lock on `other.db` leaves `ark.db` repairable — the lock is per database, not per folder |
+| `test_the_repair_lock_is_never_swept` | a 90-day-old `.repair.lock` survives `sweep()` |
+| `test_only_the_journal_is_mandatory_and_the_index_is_not` | `-shm` as a folder ⇒ `_drain_journal` answers `True`; `-wal` as a folder ⇒ `False` |
+| `test_a_platform_without_flock_still_repairs` | with `heal.fcntl` set to `None`, a damaged database is still put back |
+
+**Sensitivity, measured rather than assumed.** `_repair_lock` was replaced with a no-op context
+manager (the defect exactly: a guard that is there and takes nothing) and the shipped function asked
+about the same damaged file with the lock held by somebody else:
+
+```
+shipped code, lock held : locked   | unchanged: True
+no-op lock (the defect) : restored | unchanged: False
+```
+
+So the two tests that matter fail without the wiring, and they fail for the right reason. The
+"given back" test passes either way and says so: with no lock there is nothing to give back. The
+`-shm` rule is held by `test_only_the_journal_is_mandatory_and_the_index_is_not` alone, and that is
+deliberate — it asks the rule directly instead of through a fixture that would have to be built to
+refuse an `unlink`, which a temp folder does not do.
+
+`tests/test_self_heal.py` is **80 passed** (was 73) and the whole suite is **660 passed, 2 skipped**
+over **28 files**; `python3 -m py_compile` is clean on `pi/api/ark_self_heal.py` and the test file.
+
+### 39.5 A correction to §38's prose, and what still stands
+
+§38 described the put-back as removing **both** sidecars. That is still what it does on every card
+whose `-shm` is an ordinary file — which is every card anybody has seen, and why
+`test_the_put_back_takes_the_old_journal_with_it` is unchanged and still passes. What changed is the
+*refusal* rule: a card that will not give up the index no longer abandons the repair, where a card
+that will not give up the journal still does. §38's measurements — 4 rows reading as 51 when the old
+journal is put beside them, 4,152 B while the writer is open and 0 B once the last connection has
+closed — are untouched and remain the reason this drain exists at all.
+
+### 39.6 What this does not prove
+
+* **No two passes have ever raced on the box.** No repair there has had anything to repair
+  (`repaired: 0` on 1 Nov 2026), so the lock has met a second open of the same file only in a temp
+  folder on the Mac.
+* The lock's `flock` semantics were measured on the Mac's own filesystem. ext4 on the card is the
+  kernel's, but nobody has raced two passes against it.
+* **No power cut has been simulated on hardware** and the put-back has never run in anger (§8.9 item
+  0e, `docs/HUMAN-TEST-LIST.md` §15).
+* Nothing here makes a repair **safe** — it makes two repairs of one file impossible at the same
+  moment. One wrong copy put back deliberately is still the owner's decision, and `ark-restore` is
+  still the only program that may replace records on purpose.
 

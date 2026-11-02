@@ -499,6 +499,81 @@ def test_a_database_put_back_beside_an_old_journal_does_not_replay_it(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+#  two passes at once: one repair lock, and the one sidecar that is mandatory
+# ---------------------------------------------------------------------------
+def hold_the_lock(path: Path):
+    """Take the repair lock the way a second pass would, and answer the handle.
+
+    ``flock`` is asked on a **separate open** of the same file, which is what another
+    process holds, so this is the real conflict and not a stand-in for it.
+    """
+    handle = open(str(heal.lock_path(path)), "a+b")
+    heal.fcntl.flock(handle.fileno(), heal.fcntl.LOCK_EX | heal.fcntl.LOCK_NB)
+    return handle
+
+
+def a_ruined_database_with_a_good_copy(tmp_path: Path):
+    """The shape a put-back exists for: a file that cannot be read and a copy that can."""
+    root = make_box(tmp_path)
+    db = root / "api/data/ark.db"
+    make_database(db, rows=4)
+    shutil.copyfile(str(db), str(db) + ".good.bak")
+    db.write_bytes(b"this main file is not a database" * 200)
+    return root, db
+
+
+no_flock = pytest.mark.skipif(heal.fcntl is None,
+                              reason="this platform has no flock to test against")
+
+
+@no_flock
+def test_two_passes_cannot_repair_the_same_database_at_once(tmp_path):
+    """Measured: while another pass holds the lock, this one answers ``locked``.
+
+    Two passes really can meet — a person running it by hand while the timer fires, the
+    boot pass a minute before the daily one — and two put-backs read their copies from
+    either side of each other, which is how one whole file becomes a mixed one.  The pass
+    that loses the race changes **nothing** and says which state it is in.
+    """
+    _root, db = a_ruined_database_with_a_good_copy(tmp_path)
+    was = db.read_bytes()
+    held = hold_the_lock(db)
+    try:
+        state, said = heal.heal_sqlite(db)
+    finally:
+        held.close()
+
+    assert state == "locked", said
+    assert "another repair" in said
+    assert db.read_bytes() == was, "nothing half-done behind the other pass's back"
+    assert heal.quick_check_state(db)[0] == "damaged"
+
+
+@no_flock
+def test_a_database_another_pass_owns_is_not_a_problem_to_look_at(tmp_path):
+    """``locked`` is neither a repair nor a fault: the other pass keeps the record.
+
+    Measured through the whole pass: the file is reported with its own state, nothing is
+    put back, and the receipt a person reads carries no *Still to look at* entry — a
+    second pass losing the race must not raise an alarm about a database that is being
+    repaired at that very second.
+    """
+    root, db = a_ruined_database_with_a_good_copy(tmp_path)
+    held = hold_the_lock(db)
+    try:
+        report = heal.run(root, current=time.time() + 1, setter=lambda stamp: True)
+    finally:
+        held.close()
+
+    rows = [row for row in report["databases"] if row["file"].endswith("ark.db")]
+    assert [row["state"] for row in rows] == ["locked"], report["databases"]
+    assert report["problems"] == [], report["problems"]
+    assert report["healed"] == 0
+    assert not any("Still to look at" in line for line in heal.summary(report))
+
+
+
+# ---------------------------------------------------------------------------
 #  half-written things
 # ---------------------------------------------------------------------------
 def test_old_temp_files_are_swept_and_fresh_ones_are_left(tmp_path):
@@ -512,6 +587,96 @@ def test_old_temp_files_are_swept_and_fresh_ones_are_left(tmp_path):
     assert gone == ["drop/tmp/upload-0123456789abcdef.part"]
     assert not old.exists() and fresh.exists()
     assert settled.exists(), "a published file is never swept, however old"
+
+
+@no_flock
+def test_the_lock_is_given_back_when_the_pass_is_done(tmp_path):
+    """A finished repair must not leave the database locked for ever.
+
+    Measured: after a put-back the next pass takes the lock at once (no wait), which is
+    the half of this that would otherwise turn one clean repair into a box that can never
+    be repaired again.
+    """
+    _root, db = a_ruined_database_with_a_good_copy(tmp_path)
+
+    assert heal.heal_sqlite(db)[0] == "restored"
+    with heal._repair_lock(db, wait=0.0) as again:
+        assert again is True, "a finished repair must not leave the file locked"
+    assert bodies_in(db) == ["note %d" % n for n in range(4)]
+
+
+@no_flock
+def test_a_lock_beside_one_database_does_not_hold_up_another(tmp_path):
+    """The lock is per database, not per folder: calibre's two and the ark's are separate.
+
+    Measured: another database's lock being held leaves this one repairable, so a slow
+    repair of one file cannot stop the pass looking at the rest of the card.
+    """
+    root, db = a_ruined_database_with_a_good_copy(tmp_path)
+    other = root / "api/data/other.db"
+    make_database(other)
+    held = hold_the_lock(other)
+    try:
+        state, said = heal.heal_sqlite(db)
+    finally:
+        held.close()
+
+    assert state == "restored", said
+
+
+def test_the_repair_lock_is_never_swept(tmp_path):
+    """A lock a sweep can delete is not a lock.
+
+    The sweep judges by pattern and age; no rule may match ``*.repair.lock``, and the file
+    is created empty beside a database, so this holds a very old one and asks.
+    """
+    root = make_box(tmp_path)
+    db = root / "api/data/ark.db"
+    make_database(db)
+    lock = heal.lock_path(db)
+    lock.write_bytes(b"")
+    old = time.time() - 90 * 24 * 3600
+    os.utime(str(lock), (old, old))
+
+    heal.sweep(root)
+
+    assert lock.exists(), "a lock the sweep could delete is not a lock"
+
+
+def test_only_the_journal_is_mandatory_and_the_index_is_not(tmp_path):
+    """``-wal`` is the rest of the database; ``-shm`` is only that journal's index.
+
+    Measured: a junk ``-shm`` with no ``-wal`` still answers ``quick_check ok``, so an
+    index the card will not give up is not a reason to abandon a whole repair — but an
+    obstruction where the **journal** would be stops it and changes nothing.
+    """
+    root = make_box(tmp_path)
+    db = root / "api/data/ark.db"
+    make_database(db)
+    for suffix in ("-wal", "-shm"):
+        sidecar = Path(str(db) + suffix)
+        if sidecar.exists():
+            sidecar.unlink()
+
+    Path(str(db) + "-shm").mkdir()
+    assert heal._drain_journal(db) is True, "the index is best effort"
+    Path(str(db) + "-wal").mkdir()
+    assert heal._drain_journal(db) is False, "the journal is mandatory"
+
+
+def test_a_platform_without_flock_still_repairs(tmp_path, monkeypatch):
+    """No ``flock`` means the question cannot be asked, not that repair is impossible.
+
+    Refusing every repair on such a platform would be the worse failure: the lock guards
+    against two passes at once, it is not a condition for repairing anything.
+    """
+    _root, db = a_ruined_database_with_a_good_copy(tmp_path)
+    monkeypatch.setattr(heal, "fcntl", None)
+
+    state, said = heal.heal_sqlite(db)
+
+    assert state == "restored", said
+    assert bodies_in(db) == ["note %d" % n for n in range(4)]
 
 
 def test_a_half_built_copy_is_swept_but_a_finished_one_is_not(tmp_path):

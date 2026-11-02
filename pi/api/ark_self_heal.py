@@ -54,15 +54,21 @@ once at boot, before anything else looks at the card.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import sqlite3
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 import ark_atomic
+
+try:  # every machine that runs this is Linux or macOS; Windows is not a box
+    import fcntl
+except ImportError:  # pragma: no cover - the two supported platforms both have it
+    fcntl = None  # type: ignore[assignment]
 
 #: How long a temp file is left alone before it is swept.  Long enough that a slow
 #: upload over a phone's Wi-Fi is never mistaken for a leftover.
@@ -91,6 +97,17 @@ CLOCK_MAX_AHEAD = 400 * 86400.0
 #: that is serving pages holds that lock for milliseconds; anything slower than this
 #: and the pass stops trying to repair it and only looks.
 BUSY_TIMEOUT = 0.2
+
+#: How long one pass waits for another process to finish replacing the same database.
+#: A repair is a handful of file operations, so this is generous; past it the pass
+#: reports the wait rather than guessing what the other writer is doing.  Two passes
+#: that both decided a file was damaged would otherwise swap in two different copies.
+LOCK_WAIT = 10.0
+
+#: The name a repair lock takes beside the database it guards.  It is a **separate**
+#: file on purpose: SQLite's own lock lives in the `-shm` sidecar, and that file is
+#: exactly what the repair replaces and removes.
+LOCK_SUFFIX = ".repair.lock"
 
 
 def ark_root() -> Path:
@@ -634,6 +651,81 @@ def snapshot(path: Any, *, hours: float = GOOD_COPY_HOURS,
         return False
 
 
+def _sidecar(target: Path, suffix: str) -> Path:
+    """The file SQLite keeps beside a database: ``<name>-wal``, ``<name>-shm``."""
+    return target.with_name(target.name + suffix)
+
+
+def lock_path(target: Any) -> Path:
+    """Where the repair lock for this database lives.  Beside it, and separate.
+
+    Deliberately **not** SQLite's own lock: that one lives in the ``-shm`` sidecar,
+    which is one of the files a repair replaces and removes.  A lock a repair can
+    delete is not a lock.  This file is created empty, is never swept (no rule in
+    ``SWEEP_RULES`` can match it), and a leftover one means nothing.
+    """
+    target = Path(target)
+    return target.with_name(target.name + LOCK_SUFFIX)
+
+
+@contextlib.contextmanager
+def _repair_lock(target: Path, *, wait: Optional[float] = None) -> Iterator[bool]:
+    """Hold the repair lock for ``target`` for the length of the block.
+
+    Two passes can decide a file is damaged at the same moment — a boot pass and the
+    daily one are minutes apart, but a person running it by hand while the timer fires
+    is not — and two repairs of one database swapping in two different copies is how a
+    good file becomes a mixed one.  ``flock`` on a file beside it makes the decision and
+    the replacement one step.
+
+    Answers ``True`` while held, ``False`` if it could not be taken in ``LOCK_WAIT``
+    seconds or the folder will not let the lock file be created.  The caller then
+    changes **nothing**: a repair that cannot be finished is worse than one that never
+    started.  The kernel releases the lock if this process dies, which is the one thing
+    a lock file written by hand cannot promise.
+    """
+    target = Path(target)
+    if fcntl is None:                         # pragma: no cover - no box lacks flock
+        # A platform with no ``flock`` cannot be asked the question at all, and refusing
+        # every repair there would be the worse failure: the lock guards against two
+        # passes at once, it is not a condition for repairing anything.
+        yield True
+        return
+    path = lock_path(target)
+    handle = None
+    held = False
+    if fcntl is not None:
+        try:
+            handle = open(str(path), "a+b")
+        except OSError:
+            handle = None
+        if handle is not None:
+            limit = LOCK_WAIT if wait is None else float(wait)
+            deadline = time.time() + limit
+            while True:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    held = True
+                    break
+                except OSError:
+                    if time.time() >= deadline:
+                        break
+                    time.sleep(0.05)
+    try:
+        yield held
+    finally:
+        if handle is not None:
+            if held:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                except OSError:               # pragma: no cover - already gone
+                    pass
+            try:
+                handle.close()
+            except OSError:                   # pragma: no cover - already closed
+                pass
+
+
 def _drain_journal(target: Path) -> bool:
     """Take the *old* database's ``-wal`` and ``-shm`` away from beside ``target``.
 
@@ -641,22 +733,29 @@ def _drain_journal(target: Path) -> bool:
     live in ``<name>-wal`` beside it, and those frames belong to the database that was
     there, not to the copy about to be put in its place: SQLite replays a journal it
     finds into whatever main file it is opened with, so a good copy put back beside the
-    old journal is corrupted again by the first process that opens it.  The ``-shm`` is
-    only that journal's index and means nothing without it.  Both go, and nothing else
-    does.
+    old journal is corrupted again by the first process that opens it.  Measured on a
+    card-shaped case, and held by a test: a 4-row file with 47 more rows living only in
+    its journal reads as **51 rows** the moment that journal is put beside a 4-row copy.
 
-    Answers ``False`` only when a sidecar is there and cannot be removed — the caller
-    then changes nothing at all, which is the honest outcome: a repair that cannot be
-    finished is worse than one that did not start.
+    The ``-wal`` is **mandatory**: if it is there and will not go, the caller changes
+    nothing at all.  The ``-shm`` is only that journal's index — a leftover one is
+    harmless (measured: a junk ``-shm`` with no ``-wal`` still answers ``quick_check
+    ok``), so a card that refuses it is not a reason to abandon an otherwise good
+    repair.
     """
-    for suffix in ("-wal", "-shm"):
-        sidecar = target.with_name(target.name + suffix)
-        try:
-            sidecar.unlink()
-        except FileNotFoundError:
-            continue
-        except OSError:                       # pragma: no cover - read-only folder
-            return False
+    wal = _sidecar(target, "-wal")
+    try:
+        wal.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:                           # pragma: no cover - read-only folder
+        return False
+    try:
+        _sidecar(target, "-shm").unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:                           # best effort, see the docstring
+        pass
     return True
 
 
@@ -689,10 +788,10 @@ def heal_sqlite(path: Any, *, dry_run: bool = False,
     """Check one database, keep a good copy of it, and put one back if it is broken.
 
     Answers ``(state, sentence)`` with ``state`` one of ``fine``, ``absent``,
-    ``unchecked``, ``in use``, ``restored``, ``busy``, ``left`` or ``would``.  A
-    database with no good copy is **left exactly where it is** and reported: replacing
-    it would empty the box, and the owner has ``ark-restore`` and a bundle for that
-    decision.
+    ``unchecked``, ``in use``, ``restored``, ``busy``, ``locked``, ``left`` or
+    ``would``.  A database with no good copy is **left exactly where it is** and
+    reported: replacing it would empty the box, and the owner has ``ark-restore`` and a
+    bundle for that decision.
 
     Four rules, and each one is here because of a way this can go wrong:
 
@@ -759,29 +858,45 @@ def heal_sqlite(path: Any, *, dry_run: bool = False,
     # A copy that reads but could not be put back is a different sentence from "there is
     # no copy": the older file is sitting right there, and the reason it stayed is
     # worth saying (something still holds the old journal, or the card is full).
-    refused = ""
-    for candidate in (Path(str(target) + ".good.bak"),
-                      Path(str(target) + ark_atomic.BACKUP_SUFFIX)):
-        if not candidate.is_file():
-            continue
-        good_state, good_said = quick_check_state(candidate)
-        if good_state != "ok":
-            continue
-        if not _copy_over(candidate, target):
-            refused = candidate.name
-            continue
-        return ("restored",
-                "%s came back unreadable (%s); the good copy from before it was "
-                "put back." % (target.name, answer))
-    if refused:
+    #
+    # The lock makes the decision and the replacement one step.  Two passes can find the
+    # same file damaged at the same moment — a person running it by hand while the timer
+    # fires, the boot pass a minute before the daily one — and two put-backs read their
+    # copies from either side of each other, which is how one whole file becomes a mixed
+    # one.  It is a file *beside* the database, never SQLite's own lock (that one lives in
+    # the `-shm` this pass removes, and a lock a repair can delete is not a lock).
+    with _repair_lock(target) as held:
+        if not held:
+            # Something else is repairing this database right now.  Its own receipt says
+            # what it did; this pass changed nothing and has nothing for a person to look
+            # at, so the state is its own word and not one of the two problem states.
+            return ("locked",
+                    "%s cannot be read (%s) and another repair is working on it at this "
+                    "same moment, so nothing was changed — that pass keeps the record of "
+                    "what it found." % (target.name, answer))
+        refused = ""
+        for candidate in (Path(str(target) + ".good.bak"),
+                          Path(str(target) + ark_atomic.BACKUP_SUFFIX)):
+            if not candidate.is_file():
+                continue
+            good_state, good_said = quick_check_state(candidate)
+            if good_state != "ok":
+                continue
+            if not _copy_over(candidate, target):
+                refused = candidate.name
+                continue
+            return ("restored",
+                    "%s came back unreadable (%s); the good copy from before it was "
+                    "put back." % (target.name, answer))
+        if refused:
+            return ("left",
+                    "%s came back unreadable (%s) and its good copy (%s) could not be put "
+                    "back — something still holds the old journal, or the card is full. "
+                    "%s was left exactly where it is." % (target.name, answer, refused,
+                                                          target.name))
         return ("left",
-                "%s came back unreadable (%s) and its good copy (%s) could not be put "
-                "back — something still holds the old journal, or the card is full. "
-                "%s was left exactly where it is." % (target.name, answer, refused,
-                                                      target.name))
-    return ("left",
-            "%s came back unreadable (%s) and there is no good copy of it on the "
-            "card — it was left where it is." % (target.name, answer))
+                "%s came back unreadable (%s) and there is no good copy of it on the "
+                "card — it was left where it is." % (target.name, answer))
 
 
 # ---------------------------------------------------------------------------
@@ -1003,7 +1118,9 @@ def run(root: Optional[Path] = None, *, dry_run: bool = False,
             # sentence is still printed.  What needs a human is a database that is
             # *still* unreadable (only the owner may replace it) or one that is broken
             # while the box is writing to it (nothing was touched, and it has to be
-            # looked at again when the box is quiet).
+            # looked at again when the box is quiet).  ``locked`` is neither: another
+            # repair pass owns that database this second, and its own receipt says what
+            # it found.
             report["problems"].append(said)
 
     for path in catalogue_targets(base):
