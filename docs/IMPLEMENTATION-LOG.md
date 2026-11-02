@@ -4296,3 +4296,34 @@ closed — are untouched and remain the reason this drain exists at all.
   moment. One wrong copy put back deliberately is still the owner's decision, and `ark-restore` is
   still the only program that may replace records on purpose.
 
+### 39.7 On the card, 2 Nov 2026 — the module carried over, and the phase deliberately not re-run
+
+Committed as `c662c88` and pushed to `origin/feature/admin-hardening` (`origin/main` untouched at
+`dd3336c` = `v1.0.5`). The box was up (1 day 6 h, `ark-api` active) and was deployed **as the phase
+would install this module and nothing else**:
+
+```
+$ sha256sum /srv/ark/api/ark_self_heal.py
+0614bf57dbefaf3d3e42f79ba02087c77cb1815444f8726dc7d28f602be8b99f   (= the repo copy)
+-rw-r--r-- 1 root root 53687  /srv/ark/api/ark_self_heal.py          (root:root 644, as phase 15)
+rollback: /root/ark-db-before-lock-20261102.db (290,816 B, sqlite3 .backup, taken first)
+```
+
+Proved on the box, under the box's own Python 3.9: `lock suffix: .repair.lock | wait: 10.0`,
+`heal_sqlite takes the lock: True`, `locked is its own state: True`. Then a real pass, through the
+unit the boot runs (`sudo systemctl start ark-self-heal.service`) — `ok: true`, `healed: 0`,
+`problems: []`, **no `.repair.lock` left beside any database**, which is right: on a healthy card
+`heal_sqlite()` returns long before the lock exists. `--only 90-verify` came back green: **74 ✓, no
+warning, no failure**, receipt `ready.ok: true`, `blocking: []`, `card_check: withdrawn`,
+`self_heal: {repaired: 0, left_to_look_at: 0}`, `mode: home`, 20 collections (86.5 GiB), 1291 books,
+11 guides, 116.3 GiB free.
+
+**Phase `15-resilience` as a whole was deliberately not re-run, and that is the honest record.** Its
+first section is exactly this copy, but its boot-line section re-adds `fsck.mode=force
+fsck.repair=yes` whenever they are absent — they were withdrawn by `ark-fsck-once` on the 31 Oct cold
+boot, so re-running the phase would arm a full card check on the owner's next reboot for a change
+that does not touch the card's filesystem. Everything else in the phase (fstab, sysctl, watchdog
+drop-ins, journald, Calibre WAL, the units) was already read back from that card on 26 Oct and is
+unchanged by this checkpoint; `15-resilience.sh` is idempotent, so the next time it *is* run nothing
+here will be undone — it will simply also arm one forced check, which `ark-fsck-once` takes back off
+again on that boot.
