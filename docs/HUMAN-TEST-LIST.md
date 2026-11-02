@@ -767,8 +767,13 @@ collections — a ceiling meant as a guard against a pathological card was actin
 and it printed *Nothing matched “…” yet* about a search it had never finished making. It also
 printed that same sentence when the library said nothing at all, which is a fault wearing the
 costume of an answer. And a snippet was cut at character 220 whatever fell there, so the box was
-seen serving `…do you carry wat` — a good answer that looked like a broken page. All three are
-fixed (2 Nov 2026, `tests/test_search.py`), and **none of it has been looked at by a person.**
+seen serving `…do you carry wat` — a good answer that looked like a broken page. Once all twenty
+were asked, a fourth fault showed up behind the first: the twenty-four places on the page were
+filled from a list sorted **by collection name**, so *water* came back as Amateur Radio, Bicycles,
+Cooking, Gardening, Learning Self-Reliance and Medical Sciences and nothing else — no encyclopedia,
+dictionary, travel guide or Gutenberg book could appear at all, however good the article was. All
+four are fixed (2 Nov 2026, `tests/test_search.py`), and **none of it has been looked at by a
+person.**
 
 **What this test is really about:** a reader deciding whether to trust a "no". There are now
 three different sentences for three different facts, and only one of them is a real "no".
@@ -795,18 +800,32 @@ three different sentences for three different facts, and only one of them is a r
    have asked that many, not twelve. The way to tell from the page: the complete "no" in step 4
    says **All *n* collections were asked**, and that *n* must match this number.
 
-4. Search for something that cannot be in any book — `xylophone quantum badger` is a good one.
+4. Search for something that cannot be in any book — `zzqx vrrblt kjjj` is a good one, because
+   every word in it is nonsense.
 
-   **You should see:** a **green** dot, *Nothing matched “xylophone quantum badger” yet*, and the
+   **You should see:** a **green** dot, *Nothing matched “zzqx vrrblt kjjj” yet*, and the
    sentence **All 20 collections were asked and none of them had it.** That is a real "no" and
    the only wording allowed to say it.
 
+   **Do not use words that exist.** `xylophone quantum badger` reads like gibberish to a person
+   and is **not** one to this box: measured on 2 Nov 2026 it comes back with real hits (Wiktionary
+   among them), because each collection matches word by word and *badger* and *quantum* are
+   entries. A sentence of real words is the wrong tool for testing a "no" — use the one above.
+
 5. Search for one plain word that will hit many books — `water`.
 
-   **You should see:** hits grouped by collection, more than twelve different sources across the
-   library block once you scroll. Before 2 Nov 2026 the last eight collections could not appear
-   at all, so a source that is only in a *late* collection (a Gutenberg shelf, a Wikivoyage
-   page) is the specific thing this step proves.
+   **You should see:** hits grouped by collection, and **every heading on the card** somewhere in
+   the library block: the twenty-four places are shared out one per collection before any
+   collection gets a second, so Amateur Radio, Bicycles, Cooking, Gardening and Learning
+   Self-Reliance show two and the rest show one. Before 2 Nov 2026 all twenty-four places went to
+   the six alphabetically-first collections, so **Wikipedia, Wiktionary, Wikivoyage, WikiMed,
+   Ready.gov, iFixit and the Gutenberg shelf could not appear at all** — those are the specific
+   sources this step proves.
+
+   Count the names under the titles, not the titles: you should find **nineteen** different
+   names for **twenty** collections, because two of the shelves on the card are both called
+   *Project Gutenberg Library*. (The box groups by the name it shows you, so those two count as
+   one — and no page can tell you which of the two Gutenberg books answered.)
 
 6. Make the library refuse, and watch the page say so rather than lie:
 

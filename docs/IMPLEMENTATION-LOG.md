@@ -4317,7 +4317,8 @@ Proved on the box, under the box's own Python 3.9: `lock suffix: .repair.lock | 
 `heal_sqlite takes the lock: True`, `locked is its own state: True`. Then a real pass, through the
 unit the boot runs (`sudo systemctl start ark-self-heal.service`) — `ok: true`, `healed: 0`,
 `problems: []`, **no `.repair.lock` left beside any database**, which is right: on a healthy card
-`heal_sqlite()` returns long before the lock exists. `--only 90-verify` came back green: **74 ✓, no
+`heal_sqlite()` returns long before the lock exists. `--only 90-verify` came back green: **74 ✓** — a
+whole provisioning run, so the verifier's own 69 plus `03-provision.sh`'s five (see §41.4) — **no
 warning, no failure**, receipt `ready.ok: true`, `blocking: []`, `card_check: withdrawn`,
 `self_heal: {repaired: 0, left_to_look_at: 0}`, `mode: home`, 20 collections (86.5 GiB), 1291 books,
 11 guides, 116.3 GiB free.
@@ -4500,8 +4501,134 @@ prints one sentence for three facts. Deploying it means replacing that one file 
   screen.** The way to see it on purpose is to restart `ark-kiwix` and search in the same second
   (`docs/HUMAN-TEST-LIST.md` §20, step 7). If the owner's own searching never shows it, that is the good
   outcome and has to be reported as one, not as "the test failed".
-* **The 24-hit cap inside `_search_report()` is still a cap.** Twenty collections × 4 hits is up to 80, and
-  the page shows 24 sorted by source then title — so a very common word still shows a slice of the top of
-  the list. That is a page-size decision and it is deliberate; what is no longer true is the *lookup* being
-  partial.
+* **The 24-hit cap inside `_search_report()` is still a cap** — twenty collections × 4 hits is up to 80,
+  and the page shows 24. What this section wrongly accepted as a page-size decision was that the 24 were
+  taken from a list sorted by collection name, which made the cap a *breadth* limit: on the card, *water*
+  filled all 24 places from six collections and the other fourteen could not appear (§41). The cap is now
+  spent by `_spread()`, one hit per collection before any collection's second, and a very common word still
+  shows the top of each shelf rather than all of it — which is the page-size decision, and deliberate.
+
+---
+
+## 41. Twenty books were asked and six of them answered — 2 Nov 2026
+
+§40 fixed the search that only looked in twelve of the box's twenty collections. It left the other half of
+the same fault standing, and its fix made the fault easier to see: `_search_report()` asked every
+collection, kept up to four hits from each, sorted the lot **by collection name**, and cut the list at
+`LIBRARY_HITS = 24`. Twenty collections answering four each is up to eighty answers for twenty-four
+places, and the sort key was the collection's own name — so a common word filled every place from the
+alphabetically-first few and the rest of the shelf could not appear at all. The page above the block said
+*All 20 collections were asked*, which was true and, in the same breath, wrong: it had asked them all and
+then read only the first six answers off a list it had put in alphabetical order. Asking every book and
+then showing six of them is the same half-answer the old ceiling used to give, one layer down.
+
+### 41.1 Measured on the card, before anything was changed
+
+One throwaway probe (`/tmp/ark-live-spread.py`, removed afterwards) asked the box's own `/kiwix/search` one
+collection at a time, out of the box's own `library.xml`, and wrote nothing anywhere:
+
+```
+asked 20 collections for 'water' in 12.1s (0 unreadable)
+hits collected (max 4/collection): 80
+OLD cut [:24]      -> 24 hits, 6 collections: Amateur Radio Q&A, Bicycles Q&A,
+                      Cooking Q&A (Seasoned Advice), Gardening & Landscaping Q&A,
+                      Learning Self-Reliance, Medical Sciences Q&A
+NEW _spread(24)    -> 24 hits, 19 collections: Amateur Radio Q&A, Bicycles Q&A,
+                      Cooking Q&A (Seasoned Advice), Gardening & Landscaping Q&A,
+                      Learning Self-Reliance, Medical Sciences Q&A,
+                      Project Gutenberg Library, Ready.gov, The Great Outdoors Q&A, WikEM,
+                      WikiMed Medical Encyclopedia, Wikibooks, Wikipedia, Wikiquote,
+                      Wikiversity, Wikivoyage, Wiktionary, Woodworking Q&A, iFixit in English
+collections with nothing on the page: 0
+```
+
+Thirteen of the card's twenty collections had never been on the page for that word — Wikipedia, Wiktionary,
+Wikivoyage, WikiMed, WikEM, Ready.gov, iFixit, Wikibooks, Wikiquote, Wikiversity and the Gutenberg shelf —
+on the single most ordinary question a household asks it.
+
+### 41.2 What changed — `pi/api/main.py`
+
+| Before | Now |
+|---|---|
+| `found[:4]` in `_kiwix_one` and `hits[:24]` in the report — two bare literals, one of them a page size pretending to be a guard | `HITS_PER_COLLECTION = 4` and `LIBRARY_HITS = 24`, named, with the 2 Nov 2026 measurement written beside them (a number that decides what a person sees carries its story) |
+| the report sorted by source and cut at 24 | `report["hits"] = _spread(hits)` — `limit` defaults to `LIBRARY_HITS` |
+
+`_spread()` groups the arrived hits by the source **a reader sees**, takes depth 0 from every collection,
+then depth 1 from every collection that still has one, and stops at the limit; the chosen hits are then
+sorted back into `(source, title)` order so the page still reads collection by collection — the heading is
+how a reader decides whose opinion they are looking at. It invents nothing and pads nothing: a library where
+three collections answered still shows exactly those three answers, and a card holding fewer than
+twenty-four answers shows all of them.
+
+**One detail a person counting headings will notice, and it belongs to the shelf, not to the search:** the
+card holds twenty collections and the block names **nineteen**, because two of its ZIMs are both titled
+*Project Gutenberg Library*. `_spread()` groups by the name it shows, so those two are one group — and on
+this page one of them took every Gutenberg place. No page on the box can say which of the two books an
+answer came from, and none ever could; making that visible means naming collections differently, not
+spreading them differently.
+
+### 41.3 Tests — `tests/test_search.py`, 39 → 44
+
+| Holds | Test |
+|---|---|
+| the block cannot be shorter than the shelf it samples | `test_the_block_is_long_enough_to_show_every_collection_it_asked` |
+| one collection's ceiling is applied where the bytes arrive | `test_one_collection_may_only_fill_its_share_of_the_block` |
+| **the defect** — eighty answers, twenty-four places, every collection named, `Book 19` (last in an alphabetical sort) among them | `test_a_search_shows_a_hit_from_every_collection_before_a_second_from_any` |
+| a spread may not invent or pad | `test_a_library_where_only_three_collections_answered_is_not_padded` |
+| the chosen hits still reach the page grouped, one group per collection | `test_the_block_still_reads_grouped_by_collection` |
+
+The fixture is twenty collections × four hits with deliberately alphabetical names, so the old behaviour is
+not a rare case in it but the only case: `hits[:24]` yields **6** collections, `_spread()` yields **20**.
+
+**Measured, not assumed:** with `pi/api/main.py` put back to the committed version and this test file left
+alone, pytest answers **3 failed, 41 passed** — the constants, the per-collection ceiling and the spread
+itself. The other two pass against the old code as well, and on purpose: the old cut happened to sort by
+source and to pad nothing, so those two hold properties that must **survive** `_spread()` rather than
+properties it introduced. They are what stops a future "cleaner" spread from interleaving the library into
+a list of alternating names, or padding a three-book answer out to twenty-four.
+
+### 41.4 The deploy — one file, no migration
+
+| | |
+|---|---|
+| What | `pi/api/main.py` → `/srv/ark/api/main.py`: no migration (schema stays **v6**), no unit, no nginx rule, no data, no timer |
+| Aside | `/root/ark-main-before-spread-20261102.py` — root-only, so `pi` cannot read or list it, which is where a rollback copy of a file the service runs belongs |
+| Proved | md5 identical on both sides (`385a9d6798a27afa16da53200bd0e0de`), `ark-api` **active**, `--only 90-verify` run **on the Pi** → **69 ✓** (the same verifier behind `03-provision.sh` prints 74 — see the note below), `✓ ARK_INSTALL_COMPLETE`, `ready.ok: true`, `blocking: []`, 116.3 GiB free |
+| Live breadth | `/search?q=water` on the card, measured **out of the HTML**: 24 hits under **19** headings (was 24 under 6) |
+| Live "no" | `zzqx vrrblt kjjj` → *Nothing matched “zzqx vrrblt kjjj” yet* + *All 20 collections were asked and none of them had it.* — the one wording allowed to say it (§40.3) |
+
+**Why 69 here and 74 in §39 — one verifier counted in two run shapes, and nothing was lost.** Run
+directly on the Pi, `install-ark.sh --only 90-verify` prints **69** ✓; run through
+`scripts/03-provision.sh` the same phase prints 69 and the wrapper adds **five of its own**
+(`ok "target: pi@$HOST"`, `ok "SSH and passwordless sudo work"`, `ok "source tree installed at
+/srv/ark/src"`, `ok "installer started on the Pi in the background"`, `ok "the Ark is up — receipt:
+…"` — `grep -c 'ok "' scripts/03-provision.sh` = 5), so a whole provisioning run reads **74**.
+Measured: `logs/deploy-90verify-lock.log` (74) diffed check by check against
+`logs/deploy-90verify-spread.log` (69, the Pi-only run kept beside it) differs by **exactly those
+five lines and two ages** (22 h → 27 h); no verifier check is missing. The printed count is not the
+call-site count either — `pi/steps/90-verify.sh` holds **33** `say_ok` calls and prints 69 lines,
+because several sit inside loops — so a figure quoted from another run shape, or from
+`grep -c say_ok`, is not this run's count.
+
+**A correction §40's prose needed, made in this commit.** `docs/HUMAN-TEST-LIST.md` §20 offered
+`xylophone quantum badger` as the query that cannot be in any book. It is not: measured on this card the
+same afternoon it returns real hits, Wiktionary among them, because each collection matches word by word
+and *badger* and *quantum* are entries. A sentence of real words is the wrong instrument for testing a
+"no" — the step now uses `zzqx vrrblt kjjj`, and says out loud why the old one fails, so the next person
+does not report a correct answer as a broken page.
+
+### 41.5 Still unproven
+
+* **No person has typed in the box.** The breadth is proved out of the HTML and out of the library's own
+  answers. Whether 24 hits under 19 headings reads as *the whole shelf* rather than *a wall of results* is
+  a thumb's question — `docs/HUMAN-TEST-LIST.md` §20, steps 4 and 5.
+* **The timings are one reader on a quiet box** (12.1 s for twenty collections through six workers).
+  `SEARCH_DEADLINE` and the pool are untouched by this work, so §40.4's caveat stands as written.
+* **`partial` has still never been seen on a screen** — and this work must not be used to make it appear:
+  the spread changes only *which* of the arrived answers are shown, never how long the lookup waits. If the
+  owner's own searching never shows it, that is the good outcome and has to be reported as one.
+* **A card with more than twenty-four collections would be short again.** `LIBRARY_HITS >= MAX_COLLECTIONS`
+  is a test, so growing the shelf past the block fails the suite rather than quietly narrowing the page.
+
+**The whole suite: 691 passed, 2 skipped, 28 files** (was 686 after §40).
 

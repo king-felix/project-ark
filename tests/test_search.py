@@ -6,6 +6,13 @@ so the deadline expired and then the request waited anyway for every worker —
 twenty collections at nine seconds each is far past any budget a person will
 accept.  The pool is now held open and shared, the wait is bounded, and nothing
 unfinished is joined on the way out.
+
+The second half is the same fault one step further on: *which* of the answers
+that arrived reach the page.  The block was sorted by collection name and cut at
+``LIBRARY_HITS``, so on the card a common word filled every place from the
+alphabetically-first six collections and the rest of the library could not appear
+at all.  ``_spread()`` takes the best of every collection before the second of
+any, and these tests pin that.
 """
 
 from __future__ import annotations
@@ -588,4 +595,124 @@ def test_answers_from_the_manuals_say_that_the_library_half_is_missing(public, m
     assert "may hold more" in page.text, "why the library half is missing"
     assert "Look again" in page.text, "and what to do about it"
     assert "nothing to read" not in page.text, "the shelf was not empty — the look-up was"
+
+
+
+def test_the_block_is_long_enough_to_show_every_collection_it_asked(public):
+    """A block shorter than the library is a sample of the alphabet, not the shelf.
+
+    ``LIBRARY_HITS`` places cannot name more collections than it has places, so the
+    two numbers are tied: if a future card holds more books than the block has
+    places, the block must grow with it or the search goes back to answering from
+    the front of an alphabetical list.
+    """
+    main = public.app
+    assert main.LIBRARY_HITS >= main.MAX_COLLECTIONS, \
+        "a block of 24 cannot show a card of 30 collections"
+    assert main.HITS_PER_COLLECTION >= 1
+
+
+class _Reply:
+    """Just enough of an ``http.client.HTTPResponse`` for ``_kiwix_one``."""
+
+    def __init__(self, body: bytes) -> None:
+        self.body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self, amount: int | None = None) -> bytes:
+        return self.body
+
+
+def _feed(count: int, handle: str = "b00") -> bytes:
+    """An answer in the shape the library really sends: an RSS channel of items."""
+    items = "".join(
+        f"<item><title>Water {i}</title>"
+        f"<link>http://127.0.0.1:8081/content/{handle}/A/water-{i}</link>"
+        f"<description>boil it</description></item>"
+        for i in range(count))
+    return f"<rss version='2.0'><channel>{items}</channel></rss>".encode()
+
+
+def test_one_collection_may_only_fill_its_share_of_the_block(public, monkeypatch):
+    """The per-collection ceiling is applied to the answer, not to the page.
+
+    A collection that returns forty articles about *water* must not be allowed to
+    crowd out the other nineteen, so the cut belongs where the bytes arrive.
+    """
+    main = public.app
+    monkeypatch.setattr(main.urllib.request, "urlopen",
+                        lambda req, timeout=None: _Reply(_feed(9)))
+    found = main._kiwix_one("b00", "water")
+    assert len(found) == main.HITS_PER_COLLECTION < 9
+
+
+def test_a_search_shows_a_hit_from_every_collection_before_a_second_from_any(public, monkeypatch):
+    """This is the defect: *water* came back from six collections out of twenty.
+
+    Twenty collections, four answers each — eighty hits for twenty-four places.
+    Every collection must be named before any collection is named twice, which is
+    also why ``"Book 19"`` (last in an alphabetical sort) has to be on the page.
+    """
+    main = public.app
+    monkeypatch.setattr(main, "library_books", lambda: _books(20))
+    monkeypatch.setattr(main, "_kiwix_one", lambda handle, pattern: [
+        {"title": f"Water {i}", "link": f"/kiwix/content/{handle}/A/w{i}", "snippet": ""}
+        for i in range(main.HITS_PER_COLLECTION)])
+
+    hits = main.search_library("water")
+
+    assert len(hits) == main.LIBRARY_HITS, "the block is still exactly its own length"
+    assert {h["source"] for h in hits} == {f"Book {i}" for i in range(20)}, \
+        "every collection on the card is named, not just the alphabetically-first six"
+    assert "Book 19" in {h["source"] for h in hits}
+
+
+def test_a_library_where_only_three_collections_answered_is_not_padded(public, monkeypatch):
+    """A spread may never invent a hit, and never lengthen the block.
+
+    Three collections with something to say still show all three of their answers
+    and nothing else — no empty row, no filler from a collection that had nothing.
+    """
+    main = public.app
+    monkeypatch.setattr(main, "library_books", lambda: _books(20))
+    answered = {"b00", "b05", "b19"}
+    monkeypatch.setattr(main, "_kiwix_one",
+                        lambda handle, pattern: [{"title": f"Water in {handle}",
+                                                  "link": f"/kiwix/content/{handle}/A/x",
+                                                  "snippet": ""}]
+                        if handle in answered else [])
+
+    hits = main.search_library("water")
+
+    assert len(hits) == 3
+    assert [h["source"] for h in hits] == ["Book 0", "Book 19", "Book 5"], \
+        "each answer travels, and they are ordered by collection for reading"
+
+
+def test_the_block_still_reads_grouped_by_collection(public, monkeypatch):
+    """Spreading picks the hits; the page still shows them grouped.
+
+    A reader decides whose opinion they are looking at by the collection heading, so
+    the chosen hits are sorted back into collection order rather than left in the
+    round-robin sequence that chose them.
+    """
+    main = public.app
+    monkeypatch.setattr(main, "library_books", lambda: _books(20))
+    monkeypatch.setattr(main, "_kiwix_one", lambda handle, pattern: [
+        {"title": f"Water {i}", "link": f"/kiwix/content/{handle}/A/w{i}", "snippet": ""}
+        for i in range(main.HITS_PER_COLLECTION)])
+
+    keys = [(h["source"], h["title"]) for h in main.search_library("water")]
+
+    assert keys == sorted(keys), "the block reads collection by collection"
+    seen: list[str] = []
+    for source, _title in keys:
+        if not seen or seen[-1] != source:
+            seen.append(source)
+    assert len(seen) == len(set(seen)), "one collection is one group, never two"
 

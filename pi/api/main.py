@@ -89,6 +89,20 @@ SEARCH_DEADLINE = 8.0
 #: reads as a broken page rather than a shortened one.
 SNIPPET_CHARS = 220
 
+#: How long the library block is, and how many answers one collection may put in it.
+#:
+#: These two numbers decide **which books a reader ever sees**, and getting that
+#: wrong is the same fault as asking only twelve of them: the block was sorted by
+#: collection name and cut at ``LIBRARY_HITS``, so with twenty collections a common
+#: word filled every place from the alphabetically-first six — measured on the card
+#: on 2 November 2026, where ``water`` came back as Amateur Radio, Bicycles,
+#: Cooking, Gardening, Learning Self-Reliance and Medical Sciences and **no**
+#: encyclopedia, dictionary, travel guide or Gutenberg book could appear at all,
+#: however good the article was.  ``_spread()`` is what makes these numbers a
+#: sample of the library instead of a sample of the alphabet.
+LIBRARY_HITS = 24
+HITS_PER_COLLECTION = 4
+
 app = FastAPI(title="Project ARK", docs_url=None, redoc_url=None, openapi_url=None)
 
 
@@ -462,7 +476,7 @@ def _kiwix_one(book_id: str, pattern: str) -> list[dict] | None:
                                  headers={"User-Agent": "ark-portal/1.0"})
     with urllib.request.urlopen(req, timeout=9) as resp:
         found = _parse_feed(resp.read(3_000_000))
-    return None if found is None else found[:4]
+    return None if found is None else found[:HITS_PER_COLLECTION]
 
 
 def _handle(book: dict) -> str:
@@ -492,6 +506,44 @@ def _search_pool() -> ThreadPoolExecutor:
 
 
 _SEARCH_EXECUTOR: ThreadPoolExecutor | None = None
+
+
+def _spread(hits: list[dict], limit: int = LIBRARY_HITS) -> list[dict]:
+    """The library block: the best of every collection, before the second of any.
+
+    A hit list arrives sorted by collection name, and cutting it at ``limit`` made
+    the block a sample of the **alphabet** rather than of the library: on the card
+    on 2 November 2026 a search for *water* filled all 24 places from the
+    alphabetically-first six collections, so no encyclopedia, dictionary, travel
+    guide or Gutenberg book could appear however good the article was — while the
+    page above it said *All 20 collections were asked*.  Asking every book and then
+    showing six of them is the same half-answer the ceiling used to give.
+
+    Round-robin fixes that by giving the first hit of **every** collection a place
+    before any collection's second one is taken; the chosen hits are then sorted
+    back into collection order, so the page still reads grouped by collection (the
+    thing a reader uses to decide whose opinion they are looking at).
+
+    It never invents a hit and never lengthens the block: a library where only three
+    collections had anything still shows all of theirs.
+    """
+    by_source: dict[str, list[dict]] = {}
+    for hit in sorted(hits, key=lambda h: (h["source"], h["title"])):
+        by_source.setdefault(hit["source"], []).append(hit)
+    spread: list[dict] = []
+    depth = 0
+    while len(spread) < limit:
+        taken = False
+        for queue in by_source.values():
+            if depth < len(queue):
+                spread.append(queue[depth])
+                taken = True
+                if len(spread) == limit:
+                    break
+        if not taken:
+            break
+        depth += 1
+    return sorted(spread, key=lambda h: (h["source"], h["title"]))
 
 
 def search_library(pattern: str) -> list[dict]:
@@ -526,7 +578,9 @@ def _search_report(pattern: str) -> dict:
     honestly.
 
     Whatever has arrived by the deadline is rendered; whatever has not is
-    abandoned (not joined, not waited for) and its late answer is discarded.
+    abandoned (not joined, not waited for) and its late answer is discarded.  The
+    block itself is chosen by ``_spread()``, because *which* of the arrived answers
+    reach the page is a second way to answer from half a library.
     """
     books_on_card = library_books()
     books = books_on_card[:MAX_COLLECTIONS]
@@ -570,7 +624,7 @@ def _search_report(pattern: str) -> dict:
             seen.add(key)
             hits.append(hit)
     hits.sort(key=lambda h: (h["source"], h["title"]))
-    report["hits"] = hits[:24]
+    report["hits"] = _spread(hits)
     return report
 
 
