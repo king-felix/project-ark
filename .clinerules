@@ -707,13 +707,18 @@ Two page-size facts, so nobody documents them wrongly again:
   `source tree installed at /srv/ark/src`, `installer started on the Pi in the background`, `the Ark is
   up — receipt: …` — `grep -c 'ok "'` on it = 5). Neither number is a lie and neither travels: on
   2 Nov 2026 a deploy note inherited the previous checkpoint's **74** for a run that had been the
-  phase alone, and the "five missing checks" turned out to be the wrapper's, found by diffing
-  `logs/deploy-90verify-lock.log` (74) against `logs/deploy-90verify-spread.log` (69) — the only
-  other differences were two ages (22 h → 27 h). The printed count is not the call-site count
-  either: `pi/steps/90-verify.sh` holds **33** `say_ok` calls and prints 69 lines, because several
-  sit inside loops, so `grep -c say_ok` is a third wrong answer. When a count is the evidence, name
-  the command and count that log's own output — and never carry a figure across a different run
-  shape.
+  phase alone, and the "five missing checks" turned out to be the wrapper's, found by diffing the two
+  runs' ✓ lines (74 against 69): exactly those five and two copy ages (the page's row 22 h → 27 h,
+  the verifier's own `latest copy` row 21 h → 27 h), the rest of the difference being the wrapper's
+  own plumbing (its opening hardware block, an rsync note, the run's timestamp and `elapsed`, the
+  Pi's sshd banner, the tail of its receipt) — no verifier check lost. The printed count is not the
+  call-site count either: `pi/steps/90-verify.sh` holds **33** `say_ok` calls and prints 69 lines,
+  because several sit inside loops, so `grep -c say_ok` (**34** — the definition counts once) is a
+  third wrong answer. **And a run log is a note, never a citation:** both of those files are
+  `logs/*.log`, which `.gitignore` keeps out of the published tree, so a path in `docs/` pointing at
+  one points at a file a reader cannot open — which is why §41.4 now says *where the measurement was
+  made* and gives the reproducible count instead. When a count is the evidence, name the command and
+  count that log's own output — and never carry a figure across a different run shape.
 
 ### 8.8 Rules for the next stage
 

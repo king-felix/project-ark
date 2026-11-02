@@ -4603,12 +4603,24 @@ directly on the Pi, `install-ark.sh --only 90-verify` prints **69** ✓; run thr
 (`ok "target: pi@$HOST"`, `ok "SSH and passwordless sudo work"`, `ok "source tree installed at
 /srv/ark/src"`, `ok "installer started on the Pi in the background"`, `ok "the Ark is up — receipt:
 …"` — `grep -c 'ok "' scripts/03-provision.sh` = 5), so a whole provisioning run reads **74**.
-Measured: `logs/deploy-90verify-lock.log` (74) diffed check by check against
-`logs/deploy-90verify-spread.log` (69, the Pi-only run kept beside it) differs by **exactly those
-five lines and two ages** (22 h → 27 h); no verifier check is missing. The printed count is not the
-call-site count either — `pi/steps/90-verify.sh` holds **33** `say_ok` calls and prints 69 lines,
-because several sit inside loops — so a figure quoted from another run shape, or from
-`grep -c say_ok`, is not this run's count.
+**Measured on the workstation, where both runs' logs were kept** — they are `logs/*.log`, which
+`.gitignore` keeps out of the published tree, so naming them here would only say *where the
+measurement was made* and not point a reader at a file they can open; the reproducible form of the
+same fact is `grep -c 'ok "' scripts/03-provision.sh` (5) beside each run's own ✓ total. Compared
+✓ line for ✓ line, the whole run's **74** and the Pi-only run's **69** differ by **exactly the
+wrapper's five `ok "` lines** — `✓ target: pi@ark.local`, `✓ SSH and passwordless sudo work`,
+`✓ source tree installed at /srv/ark/src`, `✓ installer started on the Pi in the background`, and
+`✓ the Ark is up — receipt: …` — and by **two copy ages** (the page's row 22 h → 27 h, the
+verifier's own `latest copy` row 21 h → 27 h). Everything else that differs is the wrapper's own
+plumbing, never a check: its opening block (the SSH/sudo line, the Pi's hardware line, `117G` free,
+`up 1 day, 6 hours`), an rsync note, `cannot delete non-empty directory: ai`, the
+`following … provision.log` line, the run's timestamp, the Pi's sshd banner and the tail of its
+receipt block. **No verifier check is missing.** The printed count is **not** the call-site count
+either: `pi/steps/90-verify.sh` holds **33** `say_ok` calls (34 `grep` matches, because the
+function's own definition counts once) and prints 69 ✓ lines, since several sit inside loops — so a
+figure quoted from another run shape, or from `grep -c say_ok`, is not this run's count. Neither log
+carries a household name, a LAN address or a passphrase, which is why they may sit on the
+workstation at all; they are outside the tree regardless.
 
 **A correction §40's prose needed, made in this commit.** `docs/HUMAN-TEST-LIST.md` §20 offered
 `xylophone quantum badger` as the query that cannot be in any book. It is not: measured on this card the
