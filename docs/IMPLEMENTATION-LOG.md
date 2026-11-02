@@ -3281,8 +3281,7 @@ Two changes, and both are now held by a test in `tests/test_network_page.py`:
 
 `test_the_installer_rehearses_a_network_name_the_helper_would_accept` reads the name straight out
 of `pi/steps/70-network.sh` and holds it to `ark_network.SSID_MIN`/`SSID_MAX`, so the installer and
-the helper cannot drift apart again; `test_the_installer_counts_the_helpers_own_refusal_as_having_
-reached_it` holds the second half, including that the *cannot reach* sentence appears exactly once
+the helper cannot drift apart again; `test_the_installer_counts_the_helpers_own_refusal_as_having_reached_it` holds the second half, including that the *cannot reach* sentence appears exactly once
 and only as the `else`. **567 → 569 passed, 2 skipped** (the two new tests; `tests/test_network_page.py`
 is 43).
 
@@ -4332,3 +4331,177 @@ drop-ins, journald, Calibre WAL, the units) was already read back from that card
 unchanged by this checkpoint; `15-resilience.sh` is idempotent, so the next time it *is* run nothing
 here will be undone — it will simply also arm one forced check, which `ark-fsck-once` takes back off
 again on that boot.
+
+---
+
+## 40. A search that asked twelve of twenty books, and a "no" that was not one — 2 Nov 2026
+
+### 40.1 What the box was doing
+
+Three defects in the same function, and not one of them could fail a test that existed:
+
+* **`MAX_COLLECTIONS = 12` while the card holds twenty.** The ceiling was written as a guard against a
+  pathological card (a downloader queue that had left a hundred half-finished ZIMs in the folder) and it
+  was never a page size — but a guard above nothing is a limit, and this one was *below* what the box
+  really holds. Eight collections were never asked anything at all, and the page then printed
+  **“Nothing matched … yet”** about a search that had not happened in almost half the library.
+* **An empty answer and no answer were the same value.** `_parse_feed()` returned `[]` for all three of
+  *a real feed with no hits*, *XML that did not parse*, and *the library's own
+  `<error>Content not found</error>` document* — which parses perfectly well, reports nothing, and is
+  exactly what a wrong collection name produces. `_kiwix_one()` caught its own `URLError`s nowhere, so a
+  refusal became an exception the caller swallowed as "nothing found". The page therefore had one
+  sentence for two opposite facts: *the books do not have this* and *the books did not answer*.
+* **`snippet[:220]` is a slice, not a summary.** It ends wherever character 220 falls. The live box was
+  seen serving `…do you carry wat`, and `disinf`, and snippets ending in a dangling comma — a good answer
+  that reads as a broken page, in the one place a reader decides whether a hit is worth tapping.
+
+### 40.2 What changed — `pi/api/main.py`
+
+| Piece | Now |
+|---|---|
+| `MAX_COLLECTIONS` | **20** — above what this card holds, so a real box is never silently clipped. The comment says out loud that it is a guard, not a page size, and why |
+| `SEARCH_DEADLINE` | **8.0 s** (was 6.0). Measured, not guessed: see §40.4 |
+| `SNIPPET_CHARS` | **220**, unchanged as a *limit*, but it is now handed to a function instead of a slice |
+| `shorten(text, limit)` | new. Fits → shown whole with **no** ellipsis (nothing was dropped); else stop at a sentence end when one lands in the back half of the window, else at the last whole word; `rstrip(" ,;:—-–(")` drops a dangling comma or dash; `" …"` is added **only** when words really were left out |
+| `_tag(node)` | new. `{http://www.w3.org/2005/Atom}entry` → `entry`. Without it an Atom shelf parsed to a feed with **no** entries, because every item was skipped by its own namespaced tag — a real answer read as an empty one |
+| `_FEED_ROOTS` | `("rss", "feed", "rdf", "channel")`. Anything else that happens to parse — an error page from something in front of the reader — is **not** an answer, however well-formed |
+| `_parse_feed()` | returns `list[dict] | None`. **`None`** = that was not an answer (unparsed, `<error>` root, a root that is not a feed); **`[]`** = a real answer that held no hits. The two used to be one thing, which is how a lookup that never happened came out looking like a lookup that found nothing |
+| `_kiwix_one()` | the same contract; it no longer pretends a refusal is an answer |
+| `_search_report()` | new, and the only thing `search()` asks. Returns the hits **and** `asked` / `answered` / `failed` / `late` / `available` |
+| `library_state(report)` | new. One of five words: `found`, `empty`, `partial`, `silent`, `no-books` |
+| `search_library()` | kept as `_search_report(pattern)["hits"]` so every existing caller still gets a hit list |
+
+### 40.3 The five states, and why only one of them may say "no"
+
+| State | When | The page says | Dot |
+|---|---|---|---|
+| `found` | at least one hit, whatever else happened | the count, and the blocks | green |
+| `empty` | every collection that was asked **answered**, and none had it, **and** the box holds no more than one search asks | *Nothing matched “…” yet* + **All n collections were asked and none of them had it** | green |
+| `partial` | the search did not cover the library and nobody had it — either some asked collections never answered, **or** the card holds more books than one search asks | *…the look-up stopped early, so this is not the whole library* + **Look again** | amber (`dot wait`) |
+| `silent` | **nothing** answered at all — the lookup failed, it did not come back empty | *The big library could not be looked in just now* + **That is not the same as “nothing found”** | red (`dot no`) |
+| `no-books` | nothing to ask: no collection on the card, or no index to read the list from | *The Offline Library has no list of its books yet, so the big look-up had nothing to read* | amber |
+
+Two details that are load-bearing:
+
+* **`partial` has two different causes and `shortfall()` words them by the counts, not by a guess.** Books
+  that were asked and never answered — *“Only 7 of 20 collections answered in time”* — and books that were
+  never asked — *“Only the first 12 of the box's 20 collections were looked in”* — are different facts, and
+  saying the wrong one is a lie in plain English. The comparison is `asked < available`, which is exactly
+  the ceiling biting.
+* **`no-books` is not `empty` and not `silent`.** A box whose library folder has not filled up yet is not
+  broken, and it must not read as *nothing matched*. It is amber, and it says the library fills up as the
+  box has time.
+* The `found` branch still says a sentence when the library half is missing (`partial` / `silent` /
+  `no-books` with hits from the manuals or the shelf), because a broken lookup hidden behind a tidy list of
+  manual pages is the same lie one size smaller.
+
+
+
+### 40.4 Measured on the card, before the deadline was chosen
+
+`SEARCH_DEADLINE` is not a round number picked to feel safe. The question was *how long do twenty
+collections really take on this box*, and the only way to answer it was to ask the live library. A script
+on the Mac (`/tmp/time-search.py`) reads the real collection list from
+`/kiwix/catalog/v2/entries?count=-1`, then asks all twenty through the box's own nginx with a six-worker
+pool — the same shape as the app. **Run three times, because one sample of a timing is not a measurement:**
+
+```
+run 1  collections: 20
+       pattern='water'        wall=4.31s slowest=3.34s fastest=0.22s
+          3.34s  22375 B  wikipedia_en_all_nopic_2026-06
+          1.75s  24484 B  gutenberg_en_lcc-r_2026-03
+          1.62s  21272 B  wikivoyage_en_all_maxi_2026-09
+          1.62s  22278 B  wiktionary_en_all_nopic_2026-08
+       pattern='bleach water' wall=2.21s slowest=1.72s fastest=0.03s
+          1.72s  23137 B  gutenberg_en_lcc-s_2026-03
+          1.69s  23072 B  ifixit_en_all_2025-12
+
+run 2  pattern='water'        wall=8.04s slowest=5.96s fastest=0.47s
+          5.96s  22375 B  wikipedia_en_all_nopic_2026-06
+          2.84s  24484 B  gutenberg_en_lcc-r_2026-03
+          2.38s  23133 B  wikipedia_en_medicine_maxi_2026-10
+       pattern='bleach water' wall=4.53s slowest=3.67s fastest=0.04s
+          3.67s  22811 B  gutenberg_en_lcc-r_2026-03
+
+run 3  pattern='water'        wall=8.04s slowest=5.43s fastest=0.25s
+          5.43s  24149 B  woodworking.stackexchange.com_en_all_2026-10
+          4.11s  22375 B  wikipedia_en_all_nopic_2026-06
+          3.79s  22951 B  wikiversity_en_all_maxi_2026-05
+       pattern='bleach water' wall=4.01s slowest=1.72s fastest=0.04s
+          1.72s  21385 B  wikipedia_en_all_nopic_2026-06
+```
+
+Three things this says, and two of them are uncomfortable:
+
+1. **A common word over twenty collections costs 4.3–8.0 s of wall clock, and the slowest single book
+   takes 3.3–6.0 s of it.** It is not always the full Wikipedia that is slow — run 3's slowest was the
+   woodworking Stack Exchange at 5.4 s — so there is no "the big one, ask it first" ordering that would
+   help.
+2. **The spread between runs is a factor of two** (4.3 s and 8.0 s for the same word on the same card,
+   minutes apart). A deadline chosen from a single sample would be a guess about a box having a good
+   moment.
+3. **`8.0 s` therefore sits at the top of the measured range, not below it.** On a busy card the last
+   wave can be cut off — which is *exactly* what the counts and the `partial` state exist for: the reader
+   gets the hits that did arrive and a sentence saying *only n of 20 answered in time*, instead of a
+   spinner, a 504, or a false "nothing matched". Six seconds would have cut into the normal case; twenty
+   seconds would hold a page while somebody is standing there. If the owner's own searching shows
+   `partial` often, the next honest change is `SEARCH_WORKERS` (measuring first, `.clinerules` §8.7 warns
+   a timed-out worker is abandoned, not stopped) or a longer deadline — a decision to take with evidence,
+   not a number to nudge.
+
+`pi/nginx/ark.conf` already gives this route far longer than eight seconds (`proxy_read_timeout 120s` on
+the search location, 300 s on `/ask`), so the page is the shortest patience of the three and the proxy can
+never turn a slow answer into a 504 — **no nginx change was needed, and none was made.**
+
+`SEARCH_WORKERS` stays at **6**, unchanged and on purpose: twenty collections over six workers is four
+waves, the measurement above says that is the shape of the cost, and more concurrency would put more than
+six simultaneous Kiwix queries on a Pi 4 while somebody is reading. A worker that misses the deadline is
+**abandoned, not stopped** (`.clinerules` §8.7), which is the other reason the counts travel with the hits:
+the page can say how many answered instead of pretending.
+
+### 40.5 Tests — `tests/test_search.py`, 13 → 39
+
+**Measured, not assumed:** with `pi/api/main.py` put back to the committed version and this test file
+left alone, pytest answers **26 failed, 13 passed** — so every one of the 26 new tests fails against the
+code as it was, and the 13 that were already there still pass. Grouped by what they hold:
+
+| Holds | Tests |
+|---|---|
+| a card holding more books than one search asks is reported, not clipped | `test_a_box_holding_more_books_than_one_search_asks_is_not_an_empty_library`, `test_the_page_says_which_books_it_never_asked` |
+| `[]` vs `None` — a real feed with no hits; bytes that are not XML; the library's own `<error>` document, with and without a namespace; a page that parses but is not a feed; a namespaced Atom shelf that really did answer | `test_a_feed_with_no_hits_is_an_empty_answer_and_not_a_failure`, `test_bytes_that_are_not_xml_are_not_an_answer`, `test_the_readers_own_error_document_is_not_an_answer`, `test_an_error_document_carrying_a_namespace_is_still_not_an_answer`, `test_a_page_that_parses_but_is_not_a_feed_is_not_an_answer`, `test_an_atom_shelf_is_read_even_though_every_element_carries_a_namespace` |
+| the five states, counted rather than guessed, and `no-books` never reading as `empty` | `test_an_empty_feed_from_every_collection_is_the_only_empty_answer`, `test_a_collection_that_never_answered_is_not_counted_as_an_empty_one`, `test_a_collection_that_raised_is_not_counted_as_having_answered`, `test_the_collections_the_deadline_left_behind_are_counted_as_late`, `test_a_hit_is_found_whatever_else_the_library_did`, `test_a_box_with_no_books_is_not_a_search_that_failed` |
+| the words the page may and may not print — *nothing matched* only from `empty`, a gap worded as a gap, a fault worded as a fault, an empty shelf not blamed on the search | `test_the_page_may_say_nothing_matched_only_when_every_book_answered`, `test_the_page_names_how_many_books_answered_when_some_did_not`, `test_a_library_that_answered_nothing_is_worded_as_a_fault_not_as_an_answer`, `test_a_box_with_no_books_says_so_instead_of_blaming_the_search` |
+| answers from the manuals never hide a library that never answered | `test_answers_from_the_manuals_do_not_hide_a_library_that_never_answered`, `test_answers_from_the_manuals_say_that_the_library_half_is_missing` |
+| `shorten()` — no ellipsis when nothing was dropped, never mid-word, a finished sentence preferred, dangling punctuation dropped, nothing to cut on still bounded, and the cut made on the way in so the page never holds a half word | `test_a_snippet_short_enough_to_fit_is_shown_whole_with_no_ellipsis`, `test_a_long_snippet_is_cut_at_a_whole_word_and_says_so`, `test_a_snippet_prefers_a_finished_thought_when_one_lands_near_the_end`, `test_a_comma_the_cut_left_dangling_is_not_shown`, `test_a_snippet_with_no_space_to_cut_at_is_still_bounded`, `test_a_long_description_reaches_the_page_cut_at_a_word` |
+
+One of the 13 that were already there is the guard that now finally sits above something:
+`test_only_a_bounded_number_of_collections_is_asked` still holds that a ceiling exists — what changed is
+that the ceiling is no longer *below* what this card holds.
+
+The whole suite: **686 passed, 2 skipped, 28 files** (was 660).
+
+### 40.6 What is deployed and what is not
+
+**The code is committed here; the box is still running the old `main.py`.** `/srv/ark/api/main.py` on the
+card predates this whole change, so a search on the live box today still asks twelve collections and still
+prints one sentence for three facts. Deploying it means replacing that one file and restarting `ark-api`
+— no migration, no schema change, no unit change, no nginx change — and the rollback is the old file.
+
+### 40.7 Still unproven
+
+* **No browser has drawn any of the three "nothing found" states.** They are proved out of the HTML
+  (`tests/test_search.py`), which can say the sentence and the dot class are there; it cannot say whether
+  amber reads as *try again* rather than *something is wrong*.
+* **The timings were taken on a quiet box, and not under load.** One reader, nothing else asking. Nothing
+  has searched while two other people were reading, so the wall clock under load is unmeasured — and §40.4
+  already shows a factor-of-two spread between runs on an idle card.
+* **`partial` is reachable, not theoretical** — a `water` search took 8.04 s twice out of three on this very
+  card, which is the deadline to the hundredth of a second — but **nobody has seen the sentence on a
+  screen.** The way to see it on purpose is to restart `ark-kiwix` and search in the same second
+  (`docs/HUMAN-TEST-LIST.md` §20, step 7). If the owner's own searching never shows it, that is the good
+  outcome and has to be reported as one, not as "the test failed".
+* **The 24-hit cap inside `_search_report()` is still a cap.** Twenty collections × 4 hits is up to 80, and
+  the page shows 24 sorted by source then title — so a very common word still shows a slice of the top of
+  the list. That is a page-size decision and it is deliberate; what is no longer true is the *lookup* being
+  partial.
+

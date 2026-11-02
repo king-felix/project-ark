@@ -71,9 +71,23 @@ FILES_PAGE = 50
 
 # Search is bounded in three places: how many collections are asked, how many
 # questions are in flight, and how long the page waits for answers.
+#
+# The ceiling on collections is a guard against a pathological card, **never** a
+# page size.  It was 12 while this box held 20 collections, so eight books were
+# never asked anything — and the page then said *Nothing matched* about a search
+# that had not happened at all (2 November 2026).  A reader cannot tell a book
+# that has nothing from a book nobody opened, so the ceiling must be above what a
+# real card holds; measured on the Pi with six workers, twenty collections answer
+# in about 4.5 s, which is why the wait below is eight seconds and not six.
 SEARCH_WORKERS = 6
-MAX_COLLECTIONS = 12
-SEARCH_DEADLINE = 6.0
+MAX_COLLECTIONS = 20
+SEARCH_DEADLINE = 8.0
+
+#: How much of a hit's description a reader is shown.  This is a limit, never a
+#: place to cut: ``shorten()`` stops at a word or a sentence boundary and marks a
+#: real omission with an ellipsis, because a snippet ending "...do you carry wat"
+#: reads as a broken page rather than a shortened one.
+SNIPPET_CHARS = 220
 
 app = FastAPI(title="Project ARK", docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -344,19 +358,80 @@ def _feed_text(node) -> str:
     return re.sub(r"\s+", " ", _FEED_MARKUP.sub(" ", text)).strip()
 
 
-def _parse_feed(raw: bytes) -> list[dict]:
-    """The library answers in a simple XML feed; take title/link/snippet from it."""
+def shorten(text: str, limit: int = SNIPPET_CHARS) -> str:
+    """The first ``limit`` characters of ``text``, cut where a person would cut.
+
+    A slice is not a summary: ``text[:220]`` ends wherever character 220 happens to
+    fall, and on the live box that produced snippets ending ``"...do you carry wat"``
+    — mid-word, so a good answer looked like a broken page.  So:
+
+    * short enough to fit — shown whole, with **no** ellipsis (nothing was dropped);
+    * otherwise stop at a sentence end if one lands in the back half of the window
+      (whole thoughts read better than a long phrase), else at the last whole word;
+    * ``" …"`` is added **only** when words really were left out.
+
+    Never raises, and never returns something that is not the beginning of ``text``.
+    """
+    text = re.sub(r"\s+", " ", text or "").strip()
+    if len(text) <= limit:
+        return text
+    window = text[:limit]
+    ends = [window.rfind(". "), window.rfind("! "), window.rfind("? ")]
+    end = max(ends)
+    if end >= limit // 2:
+        return window[:end + 1] + " …"
+    space = window.rfind(" ")
+    # ``rstrip`` drops a comma or a dash the cut left dangling at the end.
+    cut = (window[:space] if space > 0 else window).rstrip(" ,;:—-–(")
+    return (cut or window) + " …"
+
+
+#: The root elements a search answer really arrives under: ``<rss>`` from the
+#: library's XML feed, ``<feed>`` from an Atom shelf, and the RDF-era spellings.
+#: Anything else that happens to parse — an error page from something in front of
+#: the reader, say — is *not* an answer, however well-formed it is.
+_FEED_ROOTS = ("rss", "feed", "rdf", "channel")
+
+
+def _tag(node) -> str:
+    """An element's own name, lowercased, with any namespace taken off.
+
+    ``{http://www.w3.org/2005/Atom}entry`` → ``entry``.  Without this an Atom shelf
+    parsed to a feed with **no** entries — every item skipped by its tag — so a real
+    answer came back as an empty list, which the page is allowed to word as *nothing
+    matched*.  A namespace is a label, never a fact about the answer.
+    """
+    return str(node.tag).lower().split("}")[-1]
+
+
+def _parse_feed(raw: bytes) -> list[dict] | None:
+    """The library answers in a simple XML feed; take title/link/snippet from it.
+
+    ``None`` means *that was not an answer* — the bytes did not parse, the reader
+    replied with its own ``<error>Content not found</error>`` document (which parses
+    perfectly well and reports nothing, the shape a wrong collection name produces),
+    or the reply parsed but is not a feed at all.  An **empty list** means the
+    opposite: a real answer that held no hits.  The two used to be one thing, which
+    is how a search that never happened came out looking like a search that found
+    nothing.
+    """
     try:
         root = ET.fromstring(raw)
     except ET.ParseError:
-        return []
+        return None
+    # ``{http://www.w3.org/2005/Atom}feed`` → ``feed``: the namespace is not the point.
+    where = _tag(root)
+    if where == "error":
+        return None
+    if where not in _FEED_ROOTS:
+        return None
     hits = []
     for node in root.iter():
-        if node.tag.lower() not in ("item", "entry"):
+        if _tag(node) not in ("item", "entry"):
             continue
         title = link = snippet = ""
         for child in node:
-            tag = child.tag.lower()
+            tag = _tag(child)
             if tag in ("title", "name") and not title:
                 title = _feed_text(child)
             elif tag == "link" and not link:
@@ -365,23 +440,29 @@ def _parse_feed(raw: bytes) -> list[dict]:
                 snippet = _feed_text(child)
         if title and link:
             hits.append({"title": title, "link": _public_link(link),
-                         "snippet": snippet[:220]})
+                         "snippet": shorten(snippet)})
     return hits
 
 
-def _kiwix_one(book_id: str, pattern: str) -> list[dict]:
+def _kiwix_one(book_id: str, pattern: str) -> list[dict] | None:
     """Ask one collection.
 
     ``book_id`` is what the library answers to, which is the ZIM's **file name
     without ``.zim``** — see ``_handle``.  It is not the ``id`` attribute in
     ``library.xml`` (a UUID the server does not index by): asking with that gets
     an empty feed, and an empty feed looks exactly like "nothing matched".
+
+    Answers ``None`` when the reply was not an answer at all (bytes that did not
+    parse, or the library's own error document) and raises when the request itself
+    failed — ``_search_report`` counts both, because *"this collection found
+    nothing"* and *"this collection said nothing"* are different facts.
     """
     query = urllib.parse.urlencode({"content": book_id, "pattern": pattern, "format": "xml"})
     req = urllib.request.Request(f"{ark_health.kiwix_base()}/search?{query}",
                                  headers={"User-Agent": "ark-portal/1.0"})
     with urllib.request.urlopen(req, timeout=9) as resp:
-        return _parse_feed(resp.read(3_000_000))[:4]
+        found = _parse_feed(resp.read(3_000_000))
+    return None if found is None else found[:4]
 
 
 def _handle(book: dict) -> str:
@@ -414,14 +495,45 @@ _SEARCH_EXECUTOR: ThreadPoolExecutor | None = None
 
 
 def search_library(pattern: str) -> list[dict]:
-    """Ask a bounded set of collections, and never wait longer than the budget.
+    """The hits the collections gave, and nothing else — see ``_search_report``.
+
+    Kept as its own name because a hit list is what most callers want; the page
+    asks ``_search_report`` so it can also say who never answered.
+    """
+    return _search_report(pattern)["hits"]
+
+
+def _search_report(pattern: str) -> dict:
+    """Ask the collections, and report what came back *and* how much was heard.
+
+    A search has three different outcomes and the old page printed one sentence for
+    all of them: *Nothing matched “x” yet*.  On 2 November 2026 that sentence was
+    shown about a search that had only ever asked **twelve of the box's twenty
+    collections** (``MAX_COLLECTIONS``), and it was also shown when the library
+    answered nothing at all.  A reader cannot tell a book that has nothing from a
+    book nobody opened, so the counts travel with the hits:
+
+    * ``asked``    — how many collections were actually asked;
+    * ``answered`` — how many answered *anything* (an empty answer is an answer);
+    * ``failed``   — how many answered with something that was not an answer;
+    * ``late``     — how many had not answered by the deadline and were abandoned;
+    * ``available`` — how many collections the box holds, so that a search which could
+                    only ask *some* of them says so instead of quietly counting its own
+                    cap as the whole library (the fault that started all of this).
+
+    Anything un-asked or un-answered is a gap in the search, not a gap in the books,
+    and ``library_state()`` turns that into one of five words the page can word
+    honestly.
 
     Whatever has arrived by the deadline is rendered; whatever has not is
     abandoned (not joined, not waited for) and its late answer is discarded.
     """
-    books = library_books()[:MAX_COLLECTIONS]
+    books_on_card = library_books()
+    books = books_on_card[:MAX_COLLECTIONS]
+    report = {"hits": [], "asked": len(books), "available": len(books_on_card),
+              "answered": 0, "failed": 0, "late": 0}
     if not books:
-        return []
+        return report
     by_id: dict[str, dict] = {}
     for book in books:
         by_id[book["id"]] = book
@@ -432,6 +544,7 @@ def search_library(pattern: str) -> list[dict]:
     pool = _search_pool()
     jobs = {pool.submit(_kiwix_one, _handle(b), pattern): b for b in books}
     done, pending = wait(list(jobs), timeout=SEARCH_DEADLINE)
+    report["late"] = len(pending)
     for future in pending:
         future.cancel()           # a running worker is left to finish and be ignored
     for future in done:
@@ -439,7 +552,12 @@ def search_library(pattern: str) -> list[dict]:
         try:
             found = future.result()
         except Exception:
+            report["failed"] += 1
             continue              # one broken collection is not the page's problem
+        if found is None:
+            report["failed"] += 1
+            continue
+        report["answered"] += 1
         for hit in found:
             # The link names the collection that owns the article; trust that
             # over the guess we made when we sent the question.
@@ -452,7 +570,44 @@ def search_library(pattern: str) -> list[dict]:
             seen.add(key)
             hits.append(hit)
     hits.sort(key=lambda h: (h["source"], h["title"]))
-    return hits[:24]
+    report["hits"] = hits[:24]
+    return report
+
+
+def library_state(report: dict) -> str:
+    """One of five words: what the library half of a search really did.
+
+    ``found``     — at least one hit, whatever else happened;
+    ``empty``     — every collection that was asked answered, and none had it.  This
+                    is the **only** state that may say *nothing matched*;
+    ``partial``   — the search did not cover the whole library and none of the answers
+                    had it: either some of the collections that were asked never
+                    answered, or the box holds more books than one search asks
+                    (``MAX_COLLECTIONS``).  A shorter word may well be in a book
+                    nobody heard from;
+    ``silent``    — nothing answered at all: the lookup failed, it did not come back
+                    empty;
+    ``no-books``  — there was nothing to ask (no collection on the card, or no index
+                    to read the list from).
+
+    The page words these five differently on purpose.  Collapsing them back into one
+    sentence is how a broken lookup came out looking like a confident "no".
+    """
+    if report.get("hits"):
+        return "found"
+    if not report.get("asked"):
+        return "no-books"
+    if not report.get("answered"):
+        return "silent"
+    if report.get("answered", 0) < report.get("asked", 0):
+        return "partial"
+    if report.get("asked", 0) < report.get("available", report.get("asked", 0)):
+        # The ceiling bit.  Every book that was asked answered, and none had it — but
+        # the box holds more books than one search asks, so the whole library was not
+        # looked in.  Calling this ``empty`` would put "All 20 collections were asked"
+        # over a card holding 25, which is the same false confidence one size smaller.
+        return "partial"
+    return "empty"
 
 
 def search_guides(pattern: str) -> list[dict]:
@@ -482,11 +637,20 @@ def search_guides(pattern: str) -> list[dict]:
             space = plain.find(" ", start)
             if 0 <= space < pos:
                 start = space + 1
-        snippet = plain[start: pos + 170].strip()
+        end = pos + 170
+        if end < len(plain):
+            # …and stop on one, for the same reason at the other end: a page cut
+            # at character 170 ends "…do you carry wat", which reads as a broken
+            # page rather than a shortened one — the rule ``shorten()`` keeps.
+            space = plain.rfind(" ", pos, end)
+            if space > pos:
+                end = space
+        snippet = plain[start:end].strip().rstrip(" ,;:—-–(")
         found.append({
             "title": title,
             "link": "/vault/" + str(path.relative_to(ark_health.vault_dir())),
-            "snippet": ("… " if start else "") + snippet + " …",
+            # ``" …"`` only when words really were left out of the page.
+            "snippet": ("… " if start else "") + snippet + (" …" if end < len(plain) else ""),
             "source": "Manuals & Guides",
             # a page whose title matches is almost always the one you meant
             "rank": 0 if in_title else 1,
@@ -545,10 +709,28 @@ def search(q: str = ""):
      Short and specific beats a whole sentence.</p>""", here="/search",
                     tagline="One box that looks in the encyclopedias, the manuals and the bookshelf.")
 
-    library = search_library(pattern)
+    report = _search_report(pattern)
+    library = report["hits"]
+    state = library_state(report)
     guides = search_guides(pattern)
     books = search_books(pattern)
     total = len(library) + len(guides) + len(books)
+    asked, answered = report["asked"], report["answered"]
+    available = report.get("available", asked)
+    again = f"/search?q={urllib.parse.quote_plus(pattern)}"
+
+    def shortfall() -> str:
+        """Why the library half may be missing — one clause, true to the counts.
+
+        Two different things make a search *partial*, and saying the wrong one is a
+        lie in plain English: books that were asked and never answered, versus books
+        that were never asked because the box holds more than one search asks.  The
+        numbers are the only thing that can tell them apart.
+        """
+        if asked < available:
+            return (f"Only the first {asked} of the box’s {available} collections "
+                    f"were looked in")
+        return f"Only {answered} of {asked} collections answered in time"
 
     def block(title: str, items: list[dict]) -> str:
         if not items:
@@ -566,10 +748,52 @@ def search(q: str = ""):
         word = "answer" if total == 1 else "answers"
         parts.append(f'<p class="status"><span class="dot" aria-hidden="true"></span>'
                      f'<span><b>{total}</b> {word} for “{esc(pattern)}”. Tap one to read it.</span></p>')
-    else:
+        # ``found`` needs nothing said.  The other three all mean the same thing in
+        # this branch — *the library half is missing from what you are reading* — and
+        # saying nothing would hide a failed lookup behind a tidy list of manuals.
+        if state == "partial":
+            parts.append(f'<p class="note">{esc(shortfall())}, so the books that did not '
+                         f'answer may hold more. '
+                         f'<a href="{esc(again)}">Look again</a>.</p>')
+        elif state == "silent":
+            parts.append(f'<p class="note">The big library could not be looked in just now — none '
+                         f'of the {asked} collections answered — so everything above comes from '
+                         f'the manuals and the bookshelf. <a href="{esc(again)}">Try again</a> in '
+                         f'a moment.</p>')
+        elif state == "no-books":
+            parts.append('<p class="note">There are no collections on this box yet, so everything '
+                         'above comes from the manuals and the bookshelf. The Offline Library '
+                         'fills up as the box has time.</p>')
+    elif state == "empty":
         parts.append(f"""<p class="status"><span class="dot" aria-hidden="true"></span>
       <span>Nothing matched <b>“{esc(pattern)}”</b> yet.</span></p>
-  <p class="note">Try a shorter word, or open a collection and use the search box inside it.</p>
+  <p class="note">All {asked} collections were asked and none of them had it. Try a shorter
+     word, or a different word for the same thing.</p>
+  <div class="nav"><a href="/kiwix/">Open the Offline Library</a><a href="/vault/">Open the manuals</a></div>""")
+    elif state == "partial":
+        # Amber, not red: some collections answered, and a second try often gets
+        # further.  ``dot wait`` is this box's word for "fine, but not finished".
+        parts.append(f"""<p class="status"><span class="dot wait" aria-hidden="true"></span>
+      <span>Nothing found for <b>“{esc(pattern)}”</b> — but the look-up stopped early,
+      so this is not the whole library.</span></p>
+  <p class="note">{esc(shortfall())}. Nothing was found in those, and the rest were not
+     heard from.
+     <a href="{esc(again)}">Look again</a> — a second try often gets further.</p>
+  <div class="nav"><a href="/kiwix/">Open the Offline Library</a><a href="/vault/">Open the manuals</a></div>""")
+    elif state == "silent":
+        # Red: nothing answered, which is a fault and must never read as an answer.
+        parts.append(f"""<p class="status"><span class="dot no" aria-hidden="true"></span>
+      <span>The big library could not be looked in just now.</span></p>
+  <p class="note">That is not the same as “nothing found” — none of the {asked} collections
+     answered at all. The manuals and the bookshelf were searched and are below if they
+     have anything. <a href="{esc(again)}">Try again</a> in a moment.</p>
+  <div class="nav"><a href="/kiwix/">Open the Offline Library</a><a href="/vault/">Open the manuals</a></div>""")
+    else:
+        parts.append(f"""<p class="status"><span class="dot wait" aria-hidden="true"></span>
+      <span>The Offline Library has no list of its books yet, so the big look-up had
+      nothing to read.</span></p>
+  <p class="note">The manuals and the bookshelf were still searched. The Offline Library
+     fills up as the box has time.</p>
   <div class="nav"><a href="/kiwix/">Open the Offline Library</a><a href="/vault/">Open the manuals</a></div>""")
     parts.append(block("From the library", library))
     parts.append(block("From the manuals", guides))

@@ -140,8 +140,9 @@ who needs this most will not be the person who set it up.
 
 **What it is for:** the moment where you do not know *which* library has the answer.
 
-It asks every collection at the same time (in parallel, so a slow one never stalls the page),
-plus the manuals and the book shelf, and groups what it finds into three blocks:
+It asks **every** collection on the box at the same time (in parallel, so a slow one never
+stalls the page), plus the manuals and the book shelf, and groups what it finds into three
+blocks:
 
 - **From the library** — actual encyclopedia articles
 - **From the manuals** — your own pages
@@ -150,8 +151,25 @@ plus the manuals and the book shelf, and groups what it finds into three blocks:
 **How to use it:** one or two words. `bleach water`, `burn`, `radiator leak`. Short and
 specific beats a sentence. Tap any result to read it right there.
 
-**If nothing matches:** the page will say so and offer links into the library and the manuals.
-Narrower search boxes inside each collection often find more than the global one.
+**Why it can say three different things when it finds nothing.** The page used to say
+*Nothing matched* whatever had happened, which was sometimes untrue — so there are now three
+separate answers, and the dot beside each one is a different colour:
+
+| What the page says | The dot | What it really means |
+|---|---|---|
+| *Nothing matched “…” yet* — **All 20 collections were asked and none of them had it** | green | a real, complete "no". Try a shorter word, or a different word for the same thing |
+| *Nothing found — but the look-up stopped early, so this is not the whole library* | amber | some collections were still thinking when the page had to draw. **A second try often gets further** — tap **Look again** |
+| *The big library could not be looked in just now* | red | none of the collections answered at all. This is a fault, **not** a "no" — the manuals and the bookshelf were still searched, and they are listed below if they had anything. Tap **Try again** in a moment |
+
+The page waits eight seconds for the collections. On this box twenty collections answer in
+about four and a half, so the amber and red states should be rare — when you see one, the
+honest thing is to try again once before believing the answer.
+
+**A snippet is a beginning, not a summary.** The line under each result stops at the end of a
+word or a sentence and says so with `…`, so it never leaves you reading half a word.
+
+**If it still finds nothing,** narrower search boxes inside each collection often find more
+than the global one.
 
 ### 3.2 Offline library — `http://ark.lan/kiwix/`
 

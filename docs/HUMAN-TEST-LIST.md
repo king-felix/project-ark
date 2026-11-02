@@ -760,6 +760,92 @@ everywhere — on the device it was pressed on and on the one in the kitchen.
 
 ---
 
+## 20. Twenty books, one search box (15 minutes, needs a phone and an SSH session)
+
+**Why it is unproven:** the search page could only ever look in **twelve** of the box's twenty
+collections — a ceiling meant as a guard against a pathological card was acting as a page size —
+and it printed *Nothing matched “…” yet* about a search it had never finished making. It also
+printed that same sentence when the library said nothing at all, which is a fault wearing the
+costume of an answer. And a snippet was cut at character 220 whatever fell there, so the box was
+seen serving `…do you carry wat` — a good answer that looked like a broken page. All three are
+fixed (2 Nov 2026, `tests/test_search.py`), and **none of it has been looked at by a person.**
+
+**What this test is really about:** a reader deciding whether to trust a "no". There are now
+three different sentences for three different facts, and only one of them is a real "no".
+
+**Before you start:** a phone on the same Wi-Fi as the box, and an SSH session for steps 3 and 6.
+
+1. On the phone, open `http://ark.lan/search?q=bleach+water`.
+
+   **You should see:** a **green** dot and a count of answers, with **From the library** first
+   and the source collection named under each title.
+
+2. Read the snippet under one library result out loud.
+
+   **You should hear:** whole words. If it stops early it ends with ` …`, and the character
+   before the space is a full word — never `wat`, `disinf` or a dangling comma.
+
+3. On the box, count the collections the search really asked:
+
+   ```bash
+   curl -s 'http://127.0.0.1:8081/catalog/v2/entries?count=-1' | grep -c 'href="/kiwix/content/'
+   ```
+
+   **You should see:** `20` (or however many the box holds that day) — and the search above must
+   have asked that many, not twelve. The way to tell from the page: the complete "no" in step 4
+   says **All *n* collections were asked**, and that *n* must match this number.
+
+4. Search for something that cannot be in any book — `xylophone quantum badger` is a good one.
+
+   **You should see:** a **green** dot, *Nothing matched “xylophone quantum badger” yet*, and the
+   sentence **All 20 collections were asked and none of them had it.** That is a real "no" and
+   the only wording allowed to say it.
+
+5. Search for one plain word that will hit many books — `water`.
+
+   **You should see:** hits grouped by collection, more than twelve different sources across the
+   library block once you scroll. Before 2 Nov 2026 the last eight collections could not appear
+   at all, so a source that is only in a *late* collection (a Gutenberg shelf, a Wikivoyage
+   page) is the specific thing this step proves.
+
+6. Make the library refuse, and watch the page say so rather than lie:
+
+   ```bash
+   sudo systemctl stop ark-kiwix
+   ```
+
+   Then search for anything on the phone.
+
+   **You should see:** a **red** dot and *The big library could not be looked in just now* — with
+   *That is not the same as “nothing found”* under it — and the manuals and bookshelf still
+   searched below. **It must not** say *Nothing matched*.
+
+   Then start it again and search once more:
+
+   ```bash
+   sudo systemctl start ark-kiwix
+   ```
+
+7. Make it slow rather than silent, to see the amber state. Stop it, start it, and search in the
+   same second — the first search hits a box that is still loading twenty collections:
+
+   ```bash
+   sudo systemctl restart ark-kiwix
+   ```
+
+   **You should see:** an **amber** dot and *Nothing found for “…” — but the look-up stopped
+   early, so this is not the whole library*, with **Look again** offered. Tapping it a few
+   seconds later should give the green state. Amber is allowed to be rare; if you cannot catch
+   it, that is a good sign, not a failed test — say so rather than inventing a result.
+
+**If step 4 says anything other than *All n collections were asked*,** the search did not cover
+the library and the wording is wrong: note the exact sentence and whether the dot was amber.
+
+**What this proves that nothing else can:** that a "no" from this box is a real no, that a fault
+never reads as an answer, and that a reader's eyes are not left in the middle of a word.
+
+---
+
 ## What is *not* on this list, on purpose
 
 
