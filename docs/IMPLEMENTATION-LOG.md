@@ -5838,9 +5838,9 @@ The full suite collects **840 tests**; the run without the three browser map tes
 ### 51.6 What is not proved
 
 * **No destructive live restore and no power-cut test was performed** (on purpose).
-  The restore gate is proved against throwaway boxes on the Mac; the live-box proof is a
-  non-destructive `--dry-run`, the readiness gate, and a scratch database under
-  `/srv/ark/tmp` exercising the lock across two processes.
+  The restore gate is proved against throwaway boxes on the Mac; the live-box proof
+  (§51.7) is a non-destructive `--dry-run`, the readiness gate, and a scratch database
+  under `/srv/ark/tmp` exercising the lock across two real processes.
 * A restore killed **between** `os.replace` and the post-copy drain leaves the box dark
   (by design) and requires the console step the refusal prints. The unit test covers the
   classification; nothing can safely simulate the crash on the live card.
@@ -5848,3 +5848,69 @@ The full suite collects **840 tests**; the run without the three browser map tes
   Calibre upgrade that changes its unit name would be caught by the phase tests, not by a
   running box.
 * No real phone or reader was used to watch a 503 during a maintenance window.
+
+### 51.7 Deployed and proved on the live box — 3 Nov 2026
+
+**Before touching it:** `sudo ark-backup --to /srv/ark/backup --keep 3` wrote
+`ark-backup-20261103-235239` (347.0 kB; 0 messages, 0 shared files, 0 player names,
+0 game saves, the import list), and the deployed source tree was saved as
+`/srv/ark/tmp/rollback-src-20261103-235238.tar.gz` (20 MB). The previous deployed
+revision was `448638b`.
+
+**The deploy** was the established one, not a hand copy:
+
+```
+bash scripts/03-provision.sh ark.local --only 15-resilience,60-portal,95-backup,90-verify
+```
+
+All four phases reported **ok**, none failed, in 49 s. Phase 15 ran a self-heal pass
+at 23:53:09 (`0 repaired`, nothing left to look at); phase 60 restarted `ark-api` and
+proved `/api/health`, `/api/status`, `/api/ready`; phase 95 installed the tools and
+planned a backup; phase 90 printed the full gate: every line `✓` except the expected
+informational `·` (the next boot's forced card check, the first network-watch check,
+and the backup count).
+
+The two long-lived holders were restarted afterwards so they would load the new
+`ark_db`, and both came up active:
+
+```
+sudo systemctl restart ark-media-worker.service ark-ai.service
+```
+
+**Hashes on the box matched the commit**, byte for byte:
+
+| File | sha256 (first 16) |
+|---|---|
+| `/srv/ark/api/ark_maintenance.py` | `d8b2575d35803dc2` |
+| `/srv/ark/api/ark_db.py` | `d82a5e433e9f3af1` |
+| `/usr/local/sbin/ark-restore` | `f624a793514c3e4d` |
+| `/usr/local/sbin/ark_bundle.py` | `6bedeca2c30008fe` |
+
+**Readiness:** `http://ark.local/api/ready` → **HTTP 200**, `ok: true`, `ready: 9/9`,
+`blocking: []`. The self-heal receipt (`/srv/ark/logs/self-heal.json`) is
+`ok: true`, `healed: 0`, `problems: []`. `ark-media-worker --status` answers and shows
+8 films, no queued or running job; `ark-restore --list` lists three bundles.
+
+**The protocol, on the real card, on a scratch database** under `/srv/ark/tmp` (never
+the live records), using the deployed `/srv/ark/api` and venv:
+
+* a real `ark_db` connection in another process → `BLOCKED_BY_READER`;
+* `SIGKILL` that process → `AFTER_KILL_HELD 0.0` (the kernel released it at once);
+* a **different** process trying `ark_db.read()` during a maintenance window →
+  `REFUSED Busy` (the same process is admitted by design: a maintenance owner may
+  read the database it is repairing);
+* the repair turnstile → `TURNSTILE_HELD`;
+* both lock files survived the kill and are `-rw-rw-rw-` (`0666`);
+* the scratch tree was removed afterwards (`ls /srv/ark/tmp/gate-probe-*` → none).
+
+**Not done, on purpose:** no destructive live restore, no power-cut test, and no live
+`ark-restore` of the real records. The restore path is proved against throwaway boxes
+on the Mac and the protocol is proved on the card with a scratch database; the
+human rehearsal in `docs/HUMAN-TEST-LIST.md` §24 is the next step if a real-card
+refusal is wanted without risking the live records.
+
+**Rollback:** the previous tree is the tarball above and commit `448638b` on the Mac.
+To go back, `sudo tar -C /srv/ark -xzf /srv/ark/tmp/rollback-src-20261103-235238.tar.gz`,
+re-run `15-resilience`, `60-portal` and `95-backup`, then
+`sudo systemctl restart ark-api ark-media-worker ark-ai`. The pre-deploy bundle is the
+records' rollback.
