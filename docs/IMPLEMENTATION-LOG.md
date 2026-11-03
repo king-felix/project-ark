@@ -5652,3 +5652,70 @@ real phone remains the test in `docs/HUMAN-TEST-LIST.md` §22.
 * Commits `a2d1a98` (builder) and `6d36d16` (router), both pushed; the box's
   maps application is byte-identical to `router.js` in the commit
   (`04d7916a…`).
+
+---
+
+## 50. El Paso, at street level — 3 Nov 2026
+
+### 50.1 What was asked
+
+The owner lives in El Paso and asked for "a more detailed map of El Paso in
+particular". The two state packs carry the numbered network only; this one is
+the opposite: every street, cropped out of the Texas extract.
+
+### 50.2 A box, and what it keeps
+
+`scripts/ark-map-pack --bbox S,W,N,E` crops an extract. The box is inclusive and
+a road with **any** point inside it is kept whole, so a route can leave the box
+on the road it arrived on — which is also why the pack's own bounds reach a
+little past the box. The point test is `ark_maps.in_box()`, unit-tested, and the
+pack states the box in its own limitations.
+
+The box used: **31.35–32.05 N, 106.70–105.90 W** — El Paso County and a margin.
+
+### 50.3 The pack
+
+| | El Paso |
+|---|---|
+| Graph | 386,511 points, 856,404 edges |
+| Street names | 13,294 |
+| Turn restrictions | 247 |
+| Searchable places | 4,426 |
+| Streets drawn | base-minor 67,964 + base-major 3,471 |
+| Buildings | 30,000 (the format's cap) |
+| Water / forest / boundary | 4,412 / 13 / 73 |
+| Pack size | 51,668,403 bytes (49.3 MB) |
+| Bounds | 31.10–32.30 N, −106.83 to −105.75 E |
+| Data date | 2026-11-02 |
+
+Built in six minutes from the Texas extract (one 353-second pass, 14.2 million
+objects left outside the box), verified at build, imported, checked again on the
+box byte for byte, and published. It is the third pack on the shelf, beside New
+Mexico and Texas.
+
+### 50.4 Proved on the live box
+
+Chromium over the LAN: the catalogue listed **El Paso** first; it downloaded in
+**11.9 s** (51.7 MB); the map opened; searches returned
+*El Paso International Airport — Terminal*, *The University of Texas at El Paso
+— University*, *Ysleta — Suburb* and its schools; a route from the airport to
+UTEP measured **13 km, about 11 min**. The only console error was the
+certificate refusal of the service worker — the documented human step, not a
+map fault.
+
+### 50.5 What it does not have
+
+* **Juárez is not in it.** The Geofabrik Texas extract stops at the Rio Grande;
+  the Mexican half of the metro needs a Mexico extract of its own.
+* **No street-address search.** The format has no address index; search finds
+  named places and points of interest, and street names live in the routing
+  graph. The catalogue card says "no street addresses".
+* **30,000 building footprints** is the format's cap, not the city's count.
+* 49.3 MB of browser storage on a phone that installs it.
+
+### 50.6 Evidence
+
+* `tests/test_maps.py` — 20 passed: `in_box()` keeps the inside, refuses the
+  outside, and a missing box keeps everything.
+* Full suite: **817 passed, 2 skipped**.
+* `ark-maps --published`: `el-paso 2026-11-02 49.3 MB`, beside the two states.

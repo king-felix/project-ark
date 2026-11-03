@@ -458,6 +458,11 @@ the numbered and primary network, drawn and routed, with local streets left out 
 and `--min-water-area` / `--named-water-lines-only` keep the water layer to named
 lakes and rivers. Such a pack says what it leaves out, and its name says it too.
 
+**A city is the other way round.** `--bbox S,W,N,E` crops a state extract to
+one city at full street detail: the El Paso pack on this box is 386,511 routing
+points, 67,964 streets and 49.3 MB. The Texas extract stops at the Rio Grande,
+so Juárez is not in it.
+
 **Why Maps is on a different address.** A service worker — the browser feature
 that lets the page reopen with nothing reachable — is only allowed on a secure
 origin the device trusts. `http://ark.local` is not one, and clicking through a

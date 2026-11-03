@@ -888,6 +888,14 @@ def line_feature(points: Sequence[Tuple[float, float]],
             "geometry": {"type": "LineString", "coordinates": drawn}}
 
 
+def in_box(bounds, lat: float, lon: float) -> bool:
+    """Is this point inside `[south, west, north, east]`?  No box keeps everything."""
+    if not bounds:
+        return True
+    south, west, north, east = (float(value) for value in bounds)
+    return south <= float(lat) <= north and west <= float(lon) <= east
+
+
 def ring_area_m2(points: Sequence[Tuple[float, float]]) -> float:
     """A closed ring's area in square metres, near enough to sort lakes from ponds.
 

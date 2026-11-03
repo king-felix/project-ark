@@ -19,6 +19,10 @@ verified folder (or a zip of one).
         --name "Texas — main roads" --max-buildings 0 --max-points 1200000 \\
         --out logs/maps/packs
 
+    # one city inside a state extract, at full street detail
+    python3 scripts/ark-map-pack --pbf texas.osm.pbf --bbox 31.35,-106.70,32.05,-105.90 \\
+        --name "El Paso" --out logs/maps/packs
+
     # a region already on disk
     python3 scripts/ark-map-pack --pbf region.osm.pbf --name "My Region" \\
         --source-url https://download.geofabrik.de/... --out /tmp/packs
@@ -177,6 +181,20 @@ def build(pbf: Path, args) -> Path:
     source_bytes = pbf.stat().st_size
     date = data_date_of(pbf, args.data_date)
 
+    box = None
+    if args.bbox:
+        try:
+            south, west, north, east = (float(v) for v in
+                                        args.bbox.replace(" ", "").split(","))
+        except ValueError:
+            raise SystemExit("--bbox takes four numbers: S,W,N,E")
+        if not (-90 <= south < north <= 90 and -180 <= west < east <= 180):
+            raise SystemExit("--bbox is not a real box")
+        box = (south, west, north, east)
+
+    def inside(lat, lon):
+        return ark_maps.in_box(box, lat, lon)
+
     builder = ark_maps.PackBuilder(max_points=args.max_points,
                                    max_places=args.max_places,
                                    max_buildings=args.max_buildings,
@@ -191,9 +209,13 @@ def build(pbf: Path, args) -> Path:
             self.unresolved = 0
             self.ways_seen = 0
             self.left_out = 0
+            self.outside = 0
 
         def node(self, node):
             if not node.tags:
+                return
+            if not inside(node.location.lat, node.location.lon):
+                self.outside += 1
                 return
             try:
                 builder.add_point(node.id, tags_of(node),
@@ -219,6 +241,10 @@ def build(pbf: Path, args) -> Path:
                 points.append((ref.ref, ref.location.lat, ref.location.lon))
             if len(points) < 2:
                 return
+            if box is not None and not any(inside(lat, lon)
+                                           for _nid, lat, lon in points):
+                self.outside += 1
+                return
             builder.add_way(way.id, tags, points)
 
         def relation(self, relation):
@@ -237,6 +263,9 @@ def build(pbf: Path, args) -> Path:
         kept = [name for name in ark_maps.ROAD_CLASSES if rank[name] >= floor]
         print("kept road classes: %s (%d ways left out)"
               % (", ".join(reversed(kept)), handler.left_out))
+    if box is not None:
+        print("box         %.4f,%.4f,%.4f,%.4f (%d objects outside)"
+              % (box[0], box[1], box[2], box[3], handler.outside))
 
     made = builder.finish()
     stats = made["stats"]
@@ -268,6 +297,10 @@ def build(pbf: Path, args) -> Path:
             limitations = ("Only %s roads are carried; local streets, service roads and "
                            "paths are not, so routing works on the main road network only. "
                            % (kept,)) + limitations
+        if box is not None:
+            limitations += (" This pack covers only %.4f-%.4f N, %.4f-%.4f E; "
+                            "a road that leaves the box stops at its edge."
+                            % (box[0], box[2], box[1], box[3]))
 
     print("bounds      %s" % (", ".join("%.4f" % v for v in made["bounds"]),))
     staging = out / (".build-%s-%s-%d" % (ident, version, os.getpid()))
@@ -369,6 +402,8 @@ def main(argv=None) -> int:
                              "square metres (0 keeps every shape)")
     parser.add_argument("--named-water-lines-only", action="store_true",
                         help="draw only named rivers and streams, not every unnamed one")
+    parser.add_argument("--bbox", default="",
+                        help="S,W,N,E — keep only this box (a city inside a state extract)")
     parser.add_argument("--force", action="store_true", help="replace an existing pack version")
     args = parser.parse_args(argv)
 

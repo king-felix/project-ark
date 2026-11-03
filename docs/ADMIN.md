@@ -1779,6 +1779,21 @@ without `--min-class`.
   --out logs/maps/packs --bundle logs/maps/texas-main-roads.zip
 ```
 
+**A city is the opposite case.** Build the full detail and crop the extract with
+`--bbox S,W,N,E`; the box is inclusive and a road that leaves it is kept whole,
+so the pack's own bounds reach a little past the box (and it says so). This is
+the El Paso pack on the card — 386,511 routing points, 67,964 streets, 49.3 MB:
+
+```bash
+.venv/bin/python scripts/ark-map-pack --pbf texas-latest.osm.pbf \
+  --bbox 31.35,-106.70,32.05,-105.90 --name "El Paso" --code US-TX \
+  --out logs/maps/packs --bundle logs/maps/el-paso.zip
+```
+
+The Texas extract stops at the Rio Grande, so the Mexican side of the metro
+(Juárez) is not in this pack; a city on the other side of a border needs its own
+country's extract.
+
 ### Adding, checking, offering, removing
 
 1. **Add a pack** — choose the `.zip` on `/admin/maps` (up to 1 GiB) and press

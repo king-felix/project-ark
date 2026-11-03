@@ -110,6 +110,14 @@ def test_an_unused_object_far_away_does_not_stretch_the_region():
     assert -106.2 <= west <= east <= -105.9
 
 
+def test_a_box_keeps_only_the_points_inside_it():
+    box = [31.35, -106.70, 32.05, -105.90]          # the El Paso pack, 3 Nov 2026
+    assert ark_maps.in_box(box, 31.7619, -106.4850)  # downtown
+    assert not ark_maps.in_box(box, 32.20, -106.49)  # north of it
+    assert not ark_maps.in_box(box, 31.76, -106.80)  # west of it
+    assert ark_maps.in_box(None, 0.0, 0.0), "no box keeps everything"
+
+
 def test_small_unnamed_water_is_left_out_when_a_floor_is_set():
     """A state is full of unnamed stock tanks; a named lake is always kept."""
     builder = ark_maps.PackBuilder(min_water_area=250000.0)
