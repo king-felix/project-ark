@@ -38,7 +38,11 @@ import ark_space
 #: Bounded, and generous enough for a long film on a slow card.
 THUMB_TIMEOUT = 30.0
 REMUX_FACTOR = 0.6            # seconds of repacking per second of film
-CONVERT_FACTOR = 3.0          # seconds of encoding per second of film, at most
+#: A wall-clock ceiling, not a prediction.  Measured on the box: x264 veryfast
+#: at 720p encodes about 2.3x faster than real time, so 3x the film's length is
+#: roughly seven times the time it should need — enough headroom for a 4K source
+#: without letting a broken file pin the card for a day.
+CONVERT_FACTOR = 3.0
 MIN_TIMEOUT = 120.0
 MAX_TIMEOUT = 6 * 3600.0
 #: Never let one conversion write more than this, whatever the input claims.

@@ -4775,9 +4775,14 @@ tool, reserve line), portal pages, README, ADMIN, USING-THE-ARK, matrix R8/R13.
 * The Pi: `df -h /srv/ark` reports 229 GiB total, 117 GiB free → the reserve is
   **16.0 GiB** (7 %), leaving about 101 GiB of admissible growth at the time of
   measurement. `/etc/ark/ark.env` now records the percentage.
-* **Not measured:** how fast a Pi 4 encodes. The worker's ceiling
-  (`CONVERT_FACTOR = 3×`, capped at 6 h) is a *bound*, not a benchmark, and the
-  page says a feature film can take hours. This is the honest gap in the feature.
+* **Measured on the Pi 4B** (FFmpeg 7.1.5, software x264 veryfast CRF 24,
+  1280×720): a 30-second clip converted in **13 s** (2.3× faster than real time),
+  so a 90-minute film is about **40 minutes** of background work. The hardware
+  encoder `h264_v4l2m2m` also worked and took **6 s** (≈5× real time), producing
+  H.264 High/4.0/yuv420p; the box does not use it by default — a hardware
+  encoder's output depends on the driver and the source, and libx264 is the
+  predictable choice. The worker's `CONVERT_FACTOR = 3×` (capped at 6 h) is a
+  ceiling with about seven times the measured headroom, not a prediction.
 
 ### 43.4 A defect found on the way (and fixed)
 

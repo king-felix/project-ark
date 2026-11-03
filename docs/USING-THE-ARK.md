@@ -458,9 +458,10 @@ watching** row on the shelf is built from the same local list, and **Clear this 
 under it removes it.
 
 **If a film says *Needs preparing***: the box has the file, but it is in a shape this
-browser cannot play. The owner's page can make a playing copy; a long film takes a
-long time on a small computer, and the original is never touched. **If it says *Could
-not be prepared***, the reason is on the owner's page.
+browser cannot play. The owner's page can make a playing copy — on this box that is
+about **40 minutes for a 90-minute film**, done in the background while everything
+else keeps working, and the original is never touched. **If it says *Could not be
+prepared***, the reason is on the owner's page.
 
 **Captions** appear in the player's caption menu when the owner has added them
 (a `.vtt` or `.srt` file with the film). **Download the original** is on every film's

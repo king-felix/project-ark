@@ -1598,12 +1598,19 @@ Each conversion:
 * is bounded to H.264/AAC MP4 with `+faststart`, preserving the aspect ratio and
   capping height at 1080 (720p and below are left alone).
 
-**How slow is it?** On a Pi 4, on-card encoding is the bottleneck: a short clip is
-seconds, a half-hour episode is a long coffee, and a two-hour film can take many
-hours. The page says so rather than implying otherwise. If a film matters to you
-and the box is too slow, convert it on a workstation; the page prints the exact
-command the worker would run, built from the same function
-(`ark_media_jobs.build_command`), and then drop the MP4 in.
+**How slow is it?** Measured on this box (Pi 4B, FFmpeg 7.1.5, software x264
+`veryfast`/CRF 24, 720p): **30 seconds of film took 13 seconds to convert** — about
+2.3× faster than real time, so a 90-minute film is roughly **40 minutes** of
+background work, not hours. The worker is nice'd and CPU-capped, so the portal
+keeps answering while it runs; a film that is already playable needs none of this.
+
+The Pi's hardware encoder (`h264_v4l2m2m`) also works on this box and is about
+twice as fast again (6 s for the same clip), but the box does **not** use it: a
+hardware encoder's output depends on the driver and the source, and "it played
+here" is not the same promise as libx264's. If a film matters and the wait
+matters more, convert it on a workstation; the page prints the exact command the
+worker would run, built from the same function (`ark_media_jobs.build_command`),
+and then drop the MP4 in.
 
 ### Deleting, and what it frees
 
