@@ -90,14 +90,14 @@ def name_of(stem: str) -> str:
 
 
 def read_catalogue(path: str | os.PathLike | None = None) -> dict:
-    """``{catalogue name: topic key}`` from ``catalog.tsv``.
+    """``{catalogue name: {"topic": key, "label": words}}`` from ``catalog.tsv``.
 
     A malformed or absent catalogue is an empty map, not an error: the Library
     page must still list the card's books on a box where the phase that copies
     the catalogue has not run.
     """
     target = Path(path) if path else catalogue_file()
-    out: dict[str, str] = {}
+    out: dict[str, dict] = {}
     try:
         text = target.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
@@ -114,14 +114,27 @@ def read_catalogue(path: str | os.PathLike | None = None) -> dict:
         if len(parts) < 6:
             continue
         topic = parts[6].strip() if len(parts) > 6 else ""
-        out[parts[0].strip()] = topic if topic in _BY_KEY else ""
+        out[parts[0].strip()] = {"topic": topic if topic in _BY_KEY else "",
+                                 "label": parts[4].strip()}
     return out
 
 
 def shelf_of(stem: str, catalogue: dict | None = None) -> str:
     """Which shelf one book belongs on (a topic key, or ``more``)."""
     table = read_catalogue() if catalogue is None else catalogue
-    return table.get(name_of(stem)) or OTHER[0]
+    return (table.get(name_of(stem)) or {}).get("topic") or OTHER[0]
+
+
+def title_of(stem: str, fallback: str, catalogue: dict | None = None) -> str:
+    """What to call one book on the shelf page.
+
+    The catalogue's label wins when there is one, because two of these bundles can
+    carry the *same* publisher title — every Canadian Prepper playlist calls itself
+    "Canadian prepper", so a shelf of them would read as one book listed twice.
+    The box's own name for it is the only one that tells them apart.
+    """
+    table = read_catalogue() if catalogue is None else catalogue
+    return (table.get(name_of(stem)) or {}).get("label") or fallback
 
 
 def shelves(books: list[dict], catalogue: dict | None = None) -> list[dict]:

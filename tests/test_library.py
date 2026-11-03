@@ -215,8 +215,8 @@ def test_the_shelf_page_shows_every_collection_and_links_to_it(public, ark, monk
     _two_shelves(ark, monkeypatch)
     body = public.client.get("/library", headers={"x-real-ip": "192.0.2.50"}).text
 
-    assert "Home Improvement Q&amp;A" in body
-    assert "Urban Prepper" in body
+    assert "Home improvement Q&amp;A" in body      # the catalogue's own name
+    assert "Urban Prepper (videos)" in body
     assert 'href="/kiwix/content/diy.stackexchange.com_en_all_2026-10/"' in body
     assert 'href="/kiwix/content/urban-prepper_en_all_2026-08/"' in body
     assert body.count("Urban Prepper") >= 1
@@ -273,8 +273,9 @@ def test_the_shelf_page_says_what_each_shelf_is_for(public, ark, monkeypatch):
 
 def test_the_shelf_page_uses_the_plain_words_and_escapes_a_title(public, ark, monkeypatch):
     monkeypatch.setenv("ARK_CATALOG", str(CATALOG))
+    # No catalogue row, so the publisher's own title is what must be escaped.
     _library_xml(ark, [
-        ("urban-prepper_en_all_2026-08", "Prepper &lt;script&gt;alert(1)&lt;/script&gt;",
+        ("something-hand-carried_2026-01", "Prepper &lt;script&gt;alert(1)&lt;/script&gt;",
          2192613, "_videos:yes;_ftindex:no"),
     ])
     body = public.client.get("/library", headers={"x-real-ip": "192.0.2.50"}).text
@@ -283,6 +284,26 @@ def test_the_shelf_page_uses_the_plain_words_and_escapes_a_title(public, ark, mo
     for word in re.findall(r"[a-z]+", re.sub(r"<[^>]+>", " ", body).lower()):
         assert word not in BANNED, f"{word!r} reached a reader"
     assert "https://ark.local:8443/admin" in body    # the footer still tells the owner
+
+
+def test_two_bundles_with_one_publisher_title_get_the_boxes_own_names(public, ark, monkeypatch):
+    """Every Canadian Prepper playlist is titled "Canadian prepper" by its publisher.
+
+    A shelf page that used the publisher's title would show three identical cards
+    with three different sizes and no way to tell which is which, so the catalogue's
+    own label is what a person reads.
+    """
+    monkeypatch.setenv("ARK_CATALOG", str(CATALOG))
+    _library_xml(ark, [
+        ("canadian-prepper_en_preppingfood_2026-10", "Canadian prepper", 2143151,
+         "_videos:yes;_ftindex:no"),
+        ("canadian-prepper_en_bugoutconcepts_2026-08", "Canadian prepper", 2818575,
+         "_videos:yes;_ftindex:no"),
+    ])
+    body = public.client.get("/library", headers={"x-real-ip": "192.0.2.50"}).text
+    assert "Storing food (videos)" in body
+    assert "Bug-out planning (videos)" in body
+    assert body.count(">Canadian prepper<") == 0, "one title for three bundles is not a shelf"
 
 
 def test_an_empty_library_is_a_friendly_page_not_an_error(public, ark, monkeypatch):

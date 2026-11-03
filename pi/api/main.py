@@ -475,7 +475,8 @@ def library():
     library index lists it as present.
     """
     books = library_books()
-    groups = ark_library.shelves(books)
+    catalogue = ark_library.read_catalogue()
+    groups = ark_library.shelves(books, catalogue)
     total_bytes = sum(int(b.get("size") or 0) for b in books) or library_bytes()
 
     if not books:
@@ -503,7 +504,7 @@ def library():
             else:
                 note, verb = "Tap to open it in your browser.", "Read in browser"
             cards.append(f'''<a class="card" href="/kiwix/content/{esc(stem)}/">
-  <span class="t">{esc(book["title"])}</span>
+  <span class="t">{esc(ark_library.title_of(stem, book["title"], catalogue))}</span>
   <span class="d">{esc(note)}</span>
   <span class="go">{verb} · {esc(human_size(book.get("size")))}</span>
 </a>''')
