@@ -1010,3 +1010,47 @@ or the search wording. Those are four different problems; do not report them as
   human. `tests/test_health.py` covers a full card; nothing covers twelve phones at once.
 * Anything the box has not built yet (quotas, a trash, an approval step, a backup button, a "check
   now" button) is not a test item — it is absent, and `AGENTS.md` §8.6 says so.
+
+---
+
+## 24. A restore that meets a live reader (20 minutes, on a **spare** box or a rehearsal folder)
+
+This is the maintenance-protocol proof on real hardware, without putting the live
+records at risk. **Do not point it at `/srv/ark`.** Every command below uses a
+rehearsal root under `/srv/ark/tmp`, which is on the card but is a throwaway tree.
+
+```bash
+# 1. Put a real bundle back into a rehearsal box (no services involved).
+sudo mkdir -p /srv/ark/tmp/rehearsal
+sudo env ARK_ROOT=/srv/ark/tmp/rehearsal \
+        ARK_DB=/srv/ark/tmp/rehearsal/api/data/ark.db \
+        ARK_MARKER=/srv/ark/tmp/rehearsal/api/data/ark.installed \
+        /usr/local/sbin/ark-restore --from /srv/ark/backup/ark-backup-<date>-<time> --no-service
+```
+
+2. Hold the rehearsal records open, as a page would:
+
+```bash
+sudo -u pi env ARK_ROOT=/srv/ark/tmp/rehearsal \
+     ARK_DB=/srv/ark/tmp/rehearsal/api/data/ark.db \
+     /srv/ark/venv/bin/python -c \
+     'import sys,time; sys.path.insert(0,"/srv/ark/api"); import ark_db; c=ark_db.connect(); c.execute("select 1"); print("holding the records"); time.sleep(180)' &
+```
+
+3. While that prints **holding the records**, try the same restore again with
+`--force --no-service` and `ARK_RESTORE_GATE_WAIT=1` added to the environment.
+It must say **another program still has the records open** and **nothing was
+changed**; it must not replace the file. Check the rehearsal database still opens
+(`sqlite3 /srv/ark/tmp/rehearsal/api/data/ark.db 'select count(*) from notes;'`).
+
+4. Kill the holder (`sudo pkill -f "holding the records"`) and run the restore a
+third time. It must go through.
+
+**What this proves:** the gate is real on the box, a kept handle blocks a
+replacement, and the refusal is a sentence rather than a half-written file. It does
+**not** prove the service stop/resume path — that is `tests/test_backup.py` with a
+stand-in service manager, and it would need a second card to prove destructively.
+
+**If it fails:** keep the output. The interesting lines are the one naming the
+program that still holds the records, and whether the file's mtime changed. Do not
+"fix" it by deleting a `.maintenance.lock` file — the file is not the lock.

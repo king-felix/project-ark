@@ -771,8 +771,10 @@ copy reads; **a database SQLite cannot open** is replaced only by a copy that
 passes the same `quick_check`, and one with no good copy is left exactly where it
 is; **half-built uploads and bundles** are swept after 6–12 hours; **a library
 catalogue listing books that are gone** is rebuilt. It never deletes a database,
-never restarts a service, and takes no copy — a copy is still your deliberate act
-(see above). Anything repaired counts as repaired; only what is left **for a
+never starts a service it did not stop, and takes no copy — a copy is still your
+deliberate act (see above). A damaged database is replaced only under the
+maintenance gate: if a reader still has it open the pass says **deferred** and
+changes nothing, because a busy lock is not damage. Anything repaired counts as repaired; only what is left **for a
 person** exits non-zero, and `90-verify` fails on exactly that and nothing else.
 
 The settings, which is the half that prevents the damage instead of repairing it:

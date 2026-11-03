@@ -5719,3 +5719,132 @@ map fault.
   outside, and a missing box keeps everything.
 * Full suite: **817 passed, 2 skipped**.
 * `ark-maps --published`: `el-paso 2026-11-02 49.3 MB`, beside the two states.
+
+---
+
+## 51. One maintenance protocol: nothing replaces a database while anyone still holds it — 3 Nov 2026
+
+### 51.1 The finding, at `448638b`
+
+`ark-restore` stopped a list of units before replacing `ark.db`, and the list did not
+contain `ark-media-worker.service`. The worker is an independent process with its own
+database handles and its own job queue; stopping `ark-api.service` does not stop it, and
+`Restart=always` keeps it alive. So a restore could replace the records underneath an
+active film job, take the old journal away, and leave the worker writing rows for a file
+that no longer existed.
+
+The same gap was one layer deeper. `ark_self_heal`'s repair lock made two *repairs* take
+turns, but ordinary connections never took it. A reader that kept a connection — a
+request, a console command, a worker between jobs — was invisible to the repair, which
+could replace the file under it as soon as it had the repair lock.
+
+### 51.2 Every database user, and who stops for whom
+
+| User | What it holds | How it participates |
+|---|---|---|
+| `ark-api.service` (every public and admin request) | `ark.db`, one connection per request (sometimes two) | `ark_db.connect()` takes the shared gate for the connection's life |
+| `ark-media-worker.service` | `ark.db` for claims, heartbeats and results, between `ffmpeg` runs | same gate; **also stopped by `ark-restore`** (the finding) |
+| `ark-ai.service` | `ark.db` for the counted brief and the game list | same gate; not stopped — it drains like any reader |
+| `ark-arcade` (console + `ark-arcade-discover.timer/.service`) | `ark.db` for the shelf, imports and discovery | same gate; the timer and service are stopped by a restore |
+| `ark-book-import.path/.service`, `ark-import-books` | Calibre's `metadata.db`, `drop/files`, the import ledger | no `ark.db`; stopped by a restore because it writes the files and the ledger |
+| `ark-zim-downloader.service` | `kiwix/`, no database | stopped by a restore (existing behaviour; it is a card writer) |
+| `ark-self-heal.timer/.service` | `ark.db`, Calibre's two databases | repair turnstile + exclusive gate; stopped by a restore |
+| `ark-calibre.service` | Calibre's `metadata.db` and `app.db` | **cannot take the gate** (third-party); a repair of either stops it first and starts it again |
+| `ark-backup`, `ark-restore` | `ark.db` — one read, one replacement | shared gate / turnstile + exclusive gate |
+| `ark-space`, `ark-admin-recover`, `ark-media-worker --status/--once/--trim` | `ark.db` through `ark_db` | the same shared gate; a maintenance window waits for them or reports them |
+| `ark-maps`, `ark-essentials`, `ark-romdb-build`, `ark-kiwix`, `ark-net-watch` | no `ark.db` | not in the protocol; they are not writers of these records |
+
+`ark-boot-guard` and `ark-fsck-once` are deliberately **not** stopped or restarted: they
+are `RemainAfterExit` one-shots, which report `active` for ever while running nothing, and
+starting them again would run their boot logic in the middle of a restore.
+
+### 51.3 The protocol: a gate and a turnstile
+
+`pi/api/ark_maintenance.py` is the one rule, and every writer above either follows it or
+is stopped by something that does.
+
+* **The gate** — `<database>.maintenance.lock`, a `flock`. Every ordinary connection
+  takes a *shared* hold **before** SQLite opens the file and keeps it until the handle is
+  closed. Maintenance takes the *exclusive* hold. Taking it therefore drains every
+  existing handle (including one somebody forgot to close) and holds new connections at
+  the door for a bounded wait. A new page waits up to `ARK_GATE_ADMIT_WAIT` (5 s), then
+  gets a plain 503 sentence; it never hangs.
+* **The turnstile** — `<database>.repair.lock`, taken *first* by every maintenance
+  operation, so two repairs take turns instead of reading their good copies from either
+  side of each other. The gate is always taken second; nothing takes the turnstile while
+  holding the gate.
+* **The files are never deleted.** The kernel releases the lock when the process dies, so
+  a crash is not a permanent lock; the file that remains is only the name the lock was
+  held on. They are mode `0666` because root and `pi` both use them — a root-only gate
+  would lock every page out.
+* **A gate that cannot be had is an outcome, not evidence.** Self-heal reports
+  `deferred`; a restore refuses before replacing anything. Neither calls the database
+  damaged.
+* **Resume is conditional.** A restore starts again only the units that were active, in
+  reverse stop order, and only when the outcome says the records are safe to open. A
+  database put back beside a journal that would not go leaves the box dark on purpose.
+
+`ark_db.connect()` binds the shared ticket to the connection object (`close()` releases
+it; `__del__` is the belt), so "the handle is open" and "the gate is held" are the same
+fact, not two facts that can drift apart.
+
+### 51.4 What changed
+
+* `pi/api/ark_maintenance.py` — new; the protocol above, with bounded waits and explicit
+  `Busy`/`Lease` outcomes.
+* `pi/api/ark_db.py` — every connection takes the shared gate for its lifetime.
+* `pi/api/ark_self_heal.py` — repairs take the turnstile, then the gate, and re-ask the
+  damage question under it; new `deferred` (busy, nothing changed) and `unsafe` (copy in
+  place, journal would not go) states; Calibre's two databases get their owning unit
+  stopped and restarted; `_copy_over_status()` records the two moments a caller cannot
+  otherwise see.
+* `pi/bin/ark-restore` — `WRITERS` now includes `ark-media-worker.service`; the run takes
+  the turnstile, stops the units, takes the gate, replaces, releases, then resumes only
+  what it stopped and only when safe; a post-copy journal failure is `safe_to_start=False`
+  and leaves the box dark with a sentence saying why.
+* `pi/bin/ark_bundle.py`, `pi/bin/ark-backup` — the database copy takes the shared gate
+  too, so a backup cannot copy a file that is halfway out of the door.
+* `pi/api/main.py` — a request during a maintenance window answers 503 with a plain
+  sentence instead of a 500.
+* Phases `15-resilience`, `60-portal` and `95-backup` install the new module (a module the
+  installer never copies is a service that will not start).
+* `pi/RECOVERY-SHEET.txt`, `docs/ADMIN.md`, `README.md`, `docs/REQUIREMENTS-MATRIX.md`
+  updated in the same change.
+
+### 51.5 Proved on the Mac, with real processes
+
+`tests/test_maintenance.py` (13) and the new cases in `tests/test_backup.py` (5) use real
+subprocesses — a real `ark_db` connection held by another process, a real `SIGKILL`, real
+`ark-restore`/`ark-backup` runs against a throwaway box:
+
+* an open reader blocks a repair (`deferred`, bytes unchanged) and a kill releases the
+  lock so the next pass restores;
+* a maintenance window makes a new connection answer `busy` within the bound, and the
+  public board answers **503** with a sentence;
+* two repair processes' intervals do not overlap (measured timestamps);
+* a killed exclusive owner is released by the kernel, and the lock file remains `0666`;
+* a reader holding the records makes `ark-restore` refuse, resume the API, and succeed on
+  the next attempt after the reader is gone;
+* the film worker is stopped even though the API's stop does not own it, and only units
+  that were running are started again;
+* a backup refuses while the records are being replaced;
+* a failed post-copy journal drain is `safe_to_start=False`; a pre-copy failure is safe;
+* the sweep never matches either lock file, and one database's gate does not block
+  another.
+
+The full suite collects **840 tests**; the run without the three browser map tests
+(they need Chromium and are unaffected) gives **835 passed, 2 skipped**.
+
+### 51.6 What is not proved
+
+* **No destructive live restore and no power-cut test was performed** (on purpose).
+  The restore gate is proved against throwaway boxes on the Mac; the live-box proof is a
+  non-destructive `--dry-run`, the readiness gate, and a scratch database under
+  `/srv/ark/tmp` exercising the lock across two processes.
+* A restore killed **between** `os.replace` and the post-copy drain leaves the box dark
+  (by design) and requires the console step the refusal prints. The unit test covers the
+  classification; nothing can safely simulate the crash on the live card.
+* Calibre's engine is still not a gate participant; the repair stops it instead. A
+  Calibre upgrade that changes its unit name would be caught by the phase tests, not by a
+  running box.
+* No real phone or reader was used to watch a 503 during a maintenance window.

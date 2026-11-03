@@ -126,12 +126,17 @@ enumeration and update both the config and `tests/test_config.py` in one commit.
 
 ## R4 — restoring records cannot corrupt a live card
 
-**Status: DONE (code + test).** Restore pauses every writer, verifies every byte first, and
-restarts what it stopped even when it fails.
+**Status: DONE (code + test).** Restore verifies every byte first, takes the repair turn
+and then the exclusive maintenance gate, stops every writer (including the independent
+film worker), and starts again only what it stopped and only when the outcome is safe.
 
 | Acceptance sentence | Where | Test |
 |---|---|---|
 | Every writer is paused before the database is touched | `pi/bin/ark-restore` `quiesce()` | `test_backup.py::test_a_restore_pauses_every_writer_before_touching_the_database` |
+| The film worker is stopped even though the API's stop does not own it, and is started again only because it was running | `WRITERS`, `quiesce()`, `resume()` | `test_backup.py::test_a_restore_stops_the_media_worker_as_well_as_the_api`; `::test_a_restore_starts_only_what_it_stopped` |
+| A live reader (a real `ark_db` connection in another process) makes the restore refuse, and the next attempt after it is gone succeeds | `ark_maintenance.maintain()` in `restore()` | `test_backup.py::test_a_restore_refuses_while_a_reader_holds_the_records` |
+| A database put back beside a journal that will not go is `unsafe_to_start`; a failure before the copy is safe | `put_database()` `db_state` / `RestoreRefused.safe_to_start` | `test_backup.py::test_a_database_put_back_beside_a_journal_that_will_not_go_is_unsafe_to_start` |
+| A backup is a reader too: it may not copy across a replacement | `ark_bundle.copy_database()` | `test_backup.py::test_a_backup_refuses_while_the_records_are_being_replaced` |
 | A writer that will not stop aborts before any change | `ark-restore` | `test_backup.py::test_a_writer_that_will_not_stop_aborts_before_any_change` |
 | The box comes back up even when the restore raises | `finally:` in `ark-restore` | `test_backup.py::test_a_restore_that_fails_after_pausing_still_starts_the_box_again` |
 | A card in a reader can be restored without systemd | `--no-service` | `test_backup.py::test_no_service_is_available_for_a_card_in_a_reader` |
@@ -589,6 +594,10 @@ was not already broken.**
 | The gate reports the check as withdrawn / waiting / absent, and a box that has not rebooted is **waiting**, not broken | `90-verify.sh`, `"card_check"` in the receipt | `::test_the_verifier_reports_the_forced_check_without_failing_a_box_that_waiting` |
 | A dry run writes nothing at all — no journal mode, no copy, no sweep | `heal_sqlite()` (`dry_run` first) | `::test_a_dry_run_writes_nothing_at_all`; `::test_a_dry_run_on_a_broken_database_reports_and_restores_nothing` |
 | A pass that meets a live writer diagnoses and never repairs under it | `writer_busy()` | `::test_a_real_writer_stops_the_pass_touching_its_database`; `::test_a_broken_database_the_box_is_writing_to_is_left_where_it_is`; `::test_the_pass_reports_a_database_it_could_not_repair_because_it_was_in_use` |
+| A repair takes the repair turnstile and then the exclusive gate; a reader that keeps its handle makes it **defer**, not call the file corrupt | `ark_maintenance.repairing()` / `.maintain()`, `heal_sqlite()` | `test_maintenance.py::test_an_open_reader_blocks_a_repair_and_a_kill_releases_it`; `::test_a_periodic_pass_defers_when_a_reader_holds_the_records` |
+| Two repairs take turns; their intervals do not overlap, and a killed owner's lock is released by the kernel | `repairing()`, `flock` | `test_maintenance.py::test_two_repairs_take_turns_across_processes`; `::test_a_killed_owner_releases_the_gate_and_the_file_stays` |
+| The book engine, which cannot take the gate, is stopped for the repair of either of its databases and started again only if it was running; a stop that fails aborts the repair | `OWNER_UNITS`, `_stop_owner()`, `_start_owner()` | `test_self_heal.py::test_a_repair_stops_and_restarts_the_book_engine`; `::test_a_book_engine_that_was_not_running_is_not_started`; `::test_a_book_engine_that_will_not_stop_stops_the_repair` |
+| Maintenance holds new connections at the door for a bounded time, then a page says the box is busy (503), not 500 | `admit()`, `main.py` exception handler | `test_maintenance.py::test_maintenance_stops_new_access_at_the_door`; `::test_a_page_during_maintenance_is_a_503_with_a_sentence` |
 | A file stamped **years** ahead is not trusted with the clock | `clock_too_far()`, `CLOCK_MAX_AHEAD` | `::test_a_file_from_the_far_future_is_not_trusted_with_the_clock` |
 | A confirmed commit is on the card, and no module may weaken the connection the box writes with | `ark_db.connect()` (`synchronous=FULL`) | `test_durability.py::test_every_connection_writes_fully_synced`; `::test_no_module_weakens_the_connection_the_box_writes_with`; `::test_a_commit_the_box_confirmed_is_readable_from_a_connection_that_was_not_there` |
 | A save a person confirmed is whole before any record names it, and a cut between bytes and row leaves the last good save readable | save layer (`blobs/<slot>-<sha256>.bin`, `.save-*.part`, fsync + folder fsync) | `test_durability.py::test_a_save_is_staged_beside_itself_and_its_folder_is_synced`; `::test_a_write_that_fails_leaves_nothing_that_looks_like_a_save`; `::test_a_save_that_could_not_be_recorded_leaves_the_last_one_readable`; `::test_the_save_a_new_one_replaces_is_forgotten_only_after_the_record_moved` |

@@ -39,9 +39,12 @@ The pass runs twice a day and the two runs are **not the same job**:
   what the cut broke, keeping a good copy of every database on the way through;
 * **once a day at 04:17**, while the box is serving pages, a writer may be mid-commit,
   so a database that another process holds is only *looked at* (``writer_busy``) —
-  it is never replaced and its journal mode is never changed under it.  A cut is
-  repaired at the next boot; a daily look is a diagnosis, and turning it into a
-  repair under a live writer is how one damaged file becomes two.
+  it is never replaced and its journal mode is never changed under it.  A repair
+  takes the repair turnstile and then the maintenance gate (``ark_maintenance``),
+  so every ordinary connection has drained and no new one can arrive; when the gate
+  cannot be had in time the pass **defers** and changes nothing.  A cut is repaired
+  at the next boot; a daily look is a diagnosis, and turning it into a repair under
+  a live writer is how one damaged file becomes two.
 
 A dry run (``--dry-run``) writes **nothing at all**: no copy, no journal-mode change,
 no sweep.  The phase runs it to prove the tool, and a proof that alters the card is
@@ -64,6 +67,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 import ark_atomic
+import ark_maintenance as maintenance
 
 try:  # every machine that runs this is Linux or macOS; Windows is not a box
     import fcntl
@@ -98,16 +102,27 @@ CLOCK_MAX_AHEAD = 400 * 86400.0
 #: and the pass stops trying to repair it and only looks.
 BUSY_TIMEOUT = 0.2
 
-#: How long one pass waits for another process to finish replacing the same database.
+#: How long a repair waits for another process to finish replacing the same database.
 #: A repair is a handful of file operations, so this is generous; past it the pass
 #: reports the wait rather than guessing what the other writer is doing.  Two passes
 #: that both decided a file was damaged would otherwise swap in two different copies.
 LOCK_WAIT = 10.0
 
-#: The name a repair lock takes beside the database it guards.  It is a **separate**
-#: file on purpose: SQLite's own lock lives in the `-shm` sidecar, and that file is
-#: exactly what the repair replaces and removes.
-LOCK_SUFFIX = ".repair.lock"
+#: How long a repair waits for every ordinary connection to close before it gives up
+#: and reports that the box was busy.  The portal opens a connection per request and
+#: closes it at once, so this is many times longer than a busy box needs; a reader
+#: that *keeps* a handle open is exactly what the wait is for — and when it does not
+#: end, the pass changes nothing and says so, because a lock is not damage.
+GATE_WAIT = 5.0
+
+#: The service that owns each database which cannot take the gate itself.  Calibre's
+#: engine is not ours to change, so a repair of its records stops it first and starts
+#: it again afterwards — but only if it was running, and only when the repair left the
+#: file safe to open.  ``ark.db`` has no entry: every one of its users cooperates.
+OWNER_UNITS = {
+    "calibre-library/metadata.db": "ark-calibre.service",
+    "calibre-config/app.db": "ark-calibre.service",
+}
 
 
 def ark_root() -> Path:
@@ -657,20 +672,21 @@ def _sidecar(target: Path, suffix: str) -> Path:
 
 
 def lock_path(target: Any) -> Path:
-    """Where the repair lock for this database lives.  Beside it, and separate.
+    """Where the repair turnstile for this database lives.  Beside it, and separate.
 
     Deliberately **not** SQLite's own lock: that one lives in the ``-shm`` sidecar,
     which is one of the files a repair replaces and removes.  A lock a repair can
     delete is not a lock.  This file is created empty, is never swept (no rule in
-    ``SWEEP_RULES`` can match it), and a leftover one means nothing.
+    ``SWEEP_RULES`` can match it), and a leftover one means nothing — the kernel
+    releases the lock when the process dies, and the file is only the name it was
+    held on.  ``ark_maintenance`` owns the rule; this is the repair half of it.
     """
-    target = Path(target)
-    return target.with_name(target.name + LOCK_SUFFIX)
+    return maintenance.lock_path(target)
 
 
 @contextlib.contextmanager
 def _repair_lock(target: Path, *, wait: Optional[float] = None) -> Iterator[bool]:
-    """Hold the repair lock for ``target`` for the length of the block.
+    """Hold the repair turnstile for ``target`` for the length of the block.
 
     Two passes can decide a file is damaged at the same moment — a boot pass and the
     daily one are minutes apart, but a person running it by hand while the timer fires
@@ -683,47 +699,13 @@ def _repair_lock(target: Path, *, wait: Optional[float] = None) -> Iterator[bool
     changes **nothing**: a repair that cannot be finished is worse than one that never
     started.  The kernel releases the lock if this process dies, which is the one thing
     a lock file written by hand cannot promise.
+
+    This is only half the protocol: a repair must also take the **gate**
+    (``ark_maintenance.maintain``) before it changes a database, so every ordinary
+    connection — including one somebody kept open — has drained first.
     """
-    target = Path(target)
-    if fcntl is None:                         # pragma: no cover - no box lacks flock
-        # A platform with no ``flock`` cannot be asked the question at all, and refusing
-        # every repair there would be the worse failure: the lock guards against two
-        # passes at once, it is not a condition for repairing anything.
-        yield True
-        return
-    path = lock_path(target)
-    handle = None
-    held = False
-    if fcntl is not None:
-        try:
-            handle = open(str(path), "a+b")
-        except OSError:
-            handle = None
-        if handle is not None:
-            limit = LOCK_WAIT if wait is None else float(wait)
-            deadline = time.time() + limit
-            while True:
-                try:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    held = True
-                    break
-                except OSError:
-                    if time.time() >= deadline:
-                        break
-                    time.sleep(0.05)
-    try:
-        yield held
-    finally:
-        if handle is not None:
-            if held:
-                try:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-                except OSError:               # pragma: no cover - already gone
-                    pass
-            try:
-                handle.close()
-            except OSError:                   # pragma: no cover - already closed
-                pass
+    with maintenance.repairing(target, wait=wait) as turn:
+        yield turn.held
 
 
 def _drain_journal(target: Path) -> bool:
@@ -759,41 +741,105 @@ def _drain_journal(target: Path) -> bool:
     return True
 
 
-def _copy_over(source: Path, target: Path) -> bool:
-    """Put a checked copy back in place, atomically, and take the old journal away.
+def _copy_over_status(source: Path, target: Path, state: Optional[Dict[str, bool]] = None) -> str:
+    """Put a checked copy back, and say whether the box may now be started.
 
-    Order matters in both directions.  The journal is drained **before** the main file
-    is replaced, so a card that cannot give up the sidecar leaves the database exactly
-    as it was (nothing half-done), and it is drained **again after** the replace,
-    because a writer that slipped in between the two would otherwise leave a fresh
-    ``-wal`` describing rows that are no longer in the file.  ``put_database()`` in
-    ``ark-restore`` does the same thing for the same reason; the two are the only
-    programs that replace a database here.
+    Answers ``ok`` (the copy is in place and no old journal survives), ``refused``
+    (nothing was changed) or ``unsafe`` (the copy is in place but a journal that
+    belongs to the old file could not be taken away — **do not start anything**).
+    The three are different because the caller's next action is different, and
+    collapsing ``unsafe`` into a plain failure is how a repair starts a service on
+    top of a journal full of rows the new file never held.
+
+    ``state`` records the two moments a caller cannot otherwise see: ``replaced``
+    once the new file is in place, and ``safe`` once no journal of the old one
+    survives.  An unexpected interruption between them must leave the services
+    stopped, so the caller asks this record rather than assuming success.
     """
+    track = state if state is not None else {}
+    track.setdefault("replaced", False)
+    track.setdefault("safe", False)
     try:
         data = source.read_bytes()
     except OSError:
-        return False
+        return "refused"
     if not _drain_journal(target):
-        return False
+        return "refused"
     try:
         ark_atomic.save_bytes(target, data, keep_backup=False)
     except OSError:                           # pragma: no cover - card full
+        return "refused"
+    track["replaced"] = True
+    if not _drain_journal(target):
+        return "unsafe"
+    track["safe"] = True
+    return "ok"
+
+
+def _copy_over(source: Path, target: Path) -> bool:
+    """``True`` only when the copy is in place and safe to open."""
+    return _copy_over_status(source, target) == "ok"
+
+
+def _systemctl(*args: str):
+    """Ask the service manager, or answer ``None`` on a box that has no systemd."""
+    tool = shutil.which("systemctl")
+    if not tool:
+        return None
+    try:
+        return subprocess.run([tool, *args], capture_output=True, text=True,
+                              timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _unit_active(unit: str) -> bool:
+    """Is this unit running (or on its way up)?  A box with no systemd says no."""
+    done = _systemctl("is-active", unit)
+    if done is None:
         return False
-    return _drain_journal(target)
+    return done.stdout.strip() in ("active", "activating", "reloading")
+
+
+def _stop_owner(unit: str):
+    """Stop a service that cannot take the gate.  ``True`` if this call stopped it.
+
+    ``False`` means it was not running (nothing to resume); ``None`` means it could
+    not be stopped, and the caller must change nothing at all.
+    """
+    if not unit or not _unit_active(unit):
+        return False
+    done = _systemctl("stop", unit)
+    if done is None or done.returncode != 0:
+        return None
+    return True
+
+
+def _start_owner(unit: str, problems: Optional[List[str]] = None) -> str:
+    """Start again a service this pass stopped.  A failure is reported, never hidden."""
+    done = _systemctl("start", unit)
+    if done is not None and done.returncode == 0:
+        return ""
+    said = ("%s was stopped so its records could be repaired and could not be started "
+            "again — start it by hand." % unit)
+    if problems is not None:
+        problems.append(said)
+    return said
 
 
 def heal_sqlite(path: Any, *, dry_run: bool = False,
-                in_use: Optional[bool] = None) -> Tuple[str, str]:
+                in_use: Optional[bool] = None, owner_unit: str = "",
+                problems: Optional[List[str]] = None,
+                gate_wait: Optional[float] = None) -> Tuple[str, str]:
     """Check one database, keep a good copy of it, and put one back if it is broken.
 
     Answers ``(state, sentence)`` with ``state`` one of ``fine``, ``absent``,
-    ``unchecked``, ``in use``, ``restored``, ``busy``, ``locked``, ``left`` or
-    ``would``.  A database with no good copy is **left exactly where it is** and
-    reported: replacing it would empty the box, and the owner has ``ark-restore`` and a
-    bundle for that decision.
+    ``unchecked``, ``in use``, ``restored``, ``busy``, ``locked``, ``deferred``,
+    ``unsafe``, ``left`` or ``would``.  A database with no good copy is **left
+    exactly where it is** and reported: replacing it would empty the box, and the
+    owner has ``ark-restore`` and a bundle for that decision.
 
-    Four rules, and each one is here because of a way this can go wrong:
+    Six rules, and each one is here because of a way this can go wrong:
 
     * **a dry run writes nothing** — no journal-mode change, no copy.  The phase runs
       ``--dry-run`` to prove itself, and a proof that alters the card is not a proof.
@@ -807,7 +853,18 @@ def heal_sqlite(path: Any, *, dry_run: bool = False,
       good records with yesterday's copy and silently loses every row committed since.
       The lock is asked again immediately before a copy goes back, because the first
       answer is a moment old by then.
-    * **the boot pass is the one that repairs**, because nothing is writing yet.
+    * **the repair takes the turnstile, then the gate** (``ark_maintenance``).  Two
+      repairs take turns; the gate waits for every ordinary connection to close,
+      including a handle somebody kept, and stops new ones at the door.  A gate that
+      cannot be had in ``GATE_WAIT`` seconds means **deferred**: nothing was changed,
+      and an unavailable lock is not evidence of damage.  The verdict is asked again
+      under the gate, because the first one was a moment old.
+    * **a service that cannot cooperate is stopped while its records are repaired**.
+      Calibre's engine is not ours to change, so ``owner_unit`` is stopped first and
+      started again afterwards — only if it was running, and only when the outcome
+      left the file safe to open.
+    * **the boot pass is the one that repairs reliably**, because nothing is writing
+      yet; the daily pass may defer, and says so.
     """
     target = Path(path)
     if not target.is_file():
@@ -830,8 +887,25 @@ def heal_sqlite(path: Any, *, dry_run: bool = False,
             return ("in use",
                     "%s is being written right now, so it was only checked — nothing "
                     "on it was changed." % target.name)
-        note = harden(target)
-        taken = snapshot(target)
+        # A healthy database still gets two small writes: the journal mode (so the
+        # next cut is cheap) and a good copy.  The turnstile keeps a repair from
+        # working on it at the same moment; the gate is taken only for the mode
+        # change, which is a file-header write.  The copy is taken by SQLite itself
+        # and is safe beside a live writer, so it does not hold the portal open.
+        with maintenance.repairing(target, wait=0.0) as turn:
+            if not turn.held:
+                if "could not be opened" in (turn.reason or ""):
+                    # A read-only card cannot hold a lock file.  Nothing is wrong
+                    # with the database; there is simply nothing to write here.
+                    return "fine", ""
+                return ("in use",
+                        "%s is being repaired by another pass right now, so it was "
+                        "only checked — nothing on it was changed." % target.name)
+            note = ""
+            with maintenance.maintain(target, wait=0.0) as lease:
+                if lease.held:
+                    note = harden(target)
+            taken = snapshot(target)
         if note:
             return "fine", "%s could not be set for the next cut: %s." % (target.name, note)
         if taken:
@@ -859,44 +933,105 @@ def heal_sqlite(path: Any, *, dry_run: bool = False,
     # no copy": the older file is sitting right there, and the reason it stayed is
     # worth saying (something still holds the old journal, or the card is full).
     #
-    # The lock makes the decision and the replacement one step.  Two passes can find the
-    # same file damaged at the same moment — a person running it by hand while the timer
-    # fires, the boot pass a minute before the daily one — and two put-backs read their
-    # copies from either side of each other, which is how one whole file becomes a mixed
-    # one.  It is a file *beside* the database, never SQLite's own lock (that one lives in
-    # the `-shm` this pass removes, and a lock a repair can delete is not a lock).
-    with _repair_lock(target) as held:
-        if not held:
+    # The turnstile first, then the gate.  Two passes can find the same file damaged at
+    # the same moment — a person running it by hand while the timer fires, the boot pass
+    # a minute before the daily one — and two put-backs read their copies from either
+    # side of each other, which is how one whole file becomes a mixed one.  The gate is
+    # what makes the verdict true for the whole replacement: no ordinary connection
+    # exists outside it, and none can arrive until it is released.
+    with maintenance.repairing(target, wait=LOCK_WAIT) as turn:
+        if not turn.held:
             # Something else is repairing this database right now.  Its own receipt says
             # what it did; this pass changed nothing and has nothing for a person to look
-            # at, so the state is its own word and not one of the two problem states.
+            # at, so the state is its own word and not one of the problem states.
             return ("locked",
                     "%s cannot be read (%s) and another repair is working on it at this "
                     "same moment, so nothing was changed — that pass keeps the record of "
                     "what it found." % (target.name, answer))
-        refused = ""
-        for candidate in (Path(str(target) + ".good.bak"),
-                          Path(str(target) + ark_atomic.BACKUP_SUFFIX)):
-            if not candidate.is_file():
-                continue
-            good_state, good_said = quick_check_state(candidate)
-            if good_state != "ok":
-                continue
-            if not _copy_over(candidate, target):
-                refused = candidate.name
-                continue
-            return ("restored",
-                    "%s came back unreadable (%s); the good copy from before it was "
-                    "put back." % (target.name, answer))
-        if refused:
-            return ("left",
-                    "%s came back unreadable (%s) and its good copy (%s) could not be put "
-                    "back — something still holds the old journal, or the card is full. "
-                    "%s was left exactly where it is." % (target.name, answer, refused,
-                                                          target.name))
-        return ("left",
-                "%s came back unreadable (%s) and there is no good copy of it on the "
-                "card — it was left where it is." % (target.name, answer))
+        with maintenance.maintain(
+                target, wait=GATE_WAIT if gate_wait is None else gate_wait) as lease:
+            if not lease.held:
+                if "could not be opened" in (lease.reason or ""):
+                    return ("deferred",
+                            "%s cannot be read (%s) and this card will not let a "
+                            "maintenance lock be made, so nothing was changed — a lock "
+                            "that cannot be made is not damage." % (target.name, answer))
+                # A reader that kept its handle (or a program that never closes one)
+                # is still out there.  That is a reason to try again, never a reason to
+                # call the file corrupt or to replace it under the reader.
+                return ("deferred",
+                        "%s cannot be read (%s) and another program still has the "
+                        "records open, so nothing was changed — an unavailable lock is "
+                        "not damage.  The pass will look again on its next run."
+                        % (target.name, answer))
+            again, answer_again = quick_check_state(target)
+            if again == "ok":
+                return ("fine",
+                        "%s was being used while it was looked at; checked again with "
+                        "nothing else running, it is sound — nothing was changed."
+                        % target.name)
+            if again != "damaged":
+                return ("unchecked",
+                        "%s could not be checked (%s) even with the box quiet, so "
+                        "nothing was changed — a database that could not be asked is "
+                        "not a damaged one." % (target.name, answer_again))
+            if in_use is None and writer_busy(target):
+                return ("busy",
+                        "%s cannot be read (%s) and a program that does not take the "
+                        "maintenance gate is writing to it, so nothing was changed — "
+                        "run the pass again when the box is quiet."
+                        % (target.name, answer_again))
+            stopped = False
+            if owner_unit:
+                stopped = _stop_owner(owner_unit)
+                if stopped is None:
+                    return ("busy",
+                            "%s cannot be read (%s) and %s could not be stopped, so "
+                            "nothing was changed — stop it by hand and run the pass "
+                            "again." % (target.name, answer_again, owner_unit))
+            safe_to_start = True
+            track: Dict[str, bool] = {"replaced": False, "safe": False}
+            refused = ""
+            try:
+                for candidate in (Path(str(target) + ".good.bak"),
+                                  Path(str(target) + ark_atomic.BACKUP_SUFFIX)):
+                    if not candidate.is_file():
+                        continue
+                    good_state, _good_said = quick_check_state(candidate)
+                    if good_state != "ok":
+                        continue
+                    outcome = _copy_over_status(candidate, target, track)
+                    if outcome == "ok":
+                        return ("restored",
+                                "%s came back unreadable (%s); the good copy from before "
+                                "it was put back." % (target.name, answer_again))
+                    if outcome == "unsafe":
+                        safe_to_start = False
+                        return ("unsafe",
+                                "%s came back unreadable (%s) and its good copy (%s) was "
+                                "put in place, but the old journal could not be taken "
+                                "away — do not start the box until %s-wal is gone: it "
+                                "holds rows that are not in the file."
+                                % (target.name, answer_again, candidate.name, target.name))
+                    refused = candidate.name
+                if refused:
+                    return ("left",
+                            "%s came back unreadable (%s) and its good copy (%s) could "
+                            "not be put back — something still holds the old journal, or "
+                            "the card is full.  %s was left exactly where it is."
+                            % (target.name, answer_again, refused, target.name))
+                return ("left",
+                        "%s came back unreadable (%s) and there is no good copy of it on "
+                        "the card — it was left where it is."
+                        % (target.name, answer_again))
+            finally:
+                # A service is started again only when the outcome left the file
+                # safe to open: either nothing was replaced, or the replacement
+                # finished and no journal of the old file survives.  An
+                # interruption between those two points leaves it stopped.
+                if stopped and safe_to_start and (
+                        track["safe"] or not track["replaced"]):
+                    _start_owner(owner_unit, problems)
 
 
 # ---------------------------------------------------------------------------
@@ -1107,20 +1242,25 @@ def run(root: Optional[Path] = None, *, dry_run: bool = False,
         report["healed"] += 1
 
     for path in sql_targets(base):
-        state, said = heal_sqlite(path, dry_run=dry_run, in_use=in_use)
-        if state in ("restored", "left", "busy", "would", "in use") or said:
+        rel = str(path.relative_to(base))
+        state, said = heal_sqlite(path, dry_run=dry_run, in_use=in_use,
+                                  owner_unit=OWNER_UNITS.get(rel, ""),
+                                  problems=report["problems"])
+        if state in ("restored", "left", "busy", "deferred", "unsafe",
+                     "would", "in use") or said:
             report["databases"].append({"file": str(path.relative_to(base)),
                                         "state": state, "said": said})
         if state == "restored":
             report["healed"] += 1
-        if state in ("left", "busy"):
+        if state in ("left", "busy", "deferred", "unsafe"):
             # A copy was put back, so that is a repair, not a problem to look at — its
             # sentence is still printed.  What needs a human is a database that is
-            # *still* unreadable (only the owner may replace it) or one that is broken
-            # while the box is writing to it (nothing was touched, and it has to be
-            # looked at again when the box is quiet).  ``locked`` is neither: another
-            # repair pass owns that database this second, and its own receipt says what
-            # it found.
+            # *still* unreadable (only the owner may replace it), one that is broken
+            # while the box is writing to it, one whose repair was **deferred** because
+            # another program kept the records open (try again; not damage), or one
+            # whose copy went back beside a journal that would not go (do not start the
+            # box).  ``locked`` is none of these: another repair pass owns that database
+            # this second, and its own receipt says what it found.
             report["problems"].append(said)
 
     for path in catalogue_targets(base):

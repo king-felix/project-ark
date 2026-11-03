@@ -51,6 +51,14 @@ fi
 for tool in ark_bundle.py ark-backup ark-restore; do
   ark_copy "$ARK_SRC/bin/$tool" "/usr/local/sbin/$tool" 755 root:root
 done
+
+# Both tools take the maintenance gate before they read or replace the records,
+# and they import the protocol from the box's API tree.  Phase 6 installs it for
+# the portal; copying it here as well means re-running *this* phase alone still
+# leaves a restore that can prove the records are quiet, instead of a tool that
+# cannot start.
+ark_ensure_dir "$ARK_ROOT/api" 775 "$ARK_PI_USER:$ARK_PI_GROUP"
+ark_copy "$ARK_SRC/api/ark_maintenance.py" "$ARK_ROOT/api/ark_maintenance.py" 644 "$ARK_PI_USER:$ARK_PI_GROUP"
 ark_ok "installed ark-backup and ark-restore in /usr/local/sbin"
 
 # ---- the page that works when the box does not ------------------------------

@@ -26,6 +26,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[1]
 BACKUP = REPO / "pi" / "bin" / "ark-backup"
 RESTORE = REPO / "pi" / "bin" / "ark-restore"
@@ -408,6 +410,215 @@ def test_a_writer_that_will_not_stop_aborts_before_any_change(tmp_path):
     assert done.returncode == 1
     assert "nothing was changed" in (done.stdout + done.stderr).lower()
     assert not (target / "api/data/ark.db").exists()
+
+
+def fake_systemctl(tmp_path: Path, active: tuple) -> tuple:
+    """A stand-in service manager that reports exactly the units a test names."""
+    fake = tmp_path / "fakebin"
+    fake.mkdir()
+    log = tmp_path / "systemctl.log"
+    cases = "".join("  %s) echo active; exit 0;;\n" % unit for unit in active)
+    script = fake / "systemctl"
+    script.write_text(
+        "#!/bin/sh\n"
+        f'echo "$@" >> "{log}"\n'
+        'if [ "$1" = "is-active" ]; then\n'
+        "  case \"$2\" in\n" + cases + "  esac\n"
+        "  echo inactive; exit 3\n"
+        "fi\n"
+        "exit 0\n", encoding="utf-8")
+    script.chmod(0o755)
+    return fake, log
+
+
+def hold_the_records(root: Path, ready: Path):
+    """A real ``ark_db`` connection held by another process, as a page holds one."""
+    code = (
+        "import sys, time\n"
+        "sys.path.insert(0, %r)\n"
+        "import ark_db\n"
+        "conn = ark_db.connect()\n"
+        "conn.execute('SELECT COUNT(*) FROM notes').fetchone()\n"
+        "open(%r, 'w').write('held')\n"
+        "time.sleep(30)\n" % (str(REPO / "pi" / "api"), str(ready)))
+    env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(root.parent),
+           "ARK_ROOT": str(root), "ARK_DB": str(root / "api/data/ark.db"),
+           "ARK_MARKER": str(root / "api/data/ark.installed")}
+    return subprocess.Popen([sys.executable, "-c", code], env=env,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+
+def wait_for(path: Path, timeout: float = 10.0) -> bool:
+    import time
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def test_a_restore_stops_the_media_worker_as_well_as_the_api(tmp_path):
+    """The finding: stopping the API does not stop the API's independent worker.
+
+    ``ark-media-worker.service`` has its own queue and its own database handles, and
+    systemd does not drag it down with the backend.  A restore that stopped only the
+    API could replace the records under a film job, so the worker is stopped first
+    and started again with the rest — and only because it was running.
+    """
+    root, dest = tmp_path / "ark", tmp_path / "backups"
+    make_box(root).close()
+    assert backup(root, dest).returncode == 0
+    bundle = only_bundle(dest)
+    fake, log = fake_systemctl(tmp_path, ("ark-api.service", "ark-media-worker.service"))
+
+    target = tmp_path / "rebuilt"
+    (target / "api/data").mkdir(parents=True)
+    done = run(RESTORE, "--from", bundle, root=target,
+               extra_env={"PATH": f"{fake}:/usr/bin:/bin:/usr/sbin:/sbin"})
+    assert done.returncode == 0, done.stderr
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert "stop ark-media-worker.service" in calls, calls
+    assert "stop ark-api.service" in calls, calls
+    assert calls.index("stop ark-media-worker.service") < calls.index("start ark-api.service")
+    assert "start ark-media-worker.service" in calls, calls
+    assert "Paused ark-media-worker.service" in done.stdout
+
+
+def test_a_restore_starts_only_what_it_stopped(tmp_path):
+    root, dest = tmp_path / "ark", tmp_path / "backups"
+    make_box(root).close()
+    assert backup(root, dest).returncode == 0
+    bundle = only_bundle(dest)
+    fake, log = fake_systemctl(tmp_path, ("ark-media-worker.service",))
+
+    target = tmp_path / "rebuilt"
+    (target / "api/data").mkdir(parents=True)
+    done = run(RESTORE, "--from", bundle, root=target,
+               extra_env={"PATH": f"{fake}:/usr/bin:/bin:/usr/sbin:/sbin"})
+    assert done.returncode == 0, done.stderr
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert "start ark-media-worker.service" in calls, calls
+    assert not [call for call in calls if call.startswith("start ark-api.service")], calls
+    assert "Started ark-api.service again" not in done.stdout
+
+
+def test_a_restore_refuses_while_a_reader_holds_the_records(tmp_path):
+    """A live handle makes the restore refuse, not write underneath it.
+
+    The reader is a real connection in another process, holding the shared gate for
+    the life of its handle.  The restore stops the (stand-in) services, cannot get
+    the exclusive gate within its bounded wait, refuses with nothing changed, and
+    starts the box again.  Killing the reader is how the crash case looks to the
+    protocol; the next attempt is then allowed.
+    """
+    root, dest = tmp_path / "ark", tmp_path / "backups"
+    make_box(root, note="the record the owner will keep").close()
+    assert backup(root, dest).returncode == 0
+    bundle = only_bundle(dest)
+    target = tmp_path / "occupied"
+    make_box(target, note="something the owner wrote here", installed=True).close()
+    fake, log = fake_systemctl(tmp_path, ("ark-api.service",))
+    ready = tmp_path / "reader-ready"
+
+    reader = hold_the_records(target, ready)
+    try:
+        assert wait_for(ready), "the reader never opened the records"
+        done = run(RESTORE, "--from", bundle, "--force", root=target,
+                   extra_env={"PATH": f"{fake}:/usr/bin:/bin:/usr/sbin:/sbin",
+                              "ARK_RESTORE_GATE_WAIT": "0.3"})
+    finally:
+        reader.kill()
+        reader.wait(timeout=10)
+
+    assert done.returncode == 1
+    text = done.stdout + done.stderr
+    assert "another program still has the records open" in text, text
+    assert "nothing was changed" in text.lower(), text
+    assert rows(target / "api/data/ark.db", "SELECT body FROM notes") == [
+        ("something the owner wrote here",)]
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert "stop ark-api.service" in calls, calls
+    assert "start ark-api.service" in calls, "a refused restore must not leave it dark"
+
+    # The reader is gone; the same restore now goes through.
+    again = run(RESTORE, "--from", bundle, "--force", root=target,
+                extra_env={"PATH": f"{fake}:/usr/bin:/bin:/usr/sbin:/sbin",
+                           "ARK_RESTORE_GATE_WAIT": "2"})
+    assert again.returncode == 0, again.stderr
+    assert rows(target / "api/data/ark.db", "SELECT body FROM notes") == [
+        ("the record the owner will keep",)]
+
+
+def test_a_backup_refuses_while_the_records_are_being_replaced(tmp_path):
+    """A backup is a reader too: it may not copy across a replacement.
+
+    SQLite's ``backup()`` handles a live writer, but not a main file being swapped
+    underneath it.  The shared gate makes the copy wait for the maintenance window to
+    close, and a bounded wait that runs out refuses rather than writing a bundle that
+    might be of a file halfway out of the door.
+    """
+    sys.path.insert(0, str(REPO / "pi" / "api"))
+    import ark_maintenance
+
+    root, dest = tmp_path / "ark", tmp_path / "backups"
+    make_box(root).close()
+    with ark_maintenance.maintain(root / "api/data/ark.db", wait=1.0) as lease:
+        assert lease.held, lease.reason
+        done = run(BACKUP, "--to", dest, root=root,
+                   extra_env={"ARK_GATE_ADMIT_WAIT": "0.2"})
+
+    assert done.returncode == 1
+    assert "putting its records back" in (done.stdout + done.stderr)
+    assert not dest.exists() or not bundles(dest), "a refused backup left a bundle behind"
+
+
+def test_a_database_put_back_beside_a_journal_that_will_not_go_is_unsafe_to_start(tmp_path):
+    """The one refusal that happens *after* a write says the box must stay dark.
+
+    ``put_database`` drains the old journal before and after the rename.  A failure
+    before the rename leaves the box exactly as it was (safe to start); a failure
+    after it leaves the new file beside rows the old one committed (not safe).  The
+    two outcomes must not be collapsed: starting a service on the second replays the
+    old rows into the new file.
+    """
+    import importlib.machinery
+    import importlib.util
+
+    loader = importlib.machinery.SourceFileLoader("ark_restore_tool", str(RESTORE))
+    spec = importlib.util.spec_from_loader("ark_restore_tool", loader)
+    tool = importlib.util.module_from_spec(spec)
+    loader.exec_module(tool)
+
+    source = tmp_path / "new.db"
+    source.write_bytes(b"a whole new database")
+    target = tmp_path / "ark.db"
+    target.write_bytes(b"the old database")
+
+    calls = {"n": 0}
+    real = tool.drain_sidecars
+
+    def fails_after_the_copy(path):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return real(path)
+        raise OSError("the journal will not go")
+
+    tool.drain_sidecars = fails_after_the_copy
+    state = {}
+    with pytest.raises(tool.RestoreRefused) as caught:
+        tool.put_database(source, target, False, state)
+    assert caught.value.safe_to_start is False
+    assert state == {"replaced": True, "safe": False}
+    assert target.read_bytes() == b"a whole new database"
+
+    tool.drain_sidecars = fails_after_the_copy
+    calls["n"] = -1                       # the next call is the *first* drain
+    state = {}
+    with pytest.raises(tool.RestoreRefused) as caught:
+        tool.put_database(source, target, False, state)
+    assert caught.value.safe_to_start is True
+    assert state == {"replaced": False, "safe": False}
 
 
 def test_a_box_that_already_has_records_is_not_overwritten_without_force(tmp_path):

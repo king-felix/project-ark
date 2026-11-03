@@ -396,10 +396,23 @@ looks like a finished backup; and `--verify` reads every byte back against the
 manifest, because a backup nobody has verified is a hope.
 
 **What a restore will not do.** It refuses a damaged folder before touching
-anything. Before it writes, it pauses every writer on the box (the web service
-and the book importer) and restarts what it stopped even if the restore fails;
-`--no-service` is for a card mounted in another computer's reader, where there is
-nothing to pause. It refuses an occupied box (messages, shared files, accounts,
+anything, and it refuses to write while anything still has the records open. A
+real run takes the **repair turn** first (so no repair pass can be half-way
+through while it decides), then stops every writer: the timers and the
+book-import watcher first, then the downloader, the repair pass itself, **the
+film worker**, and finally the web service. Stopping the web service alone is not
+enough — the film worker is an independent process with its own database handles
+and its own queue — so it is stopped by name. The restore then takes the
+exclusive **maintenance gate**, which waits for every ordinary connection to
+close and holds new ones at the door until the files are in place. A gate that
+cannot be had in the time allowed refuses the restore and says the records were
+busy; that is not a fault, and nothing is changed. Afterwards it starts again
+**only the units that were running**, and only when the outcome left the records
+safe to open: a database put back beside a journal that would not go leaves the
+box dark on purpose, because starting a service would replay the old rows into
+the new file. `--no-service` is for a card mounted in another computer's reader,
+where there is nothing to pause — the gate still applies, so a local program
+holding the records makes the restore refuse. It refuses an occupied box (messages, shared files, accounts,
 player names or game saves already there) unless you add `--force`, and says so.
 It never replaces a shared file that is already on the box — a restore only adds
 what is missing, so `ark_storage.spool()` stays the only writer of a new file.
@@ -905,7 +918,7 @@ runs **before the portal opens**, plus the settings that make the next cut cheap
 | **The clock is in the past** — a Pi has no battery-backed clock, so it wakes up believing it is the day the card was written. Every "3 hours ago" is wrong and a copy looks like it came from the future | The newest file on the card is the best evidence of the real time: if anything is newer than the clock, the clock is set from it (two minutes of slack). `fake-hwclock` also remembers the last known time across a cold boot |
 | **A small file is half written** — `ark_status.json`, the import ledger | The file is checked; if it will not read, it is set aside as `…corrupt-<stamp>` (the last three are kept) and the `.bak` beside it is put back **only if it reads**. A repair is never invented |
 | **The network watchdog's counters are damaged** | They are not JSON — three numbers as `key=value` lines — so they are checked by their own rule. Damaged ⇒ set aside, and the watchdog starts from zero, which can only make a rescue *slower*, never wrong |
-| **The database will not open** | Opened read-only and checked with SQLite's own `quick_check`. Damaged ⇒ the newest copy that passes the same check is put in its place, and a good copy is kept beside it. **It never deletes a database** |
+| **The database will not open** | Checked with SQLite's own `quick_check`. Damaged ⇒ the pass takes the repair turn and the exclusive maintenance gate, checks again with the box quiet, and puts the newest copy that passes the same check in its place; a good copy is kept beside it. If another program still has the records open it reports **deferred** and changes nothing — an unavailable lock is not damage. **It never deletes a database** |
 | **Half-built uploads, bundles and catalogue temp files** | Swept after 6–12 hours, **by pattern and age**, never by guessing. A published file is never touched |
 | **A library catalogue that lists books which are not there** | Rebuilt from the ZIMs the card really has |
 
@@ -967,8 +980,11 @@ re-run of the phase is what proves them:
 
 * **It never deletes a database** and never touches a file it does not recognise. A
   row and its file can disagree on purpose (`ark-restore --no-files`).
-* **It never restarts a service.** The boot order does that; a repair that starts
-  units would be a second writer to the same state.
+* **It never starts a service it did not stop.** At boot the boot order does that.
+  The one exception is Calibre's engine: its databases are not ours to teach the
+  gate, so a repair of either stops `ark-calibre.service` first and starts it again
+  afterwards — only if it was running, and only when the repair left the file safe
+  to open. `ark.db` needs no exception: every one of its users takes the gate.
 * **It takes no copy.** A copy is still the owner's deliberate act (§9), and the
   daily pass is a *repair*, not a backup timer.
 * **It counts a repair as a repair, not as a fault.** Only what is left needing a

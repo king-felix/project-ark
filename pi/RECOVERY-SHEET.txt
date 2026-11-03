@@ -24,8 +24,7 @@ DO NOT, EVER
 
 IF IT STILL WILL NOT START: USE THE SPARE CARD
 ----------------------------------------------
-You need the spare memory card that came with the box, a card reader, and
-a computer.  Nothing else.
+You need the spare card, a card reader and a computer.  Nothing else.
 
   1. Switch the box off at the plug and take its card out.
   2. Put the spare card in the reader.
@@ -39,9 +38,8 @@ messages, shared files and game saves back.
 PUTTING THE MESSAGES, FILES AND GAME SAVES BACK
 -----------------------------------------------
 Your backups are folders named ark-backup-<date>-<time>.  Each holds the
-messages, the shared files, the accounts, the game saves kept by a name,
-and the list of books already added.  Each also carries a short
-RESTORE-ME.txt that repeats the steps.
+messages, shared files, accounts, game saves kept by a name, and the book
+list, plus a RESTORE-ME.txt that repeats the steps.
 
   1. Copy the newest backup folder onto a USB stick.
   2. With a keyboard on the box, copy that folder to /srv/ark/backup.
@@ -52,10 +50,11 @@ RESTORE-ME.txt that repeats the steps.
          sudo ark-restore --list
          sudo ark-restore --from /srv/ark/backup/ark-backup-<date>-<time>
 
-     It stops the pages that write while it works, and starts them again after.
-  4. Read what it says.  If it says the box already holds records, it has
-     stopped rather than replace them.  Only if those records really are
-     the ones you are willing to lose, add --force to the same line.
+     It stops everything that writes while it works, and starts the same
+     things again after -- but only if the records came back safely.
+  4. If it says another program still has the records open, close it and
+     type the same line again; nothing was changed.  If it says the box
+     already has records, add --force only if you mean to lose them.
   5. Switch the box off and on.  Open http://ark.lan on a phone.
 
 MAKING A NEW BACKUP
@@ -77,6 +76,7 @@ MAPS ARE NOT IN THE BACKUP
 A map region is large and can be made again; it is not in these folders.
 Ask whoever looks after the box to put it back.  A phone that already
 downloaded one keeps its own copy.
+
 GOOD HABITS
 -----------
   * Keep one backup off the box — a USB stick in a drawer, or another

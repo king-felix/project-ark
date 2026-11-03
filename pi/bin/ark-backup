@@ -36,6 +36,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ark_bundle as bundle_tools          # noqa: E402 — sibling module, by design
 
+# The maintenance gate (ark_bundle found the module and put its folder on the
+# path).  A missing module must not silently produce a backup with no gate: the
+# copy refuses in ``copy_database`` and says to re-run the installer.
+try:
+    import ark_maintenance
+except ImportError:                          # pragma: no cover - deploy fault
+    ark_maintenance = None  # type: ignore[assignment]
+
 # The one storage policy, imported from the API tree beside this tool.  A backup
 # is a big write too: it must not be the thing that takes the card into the space
 # the portal keeps back.  Missing (an older tree) is a supported state — the
@@ -126,6 +134,7 @@ def git_describe(root: Path) -> str:
 
 def _count(db: Path, sql: str):
     import sqlite3
+    ticket = ark_maintenance.admit(db) if ark_maintenance is not None else None
     try:
         conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
         try:
@@ -135,6 +144,9 @@ def _count(db: Path, sql: str):
             conn.close()
     except Exception:                   # noqa: BLE001 — unreadable means unknown, never 0
         return None
+    finally:
+        if ticket is not None:
+            ticket.release()
 
 
 def free_name(dest: Path, stamp: str) -> str:
@@ -422,5 +434,8 @@ if __name__ == "__main__":
         print("Stopped.", file=sys.stderr)
         sys.exit(130)
     except Exception as exc:                    # noqa: BLE001 — say it plainly, exit 1
+        if ark_maintenance is not None and isinstance(exc, ark_maintenance.Busy):
+            print(f"Not done: {exc}", file=sys.stderr)
+            sys.exit(1)
         print(f"Not done: {exc.__class__.__name__}: {exc}", file=sys.stderr)
         sys.exit(1)

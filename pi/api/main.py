@@ -51,9 +51,10 @@ import ark_db
 import ark_essentials
 import ark_health
 import ark_household
+import ark_library
+import ark_maintenance
 import ark_map_store
 import ark_map_web
-import ark_library
 import ark_media
 import ark_media_web
 import ark_review
@@ -254,6 +255,24 @@ def error_page(message: str, hint: str = "", code: int = 400) -> HTMLResponse:
 """, status=code)
 
 
+@app.exception_handler(ark_maintenance.Busy)
+async def _records_are_being_put_back(request: Request, exc: Exception):
+    """A page that arrives during a maintenance window says so, and is not a 500.
+
+    A repair holds the gate for a moment and a restore holds it while the services
+    are stopped (so no page reaches here); the case this covers is a request that
+    the backend is still answering when a daily pass takes the gate.  The answer is
+    a plain sentence and a retry, never a traceback and never a half-read page.
+    """
+    sentence = ("The box is putting its records back just now. Nothing was changed "
+                "— try again in a moment.")
+    if request.url.path.startswith("/api/"):
+        return JSONResponse({"ok": False, "reason": sentence}, status_code=503)
+    return error_page(
+        "The box is putting its records back just now.",
+        "Nothing was changed.  Wait a moment and open the page again.", 503)
+
+
 # The Media shelf is public in the same way the Game shelf is: reading needs no
 # account, and only what the owner published is visible.  It is wired here, after
 # ``page()`` exists, so it can wear the portal's own header and navigation.
@@ -314,7 +333,20 @@ async def _refuse_a_body_that_cannot_fit(request: Request, call_next):
     by the check in ``ark_storage.spool`` while the bytes stream.
     """
     declared = _declared_length(request)
-    if declared is not None and declared > ark_space.slack(ark_storage.drop_dir()) + FRAMING_MARGIN:
+    if declared is None:
+        return await call_next(request)
+    try:
+        room = ark_space.slack(ark_storage.drop_dir())
+    except ark_maintenance.Busy:
+        # This runs before the route, outside the exception handler's stack; a
+        # maintenance window must still answer a sentence rather than a 500.
+        sentence = ("The box is putting its records back just now. Nothing was "
+                    "stored — try again in a moment.")
+        if request.url.path.startswith("/api/"):
+            return JSONResponse({"ok": False, "reason": sentence}, status_code=503)
+        return error_page("The box is putting its records back just now.",
+                          "Nothing was stored.  Try again in a moment.", 503)
+    if declared > room + FRAMING_MARGIN:
         return error_page(
             "That upload is bigger than the room left on the card.",
             "Nothing was stored. Ask the owner to make space, then try again.", 413)

@@ -5,6 +5,8 @@ sessions and the audit trail all live in a single SQLite file.  Everything in
 here is deliberately dull:
 
 * short-lived connections, one per request, always closed;
+* every connection holds the maintenance gate for its whole life, so no
+  replacement can happen while a handle is open (``ark_maintenance``);
 * WAL so a reader never blocks the download/import jobs;
 * numbered migrations applied inside one transaction, so a crash leaves the
   previous version untouched;
@@ -25,6 +27,8 @@ import tempfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+
+import ark_maintenance
 
 ARK_ROOT = Path(os.environ.get("ARK_ROOT", "/srv/ark"))
 DB_PATH = Path(os.environ.get("ARK_DB", str(ARK_ROOT / "api" / "data" / "ark.db")))
@@ -459,21 +463,67 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+class _GatedConnection(sqlite3.Connection):
+    """A connection whose lifetime *is* the shared maintenance hold.
+
+    The hold is taken before SQLite opens the file (``connect`` below) and given
+    back in ``close``.  A caller that forgets to close therefore keeps the box
+    from replacing the records — which is the honest answer, and is why the
+    hold is bound to the handle rather than to a function call.  ``__del__`` is
+    the belt: an abandoned handle releases the gate when it is collected.
+    """
+
+    def close(self) -> None:
+        try:
+            super().close()
+        finally:
+            self._release_gate()
+
+    def _release_gate(self) -> None:
+        ticket = getattr(self, "_ark_gate", None)
+        if ticket is not None:
+            self._ark_gate = None
+            ticket.release()
+
+    def __del__(self):  # pragma: no cover - the interpreter decides when this runs
+        try:
+            self._release_gate()
+        except Exception:
+            pass
+
+
 def connect() -> sqlite3.Connection:
-    """A fresh connection. Callers must close it (``tx`` and ``read`` do)."""
+    """A fresh connection. Callers must close it (``tx`` and ``read`` do).
+
+    The maintenance gate is taken **before** the file is opened: a replacement
+    can never land between "the gate is clear" and "this handle exists".  A box
+    that is putting its records back answers ``ark_maintenance.Busy`` after a
+    short wait, rather than hanging a page or reading a file mid-swap.
+    """
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH), timeout=15, isolation_level=None)
-    conn.row_factory = sqlite3.Row
-    # WAL is a property of the *file*, not of this connection, so asking for it
-    # again is a write that must wait for whatever writer is busy — up to the
-    # connect timeout on every fresh connection.  A reader opened while a film is
-    # being published would therefore stall for seconds before it could answer a
-    # question about free space.  Ask first; write only when the file is not in
-    # WAL yet (a brand-new database, or a restore that replaced it).
-    if str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower() != "wal":
-        conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=8000")
-    conn.execute("PRAGMA foreign_keys=ON")
+    ticket = ark_maintenance.admit(DB_PATH)
+    try:
+        conn = sqlite3.connect(str(DB_PATH), timeout=15, isolation_level=None,
+                               factory=_GatedConnection)
+    except BaseException:
+        ticket.release()
+        raise
+    conn._ark_gate = ticket
+    try:
+        conn.row_factory = sqlite3.Row
+        # WAL is a property of the *file*, not of this connection, so asking for it
+        # again is a write that must wait for whatever writer is busy — up to the
+        # connect timeout on every fresh connection.  A reader opened while a film is
+        # being published would therefore stall for seconds before it could answer a
+        # question about free space.  Ask first; write only when the file is not in
+        # WAL yet (a brand-new database, or a restore that replaced it).
+        if str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower() != "wal":
+            conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=8000")
+        conn.execute("PRAGMA foreign_keys=ON")
+    except BaseException:
+        conn.close()                    # releases the gate with the handle
+        raise
     # ``synchronous=FULL`` on **every** connection, not just the one the repair
     # pass opened.  With ``NORMAL`` SQLite reports a commit once the bytes are in
     # the kernel's cache, so a power cut can lose the last thing the box told a
@@ -482,7 +532,11 @@ def connect() -> sqlite3.Connection:
     # a handful a minute, and correctness here is the whole point of the box.
     # ``ark_self_heal.harden()`` sets the same pair on the databases it owns, but a
     # pragma is per connection: this line is what the living box actually uses.
-    conn.execute("PRAGMA synchronous=FULL")
+    try:
+        conn.execute("PRAGMA synchronous=FULL")
+    except BaseException:
+        conn.close()
+        raise
     return conn
 
 

@@ -30,8 +30,40 @@ import json
 import os
 import re
 import sqlite3
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+def _find_api_dir() -> Path | None:
+    """Where ``ark_maintenance`` lives: the box's API tree, or a checkout's.
+
+    A console tool is installed to ``/usr/local/sbin`` and the modules live in
+    ``$ARK_ROOT/api``; running from a checkout, they are beside this file's tree.
+    The environment wins so a test (or a card in a reader) can point somewhere
+    else without the tool guessing.
+    """
+    candidates = []
+    told = os.environ.get("ARK_API_DIR")
+    if told:
+        candidates.append(Path(told))
+    candidates.append(Path(os.environ.get("ARK_ROOT") or "/srv/ark") / "api")
+    candidates.append(Path(__file__).resolve().parent.parent / "api")
+    for candidate in candidates:
+        if (candidate / "ark_maintenance.py").is_file():
+            return candidate
+    return None
+
+
+_API_DIR = _find_api_dir()
+if _API_DIR is not None and str(_API_DIR) not in sys.path:
+    sys.path.insert(0, str(_API_DIR))
+try:                                          # a half-installed tree is caught below
+    import ark_maintenance
+    _MAINTENANCE_PROBLEM = ""
+except ImportError as _missing:                # pragma: no cover - deploy fault
+    ark_maintenance = None  # type: ignore[assignment]
+    _MAINTENANCE_PROBLEM = str(_missing)
 
 FORMAT = 1
 CHUNK = 1024 * 1024
@@ -136,24 +168,43 @@ def _copy_hashing(source: Path, target: Path) -> tuple:
 
 
 def copy_database(source: Path, target: Path) -> None:
-    """SQLite's own copy: page-consistent, including rows still in the WAL."""
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_name(target.name + ".tmp")
-    source_conn = sqlite3.connect(f"file:{source}?mode=ro", uri=True, timeout=10)
+    """SQLite's own copy: page-consistent, including rows still in the WAL.
+
+    A backup is a reader, and it takes the shared maintenance gate for the whole
+    copy.  That is not about the copy being inconsistent — SQLite's ``backup()``
+    handles a live writer — it is about the file **being replaced underneath it**:
+    a backup taken across a restore or a repair could otherwise copy the damaged
+    file the repair was about to put right, and call the result a verified backup.
+
+    ``ark_maintenance.Busy`` therefore means "the box is changing its records;
+    copy them in a moment", and the tool says exactly that rather than writing a
+    bundle that might be of a file halfway out of the door.
+    """
+    if ark_maintenance is None:                # pragma: no cover - deploy fault
+        raise RuntimeError(
+            "the maintenance module is missing (%s); re-run the installer phase "
+            "95-backup before trusting a backup" % _MAINTENANCE_PROBLEM)
+    ticket = ark_maintenance.admit(source)
     try:
-        dest_conn = sqlite3.connect(str(tmp))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_name(target.name + ".tmp")
+        source_conn = sqlite3.connect(f"file:{source}?mode=ro", uri=True, timeout=10)
         try:
-            source_conn.backup(dest_conn)
-            # One file, no sidecars: a bundle must be readable on its own.
-            dest_conn.execute("PRAGMA journal_mode=DELETE")
-            dest_conn.commit()
+            dest_conn = sqlite3.connect(str(tmp))
+            try:
+                source_conn.backup(dest_conn)
+                # One file, no sidecars: a bundle must be readable on its own.
+                dest_conn.execute("PRAGMA journal_mode=DELETE")
+                dest_conn.commit()
+            finally:
+                dest_conn.close()
         finally:
-            dest_conn.close()
+            source_conn.close()
+        with open(tmp, "rb+") as handle:
+            os.fsync(handle.fileno())
+        os.replace(tmp, target)
     finally:
-        source_conn.close()
-    with open(tmp, "rb+") as handle:
-        os.fsync(handle.fileno())
-    os.replace(tmp, target)
+        ticket.release()
 
 
 def file_entry(bundle: Path, source: Path, rel: str, to: str) -> dict:

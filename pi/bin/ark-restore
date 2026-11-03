@@ -32,10 +32,29 @@ forever (``SaveConflict``).
 
 **Nothing else may be writing while this runs.**  The web service keeps its own
 handle on the old database, and a copied-in database plus a stale WAL is how a
-restore looks successful and then loses rows.  Every unit that writes the
-records is therefore stopped first and started again afterwards, including on
-failure.  ``--no-service`` is for a card mounted on another machine, where there
-is no service to stop.
+restore looks successful and then loses rows.  Stopping units is not enough on its
+own: ``ark-media-worker.service`` is independent of ``ark-api.service``, and a
+console command can hold a handle too.  So the run follows the one protocol in
+``ark_maintenance``:
+
+1. take the **repair turnstile** beside the database, so no repair pass can be
+   half-way through while this decides anything (a turnstile that cannot be had
+   refuses the restore before a single unit is stopped);
+2. stop every unit that writes the records or the files being put back — timers
+   and path watchers first, then services, **including the media worker**;
+3. take the **exclusive gate**, which waits for every ordinary connection to
+   close and stops new ones at the door.  A gate that cannot be had in the time
+   allowed refuses the restore and starts the box again: an unavailable lock is
+   not evidence that anything is wrong with the records;
+4. replace the files, draining the old journal before and after;
+5. release the gate, then start again **only the units that were running**, and
+   only when the outcome left the records safe to open.  A replaced database
+   beside a journal that would not go is the one case where the box is left dark
+   on purpose, because starting it would replay rows the new file never held.
+
+``--no-service`` is for a card mounted on another machine, where there is no
+service to stop.  The gate still applies: a local program holding the records
+open still makes the restore refuse rather than write underneath it.
 """
 
 from __future__ import annotations
@@ -51,6 +70,35 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ark_bundle as bundle_tools          # noqa: E402 — sibling module, by design
 
+# The maintenance protocol lives with the API modules (the installer puts it in
+# $ARK_ROOT/api).  A checkout run by hand finds it beside this file's tree.
+_API_DIR = Path(os.environ.get("ARK_API_DIR") or "/srv/ark/api")
+if not (_API_DIR / "ark_maintenance.py").is_file():
+    _API_DIR = Path(__file__).resolve().parent.parent / "api"
+if str(_API_DIR) not in sys.path:
+    sys.path.insert(0, str(_API_DIR))
+import ark_maintenance                    # noqa: E402 — the one maintenance rule
+
+#: How long the restore waits for a repair pass to finish before refusing.  A
+#: repair is a handful of file operations; past this the restore says so and
+#: changes nothing rather than racing it.
+REPAIR_WAIT = 60.0
+#: How long it waits for the last ordinary connection to close.  The units are
+#: already stopped, so this is only a console command or a handle somebody kept.
+GATE_WAIT = 15.0
+
+
+def _bounded(name: str, default: float) -> float:
+    """A bound that a test (or a very slow card) can change without guessing."""
+    try:
+        return max(0.0, float(os.environ.get(name, default)))
+    except (TypeError, ValueError):
+        return default
+
+
+REPAIR_WAIT = _bounded("ARK_RESTORE_REPAIR_WAIT", REPAIR_WAIT)
+GATE_WAIT = _bounded("ARK_RESTORE_GATE_WAIT", GATE_WAIT)
+
 
 def say(text: str = "") -> None:
     print(text, flush=True)
@@ -65,21 +113,34 @@ class RestoreRefused(Exception):
     """A file could not be put back safely, so nothing of it was changed.
 
     Raised *before* the write, never after: a refusal is only useful when the box is
-    exactly as it was when the sentence is printed.
+    exactly as it was when the sentence is printed.  The one exception is a journal
+    that would not go **after** a database was put back: then the sentence says so and
+    ``safe_to_start`` is false, because starting the box would replay the old rows
+    into the new file.
     """
+
+    def __init__(self, text: str, *, safe_to_start: bool = True) -> None:
+        super().__init__(text)
+        self.safe_to_start = safe_to_start
 
 
 # ---------------------------------------------------------------------------
 #  what is already here
 # ---------------------------------------------------------------------------
 def occupancy(paths: dict) -> str | None:
-    """Why this box must not be overwritten without --force, or None if it may."""
+    """Why this box must not be overwritten without --force, or None if it may.
+
+    The read takes a shared gate, so it cannot land in the middle of a replacement
+    somebody else is making.  ``Busy`` is answered as "the records are being
+    changed": the caller refuses the restore instead of reading a moving file.
+    """
     if paths["marker"].exists():
         return "this box is already set up"
     db = paths["db"]
     if not db.is_file():
         return None
     import sqlite3
+    ticket = ark_maintenance.admit(db)
     try:
         conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
         try:
@@ -97,6 +158,8 @@ def occupancy(paths: dict) -> str | None:
             conn.close()
     except sqlite3.Error:
         return "there is already a database here"
+    finally:
+        ticket.release()
     return None
 
 
@@ -104,15 +167,29 @@ def occupancy(paths: dict) -> str | None:
 #  keeping the writers quiet
 # ---------------------------------------------------------------------------
 #: Every unit that can hold the database or write it.  Timers and the path unit
-#: come first so they cannot start a job between the stops and the copy.
-#: Every unit that writes the records, so a restore stops them all before it publishes
-#: anything.  ``ark-self-heal`` belongs here: since 26 Oct 2026 the daily pass at 04:17
-#: writes while the box is serving (a journal-mode change, a repair, the sweep), so a
-#: restore that started beside it would have two programs writing one card.
+#: come first so they cannot start a job between the stops and the copy.  Every unit
+#: that writes the records, so a restore stops them all before it publishes anything.
+#: ``ark-self-heal`` belongs here: since 26 Oct 2026 the daily pass at 04:17 writes
+#: while the box is serving (a journal-mode change, a repair, the sweep), so a restore
+#: that started beside it would have two programs writing one card.
+#:
+#: ``ark-media-worker.service`` belongs here as well, and is the reason stopping
+#: ``ark-api`` alone was never enough: it is an independent process with its own
+#: database handles and its own queue, and systemd does not stop it when the backend
+#: stops.  A restore that left it running could replace the records under an active
+#: film job — which is exactly the fault this list exists to prevent.
+#:
+#: ``ark-ai.service`` is deliberately absent: it reads the records only through
+#: ``ark_db`` (so it takes the gate and drains like every other reader) and stopping
+#: it would throw away a loaded model for no safety.  ``ark-boot-guard`` and
+#: ``ark-fsck-once`` are absent because they are ``RemainAfterExit`` one-shots: they
+#: are "active" for ever while running nothing, and starting them again would run
+#: their boot logic in the middle of a restore.
 WRITERS = ("ark-book-import.path", "ark-book-import.service",
            "ark-arcade-discover.timer", "ark-arcade-discover.service",
-           "ark-zim-downloader.service", "ark-self-heal.timer",
-           "ark-self-heal.service", "ark-api.service")
+           "ark-self-heal.timer", "ark-self-heal.service",
+           "ark-zim-downloader.service", "ark-media-worker.service",
+           "ark-api.service")
 
 
 def _systemctl(*args: str) -> subprocess.CompletedProcess:
@@ -136,7 +213,7 @@ def quiesce(dry: bool) -> tuple[list[str], str | None]:
             state = _systemctl("is-active", unit).stdout.strip()
         except (OSError, subprocess.SubprocessError) as exc:
             return [], f"could not ask about {unit}: {exc}"
-        if state == "active":
+        if state in ("active", "activating", "reloading"):
             running.append(unit)
     if not running:
         return [], None
@@ -159,8 +236,14 @@ def quiesce(dry: bool) -> tuple[list[str], str | None]:
 
 
 def resume(units: list[str]) -> None:
-    """Start again exactly what was stopped — even when the restore failed."""
-    for unit in units:
+    """Start again exactly what was stopped — services first, timers last.
+
+    The caller decides *whether* to call this (a restore that left a journal behind
+    must not start the box); this only decides the order.  Reversing the stop order
+    brings the portal and the worker up before the timers that might start work, so
+    a unit that wakes to a half-started box cannot.
+    """
+    for unit in reversed(units):
         try:
             done = _systemctl("start", unit)
         except (OSError, subprocess.SubprocessError) as exc:
@@ -214,7 +297,8 @@ def drain_sidecars(target: Path) -> list[str]:
     return gone
 
 
-def put_database(source: Path, target: Path, dry: bool) -> dict:
+def put_database(source: Path, target: Path, dry: bool,
+                 state: dict | None = None) -> dict:
     """Replace the records in one atomic step; a stale WAL must not survive.
 
     The order matters and is the whole point of this function:
@@ -228,29 +312,41 @@ def put_database(source: Path, target: Path, dry: bool) -> dict:
        would otherwise leave a fresh journal describing rows the file no longer
        holds.
 
-    ``ark_self_heal._copy_over()`` does exactly the same, in the same order, for
-    the same reason: those two are the only programs on the box that replace a
+    ``state`` is a small mutable record the caller keeps so a failure *between*
+    steps 2 and 3 can be told apart from one before either: ``replaced`` says the
+    file is the new one, ``safe`` says no journal of the old one survives.  Only the
+    caller can decide what to do with an unsafe outcome — starting services is not
+    one of the things it may do.
+
+    ``ark_self_heal._copy_over_status()`` does exactly the same, in the same order,
+    for the same reason: those two are the only programs on the box that replace a
     database, and they must not disagree about what "put back" means.
     """
+    track = state if state is not None else {}
+    track.setdefault("replaced", False)
+    track.setdefault("safe", False)
     if dry:
         return {"what": "records", "action": "would replace", "path": str(target)}
     target.parent.mkdir(parents=True, exist_ok=True)
     try:
         drain_sidecars(target)              # 1. the old journal must not survive
     except OSError as exc:
-        raise RestoreRefused(str(exc)) from exc
+        raise RestoreRefused(str(exc), safe_to_start=True) from exc
     staging = target.with_name(target.name + ".restoring")
     shutil.copyfile(source, staging)        # 2. the copy lands, then one rename
     with open(staging, "rb+") as handle:
         os.fsync(handle.fileno())
     os.chmod(staging, 0o640)
     os.replace(staging, target)
+    track["replaced"] = True
     try:
         drain_sidecars(target)              # 3. nothing written by the old database
     except OSError as exc:
         raise RestoreRefused(
             f"the records were put back, but {exc}  Do not start the box until "
-            f"{target.name}-wal is gone: it holds rows that are not in the file.") from exc
+            f"{target.name}-wal is gone: it holds rows that are not in the file.",
+            safe_to_start=False) from exc
+    track["safe"] = True
     return {"what": "records", "action": "put back", "path": str(target)}
 
 
@@ -361,62 +457,114 @@ def restore(bundle_path: Path, *, force: bool, dry: bool, no_files: bool,
         return 1
     say(f"Checked {len(data['entries'])} files in {bundle_path.name}: every fingerprint matches.")
 
-    why = occupancy(paths)
-    if why and not force:
-        return stop(f"{why}.  Putting a backup over it would replace those records.\n"
-                    "  If that is really what you want, run the same command again with "
-                    "--force on the end.\n  Nothing has been changed.")
-    if why and force:
-        say(f"This box {why}; replacing it because you said --force.")
+    if dry:
+        return plan_restore(data, bundle_path, paths, force=force, no_files=no_files,
+                            ledger_mode=ledger_mode, keep_owner=keep_owner,
+                            no_service=no_service)
 
-    paused: list[str] = []
-    if not no_service:
-        paused, problem = quiesce(dry)
-        if problem:
-            return stop(problem)
-    elif not dry:
-        say("Leaving the services alone because you said --no-service.")
+    # The whole real restore is one maintenance window.  The turnstile goes first:
+    # a repair pass that is half-way through must finish before this decides
+    # anything, and a turnstile that cannot be had refuses the restore before a
+    # single unit is stopped.
+    with ark_maintenance.repairing(paths["db"], wait=REPAIR_WAIT) as turn:
+        if not turn.held:
+            return stop("another repair is working on the records at this moment, so "
+                        "the backup was not put back and nothing was changed.  Try "
+                        "again when it has finished.")
+        try:
+            why = occupancy(paths)
+        except ark_maintenance.Busy:
+            return stop("the records are being changed by another program right now, "
+                        "so the backup was not put back and nothing was changed.  Try "
+                        "again in a moment.")
+        if why and not force:
+            return stop(f"{why}.  Putting a backup over it would replace those records.\n"
+                        "  If that is really what you want, run the same command again with "
+                        "--force on the end.\n  Nothing has been changed.")
+        if why and force:
+            say(f"This box {why}; replacing it because you said --force.")
 
-    results = []
-    refusal = ""
-    try:
-        for entry in data["entries"]:
-            to = entry.get("to")
-            if not to:
-                continue                                # RESTORE-ME.txt and friends
-            target = inside_or_none(paths["root"], to)
-            if target is None:
-                return stop(f"the manifest wants to write outside the box: {to!r} — refused")
-            source = bundle_path / entry["path"]
-            if entry["path"] == "database/ark.db":
-                results.append(put_database(source, target, dry))
-            elif entry["path"].startswith("calibre-incoming/"):
-                results.append(put_ledger(source, paths, dry,
-                                          "no" if no_files else ledger_mode))
-            elif entry["path"].startswith("arcade-saves/"):
-                if not no_files:
-                    results.append(put_private_file(source, target, dry,
-                                                    replace=force))
-            elif not no_files:
-                results.append(put_file(source, target, dry))
-    except RestoreRefused as refused:
-        # A refusal is only worth what it protects: everything already written keeps
-        # its owner, the file it refused is untouched, and the box is started again.
-        refusal = str(refused)
-    finally:
-        give_to_box(results, keep_owner=keep_owner, dry=dry)
-        if paused:
-            resume(paused)
+        paused: list[str] = []
+        if not no_service:
+            paused, problem = quiesce(False)
+            if problem:
+                return stop(problem)
+        else:
+            say("Leaving the services alone because you said --no-service.  The records "
+                "still have to be free of every program that has them open.")
+
+        results: list[dict] = []
+        refusal = ""
+        safe_to_start = True
+        #: Set the moment the main file is the new one, and again when no journal of
+        #: the old one survives.  A failure between the two is the one outcome that
+        #: must leave the box dark (see ``put_database``).
+        db_state = {"replaced": False, "safe": False}
+        try:
+            # The gate is what makes "nothing else is writing" true rather than
+            # hoped for: it waits for every ordinary connection to close and holds
+            # new ones at the door until the files are in place.
+            with ark_maintenance.maintain(paths["db"], wait=GATE_WAIT) as lease:
+                if not lease.held:
+                    refusal = ("another program still has the records open, so the "
+                               "backup was not put back and nothing was changed.  Close "
+                               "it (or stop it) and try again.")
+                else:
+                    for entry in data["entries"]:
+                        to = entry.get("to")
+                        if not to:
+                            continue                        # RESTORE-ME.txt and friends
+                        target = inside_or_none(paths["root"], to)
+                        if target is None:
+                            refusal = (f"the manifest wants to write outside the box: "
+                                       f"{to!r} — refused")
+                            break
+                        source = bundle_path / entry["path"]
+                        if entry["path"] == "database/ark.db":
+                            results.append(put_database(source, target, False, db_state))
+                        elif entry["path"].startswith("calibre-incoming/"):
+                            results.append(put_ledger(source, paths, False,
+                                                      "no" if no_files else ledger_mode))
+                        elif entry["path"].startswith("arcade-saves/"):
+                            if not no_files:
+                                results.append(put_private_file(source, target, False,
+                                                                replace=force))
+                        elif not no_files:
+                            results.append(put_file(source, target, False))
+        except RestoreRefused as refused:
+            # A refusal is only worth what it protects: everything already written
+            # keeps its owner, and whether the box may be started again is decided by
+            # what the refusal left behind.
+            refusal = str(refused)
+            safe_to_start = refused.safe_to_start
+        except BaseException:
+            # A crash or Ctrl-C: the main file may or may not be the new one, but if
+            # it is, ``safe`` says whether the old journal went with it.
+            safe_to_start = (not db_state["replaced"]) or bool(db_state["safe"])
+            raise
+        finally:
+            # This runs on the way out of every outcome, including a crash and
+            # Ctrl-C: a restore may leave the box unchanged, but it may not leave
+            # it dark for a reason that was not written down.  The gate has already
+            # been released by the ``with`` above, so a started unit is not held at
+            # the door.
+            give_to_box(results, keep_owner=keep_owner, dry=False)
+            if paused:
+                if safe_to_start:
+                    resume(paused)
+                else:
+                    say("Nothing was started again: a service opening the new records "
+                        "beside that journal would replay the old rows into them.")
 
     say("")
     for result in results:
         say(f"  {result['action']:<28} {result['path']}")
     if refusal:
+        if not safe_to_start:
+            refusal += ("\n  The box was left dark on purpose — a service opening the "
+                        "new records beside that journal would replay the old rows.")
         return stop(f"{refusal}\n  Everything written before it is listed above; the"
                     " file it refused was not touched.")
-    if dry:
-        say("\nNothing was written (--dry-run).")
-        return 0
     say("")
     say("Done.  The records are in place"
         + (" and everything paused for the copy has been started again."
@@ -427,6 +575,60 @@ def restore(bundle_path: Path, *, force: bool, dry: bool, no_files: bool,
             say("The book shelf is empty, so the import list was set beside it"
                 " (…imported.json.from-backup) instead of hiding books that are"
                 " not there any more.  Add the books again and they import once.")
+    return 0
+
+
+def plan_restore(data: dict, bundle_path: Path, paths: dict, *, force: bool,
+                 no_files: bool, ledger_mode: str, keep_owner: bool,
+                 no_service: bool) -> int:
+    """Say what a real run would do, and write nothing at all.
+
+    No lock is taken and no unit is asked about any further than ``quiesce``'s
+    "would pause" line: a dry run is a proof of the bundle and a description, and
+    a proof that changes the card (or stops the box) is not a proof.
+    """
+    try:
+        why = occupancy(paths)
+    except ark_maintenance.Busy:
+        return stop("the records are being changed by another program right now, so "
+                    "the plan could not be made.  Try again in a moment.")
+    if why and not force:
+        return stop(f"{why}.  Putting a backup over it would replace those records.\n"
+                    "  If that is really what you want, run the same command again with "
+                    "--force on the end.\n  Nothing has been changed.")
+    if why and force:
+        say(f"This box {why}; replacing it because you said --force.")
+    if not no_service:
+        _paused, problem = quiesce(True)
+        if problem:
+            return stop(problem)
+    else:
+        say("Leaving the services alone because you said --no-service.")
+
+    results = []
+    for entry in data["entries"]:
+        to = entry.get("to")
+        if not to:
+            continue
+        target = inside_or_none(paths["root"], to)
+        if target is None:
+            return stop(f"the manifest wants to write outside the box: {to!r} — refused")
+        source = bundle_path / entry["path"]
+        if entry["path"] == "database/ark.db":
+            results.append(put_database(source, target, True))
+        elif entry["path"].startswith("calibre-incoming/"):
+            results.append(put_ledger(source, paths, True,
+                                      "no" if no_files else ledger_mode))
+        elif entry["path"].startswith("arcade-saves/"):
+            if not no_files:
+                results.append(put_private_file(source, target, True, replace=force))
+        elif not no_files:
+            results.append(put_file(source, target, True))
+
+    say("")
+    for result in results:
+        say(f"  {result['action']:<28} {result['path']}")
+    say("\nNothing was written (--dry-run).")
     return 0
 
 

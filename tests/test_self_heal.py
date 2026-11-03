@@ -671,7 +671,7 @@ def test_a_platform_without_flock_still_repairs(tmp_path, monkeypatch):
     against two passes at once, it is not a condition for repairing anything.
     """
     _root, db = a_ruined_database_with_a_good_copy(tmp_path)
-    monkeypatch.setattr(heal, "fcntl", None)
+    monkeypatch.setattr(heal.maintenance, "fcntl", None)
 
     state, said = heal.heal_sqlite(db)
 
@@ -1440,3 +1440,86 @@ def test_the_verifier_reports_the_forced_check_without_failing_a_box_that_waitin
     for word in ("withdrawn", "waiting", "absent"):
         assert word in text, "a state nobody can name is a state nobody can read: %s" % word
 
+
+
+# ---------------------------------------------------------------------------
+#  a service that cannot take the gate is stopped for the repair
+# ---------------------------------------------------------------------------
+def fake_systemctl(tmp_path: Path, *, active: bool = True,
+                   fail_stop: bool = False):
+    """A stand-in service manager, because this Mac has none to stop."""
+    fake = tmp_path / "fakebin"
+    fake.mkdir(exist_ok=True)
+    log = tmp_path / "systemctl.log"
+    script = fake / "systemctl"
+    lines = ["#!/bin/sh", f'echo "$@" >> "{log}"',
+             'if [ "$1" = "is-active" ]; then',
+             '  if [ "%d" = "1" ]; then echo active; exit 0; fi' % (1 if active else 0),
+             "  echo inactive; exit 3",
+             "fi"]
+    if fail_stop:
+        lines.append('if [ "$1" = "stop" ]; then echo "denied" >&2; exit 1; fi')
+    lines.append("exit 0")
+    script.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    script.chmod(0o755)
+    return fake, log
+
+
+def a_ruined_book_database(tmp_path: Path):
+    root = make_box(tmp_path)
+    db = root / "calibre-library/metadata.db"
+    db.parent.mkdir(parents=True, exist_ok=True)
+    make_database(db, rows=2)
+    shutil.copyfile(str(db), str(db) + ".good.bak")
+    db.write_bytes(b"this main file is not a database" * 200)
+    return root, db
+
+
+def test_a_repair_stops_and_restarts_the_book_engine(tmp_path, monkeypatch):
+    """Calibre is not ours to change, so its records are repaired with it stopped.
+
+    ``ark-calibre.service`` holds ``metadata.db``/``app.db`` and cannot take the
+    maintenance gate; replacing either under it would leave it writing to an unlinked
+    file.  The repair stops it, and starts it again because it *was* running.
+    """
+    _root, db = a_ruined_book_database(tmp_path)
+    fake, log = fake_systemctl(tmp_path, active=True)
+    monkeypatch.setenv("PATH", str(fake) + os.pathsep + os.environ.get("PATH", ""))
+
+    state, said = heal.heal_sqlite(db, owner_unit="ark-calibre.service")
+
+    assert state == "restored", said
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert "is-active ark-calibre.service" in calls, calls
+    assert "stop ark-calibre.service" in calls, calls
+    assert "start ark-calibre.service" in calls, calls
+    assert bodies_in(db) == ["note 0", "note 1"]
+
+
+def test_a_book_engine_that_was_not_running_is_not_started(tmp_path, monkeypatch):
+    _root, db = a_ruined_book_database(tmp_path)
+    fake, log = fake_systemctl(tmp_path, active=False)
+    monkeypatch.setenv("PATH", str(fake) + os.pathsep + os.environ.get("PATH", ""))
+
+    state, said = heal.heal_sqlite(db, owner_unit="ark-calibre.service")
+
+    assert state == "restored", said
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert "is-active ark-calibre.service" in calls, calls
+    assert not [call for call in calls if call.startswith(("stop ", "start "))], calls
+
+
+def test_a_book_engine_that_will_not_stop_stops_the_repair(tmp_path, monkeypatch):
+    root, db = a_ruined_book_database(tmp_path)
+    was = db.read_bytes()
+    fake, log = fake_systemctl(tmp_path, active=True, fail_stop=True)
+    monkeypatch.setenv("PATH", str(fake) + os.pathsep + os.environ.get("PATH", ""))
+
+    state, said = heal.heal_sqlite(db, owner_unit="ark-calibre.service")
+
+    assert state == "busy", said
+    assert "could not be stopped" in said
+    assert db.read_bytes() == was, "a repair may not proceed on a service it could not stop"
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert "stop ark-calibre.service" in calls, calls
+    assert "start ark-calibre.service" not in calls, calls
