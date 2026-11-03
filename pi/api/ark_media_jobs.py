@@ -26,6 +26,7 @@ import hashlib
 import json
 import os
 import random
+import re
 import subprocess
 import tempfile
 import time
@@ -259,8 +260,13 @@ def make_thumbnail(conn, row, *, at: float | None = None, tool: str | None = Non
         return {"ok": False, "error": _tail((done.stderr or b"").decode("utf-8", "replace"))}
     os.chmod(partial, 0o644)
     os.replace(partial, target)
-    conn.execute("UPDATE media SET poster = ?, poster_at = ? WHERE id = ?",
-                 (name, float(chosen), int(row["id"])))
+    changed = conn.execute("UPDATE media SET poster = ?, poster_at = ? WHERE id = ?",
+                           (name, float(chosen), int(row["id"]))).rowcount
+    if not changed:
+        # The film was deleted while the picture was being taken.  A file under
+        # media/thumbs that no row names is bytes nobody can ever reclaim.
+        _unlink(target)
+        return {"ok": False, "error": "That film is no longer on the shelf."}
     return {"ok": True, "at": chosen, "file": name, "bytes": target.stat().st_size}
 
 
@@ -370,8 +376,13 @@ def make_derivative(row, *, job_id: int, plan: str | None = None) -> dict:
         os.replace(partial, target)
         written = target.stat().st_size
         with ark_db.tx() as conn:
-            conn.execute("UPDATE media SET play_stored = ?, play_size = ? WHERE id = ?",
-                         (name, written, int(row["id"])))
+            changed = conn.execute(
+                "UPDATE media SET play_stored = ?, play_size = ? WHERE id = ?",
+                (name, written, int(row["id"]))).rowcount
+        if not changed:
+            # Deleted while it was being prepared: do not leave an orphan copy.
+            _unlink(target)
+            return {"ok": False, "error": "That film is no longer on the shelf."}
     return {"ok": True, "file": name, "bytes": written}
 
 
@@ -391,7 +402,7 @@ def run_job(job) -> dict:
                 ark_media.finish(conn, job_id, "failed", "That film is no longer on the shelf.")
             return {"ok": False, "error": "gone"}
         if kind == "thumbnail":
-            return _job_thumbnail(job_id, media_id)
+            return _job_thumbnail(job, media_id)
         return _job_prepare(job_id, media_id, row)
     except Stopped:
         with ark_db.tx() as conn:
@@ -404,15 +415,22 @@ def run_job(job) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
-def _job_thumbnail(job_id: int, media_id: int) -> dict:
+def _job_thumbnail(job, media_id: int) -> dict:
+    job_id = int(job["id"])
     with ark_db.read() as conn:
         row = ark_media.item(conn, media_id)
     if row is None:
         return {"ok": False, "error": "gone"}
+    # An owner may name the second they want; the job carries it in `detail`
+    # (`at=12.5`) so the worker needs no second table for one number.
+    at = None
+    match = re.match(r"at=([0-9]+(?:\.[0-9]+)?)", str(job["detail"] or ""))
+    if match:
+        at = float(match.group(1))
     with ark_db.tx() as conn:
         ark_media.heartbeat(conn, job_id, 5)
     with ark_db.tx() as conn:
-        result = make_thumbnail(conn, row)
+        result = make_thumbnail(conn, row, at=at)
     with ark_db.tx() as conn:
         if result.get("ok"):
             ark_media.finish(conn, job_id, "ready", "Picture taken.", 100)

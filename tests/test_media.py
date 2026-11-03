@@ -581,3 +581,44 @@ def test_the_owners_batch_door_puts_a_film_on_the_shelf(client, ark, films):
     # ...and it is a real shelf item, not a game and not a book.
     with ark.db.read() as conn:
         assert conn.execute("SELECT COUNT(*) FROM games").fetchone()[0] == 0
+
+
+@needs_ffmpeg
+def test_the_owner_can_rename_a_film_and_keep_the_file_name(client, ark, films):
+    cookie = claim_box(client)
+    _send_video_row(ark, films["fast"], "IMGP0421.mp4")
+    media_id = _media_rows(ark)[0]["id"]
+    page = get(client, "/admin/media", cookie=f"ark_admin={cookie}")
+    assert "More for this film" in page.text
+    assert "The name on the shelf" in page.text
+    token = csrf_of(page.text)
+    renamed = post(client, f"/admin/media/{media_id}/title",
+                   {"title": "  The Water Filter Project  ", "csrf": token},
+                   cookie=f"ark_admin={cookie}")
+    assert renamed.status_code == 303
+    row = _media_rows(ark)[0]
+    assert row["title"] == "The Water Filter Project"
+    assert row["filename"] == "IMGP0421.mp4", "the original file name is never lost"
+
+
+@needs_ffmpeg
+def test_a_picture_can_be_asked_for_at_a_time_the_owner_chooses(client, ark, films):
+    cookie = claim_box(client)
+    _send_video_row(ark, films["fast"], "clip.mp4")
+    media_id = _media_rows(ark)[0]["id"]
+    page = get(client, "/admin/media", cookie=f"ark_admin={cookie}")
+    token = csrf_of(page.text)
+    answer = post(client, f"/admin/media/{media_id}/picture",
+                  {"at": "2.5", "csrf": token}, cookie=f"ark_admin={cookie}")
+    assert answer.status_code == 303
+    with ark.db.read() as conn:
+        job = conn.execute("SELECT kind, detail FROM media_jobs ORDER BY id DESC LIMIT 1"
+                           ).fetchone()
+    assert job["kind"] == "thumbnail"
+    assert job["detail"] == "at=2.5"
+    import ark_media_jobs
+    for _ in range(10):
+        if not ark_media_jobs.work_once(1):
+            break
+    row = _media_rows(ark)[0]
+    assert row["poster_at"] == pytest.approx(2.5, abs=0.05)

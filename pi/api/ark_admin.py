@@ -2809,6 +2809,29 @@ def _media_row(row, csrf: str) -> str:
     buttons.append(_media_button(item_id, "delete", "", csrf, "Delete for ever", danger=True))
     watch = (f'<a class="smallbtn" href="/media/{item_id}">Watch</a>'
              if state == ark_media.STATE_PUBLISHED and ark_media.playable(row) else "")
+    more = f"""
+      <details class="more">
+        <summary>More for this film</summary>
+        <form method="post" action="/admin/media/{item_id}/title">
+          {_csrf_field(csrf)}
+          <label for="title-{item_id}">The name on the shelf (the file keeps its own)</label>
+          <input id="title-{item_id}" name="title" type="text" maxlength="160"
+                 value="{esc(title)}">
+          <button class="smallbtn" type="submit">Save the name</button>
+        </form>
+        <form method="post" action="/admin/media/{item_id}/picture">
+          {_csrf_field(csrf)}
+          <label for="at-{item_id}">Take the picture at (seconds into the film — blank lets the box choose)</label>
+          <input id="at-{item_id}" name="at" type="text" inputmode="decimal" placeholder="65" value="">
+          <button class="smallbtn" type="submit">Take a picture there</button>
+        </form>
+        <form method="post" action="/admin/media/{item_id}/captions" enctype="multipart/form-data">
+          {_csrf_field(csrf)}
+          <label for="sub-{item_id}">Add captions (.vtt or .srt)</label>
+          <input id="sub-{item_id}" name="file" type="file" accept=".vtt,.srt">
+          <button class="smallbtn" type="submit">Add these captions</button>
+        </form>
+      </details>"""
     return f"""
   <li class="filmrow">
     <label class="tick" title="Tick to delete several at once">
@@ -2826,6 +2849,7 @@ def _media_row(row, csrf: str) -> str:
       </div>
     </div>
     <div class="filmrow-actions">{watch}{''.join(buttons)}</div>
+    <div class="filmrow-more">{more}</div>
   </li>"""
 
 
