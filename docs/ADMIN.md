@@ -1593,22 +1593,54 @@ Each conversion:
 
 * writes under `/srv/ark/media/tmp` and is renamed into `media/play` only when
   complete (a cut leaves the previous good file, or none — never half a film);
-* has a wall-clock ceiling (`CONVERT_FACTOR × length`, capped at 6 hours) and an
+* has a wall-clock ceiling (`CONVERT_FACTOR × length`, capped at 12 hours) and an
   output-size budget (`-fs`), and **reserves** that budget before it starts;
 * is bounded to H.264/AAC MP4 with `+faststart`, preserving the aspect ratio and
-  capping height at 1080 (720p and below are left alone).
+  **downscaled to 720p** whenever the short side is larger — a 1480×1080 film
+  becomes 986×720, a portrait 1080×1920 clip becomes 720×1280, 720p and below are
+  left alone, and nothing is ever upscaled. The original stays full size and
+  downloadable.
 
-**How slow is it?** Measured on this box (Pi 4B, FFmpeg 7.1.5, software x264
-`veryfast`/CRF 24, 720p): **30 seconds of film took 13 seconds to convert** — about
-2.3× faster than real time, so a 90-minute film is roughly **40 minutes** of
-background work, not hours. The worker is nice'd and CPU-capped, so the portal
-keeps answering while it runs; a film that is already playable needs none of this.
+**How slow is it?** Measured **under the worker's own limits** (Pi 4B, FFmpeg
+7.1.5, x264 `veryfast`/CRF 24, the service's `CPUQuota=150%`, idle I/O), on 24
+seconds of a 1480×1080 10-bit HEVC film:
 
-The Pi's hardware encoder (`h264_v4l2m2m`) also works on this box and is about
-twice as fast again (6 s for the same clip), but the box does **not** use it: a
-hardware encoder's output depends on the driver and the source, and "it played
-here" is not the same promise as libx264's. If a film matters and the wait
-matters more, convert it on a workstation; the page prints the exact command the
+* 1080p, decoding in software — **127 s** (5.3× the film's length);
+* 720p, decoding in software — **95 s**;
+* 720p, decoding on the Pi's hardware decoder — **45 s**, and the MP4 came out
+  **byte-identical** to the software one (same md5).
+
+So a 7-minute film is about **13 minutes** of background work, a 90-minute film
+about **3 hours**, and a two-hour film about **3¾ hours**. The ceiling is
+`8 × length + 2 minutes`, at most 12 hours, which leaves room even for the slow
+path: a file the hardware decoder refuses is converted in software at 3.96× and
+still fits. The worker is nice'd and CPU-capped, so the portal keeps answering
+while it runs; a film that is already playable needs none of this.
+
+**If it fails, the page says so.** A film that could not be prepared reads *This
+film could not be prepared* on its own page, and *Could not be prepared* on the
+shelf — never *Getting ready*, which now means exactly one thing: a preparation job
+is queued or running. The reason the box wrote down is printed on **your** Media
+page, not on a page a visitor reads. **Make a playing copy** (or **Prepare again**)
+queues it again.
+
+A film that already plays is never labelled a failure because a later attempt to
+re-prepare it went wrong, and a new picture is its own job: taking a poster says
+nothing about whether a film can play.
+
+The Pi's hardware **encoder** (`h264_v4l2m2m`) is still not used: a hardware
+encoder's output depends on the driver and the source, and "it played here" is not
+the same promise as libx264's. The hardware **decoder** *is* used — `-hwaccel drm`
+on `/dev/dri/renderD128`, which `pi` can already reach through the `video` and
+`render` groups — and it is not taken on trust: if the tool refuses a file before
+writing a single byte, the job is tried again on the CPU and the worker's log says
+so. A box with no decoder converts films exactly as it did before.
+
+`ARK_MEDIA_HWACCEL=0` in `/etc/ark/ark.env` turns it off for good (the escape hatch
+if a driver misbehaves); `=1` claims it without looking for the device, which is
+only useful to a test.
+
+If a film matters and the wait matters more, convert it on a workstation; the page prints the exact command the
 worker would run, built from the same function (`ark_media_jobs.build_command`),
 and then drop the MP4 in.
 

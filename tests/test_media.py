@@ -819,3 +819,221 @@ def test_the_file_box_cannot_delete_a_film_s_original(client, ark, films):
     assert "Media page" in urllib.parse.unquote(answer.headers["location"])
     assert (ark.root / "drop" / "files" / carrier["stored"]).is_file()
     assert _media_rows(ark), "the film is still on the shelf"
+
+
+# ---------------------------------------------------------------------------
+#  film 4 on the live box, 3 Nov 2026: prepared, killed, and still "getting ready"
+# ---------------------------------------------------------------------------
+def _shelf_row(ark, *, plan, play_stored="", jobs=()):
+    """One published film on the shelf, with the jobs it ran, oldest first."""
+    import ark_media
+    name = "1854edd0ad312c06-Red Riding Hoodwinked.mkv"
+    (ark.root / "drop" / "files" / name).write_bytes(b"\x00" * 4096)
+    with ark.db.tx() as conn:
+        media_id = conn.execute(
+            "INSERT INTO media (ts, title, filename, stored, size, state, plan,"
+            " play_stored, vcodec, container, duration)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (ark_media.now_iso(), "Red Riding Hoodwinked", "Red Riding Hoodwinked.mkv",
+             name, 4096, ark_media.STATE_PUBLISHED, plan, play_stored, "hevc", "mkv",
+             416.541)).lastrowid
+        for kind, state, detail in jobs:
+            conn.execute(
+                "INSERT INTO media_jobs (media_id, kind, state, ts, detail)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (media_id, kind, state, ark_media.now_iso(), detail))
+    return media_id
+
+
+KILLED = ("Playing copy could not be made: That took longer than this box will spend"
+          " on it.")
+
+
+def test_a_preparation_that_failed_is_not_advertised_as_getting_ready(public, ark):
+    """It said "Getting ready" for twelve hours after the job had already died.
+
+    The film's own page fetched its row without the latest job's state, so a
+    failed preparation was indistinguishable from one that had never started —
+    and the branch that prints the failure could never run.
+    """
+    media_id = _shelf_row(ark, plan="convert", jobs=[("prepare", "failed", KILLED)])
+
+    page = public.client.get(f"/media/{media_id}")
+    assert page.status_code == 200
+    assert "Getting ready" not in page.text
+    assert "could not be prepared" in page.text
+    assert "Ask the owner to try again" in page.text
+    assert "took longer than this box" not in page.text, \
+        "the box's own wording belongs on the owner's page"
+
+    shelf = public.client.get("/media/")
+    assert "Could not be prepared" in shelf.text
+
+
+def test_a_picture_taken_later_does_not_erase_a_failed_preparation(public, ark):
+    """A poster is a different job; its success says nothing about playing."""
+    media_id = _shelf_row(
+        ark, plan="convert",
+        jobs=[("prepare", "failed", KILLED), ("thumbnail", "ready", "Picture taken.")])
+
+    page = public.client.get(f"/media/{media_id}")
+    assert "could not be prepared" in page.text
+    assert "Picture taken." not in page.text
+
+
+def test_a_film_nobody_is_working_on_does_not_say_getting_ready(public, ark):
+    """Nothing queued and nothing running is not "getting ready" — it is waiting."""
+    media_id = _shelf_row(ark, plan="convert")
+
+    page = public.client.get(f"/media/{media_id}")
+    assert page.status_code == 200
+    assert "Getting ready" not in page.text
+    assert "Ask the owner to prepare it" in page.text
+    assert f"/media/{media_id}/download" in page.text, "the original is still offered"
+
+
+def test_a_film_that_plays_is_ready_even_if_a_later_attempt_failed(public, ark):
+    """'Prepare again' on a working film must not label the player a failure."""
+    media_id = _shelf_row(ark, plan="convert", play_stored="m4.mp4",
+                          jobs=[("prepare", "failed", KILLED)])
+    (ark.root / "media" / "play" / "m4.mp4").write_bytes(b"\x00" * 1024)
+
+    page = public.client.get(f"/media/{media_id}")
+    assert page.status_code == 200
+    assert "<video" in page.text
+    assert "could not be prepared" not in page.text
+
+
+def test_a_long_film_gets_the_time_the_box_really_needs():
+    """Measured on the box, quota included: 24 s of 1480x1080 10-bit HEVC took
+    127 s to convert.  A two-hour film therefore needs ~10.6 hours, and the
+    ceiling must not cut it short (film 4 needed 37 minutes and was given 23).
+    """
+    import ark_media_jobs
+
+    per_second = 127.0 / 24.0
+    assert ark_media_jobs.MAX_TIMEOUT > per_second * 2 * 3600, "a 2 h film must fit"
+    assert (ark_media_jobs._deadline({"duration": 2 * 3600},
+                                     ark_media_jobs.CONVERT_FACTOR)
+            > per_second * 2 * 3600)
+    # The film that died: 416.541 s, ~37 minutes at the measured rate.
+    allowed = ark_media_jobs._deadline({"duration": 416.541},
+                                       ark_media_jobs.CONVERT_FACTOR)
+    assert allowed > per_second * 416.541 * 1.3
+
+
+def test_the_deadline_is_still_a_ceiling_not_a_promise():
+    """A broken file may not pin the card for a day, whatever it claims to be."""
+    import ark_media_jobs
+
+    assert (ark_media_jobs._deadline({"duration": 10 * 3600},
+                                     ark_media_jobs.CONVERT_FACTOR)
+            == ark_media_jobs.MAX_TIMEOUT)
+    assert ark_media_jobs.MAX_TIMEOUT <= 12 * 3600
+    assert (ark_media_jobs._deadline({"duration": None},
+                                      ark_media_jobs.CONVERT_FACTOR)
+            == ark_media_jobs.MIN_TIMEOUT)
+
+
+# ---------------------------------------------------------------------------
+#  the playing copy: 720p, and the Pi's own decoder
+# ---------------------------------------------------------------------------
+def test_a_film_above_720p_is_prepared_at_720p_and_a_smaller_one_is_left_alone():
+    """The short side decides, so a film and a phone clip both come out 720p."""
+    import ark_media
+    import ark_media_jobs
+
+    def scale_for(width, height):
+        cmd = ark_media_jobs.build_command(
+            "ffmpeg", "in.mkv", "/tmp/out.mp4",
+            {"vcodec": "hevc", "acodec": "aac", "has_audio": True,
+             "width": width, "height": height},
+            ark_media.CONVERT, 1024 * 1024)
+        return cmd[cmd.index("-vf") + 1] if "-vf" in cmd else ""
+
+    assert scale_for(1480, 1080) == "scale=-2:720"
+    assert scale_for(1920, 1080) == "scale=-2:720"
+    assert scale_for(1280, 720) == "", "720p is left alone"
+    assert scale_for(640, 480) == "", "nothing is upscaled"
+    assert scale_for(1080, 1920) == "scale=720:-2", "a portrait clip keeps its height"
+
+
+def test_the_hardware_decoder_is_asked_for_only_when_the_device_is_there(monkeypatch,
+                                                                        tmp_path):
+    """A missing node is not an error: the box converts films without one."""
+    import ark_media_jobs
+
+    monkeypatch.delenv("ARK_MEDIA_HWACCEL", raising=False)
+    monkeypatch.setattr(ark_media_jobs, "HWACCEL_DEVICE", str(tmp_path / "renderD128"))
+    assert ark_media_jobs.hwaccel_args() == []
+
+    (tmp_path / "renderD128").write_bytes(b"")
+    assert ark_media_jobs.hwaccel_args() == ["-hwaccel", "drm"]
+
+    monkeypatch.setenv("ARK_MEDIA_HWACCEL", "0")
+    assert ark_media_jobs.hwaccel_args() == [], "the owner's switch wins"
+    monkeypatch.setenv("ARK_MEDIA_HWACCEL", "1")
+    assert ark_media_jobs.hwaccel_args() == ["-hwaccel", "drm"]
+
+
+@needs_ffmpeg
+def test_a_hardware_decoder_that_refuses_a_file_is_tried_again_on_the_cpu(ark,
+                                                                         monkeypatch):
+    """The device exists but will not decode this source: the film still plays."""
+    import ark_media
+    import ark_media_jobs
+
+    media_id = _shelf_row(ark, plan="convert")
+    with ark.db.read() as conn:
+        row = ark_media.item(conn, media_id)
+
+    seen = []
+
+    def fake_run(cmd, *, job_id=0, deadline=0.0, on_line=None):
+        seen.append(list(cmd))
+        if len(seen) == 1:
+            raise RuntimeError("Invalid data found when processing input")
+        with open(cmd[-1], "wb") as handle:
+            handle.write(b"x" * 2048)
+
+    monkeypatch.setattr(ark_media_jobs, "hwaccel_args",
+                        lambda tool=None: ["-hwaccel", "drm"])
+    monkeypatch.setattr(ark_media_jobs, "_run", fake_run)
+    monkeypatch.setattr(ark_media_jobs, "_short_output", lambda path, facts: "")
+
+    made = ark_media_jobs.make_derivative(row, job_id=0, plan="convert")
+    assert made.get("ok") is True, made
+    assert len(seen) == 2, "one attempt with the decoder, one without"
+    assert "-hwaccel" in seen[0]
+    assert seen[0].index("-hwaccel") < seen[0].index("-i"), "ffmpeg wants it before -i"
+    assert "-hwaccel" not in seen[1]
+    with ark.db.read() as conn:
+        assert ark_media.item(conn, media_id)["play_stored"] == f"m{media_id}.mp4"
+
+
+@needs_ffmpeg
+def test_a_conversion_that_failed_halfway_is_not_started_over(ark, monkeypatch):
+    """Only a refusal before the first byte may be retried: the rest is real."""
+    import ark_media
+    import ark_media_jobs
+
+    media_id = _shelf_row(ark, plan="convert")
+    with ark.db.read() as conn:
+        row = ark_media.item(conn, media_id)
+
+    seen = []
+
+    def fake_run(cmd, *, job_id=0, deadline=0.0, on_line=None):
+        seen.append(list(cmd))
+        if on_line is not None:
+            on_line("total_size=1048576")          # the tool was writing
+        raise RuntimeError("The encoder died with 20 minutes of work done")
+
+    monkeypatch.setattr(ark_media_jobs, "hwaccel_args",
+                        lambda tool=None: ["-hwaccel", "drm"])
+    monkeypatch.setattr(ark_media_jobs, "_run", fake_run)
+
+    made = ark_media_jobs.make_derivative(row, job_id=0, plan="convert")
+    assert made.get("ok") is False
+    assert "died" in made.get("error", "")
+    assert len(seen) == 1, "a failure halfway through is not a hardware problem"

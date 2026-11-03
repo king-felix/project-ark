@@ -190,7 +190,7 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 |---|---|
 | `pi/api/ark_space.py` | **the only storage policy**: `reserve_for()` = max(7 % of *this* filesystem, 2 GiB), `facts()` (`f_bavail`, never `f_bfree`), reservations (`reserve`/`touch`/`release`/`reconcile`/`hold`), `account()`. `Refused` lives here; `ark_storage.Refused` aliases it |
 | `pi/api/ark_media.py` | the film shelf's model: probe/plan (direct/remux/convert/unsupported), accept/adopt, captions, the durable job queue, the catalogue (`PAGE = 24`), delete, playable |
-| `pi/api/ark_media_jobs.py` | the work itself: bounded `ffmpeg`/`ffprobe` (argument arrays, deadline), thumbnail choice in pure Python, stream-copy-or-x264, `output_budget()` + `-fs`, startup reconciliation |
+| `pi/api/ark_media_jobs.py` | the work itself: bounded `ffmpeg`/`ffprobe` (argument arrays, deadline), thumbnail choice in pure Python, stream-copy-or-x264 at most 720p (hardware decode, CPU fallback), `output_budget()` + `-fs`, startup reconciliation |
 | `pi/api/ark_media_web.py` | the public shelf: `build_router(page)`, `ranged()` (206/416/HEAD/`Accept-Ranges`/`If-Range`), library + player pages, fallback poster SVG, browser-local resume |
 | `pi/bin/ark-media-worker` | the one background process (`--once`, `--status`): claims one job, does it, sleeps |
 | `pi/bin/ark-space` | the shell door to the policy: `--status [--json]`, `--check --need N` (exit 3 with a sentence) |

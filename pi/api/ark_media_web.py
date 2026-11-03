@@ -291,7 +291,7 @@ def build_router(page) -> APIRouter:
             if row is None or str(row["state"]) != ark_media.STATE_PUBLISHED:
                 return None, None
             job = ark_media.running_job(conn, media_id)
-            last = ark_media.last_job(conn, media_id)
+            last = ark_media.last_job(conn, media_id, kind="prepare")
             subs = ark_media.captions(conn, media_id)
         return row, {"job": job, "last": last, "subs": subs}
 
@@ -421,7 +421,12 @@ def build_router(page) -> APIRouter:
                         'the owner to look at it.</p><p><a href="/media/">Back to Media</a></p>',
                         here="/media/", status=404)
         present = ark_media.original_path(row).is_file()
-        status = ark_media.status_of(row, present)
+        last = extra["last"]
+        # The film's own page does not come through `listing()`, so the latest
+        # job has to be handed over explicitly — otherwise a failed preparation
+        # reads as "never prepared" and the page promises work nobody is doing.
+        status = ark_media.status_of(row, present,
+                                     str(last["state"] or "") if last is not None else "")
         playable = ark_media.playable(row)
         job = extra["job"]
 
@@ -452,13 +457,24 @@ def build_router(page) -> APIRouter:
   </div>
   <p class="note" id="playback-error" hidden></p>"""
         else:
-            waiting = "Getting ready" if status in ("working", "needs") else "Not ready"
             detail = ""
-            if job is not None:
+            if status == "missing":
+                waiting = "The file is not here"
+                detail = " The original is not on the card any more."
+            elif job is not None:
+                waiting = "Getting ready"
                 detail = (" The box is working on it now." if str(job["state"]) == "running"
                           else " It is next in the queue.")
-            elif status == "failed" and extra["last"] is not None:
-                detail = " " + esc(str(extra["last"]["detail"] or ""))[:240]
+            elif status == "failed":
+                waiting = "This film could not be prepared"
+                # The detail the box wrote down is for the owner's page: it can
+                # be an FFmpeg line or a Python exception, and this page is read
+                # by somebody who has never heard of either.
+                detail = (" The original file is kept. Ask the owner to try again —"
+                          " the reason is on their page.")
+            else:
+                waiting = "Not ready yet"
+                detail = " Ask the owner to prepare it before it can play."
             player = f"""
   <p class="status"><span class="dot wait" aria-hidden="true"></span>
     <span><b>{esc(waiting)}.</b>{detail}</span></p>

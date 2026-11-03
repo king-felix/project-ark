@@ -475,14 +475,17 @@ watching** row on the shelf is built from the same local list, and **Clear this 
 under it removes it.
 
 **If a film says *Needs preparing***: the box has the file, but it is in a shape this
-browser cannot play. The owner's page can make a playing copy — on this box that is
-about **40 minutes for a 90-minute film**, done in the background while everything
-else keeps working, and the original is never touched. **If it says *Could not be
+browser cannot play. The owner's page can make a playing copy — that is minutes for
+a repack and can be **hours** for a full conversion (about three hours for a
+90-minute 1080p film), done in the background while everything else keeps working,
+and the original is never touched. **If it says *Could not be
 prepared***, the reason is on the owner's page.
 
 **Captions** appear in the player's caption menu when the owner has added them
 (a `.vtt` or `.srt` file with the film). **Download the original** is on every film's
-page — it is the file exactly as it arrived.
+page — it is the file exactly as it arrived, at the size it was uploaded. The copy
+the player uses is made for a phone screen: **720p at most**, which is why the shelf
+holds several times more films than the originals alone would allow.
 
 **How to add a film:** put it in the File Box (`http://ark.lan/files`, up to 8 GB).
 It is *not* published straight away: it waits on the owner's Media page until they

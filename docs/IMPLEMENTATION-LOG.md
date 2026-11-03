@@ -5179,3 +5179,216 @@ bundle, so nothing here can be quoted or searched as text. The films have not be
 watched by a person (that is `docs/HUMAN-TEST-LIST.md` §23). Phone playback, codec
 support on an iPhone and the subjective naming of the shelves are human work.
 The two Canadian Prepper playlists left out are a choice, not a limitation.
+
+---
+
+## 46. "Getting ready" for twelve hours — a deadline that was never reachable, and a page that would not say so, 3 Nov 2026
+
+### 46.1 What was reported
+
+A test film was uploaded to the live box:
+
+```
+Looney Tunes - Red Riding Hoodwinked (1955) (1080p BluRay x265 Garshasp).mkv
+141,964,578 bytes · 1480×1080 · HEVC Main 10 (yuv420p10le) · E-AC-3 · 416.541 s
+```
+
+It sat at **Getting ready** for over twelve hours. It was never going to move: the
+job that was supposed to prepare it had already died, and nothing retries a failed
+job on its own.
+
+### 46.2 What the box had written down
+
+```
+media  id=4  state=published  plan=convert  play_stored=''  play_size=0  poster=m4.jpg
+media_jobs id=4 kind=prepare state=failed attempts=1
+  started  2026-11-03T06:33:18+00:00
+  finished 2026-11-03T06:56:21+00:00          (1383 s)
+  detail   Playing copy could not be made: That took longer than this box will spend on it.
+```
+
+The deadline was `3 × 416.541 + 120 = 1369.6 s` (22 m 50 s). The job ran 1383 s and was
+killed. The media row was otherwise healthy — the probe, the poster and the plan were
+all correct — so nothing in the film's own row said "this failed"; only the job row
+did, and the page a viewer opens never read it.
+
+### 46.3 Measured, on this box, before changing anything
+
+The old constant was `CONVERT_FACTOR = 3.0`, justified by "x264 veryfast at 720p
+encodes about 2.3× faster than real time". That figure was measured with the whole CPU
+and at 720p. The worker gets neither: `ark-media-worker.service` sets `CPUQuota=150%`,
+and `build_command()` only downscales when the source is **taller than 1080**, so this
+source is encoded at 1080p.
+
+Twenty-four seconds of *this* file, measured four ways:
+
+| Run | Wall clock | Per second of film |
+|---|---|---|
+| Encode at 1080p, no quota (all four cores) | 39 s | 1.6× |
+| Encode at 1080p, `CPUQuota=150%` (what the worker gets) | **127 s** | **5.3×** |
+| Encode at 720p, `CPUQuota=150%` | 95 s | 4.0× |
+| Decode only (`-f null -`), `CPUQuota=150%` | 37 s | 1.5× |
+
+So the film needed about **2204 s (37 minutes)** and was given 1370 s — **38 % short of
+the need** — and the shortfall is structural: the factor is per second of film, so
+every 10-bit HEVC source of more than a minute or so would hit it.
+
+The box was not throttled (`vcgencmd get_throttled` → `0x0`) and nothing else was
+running during the job; the journal for 06:30–07:00 holds only the net-watch timer.
+
+### 46.4 Two defects, both fixed
+
+**1. The deadline was measured against a box the worker never gets.**
+`CONVERT_FACTOR` 3.0 → **8.0** (1.5× headroom over the measured 5.3×), and
+`MAX_TIMEOUT` 6 h → **12 h**, because a two-hour film from such a source needs ~10.6 h
+and a 6-hour ceiling would fail it after six hours of work. This film is now allowed
+3452 s (57.5 minutes) and needs 2204 s. The ceiling is still a ceiling: a broken file
+cannot pin the card for a day, and `MIN_TIMEOUT` is unchanged.
+
+**2. The film's own page could not see a failure.**
+`/media/{id}` builds its row with `ark_media.item()` — no `job_state` column — and
+`status_of()` read the job state only from the row. It fell through to `plan=convert`
+and `play_stored=''`, which is `needs`, and the page printed **Getting ready** for a
+film nobody was working on. The `status == "failed"` branch that prints the reason was
+unreachable code. `status_of()` now takes the latest job's state explicitly, and the
+page says:
+
+* **This film could not be prepared** — plus *the original file is kept, ask the
+  owner to try again*, and the reason itself stays on the owner's Media page;
+* **Not ready yet — ask the owner to prepare it** when nothing is queued or running
+  (this was the same lie in a quieter form: *Getting ready* for work nobody had asked
+  for);
+* **The file is not here** when the original has gone.
+
+The shelf card and the owner's page already said *Could not be prepared* — only the
+page a viewer actually opens was wrong.
+
+**3. An independent review found two more, and both were real.**
+
+* *A poster job decided the verdict.* `last_job()` was kind-agnostic, so a
+  **thumbnail** job that succeeded after a failed conversion wiped the failure off the
+  page (or, failing itself, blamed preparation for a missing picture).
+  `last_job(conn, id, kind="prepare")` and the `listing()` subqueries are now filtered
+  to `kind = 'prepare'`: the status speaks about preparation, and only a prepare job
+  may answer.
+* *A failed job outranked a playing copy.* `status_of()` checked `failed` before
+  `play_stored`, so an owner who pressed **Prepare again** on a film that already
+  played — and watched that attempt fail — got a working player above the words
+  *Could not be prepared*. A film with a playing copy (or a `direct` plan) is now
+  `ready` first, and a failed job after it cannot take that away.
+
+The review also caught that the box's raw failure text (an FFmpeg line, or
+`TimeoutExpired: …`) had become visible on a **public** page, which §5 does not allow.
+It is now printed only on the owner's page; the household sees one plain sentence.
+And `docs/USING-THE-ARK.md` still promised *40 minutes for a 90-minute film*, which
+this change had just proved false — it now says hours, with the number.
+
+### 46.5 Evidence
+
+* `tests/test_media.py` — 44 passed (38 before; six added):
+  `test_a_preparation_that_failed_is_not_advertised_as_getting_ready`,
+  `test_a_picture_taken_later_does_not_erase_a_failed_preparation`,
+  `test_a_film_nobody_is_working_on_does_not_say_getting_ready`,
+  `test_a_film_that_plays_is_ready_even_if_a_later_attempt_failed`,
+  `test_a_long_film_gets_the_time_the_box_really_needs`,
+  `test_the_deadline_is_still_a_ceiling_not_a_promise`.
+* Full suite: **802 passed, 2 skipped**.
+* The measurements above were taken on the live box with `systemd-run --scope -p
+  CPUQuota=150%` so the quota was real, not assumed.
+* **The whole film, converted with the argument array the fixed settings produce**
+  (`build_command()`, run on the box as a transient unit with the worker's own
+  `CPUQuota=150%`, `Nice=10`, `IOSchedulingClass=idle`): **2080 s — 34.7 minutes** —
+  inside the new 3452 s ceiling, and 710 s *outside* the old 1370 s one, so the old
+  settings would have killed it again. Output **190,353,137 bytes**, H.264 High
+  1480×1080 `yuv420p` + AAC-LC stereo, `duration = 416.541125` against the source's
+  416.541 (whole, not truncated), `moov` before `mdat` (faststart). The extra `text`
+  track is the source's two Matroska chapters, not a subtitle. Nothing was published:
+  the file was written under `/srv/ark/tmp` and deleted afterwards.
+
+### 46.6 What this does not fix
+
+* **A 1080p 10-bit HEVC film is expensive on a Pi 4**, and now it is honest about it:
+  ~37 minutes for 7 minutes of cartoon, ~10.6 hours for a two-hour film. Dropping the
+  encode cap from 1080 to 720 would cut that by about 25 % (95 s vs 127 s per 24 s) and
+  shrink the files, but it changes what every viewer gets, so it waits for the owner.
+* **Hardware decoding works on this box and is nearly free**: `-hwaccel drm` decoded
+  12 s of this file in 2 s, against 18 s in software for the same span. It is not used
+  yet — it needs `/dev/dri` access for the service user and a tested fallback.
+* **A film longer than about two hours** (from a 1080p 10-bit HEVC source) still
+  exceeds the 12-hour ceiling and will fail after the full twelve hours rather than
+  giving up early. A pace check — compare `out_time_us` against the time left and stop
+  when it cannot finish — is the obvious next step and is not built.
+* **A long job is retried from the beginning after a cut.** `ark_media.recover()` puts
+  an interrupted `running` job back in the queue, up to three attempts, so a film near
+  the ceiling that is interrupted twice could occupy the card for three times its
+  length. The three-strike rule is the project's own; the interaction with a 12-hour
+  ceiling is new and has not been decided on.
+* Nothing here has been deployed yet.
+
+---
+
+## 47. A playing copy that fits a phone, decoded by the Pi itself — 3 Nov 2026
+
+### 47.1 What the owner asked for
+
+Two options offered at the end of §46, both accepted: **downrez anything above
+720p**, and **use the Pi's hardware decoder** rather than declining it.
+
+### 47.2 Measured before anything was changed
+
+The same 24 seconds of the same 1480×1080 10-bit HEVC film, every run under the
+worker's own `CPUQuota=150%`:
+
+| Run | Wall clock | Per second of film |
+|---|---|---|
+| 1080p, software decode (what the box did) | 127 s | 5.3× |
+| 720p, software decode | 95 s | 3.96× |
+| 720p, `-hwaccel drm` | **45 s** | **1.85×** |
+
+The two 720p files were **byte-identical** (`md5 4782a8145dcf55a602ab95f76b7e736b`),
+so the hardware decoder is not a quality trade — it is the same film, twice as fast.
+`pi` is already in the `video` and `render` groups, and `/dev/dri/renderD128` is
+`root:render 0660`, so the worker can open it with no unit change; that was proved
+by encoding as `pi` before the code was written.
+
+### 47.3 What changed
+
+* `ark_media_jobs.PLAY_HEIGHT = 720` and a new rule in `build_command()`: the
+  **short side** decides, so a 1480×1080 film becomes 986×720, a portrait
+  1080×1920 clip becomes 720×1280, 720p and below are untouched, and nothing is
+  upscaled. The previous rule only scaled above 1080p.
+* `hwaccel_args()` returns `-hwaccel drm` when `/dev/dri/renderD128` exists.
+  `ARK_MEDIA_HWACCEL=0` disables it for good; `=1` forces it (tests only).
+* `make_derivative()` tries the decoder first and **retries on the CPU when the
+  tool refuses before writing a single byte**, logging the refusal. A failure
+  halfway through is *not* retried: that is a real failure, and starting a
+  20-minute encode again to prove it would waste the card. The signal is
+  `wrote["size"]`, which `on_line()` already maintained for the space ledger.
+* The deadline is unchanged (`8 × length + 2 min`, at most 12 h) on purpose: it
+  must still cover the *slow* path — a file the decoder refuses runs at 3.96× in
+  software, so lowering the factor to fit the fast path would break the fallback.
+
+### 47.4 What it means on this box
+
+| Film | Before (§46 fix) | Now |
+|---|---|---|
+| 7 minutes (the test film) | 37 min | **13 min** |
+| 90 minutes | 8 h | **~3 h** |
+| 2 hours | 10.6 h | **~3¾ h** |
+
+And every playing copy is at most 720p: the 7-minute film's copy is 986×720 and
+190 MB at 1080p became the same film at 720p in a fraction of the time.
+
+### 47.5 Evidence
+
+* `tests/test_media.py` — 48 passed (44 before; four added):
+  `test_a_film_above_720p_is_prepared_at_720p_and_a_smaller_one_is_left_alone`,
+  `test_the_hardware_decoder_is_asked_for_only_when_the_device_is_there`,
+  `test_a_hardware_decoder_that_refuses_a_file_is_tried_again_on_the_cpu`,
+  `test_a_conversion_that_failed_halfway_is_not_started_over`.
+* Full suite: **806 passed, 2 skipped**.
+* The live proof, after deploy, is recorded in §47.6.
+
+### 47.6 Deployed and proved on the live box
+
+*(filled in below once the deploy and the film have both finished)*

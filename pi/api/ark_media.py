@@ -758,7 +758,18 @@ def running_job(conn: sqlite3.Connection, media_id: int):
         " ORDER BY id DESC LIMIT 1", (int(media_id),)).fetchone()
 
 
-def last_job(conn: sqlite3.Connection, media_id: int):
+def last_job(conn: sqlite3.Connection, media_id: int, kind: str | None = None):
+    """The newest job for a film — of one kind, when a caller asks for one.
+
+    ``status_of()`` speaks about *preparation*, so it must be told about the
+    newest ``prepare`` job: a poster taken successfully after a failed
+    conversion says nothing about whether the film can play, and a poster that
+    failed is not the reason a film cannot be watched.
+    """
+    if kind:
+        return conn.execute(
+            "SELECT * FROM media_jobs WHERE media_id = ? AND kind = ?"
+            " ORDER BY id DESC LIMIT 1", (int(media_id), str(kind))).fetchone()
     return conn.execute(
         "SELECT * FROM media_jobs WHERE media_id = ? ORDER BY id DESC LIMIT 1",
         (int(media_id),)).fetchone()
@@ -818,11 +829,11 @@ def listing(conn: sqlite3.Connection, q: str = "", state: str = STATE_PUBLISHED,
     page = max(1, int(page or 1))
     rows = conn.execute(
         "SELECT m.*, (SELECT j.state FROM media_jobs j WHERE j.media_id = m.id"
-        " ORDER BY j.id DESC LIMIT 1) AS job_state,"
+        " AND j.kind = 'prepare' ORDER BY j.id DESC LIMIT 1) AS job_state,"
         " (SELECT j.detail FROM media_jobs j WHERE j.media_id = m.id"
-        " ORDER BY j.id DESC LIMIT 1) AS job_detail,"
+        " AND j.kind = 'prepare' ORDER BY j.id DESC LIMIT 1) AS job_detail,"
         " (SELECT j.progress FROM media_jobs j WHERE j.media_id = m.id"
-        " ORDER BY j.id DESC LIMIT 1) AS job_progress"
+        " AND j.kind = 'prepare' ORDER BY j.id DESC LIMIT 1) AS job_progress"
         " FROM media m" + where + " ORDER BY " + order + " LIMIT ? OFFSET ?",
         [*args, int(per_page), (page - 1) * int(per_page)]).fetchall()
     total = count(conn, q, state, ready, category)
@@ -840,18 +851,31 @@ def categories(conn: sqlite3.Connection, states: Iterable[str] | None = None) ->
         + marks + ") ORDER BY category", wanted).fetchall()]
 
 
-def status_of(row, present: bool | None = None) -> str:
-    """One word a page can print: ready, working, needs, failed, missing, hidden."""
+def status_of(row, present: bool | None = None, job_state: str | None = None) -> str:
+    """One word a page can print: ready, working, needs, failed, missing, hidden.
+
+    ``listing()`` joins the latest job onto each row, so the shelf and the
+    owner's page get the verdict for free.  A page that fetched the row on its
+    own must pass ``job_state`` in: without it a film whose preparation *failed*
+    is indistinguishable from one that was never prepared, and its own page said
+    "Getting ready" for ever (film 4, 3 Nov 2026 — log §46).
+    """
     state = str(row["state"] or "")
-    job = str(row["job_state"] or "") if "job_state" in row.keys() else ""
+    if job_state is not None:
+        job = str(job_state or "")
+    else:
+        job = str(row["job_state"] or "") if "job_state" in row.keys() else ""
     if present is False:
         return "missing"
     if job in ("queued", "running"):
         return "working"
-    if job == "failed":
-        return "failed"
+    # A film with a playing copy is ready, whatever the last attempt said: an
+    # owner who tries "Prepare again" on a working film, and watches that second
+    # attempt fail, must not be told the film they can plainly play is broken.
     if str(row["plan"]) == DIRECT or str(row["play_stored"] or ""):
         return "ready"
+    if job == "failed":
+        return "failed"
     if str(row["plan"]) in (REMUX, CONVERT):
         return "needs"
     return "unknown"

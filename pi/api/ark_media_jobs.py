@@ -39,15 +39,58 @@ import ark_space
 #: Bounded, and generous enough for a long film on a slow card.
 THUMB_TIMEOUT = 30.0
 REMUX_FACTOR = 0.6            # seconds of repacking per second of film
-#: A wall-clock ceiling, not a prediction.  Measured on the box: x264 veryfast
-#: at 720p encodes about 2.3x faster than real time, so 3x the film's length is
-#: roughly seven times the time it should need — enough headroom for a 4K source
-#: without letting a broken file pin the card for a day.
-CONVERT_FACTOR = 3.0
+#: A wall-clock ceiling, not a prediction.
+#:
+#: The first figure here (2.3x *faster* than real time, so 3x the film's length)
+#: was measured at 720p with the whole CPU available.  The worker does not have
+#: the whole CPU — `ark-media-worker.service` caps it at `CPUQuota=150%` — and a
+#: 1080p source is encoded at 1080p, not at 720p.  Re-measured on this box
+#: (3 Nov 2026, FFmpeg 7.1.5, the same 1480x1080 10-bit HEVC cartoon): 24 s of
+#: film took **39 s** unconstrained, **127 s** under the worker's own quota —
+#: 5.3x the film's length, of which decoding alone is 1.5x.  The old 3x ceiling
+#: was therefore *below* what the box needs, and film 4 was killed at 23 minutes
+#: having needed 37 (log §46).  8x keeps about 1.5x headroom over that
+#: measurement for content harder than a cartoon.
+CONVERT_FACTOR = 8.0
 MIN_TIMEOUT = 120.0
-MAX_TIMEOUT = 6 * 3600.0
+#: 12 h, so a two-hour film from such a source (~10.6 h at the measured rate)
+#: fits.  A film that needs longer than this is past what one job on a Pi 4 can
+#: honestly do, and fails with a sentence instead of pinning the card for a day.
+MAX_TIMEOUT = 12 * 3600.0
 #: Never let one conversion write more than this, whatever the input claims.
 CONVERT_CEILING = 8 * 1024 ** 3
+
+#: The short side of a playing copy.  Anything larger is downscaled: a phone
+#: cannot show the difference, the card holds several times more films, and the
+#: encode is where the waiting is.  Measured on this box, 24 s of the same
+#: 1480x1080 10-bit HEVC cartoon: 127 s at 1080p, 95 s at 720p.
+PLAY_HEIGHT = 720
+
+#: The Pi's hardware decoder.  Measured on this box on the same 24 s: software
+#: decode + 720p encode took 91 s, hardware decode + the same encode took 45 s —
+#: and the two MP4s were **byte-identical** (md5 4782a8145dcf55a602ab95f76b7e736b),
+#: so this is not a quality trade at all.  A device node is not a working
+#: decoder, so a refusal falls back to the CPU (`make_derivative`).
+HWACCEL = "drm"
+HWACCEL_DEVICE = "/dev/dri/renderD128"
+
+
+def hwaccel_args(tool: str | None = None) -> list[str]:
+    """``-hwaccel drm`` when this box has the device, else nothing.
+
+    ``ARK_MEDIA_HWACCEL=0`` turns it off for good — the escape hatch when a
+    driver misbehaves; ``=1`` claims it without asking, which is only useful to
+    a test.  Being present is not the same as working, which is why
+    ``make_derivative`` tries again on the CPU when the tool refuses before it
+    has written a byte: a box with no driver, or a source this decoder will not
+    take, still converts films.
+    """
+    choice = os.environ.get("ARK_MEDIA_HWACCEL", "").strip().lower()
+    if choice in ("0", "no", "off", "false"):
+        return []
+    if choice in ("1", "yes", "on", "true"):
+        return ["-hwaccel", HWACCEL]
+    return ["-hwaccel", HWACCEL] if Path(HWACCEL_DEVICE).exists() else []
 
 #: Candidate positions as a fraction of the film: interior, never the fade in.
 FRACTIONS = (0.12, 0.22, 0.34, 0.46, 0.58, 0.70, 0.82)
@@ -303,19 +346,20 @@ def _audio_args(facts: dict) -> list[str]:
 
 
 def build_command(tool: str, source: Path, output: Path, facts: dict, plan: str,
-                  budget: int) -> list[str]:
+                  budget: int, hwaccel: list[str] | None = None) -> list[str]:
     """The exact argument array for a repack or an encode.
 
     Separated from running it so a test can read the plan without spending the
     electricity — and so the workstation recipe printed to the owner is built
-    from the same function the box uses.
+    from the same function the box uses.  ``hwaccel`` is inserted before ``-i``,
+    where ffmpeg wants it, and is empty on a box without the decoder.
     """
     # `-progress pipe:1` is what makes the rest of this module work: without it
     # ffmpeg writes nothing to stdout, `_run` blocks until the process exits, and
     # cancellation, the deadline, the heartbeat and the reservation's `written`
     # count are all dead code.  This line is not decoration.
     cmd = [tool, "-nostdin", "-v", "error", "-nostats", "-progress", "pipe:1",
-           "-y", "-protocol_whitelist", "file",
+           "-y", "-protocol_whitelist", "file", *(hwaccel or []),
            "-i", str(source), "-map", "0:v:0", "-map", "0:a:0?",
            "-max_muxing_queue_size", "1024"]
     if plan == ark_media.REMUX or not _needs_encode(facts):
@@ -323,9 +367,13 @@ def build_command(tool: str, source: Path, output: Path, facts: dict, plan: str,
     else:
         cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "24",
                 "-profile:v", "high", "-level", "4.1", "-pix_fmt", "yuv420p"]
+        width = int(facts.get("width") or 0)
         height = int(facts.get("height") or 0)
-        if height > 1080:
-            cmd += ["-vf", "scale=-2:1080"]
+        if width and height and min(width, height) > PLAY_HEIGHT:
+            # The *short* side decides: a 1480x1080 film becomes 986x720, a
+            # 1080x1920 phone clip becomes 720x1280, and nothing is upscaled.
+            cmd += ["-vf", f"scale=-2:{PLAY_HEIGHT}" if height <= width
+                    else f"scale={PLAY_HEIGHT}:-2"]
     cmd += _audio_args(facts)
     cmd += ["-movflags", "+faststart", "-f", "mp4", "-fs", str(int(budget)), str(output)]
     return cmd
@@ -369,15 +417,33 @@ def make_derivative(row, *, job_id: int, plan: str | None = None) -> dict:
 
     with ark_space.hold(ark_media.media_root(), budget, owner=owner,
                         label=f"media {int(row['id'])} {plan}") as receipt:
-        cmd = build_command(tool, source, partial, facts, plan, budget)
-        try:
-            _run(cmd, job_id=job_id, deadline=deadline, on_line=on_line)
-        except Stopped:
+        # The hardware decoder is fast and writes the same bytes, but a device
+        # that exists is not a device that works.  A refusal *before a single
+        # byte is written* is tried again on the CPU; a failure halfway through
+        # is a real failure and is reported as one.
+        hw = hwaccel_args(tool)
+        failure = ""
+        for extra in ([hw, []] if hw else [[]]):
             _unlink(partial)
-            return {"ok": False, "cancelled": True, "error": "Stopped."}
-        except RuntimeError as exc:
-            _unlink(partial)
-            return {"ok": False, "error": str(exc)}
+            wrote["size"] = 0
+            try:
+                _run(build_command(tool, source, partial, facts, plan, budget,
+                                   hwaccel=extra),
+                     job_id=job_id, deadline=deadline, on_line=on_line)
+                failure = ""
+                break
+            except Stopped:
+                _unlink(partial)
+                return {"ok": False, "cancelled": True, "error": "Stopped."}
+            except RuntimeError as exc:
+                _unlink(partial)
+                failure = str(exc)
+                if not extra or wrote["size"]:
+                    return {"ok": False, "error": failure}
+                log(f"media {int(row['id'])}: the hardware decoder refused this file "
+                    f"({failure}); using the CPU")
+        if failure:
+            return {"ok": False, "error": failure}
         if not partial.is_file() or partial.stat().st_size == 0:
             _unlink(partial)
             return {"ok": False, "error": "The video tool wrote nothing."}

@@ -343,10 +343,14 @@ three different facts apart:
 | **Needs converting** | a codec browsers cannot decode (HEVC, MPEG-4 Part 2, MPEG-2, WMV…) | queues a background conversion to H.264/AAC MP4, one film at a time |
 
 A conversion is a **background job** with a wall-clock ceiling, an output-size
-budget, a space reservation and a cancel button. Measured on the Pi 4B: 30
-seconds of 720p took 13 seconds to convert (2.3× faster than real time), so a
-90-minute film is about **40 minutes** of background work — nice'd and CPU-capped,
-one film at a time, never while somebody is waiting on a page. The owner's
+budget, a space reservation and a cancel button. A playing copy is never larger
+than 720p — the shelf is for phones, and the full-size original stays on the card
+and downloadable. Measured on the Pi 4B **under the worker's own CPU cap**, on 24
+seconds of a 1480×1080 10-bit HEVC film: 127 s decoding in software at 1080p, 95 s
+at 720p, and **45 s at 720p on the Pi's hardware decoder** (byte-identical output).
+So a 7-minute film is about 13 minutes of background work and a 90-minute film
+about **3 hours** — nice'd and CPU-capped, one film at a time, never while somebody
+is waiting on a page. The owner's
 **Media** page states the cost, shows the queue, and offers *Stop*; a film that
 was not converted still has its file and can be played on a workstation (the
 recipe is printed on the page).
