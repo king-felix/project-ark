@@ -100,7 +100,11 @@ def read_catalogue(path: str | os.PathLike | None = None) -> dict:
     out: dict[str, str] = {}
     try:
         text = target.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
+        # A catalogue this box cannot read is *no filing*, not a broken page: every
+        # collection then appears under "Everything else" and the reader still sees
+        # the library.  A stray Latin-1 byte in one label must not 500 the only door
+        # to 97 GiB of books.
         return out
     for raw in text.splitlines():
         line = raw.rstrip("\n")

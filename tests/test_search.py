@@ -53,7 +53,7 @@ def test_a_hanging_collection_does_not_hold_the_page(public, monkeypatch):
 
 def test_only_a_bounded_number_of_collections_is_asked(public, monkeypatch):
     main = public.app
-    monkeypatch.setattr(main, "library_books", lambda: _books(40))
+    monkeypatch.setattr(main, "library_books", lambda: _books(120))
     asked: list[str] = []
 
     def fake(book_id: str, pattern: str) -> list[dict]:
@@ -63,7 +63,7 @@ def test_only_a_bounded_number_of_collections_is_asked(public, monkeypatch):
     monkeypatch.setattr(main, "_kiwix_one", fake)
     monkeypatch.setattr(main, "SEARCH_DEADLINE", 5.0)
     main.search_library("water")
-    assert len(asked) == main.MAX_COLLECTIONS < 40
+    assert len(asked) == main.MAX_COLLECTIONS < 120
 
 
 def test_no_answer_at_all_still_arrives_on_time(public, monkeypatch):

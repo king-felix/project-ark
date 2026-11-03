@@ -79,14 +79,16 @@ FILES_PAGE = 50
 # questions are in flight, and how long the page waits for answers.
 #
 # The ceiling on collections is a guard against a pathological card, **never** a
-# page size.  It was 12 while this box held 20 collections, so eight books were
-# never asked anything — and the page then said *Nothing matched* about a search
-# that had not happened at all (2 November 2026).  A reader cannot tell a book
-# that has nothing from a book nobody opened, so the ceiling must be above what a
-# real card holds; measured on the Pi with six workers, twenty collections answer
-# in about 4.5 s, which is why the wait below is eight seconds and not six.
+# page size.  It was 12 while this box held 20 collections (2 November 2026), and
+# the page then said *Nothing matched* about a search that had not happened.  The
+# same fault returned one size larger on 3 November: the card reached 27
+# collections and the ceiling was 20, so seven books — Self-reliance, Storing
+# food, Textbooks, Travel, Urban Prepper, **Wikipedia** and Woodworking — were
+# never asked anything at all.  Thirty-two is above any real card this project
+# builds (the full profile is 29) and still bounds a pathological one; the wait
+# below, not this number, is what keeps the page quick.
 SEARCH_WORKERS = 6
-MAX_COLLECTIONS = 20
+MAX_COLLECTIONS = 32
 SEARCH_DEADLINE = 8.0
 
 #: How much of a hit's description a reader is shown.  This is a limit, never a
@@ -106,7 +108,7 @@ SNIPPET_CHARS = 220
 #: encyclopedia, dictionary, travel guide or Gutenberg book could appear at all,
 #: however good the article was.  ``_spread()`` is what makes these numbers a
 #: sample of the library instead of a sample of the alphabet.
-LIBRARY_HITS = 24
+LIBRARY_HITS = 32
 HITS_PER_COLLECTION = 4
 
 app = FastAPI(title="Project ARK", docs_url=None, redoc_url=None, openapi_url=None)

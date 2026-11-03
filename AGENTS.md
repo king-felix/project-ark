@@ -180,7 +180,7 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 | Released tag | `v1.0.5` = `dd3336c` (never move a tag, never force-push) |
 | Active branch | `feature/admin-hardening` (fast-forwarded to `main` at `acf5d29`) |
 | Schema version | `SCHEMA_VERSION = 7` (`pi/api/ark_db.py`) — migration 7 adds the film shelf and the space ledger |
-| Test suite | `793 passed, 2 skipped` across 33 files (`tests/`) |
+| Test suite | `794 passed, 2 skipped` across 33 files (`tests/`) |
 | Live Pi state | Deployed through log §44 at `19864d1`; `ready.ok: true`, `blocking: []`, `mode: home`; 20 collections (86.5 GiB), 1291 books, 67 games, 11 guides, AI active, FFmpeg fitted; 1 map pack (Liechtenstein 15.5 MB, published); reserve 17.2 GB |
 | Owner decisions pending | History rewrite + force-push for pre-`a926296` commits (log §37.6, §38.7) and for the home-LAN address in `1a3f41f` (log §44); rotate GitHub & Pi passwords; licence choice |
 
@@ -343,7 +343,7 @@ sudo bash /srv/ark/src/install-ark.sh --only 90-verify
 | Ask the Ark: brief, prompt budget, route hints, lease slot + disconnect cancel, `public_ask` switch | `tests/test_ai.py` (45) |
 | Map pack format v2 (modes, one-way, turn restrictions, buildings), safe zip import, immutable versions, publish/hide/delete, catalogue, 206/416/HEAD ranges, admin gate, app assets | `tests/test_maps.py` (16) |
 | **Defining offline journey** in real Chromium: download, disconnect, reload, pan, new search, NEW route, directions, route sheet, GPX, no network; pause/resume/cancel | `tests/test_maps_browser.py` (2) |
-| Library shelves from the catalogue's topic column; every book on one shelf; a film shelf says it is films, not that it is unsearchable; `/library` named by the proxy; every imported module copied; published sha-256 checked before publish | `tests/test_library.py` (26) |
+| Library shelves from the catalogue's topic column; every book on one shelf; a film shelf says it is films, not that it is unsearchable; `/library` named by the proxy; every imported module copied; published sha-256 checked before publish | `tests/test_library.py` (28) |
 | Stage 7 household answers, 8 emergency topics, inline SVG QR cards, essentials pack builder | `tests/test_household.py` (13), `test_household_page.py` (34), `test_qr.py` (11), `test_essentials.py` (24) |
 | claim door, forced password change, throttling, sessions, TLS probe verdicts, secrets guard | `tests/test_auth.py` (19), `test_accounts.py` (14), `test_tls_probe.py` (16), `test_secrets.py` (12), `test_public.py` |
 

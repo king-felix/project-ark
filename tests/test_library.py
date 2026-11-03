@@ -7,10 +7,11 @@ somebody who is looking for something:
   lists appears exactly once, the filing comes from the catalogue rather than
   from a second list in code, and a bundle copied on by hand lands under
   *Everything else* instead of vanishing;
-* **a film shelf is never counted as a searched shelf** — a bundle built with
-  ``_ftindex:no`` answers nothing whatever it holds, so asking it and reporting
-  "nothing matched" would be a confident false answer about 4 GiB of films.  It
-  is left out of the fan-out, counted separately, and said out loud in words;
+* **a tag in the file never decides what a reader is told** — ``_ftindex:no``
+  looks like "this cannot be searched", and on this box it is not: the installed
+  iFixit bundle carries it and answers 22,722 hits for "screen" in 0.22 s.  So the
+  search fan-out still asks every collection, and a card only calls itself films
+  because the catalogue filed it on the ``watch`` shelf;
 * **the proxy really serves the page** — ``location /`` ends in
   ``try_files … /index.html``, so an unnamed route answers the front page with a
   200.  That is a page that looks fine and is not the page anybody asked for,
@@ -105,6 +106,23 @@ def test_the_requested_collections_are_in_the_catalogue_on_the_right_shelves():
         assert "video" in rows[film][4].lower(), f"{film} is films; its label must say so"
 
 
+def test_the_search_ceiling_is_above_what_the_catalogue_can_put_on_the_card(public):
+    """The ceiling is a guard, never a page size — and it drifted anyway.
+
+    On 2 November 2026 it was 12 against 20 collections; on 3 November the card
+    reached 27 against 20, and the seven books sorted last — one of them Wikipedia
+    — were never asked anything.  The catalogue is the box's own definition of how
+    many collections exist, so it is the number the ceiling has to stay above, and
+    the block has to be able to name every collection the search asked.
+    """
+    names = {parts[0] for parts in _catalogue_rows()}
+    assert public.app.MAX_COLLECTIONS >= len(names), (
+        f"the card can hold {len(names)} collections but only "
+        f"{public.app.MAX_COLLECTIONS} would ever be asked")
+    assert public.app.LIBRARY_HITS >= public.app.MAX_COLLECTIONS, (
+        "a block shorter than the ceiling cannot show every collection that answered")
+
+
 def test_no_shelf_label_uses_a_word_the_reader_does_not_know():
     import ark_library
 
@@ -155,6 +173,20 @@ def test_an_empty_shelf_is_not_drawn(ark, monkeypatch):
     groups = ark_library.shelves([{"id": "x", "stem": "diy.stackexchange.com_en_all_2026-10",
                                    "title": "Home Improvement", "size": 1}])
     assert [g["key"] for g in groups] == ["repair"]
+
+
+def test_a_catalogue_the_box_cannot_read_is_no_filing_not_a_broken_page(tmp_path, monkeypatch):
+    """A stray non-UTF-8 byte in one label must not take the whole library page down."""
+    import ark_library
+
+    bad = tmp_path / "catalog.tsv"
+    bad.write_bytes(b"name\tflavour\tsize\ttier\tlabel\tquery\ttopic\n"
+                    b"diy.stackexchange.com_en_all\t-\t1.9\tcore\tCaf\xe9 fixes\tdiy\trepair\n")
+    monkeypatch.setenv("ARK_CATALOG", str(bad))
+    assert ark_library.read_catalogue() == {}
+    groups = ark_library.shelves([{"id": "x", "stem": "diy.stackexchange.com_en_all_2026-10",
+                                   "title": "Home Improvement"}])
+    assert [g["key"] for g in groups] == ["more"]
 
 
 def test_a_missing_catalogue_is_an_empty_map_not_a_crash(ark, monkeypatch, tmp_path):
