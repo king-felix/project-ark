@@ -5047,3 +5047,135 @@ numbers; that is §22 of the human test list.
 The local-data control is exercised by the browser test too: save the
 destination, see it on the device, clear it, and confirm the map (and the
 installed pack) remain.
+
+### 45. Seven collections, ten shelves, and a digest on every download — 3 Nov 2026
+
+**What was asked.** Add six kinds of content to the Ark's library, skipping what is
+already there: the Urban Prepper English video archive, the Home Improvement/DIY
+and Motor Vehicle Maintenance Stack Exchanges, Low-tech Magazine, selected
+Canadian Prepper playlists, and (optionally) TruePrepper. Resolve editions from
+the official Kiwix catalogues, preserve provenance, distinguish the archive's
+build date from the age of the films inside it, verify playback through the
+public routes, and integrate the result into the box's navigation.
+
+**What the catalogue actually had.** All six exist in the official catalogue
+(`library.kiwix.org/catalog/v2/entries`). Edition, build date, size as published,
+and what the OPDS entry says it holds:
+
+| Collection | Built | Bytes published | Holds (catalogue) |
+|---|---|---|---|
+| `urban-prepper_en_all` | 2026-08-27 | 2,245,235,712 | 130 pages, 256 media |
+| `diy.stackexchange.com_en_all` | 2026-10-19 | 2,086,025,216 | 166,735 questions |
+| `mechanics.stackexchange.com_en_all` | 2026-10-20 | 341,672,960 | 55,050 questions |
+| `solar.lowtechmagazine.com_mul_all` | 2025-01-02 | 700,556,288 | 1,468 articles, 11 languages |
+| `canadian-prepper_en_preppingfood` | 2026-10-21 | 2,194,586,624 | 93 pages, 189 media |
+| `canadian-prepper_en_bugoutconcepts` | 2026-08-26 | 2,886,220,800 | 144 pages, 292 media |
+| `trueprepper.com_en_all` | 2026-05-04 | 1,423,585,280 | 399 pages, 17,739 media |
+
+Two more Canadian Prepper playlists were offered and **not** taken:
+`canadian-prepper_en_winterprepping` (2026-08-26, 1,341,548,544 bytes, 54 films) and
+`canadian-prepper_en_bugoutroll` (2026-10-21, 879,090,688 bytes, 41 films). The
+first is climate-specific and the second is gear reviews that overlap Ready.gov's
+kit guidance; both are one catalogue row away, and their rows are not in the file,
+so an owner adds them by editing one line and redeploying phase 50.
+
+**How it arrived.** `50-kiwix` pinned the queue from the catalogue (27 wanted, 7 to
+fetch), and `ark-zim-download` fetched **one at a time**, resumable, asking
+`ark-space` before each fetch. Each `.part` was then checked against the digest the
+mirror publishes (`<name>.zim.meta4` → `<hash type="sha-256">`) before it was given
+its final name, and the digest that passed was kept at
+`/srv/ark/kiwix/state/<name>.zim.sha256`:
+
+| Bundle | Bytes on the card | Published sha-256 (first 16) |
+|---|---|---|
+| `urban-prepper_en_all_2026-08` | 2,245,235,674 | `84e0b6212f6cd001` |
+| `diy.stackexchange.com_en_all_2026-10` | 2,086,024,326 | `df795a0946982821` |
+| `mechanics.stackexchange.com_en_all_2026-10` | 341,672,133 | `3b8790dcde480f46` |
+| `solar.lowtechmagazine.com_mul_all_2025-01` | 700,555,670 | `0a21bde8e3be3b80` |
+| `canadian-prepper_en_preppingfood_2026-10` | 2,194,586,332 | `cc73e413b61a9bf8` |
+| `canadian-prepper_en_bugoutconcepts_2026-08` | 2,886,219,997 | `1ddc1acf36606a4c` |
+| `trueprepper.com_en_all_2026-05` | 1,423,584,895 | `64ddae8ca29ca24d` |
+
+11,877,879,027 bytes (11.06 GiB) in total. The `urban-prepper` digest is the one
+the mirror's meta4 published when the work started, fetched independently at
+13:22 and matched again at 15:01 — a check of the check.
+
+**Six defects, found by verifying rather than assuming.**
+
+1. **`_ftindex:no` was read as "cannot be searched".** It looked like a licence to
+   stop asking those collections. On this box it is not: the installed iFixit
+   bundle carries `_ftindex:no` and answered **22,722 results for "screen" in
+   0.248 s**
+   (`curl -s "http://127.0.0.1:8081/kiwix/search?content=ifixit_en_all_2025-12&pattern=screen&format=xml" | grep -o "totalResults>[^<]*"`).
+   The film bundles answer too — 19 hits for "water" in Urban Prepper, 51 in
+   Bug-out Concepts. Had the first design shipped, the whole repair archive would
+   have dropped out of every search. Reverted before it reached the card, and the
+   measurement is now in ADMIN §20 so the inference is not made again.
+2. **`library.xml` stores `size` in KiB.** The new shelf page summed the attribute
+   and printed *86.5 MB* over a card holding 86.5 GiB — a number that makes a
+   library look like one book. `library_books()` normalises to bytes once, with the
+   unit written beside it.
+3. **The downloader never reached its own success branch.** `verify_part()` began
+   its verdict at 9 and only assigned on failure, so a successful check fell
+   through to "helper missing": every good download was published **unchecked**
+   and the log said the check was not installed. Caught two minutes after the first
+   bundle landed (`mechanics.stackexchange`, 341,672,133 bytes). The block is now a
+   function whose verdict starts at 0, and `tests/test_library.py` runs the real
+   function against real files for all four answers.
+4. **The search ceiling was 20 while the card reached 27.** `MAX_COLLECTIONS` is a
+   guard, not a page size, but it had been sized to the old catalogue; sorted by
+   title, the seven asked last — including **Wikipedia** — were never asked at all.
+   This is the third time the same number has caused the same fault (12 against 20
+   on 2 November). It is now 32, `LIBRARY_HITS` moves with it, and a test ties both
+   to the catalogue's own row count.
+5. **A catalogue with one non-UTF-8 byte would 500 the whole page.** `read_catalogue()`
+   caught `OSError` only; a stray Latin-1 label raised `UnicodeDecodeError` out of a
+   route. It now degrades to "no filing" — every collection under *Everything else*.
+6. **Three collections shared one publisher title.** Every Canadian Prepper playlist
+   is titled "Canadian prepper", so the shelf showed the same card twice with two
+   sizes. The card now uses the catalogue's own name (`Storing food (videos)`,
+   `Bug-out planning (videos)`) and falls back to the publisher's title only when
+   there is no catalogue row.
+
+**The shelves.** `pi/kiwix/catalog.tsv` gained a seventh column, `topic`, and
+`pi/api/ark_library.py` groups the card onto ten shelves: fix it, vehicles, food
+and garden, health and first aid, water/power/shelter, prepared and planning,
+watch and learn, outdoors, keep in touch, learn and look things up. `/library` is
+the page; `/kiwix/` is still the A–Z browser behind it, one tap away. Four
+properties are tested: every book lands on exactly one shelf, an empty shelf is not
+drawn, a bundle with no catalogue row appears under *Everything else*, and the
+route is named in `ark.conf` (because `location /` answers the front page with a
+200 for anything it does not know). `90-verify` now asks for a sentence only that
+page has.
+
+**Measured on the live box (3 Nov 2026).**
+
+| Check | Result |
+|---|---|
+| `ark-status` receipt | `ready.ok: true`, `blocking: []`, mode `home` |
+| collections | **27 files, 97.6 GiB, 27 titles indexed** (was 20 / 86.5 GiB) |
+| free space after | **105.0 GiB** (card 53 % used); `ark-space --status` says 100.3 GB may still be added |
+| the original 20 | every size and mtime identical to the 13:31 receipt; `library.xml` backed up first (`sha256 aa88f0fb…`) |
+| resolver re-run | `queue written: 27 present, 0 to fetch (0.0 GiB), 0 unresolved` |
+| 90-verify | **87 ✓, 8 soft notes, 0 ✗**, including `library shelves — says "filed by what it is for"` |
+| Urban Prepper playback | Chromium, public route: 46 films listed; played, `currentTime` 5.76 s, readyState 4, 480×270, **21,322 audio bytes decoded**, seek to 158.4 s (target 157) |
+| Bug-out Concepts playback | 48 films listed; played, 600 s+, seek to 340.3 s (target 340), audio decoded |
+| film bytes | `HTTP 206`, `video/webm`, `Content-Range: bytes 1024-2047/8792173` through nginx |
+| captions | **none**: 0 `<track>` elements, no `.vtt` at any of the four obvious paths |
+| Low-tech Magazine | opens as the magazine, 11 languages on offer, front page carries 2023–2024 articles |
+| search | `leaking tap` and `brake pads` both return Home Improvement, Motor Vehicle Mechanics and iFixit through `http://ark.local/search` |
+
+**Build date is not content date.** The film bundles were built in August 2026 and
+October 2026, but their four Urban Prepper playlists are dated **2013-01-25,
+2014-09-29, 2015-09-21 and 2016-01-29** in the bundle's own `home_playlists.json`,
+and their films are 5–16 minutes long. So this is an older, curated selection of
+that channel — not its current output, and not "everything the channel ever made".
+Low-tech Magazine's build is 2025-01-02 and its front page still carries 2023–2024
+articles. None of this is comprehensive coverage of a living publisher, and the
+pages say so.
+
+**What this does not claim.** No captions or transcripts exist in either film
+bundle, so nothing here can be quoted or searched as text. The films have not been
+watched by a person (that is `docs/HUMAN-TEST-LIST.md` §23). Phone playback, codec
+support on an iPhone and the subjective naming of the shelves are human work.
+The two Canadian Prepper playlists left out are a choice, not a limitation.
