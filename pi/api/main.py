@@ -51,6 +51,7 @@ import ark_db
 import ark_essentials
 import ark_health
 import ark_household
+import ark_map_web
 import ark_media
 import ark_media_web
 import ark_review
@@ -181,7 +182,8 @@ def esc(value) -> str:
 
 NAV = [("/", "Home"), ("/search", "Search"), ("/ask", "Ask"), ("/kiwix/", "Library"),
        ("/books/", "Books"), ("/media/", "Media"), ("/vault/", "Manuals"),
-       ("/board", "Messages"), ("/files", "File box"), ("/household", "Household")]
+       ("/maps", "Maps"), ("/board", "Messages"), ("/files", "File box"),
+       ("/household", "Household")]
 
 
 def page(title: str, body: str, here: str = "", tagline: str = "",
@@ -249,6 +251,42 @@ def error_page(message: str, hint: str = "", code: int = 400) -> HTMLResponse:
 # account, and only what the owner published is visible.  It is wired here, after
 # ``page()`` exists, so it can wear the portal's own header and navigation.
 app.include_router(ark_media_web.build_router(page))
+# The maps application is public in the same way the shelves are: reading needs no
+# account.  It has its own door (:8446, HTTPS) because a page that must reopen
+# offline needs a secure origin the device trusts; this router is the app and the
+# pack bytes, and it never touches /admin.
+app.include_router(ark_map_web.build_router())
+
+
+# ---------------------------------------------------------------------------
+#  MAPS — an ordinary link, and the one certificate a device has to trust
+# ---------------------------------------------------------------------------
+@app.get("/maps")
+def maps_door(request: Request):
+    """Send a reader to the secure address Maps needs.
+
+    A service worker is only allowed on a secure origin, and `http://ark.local`
+    is not one.  The redirect keeps the link in the navigation ordinary while the
+    page itself lands where it can do the thing it promises.
+    """
+    proto = (request.headers.get("x-forwarded-proto") or request.url.scheme or "").lower()
+    if proto == "https":
+        return RedirectResponse("/maps/", status_code=303)
+    host = (request.headers.get("host") or "ark.local").split(":")[0]
+    if not re.match(r"^[A-Za-z0-9.\-]+$", host):
+        host = "ark.local"
+    return RedirectResponse(f"https://{host}:8446/maps/", status_code=303)
+
+
+@app.get("/certificate.crt")
+def certificate_download():
+    """The public half of the Ark's certificate, for a device to trust once."""
+    return ark_map_web.certificate_response()
+
+
+@app.get("/certificate")
+def certificate_door():
+    return RedirectResponse("/certificate.crt", status_code=303)
 
 
 # ---------------------------------------------------------------------------

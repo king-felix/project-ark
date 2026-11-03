@@ -1655,6 +1655,110 @@ Fix the cause and press **Prepare again** — nobody has to re-upload anything.
 
 ---
 
+## 19. Maps — the region shelf
+
+**Where:** `https://<name>:8443/admin/maps`, in the same sign-in as every other
+owner page. Nothing on the public portal can reach it.
+
+Maps lets a reader carry one region away: a phone downloads the region while it is
+on the Ark, and then browses, searches and calculates **new** routes with no Ark and
+no internet. The application and the pack bytes are public, like the shelves; the
+shelf itself — what is on the card, what is offered, what is removed — is the
+owner's.
+
+### Building a region
+
+Build it on a computer, not on the Pi. The builder reads an OpenStreetMap
+`.osm.pbf` and writes a finished pack; the Pi never parses an extract.
+
+```bash
+# on the Mac, in the repository, with the project virtualenv
+.venv/bin/pip install osmium              # once
+.venv/bin/python scripts/ark-map-pack --download \
+  https://download.geofabrik.de/europe/liechtenstein-latest.osm.pbf \
+  --name Liechtenstein --code LI --out logs/maps/packs \
+  --bundle logs/maps/liechtenstein-demo.zip
+```
+
+The builder prints the region, data date, size, graph counts, places, layers and
+routing modes, and it refuses to finish unless the pack passes the same byte check
+the card runs. The zip contains one folder with `manifest.json` at its top.
+
+Choose the smallest region that covers where you might be. A pack is a transfer to
+a phone and a copy kept in browser storage; a continent is neither. The
+demonstration region used to prove this pipeline is Liechtenstein — a small,
+non-personal region. **The real geographic choice is yours**; the box does not
+infer a home location from anything.
+
+### Adding, checking, offering, removing
+
+1. **Add a pack** — choose the `.zip` on `/admin/maps` (up to 1 GiB) and press
+   *Check and add the pack*. It is unpacked into a staging folder, verified
+   byte-for-byte against its manifest, then moved to
+   `/srv/ark/maps/packs/<id>/<version>/`. A pack that fails leaves nothing behind:
+   no folder, no catalogue row, no space reservation.
+2. **Check every byte** — re-runs the full check and records the verdict. A pack
+   that has never been checked is visible to you but is *not* offered to readers.
+3. **Offer it to readers** — only a checked pack whose files are all present can be
+   published. Publishing is instant for new downloads; a phone that already has the
+   previous version keeps it.
+4. **Stop offering it** — new downloads stop; a phone that already downloaded it
+   keeps its copy, and the page says so.
+5. **Delete this version for ever** — asks for your password and a tick, because it
+   cannot be undone. It removes the Ark's copy only; it cannot reach a phone.
+
+A version is immutable. To replace a region, build a new version and import that;
+the old one stays beside it until you remove it. A failed or incomplete update can
+therefore never take away the version that was working.
+
+You can also copy a finished pack into `/srv/ark/maps/incoming/` by SSH or a stick;
+the page lists what is waiting there and adds it only when you press the button.
+`/usr/local/sbin/ark-maps --status | --list | --incoming | --verify ID VERSION |
+--publish ID VERSION | --hide ID VERSION | --delete ID VERSION --yes` does the same
+from a console, as `pi` (never with `sudo`).
+
+### Storage and recovery
+
+The shelf uses the box's **one** storage policy: the 7 % reserve in
+`ark_space`, no separate map quota. An import reserves the archive plus its
+uncompressed size before extracting, rechecks as it writes, and releases the
+reservation however it ends; startup sweeps stale half-imports out of
+`incoming/` and `tmp/`. A pack is never deleted automatically to make room.
+
+Map regions are **not in `ark-backup`**: they are large, reproducible content, not
+records. The catalogue is a scan of what is actually on the card, so a restored
+card reports no packs until you import or build them again — it never claims a
+region whose bytes are absent. Keep the source `.osm.pbf` URL and the builder
+command with your notes, or keep the finished `.zip` on a stick, and a region is
+one import away.
+
+### The secure address and the certificate
+
+The application is served at `https://<name>:8446/maps/` (a new listener, the same
+certificate as the owner's pages, and nothing else on that origin: `/admin` answers
+404). It has to be HTTPS because a page that reopens offline needs a secure origin
+the device trusts; `http://ark.local` is not one, and a certificate warning that a
+person clicks through does not enable the feature.
+
+The public half of the certificate is offered at `http://<name>/certificate.crt`
+and in the Maps help page, with the exact iPhone, Android and laptop steps. The
+private key never leaves `/etc/ssl/ark/` and is never distributed. If you replace
+the certificate (`ark-tls-cert --force`), devices that installed the old one must
+install the new one before Maps will reopen offline again; a renewed certificate
+with the same key is the exception, and a forced one is not. Keep the box's clock
+right — `ark-self-heal` repairs it at boot, and a certificate is not valid before
+its own start date.
+
+### What the page deliberately does not do
+
+- It does not build regions on the Pi (that belongs on a computer).
+- It does not automatically delete a region to make room, or expire one.
+- It does not push an update to a phone, or remove a phone's copy.
+- It does not promise that a mapped water source is drinkable or a mapped facility
+  is open. The pack says what its data can and cannot know; the page repeats it.
+
+---
+
 ## 16. Tested / not tested
 
 **Tested** — 567 automated tests, disposable databases, `pytest` (the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md`):

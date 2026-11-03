@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Ark Maps">
+  <rect width="512" height="512" rx="96" fill="#000000"/>
+  <path d="M256 92c-66 0-120 53-120 119 0 88 120 209 120 209s120-121 120-209c0-66-54-119-120-119z" fill="#ffb000"/>
+  <circle cx="256" cy="211" r="47" fill="#000000"/>
+</svg>

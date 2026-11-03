@@ -1,0 +1,152 @@
+#!/usr/bin/env python3
+"""PROJECT ARK — the map shelf, from a terminal.
+
+This is the owner's command-line door for the things a page cannot do without a
+file picker: seeing what is on the card, checking a pack copied on by SSH,
+publishing or hiding it, and removing a version.  It runs as the Ark's ordinary
+user (`pi`), because the shelf belongs to that user and a root-owned pack is a
+pack the pages cannot replace.
+
+    ark-maps --status
+    ark-maps --list
+    ark-maps --verify liechtenstein 2026-11-02
+    ark-maps --publish liechtenstein 2026-11-02
+    ark-maps --hide liechtenstein 2026-11-02
+    ark-maps --import /srv/ark/maps/incoming/liechtenstein-demo.zip
+    ark-maps --delete liechtenstein 2026-11-02 --yes
+
+Building a pack is not done here: `scripts/ark-map-pack` on a workstation reads
+the OpenStreetMap extract, and the box receives only a finished, checked folder.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+from pathlib import Path
+
+
+def _load() -> None:
+    candidates = [
+        os.environ.get("ARK_API_DIR"),
+        "/srv/ark/api",
+        str(Path(__file__).resolve().parents[1] / "api"),
+        str(Path.cwd() / "pi" / "api"),
+    ]
+    for candidate in candidates:
+        if candidate and (Path(candidate) / "ark_map_store.py").is_file():
+            sys.path.insert(0, candidate)
+            return
+    raise SystemExit("cannot find the Ark's api folder; set ARK_API_DIR")
+
+
+_load()
+import ark_map_store          # noqa: E402
+
+
+def human(n) -> str:
+    value = float(max(0, int(n or 0)))
+    for unit, size in (("GB", 1024 ** 3), ("MB", 1024 ** 2), ("kB", 1024)):
+        if value >= size:
+            return "%.1f %s" % (value / size, unit)
+    return "%d B" % int(value)
+
+
+def describe(row) -> str:
+    state = "offered" if row.get("published") and row.get("ready") else \
+        ("hidden" if row.get("verified") else "not checked")
+    return "%-24s %-16s %-12s %s%s" % (
+        row.get("id"), row.get("version"), state, human(row.get("bytes")),
+        "  PROBLEMS: " + "; ".join(row.get("problems") or []) if row.get("problems") else "")
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description="Project ARK map shelf")
+    parser.add_argument("--status", action="store_true", help="space and counts")
+    parser.add_argument("--list", action="store_true", help="every pack on the card")
+    parser.add_argument("--published", action="store_true", help="what readers can see")
+    parser.add_argument("--incoming", action="store_true", help="items waiting to be imported")
+    parser.add_argument("--verify", nargs=2, metavar=("ID", "VERSION"), help="check every byte")
+    parser.add_argument("--publish", nargs=2, metavar=("ID", "VERSION"))
+    parser.add_argument("--hide", nargs=2, metavar=("ID", "VERSION"))
+    parser.add_argument("--delete", nargs=2, metavar=("ID", "VERSION"))
+    parser.add_argument("--import", dest="import_path", metavar="PATH",
+                        help="a folder or .zip inside the incoming folder")
+    parser.add_argument("--sweep", action="store_true", help="remove stale half-imports")
+    parser.add_argument("--yes", action="store_true", help="confirm a delete")
+    args = parser.parse_args(argv)
+
+    if os.geteuid() == 0 and os.environ.get("ARK_ALLOW_ROOT") != "1":
+        print("Run this as the Ark's ordinary user (pi), not with sudo: a root-owned "
+              "pack is a pack the pages cannot replace.", file=sys.stderr)
+        return 2
+
+    store = ark_map_store.Store()
+    try:
+        if args.status:
+            storage = store.storage()
+            print(ark_map_store.describe_storage(storage))
+            for row in storage.get("largest") or []:
+                print("  %-24s %-16s %s" % (row.get("id"), row.get("version"),
+                                            human(row.get("bytes"))))
+        if args.list:
+            rows = store.rows()
+            if not rows:
+                print("No map packs on the card.")
+            for row in rows:
+                print(describe(row))
+        if args.published:
+            rows = store.published_rows()
+            if not rows:
+                print("No pack is offered to readers.")
+            for row in rows:
+                print("  %-24s %-16s %s" % (row.get("id"), row.get("version"),
+                                            human(row.get("bytes"))))
+        if args.incoming:
+            items = store.incoming_items()
+            if not items:
+                print("Nothing waiting in the incoming folder.")
+            for item in items:
+                print("  %-40s %-8s %s" % (item["name"], item["kind"],
+                                           human(item["bytes"])))
+        if args.verify:
+            report = store.verify(*args.verify)
+            if report.get("ok"):
+                print("OK — %s version %s, %d bytes, every fingerprint matches."
+                      % (args.verify[0], args.verify[1], int(report.get("bytes") or 0)))
+            else:
+                print("NOT OK — %s version %s" % tuple(args.verify))
+                for problem in report.get("problems") or []:
+                    print("  - " + problem)
+                return 1
+        if args.publish:
+            row = store.publish(args.publish[0], args.publish[1], True)
+            print("%s version %s is now offered." % (row.get("id"), row.get("version")))
+        if args.hide:
+            row = store.publish(args.hide[0], args.hide[1], False)
+            print("%s version %s is now hidden." % (row.get("id"), row.get("version")))
+        if args.delete:
+            if not args.yes:
+                print("Refusing to delete without --yes.", file=sys.stderr)
+                return 2
+            store.delete(args.delete[0], args.delete[1])
+            print("%s version %s was removed from the Ark. Phones that downloaded it "
+                  "keep their own copy." % tuple(args.delete))
+        if args.import_path:
+            row = store.import_path(args.import_path)
+            print("%s version %s was checked and added%s."
+                  % (row.get("id"), row.get("version"),
+                     "" if row.get("published") else "; it is not offered yet"))
+        if args.sweep:
+            removed = store.sweep()
+            print("Removed %d stale item%s from incoming/tmp."
+                  % (removed, "" if removed == 1 else "s"))
+    except ark_map_store.Refused as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

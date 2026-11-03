@@ -39,6 +39,11 @@ for d in \
   "$ARK_ROOT/media/subs" \
   "$ARK_ROOT/media/tmp" \
   "$ARK_ROOT/tmp" \
+  "$ARK_ROOT/maps" \
+  "$ARK_ROOT/maps/packs" \
+  "$ARK_ROOT/maps/incoming" \
+  "$ARK_ROOT/maps/tmp" \
+  "$ARK_ROOT/maps/web" \
   "$ARK_ROOT/scripts" \
   "$ARK_ROOT/backups"
 do

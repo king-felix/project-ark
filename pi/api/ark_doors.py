@@ -98,6 +98,22 @@ DOORS: Tuple[Dict[str, str], ...] = (
      "name": "Books",
      "who": "anyone",
      "what": "The Book Library: read in the browser, or download a copy."},
+    {"group": "Open to anyone on the box's Wi-Fi", "address": "http://{host}/maps",
+     "name": "Maps",
+     "who": "anyone",
+     "what": "The way in to Maps. It sends the reader to the secure address the "
+             "page needs, and explains why: a page that reopens without the Ark has "
+             "to be served over a connection the device trusts."},
+    {"group": "A map to carry away", "address": "https://{host}:8446/maps/",
+     "name": "Maps, offline",
+     "who": "anyone",
+     "what": "The map application. Download a region once; after that the map, the "
+             "place search and new directions work with no Ark and no internet."},
+    {"group": "A map to carry away", "address": "http://{host}/certificate.crt",
+     "name": "The Ark's certificate",
+     "who": "anyone",
+     "what": "The public half of the Ark's certificate. A phone or laptop installs "
+             "it once so it can trust the secure address and keep Maps offline."},
     {"group": "Open to anyone on the box's Wi-Fi", "address": "http://{host}/kiwix/",
      "name": "Offline Library",
      "who": "anyone",
@@ -123,6 +139,12 @@ DOORS: Tuple[Dict[str, str], ...] = (
      "who": "the owner",
      "what": "The shelf, what licence each game states, one game at a time with its "
              "words checked first, and who may keep saves."},
+    {"group": "Behind the sign-in", "address": "https://{host}:8443/admin/maps",
+     "name": "Maps",
+     "who": "the owner",
+     "what": "The regions on the card: add a finished pack, check every byte, offer "
+             "it to readers, hide it again, or remove one version. Deleting here does "
+             "not reach a phone that already downloaded it."},
     {"group": "Behind the sign-in", "address": "https://{host}:8443/admin/community",
      "name": "Community",
      "who": "the owner",
@@ -195,6 +217,7 @@ STEPS = ("/admin/login", "/admin/setup")
 GROUP_ORDER = (
     "The way in",
     "Open to anyone on the box's Wi-Fi",
+    "A map to carry away",
     "Behind the sign-in",
     "A name for keeping saves",
     "For a monitor rather than a person",

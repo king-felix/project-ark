@@ -37,7 +37,8 @@ for f in main.py ark_db.py ark_storage.py ark_security.py ark_admin.py ark_recov
          ark_romdb.py ark_romdb_build.py ark_rommeta.py \
          ark_review.py ark_household.py ark_cards.py ark_qr.py ark_essentials.py \
          ark_network.py ark_ai.py ark_ingest.py ark_doors.py \
-         ark_space.py ark_media.py ark_media_jobs.py ark_media_web.py; do
+         ark_space.py ark_media.py ark_media_jobs.py ark_media_web.py \
+         ark_maps.py ark_map_store.py ark_map_web.py ark_map_admin.py; do
   ark_copy "$ARK_SRC/api/$f" "$API_DIR/$f" 644 "$ARK_PI_USER:$ARK_PI_GROUP"
 done
 ark_copy "$ARK_SRC/api/requirements.txt" "$API_DIR/requirements.txt" 644 "$ARK_PI_USER:$ARK_PI_GROUP"

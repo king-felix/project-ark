@@ -1,0 +1,344 @@
+#!/usr/bin/env python3
+"""PROJECT ARK — build one regional offline map pack on a workstation.
+
+This is the *host* half of the maps feature.  It reads an OpenStreetMap extract
+(``.osm.pbf``), folds it into the small pack `pi/api/ark_maps.py` defines, proves
+the pack with the same verifier the box uses, and publishes it into an output
+folder only after that proof passes.  It is deliberately not installed on the Pi:
+parsing a country is workstation work, and the box only ever receives a finished,
+verified folder (or a zip of one).
+
+    # one small, non-personal region — the demonstration pack
+    python3 scripts/ark-map-pack --download \\
+        https://download.geofabrik.de/europe/liechtenstein-latest.osm.pbf \\
+        --name Liechtenstein --code LI --out logs/maps/packs
+
+    # a region already on disk
+    python3 scripts/ark-map-pack --pbf region.osm.pbf --name "My Region" \\
+        --source-url https://download.geofabrik.de/... --out /tmp/packs
+
+    # check a folder without building anything
+    python3 scripts/ark-map-pack --verify logs/maps/packs/liechtenstein-2026-11-02
+
+The one dependency is `osmium` (pyosmium), installed in the project's virtualenv.
+The output carries the OpenStreetMap attribution and the ODbL licence because the
+data does; a pack without them is refused by the format itself.
+
+Run this as the normal user, never with sudo: it writes only where `--out` says,
+and a pack built as root becomes a folder the box's owner cannot replace.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import shutil
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import zipfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "pi" / "api"))
+
+import ark_maps  # noqa: E402
+
+MAX_DOWNLOAD_BYTES = 8 * 1024 ** 3
+DOWNLOAD_ATTEMPTS = 3
+
+
+def human_bytes(n: int) -> str:
+    value = float(max(0, int(n)))
+    for unit in ("B", "kB", "MB", "GB", "TB"):
+        if value < 1000 or unit == "TB":
+            return ("%d %s" % (value, unit)) if unit == "B" else ("%.1f %s" % (value, unit))
+        value /= 1000.0
+    return "%d B" % n
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            block = handle.read(1 << 20)
+            if not block:
+                break
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def download(url: str, cache: Path) -> Path:
+    """Fetch a source extract once, atomically, with three honest attempts."""
+    cache.mkdir(parents=True, exist_ok=True)
+    name = os.path.basename(urllib.parse.urlparse(url).path) or "region.osm.pbf"
+    target = cache / name
+    if target.exists() and target.stat().st_size > 0:
+        print("using the cached extract: %s (%s)" % (target, human_bytes(target.stat().st_size)))
+        return target
+    part = cache / (name + ".part")
+    last = ""
+    for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+        try:
+            print("downloading %s (attempt %d of %d)" % (url, attempt, DOWNLOAD_ATTEMPTS))
+            request = urllib.request.Request(
+                url, headers={"User-Agent": "Project-ARK-map-pack/1 (+offline appliance)"})
+            with urllib.request.urlopen(request, timeout=120) as response:
+                declared = response.headers.get("Content-Length")
+                if declared and int(declared) > MAX_DOWNLOAD_BYTES:
+                    raise SystemExit("that extract is %s bytes, more than this tool "
+                                     "will download" % declared)
+                written = 0
+                with part.open("wb") as handle:
+                    while True:
+                        block = response.read(1 << 20)
+                        if not block:
+                            break
+                        written += len(block)
+                        if written > MAX_DOWNLOAD_BYTES:
+                            raise SystemExit("the download grew past the size cap")
+                        handle.write(block)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+            if written <= 0:
+                raise OSError("the server sent no bytes")
+            os.replace(part, target)
+            print("downloaded %s (%s)" % (target, human_bytes(written)))
+            return target
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            last = str(exc)
+            print("  attempt %d failed: %s" % (attempt, exc))
+            try:
+                part.unlink()
+            except OSError:
+                pass
+            if attempt < DOWNLOAD_ATTEMPTS:
+                time.sleep(2 * attempt)
+    raise SystemExit("could not download %s after %d attempts: %s"
+                     % (url, DOWNLOAD_ATTEMPTS, last))
+
+
+def tags_of(item) -> dict:
+    return {tag.k: tag.v for tag in item.tags}
+
+
+def data_date_of(pbf: Path, explicit: str) -> str:
+    if explicit:
+        if not ark_maps._DATE_RE.match(explicit):
+            raise SystemExit("--data-date must be YYYY-MM-DD")
+        return explicit
+    try:
+        import osmium
+
+        reader = osmium.io.Reader(str(pbf))
+        try:
+            header = reader.header()
+            stamp = header.get("osmosis_replication_timestamp") or header.get("timestamp")
+        finally:
+            reader.close()
+    except Exception as exc:            # noqa: BLE001 — a missing header is not fatal
+        raise SystemExit("this extract does not say when its data is from; pass "
+                         "--data-date YYYY-MM-DD (%s)" % (exc,))
+    text = str(stamp or "")
+    if len(text) >= 10 and ark_maps._DATE_RE.match(text[:10]):
+        return text[:10]
+    raise SystemExit("this extract's header has no usable date; pass --data-date")
+
+
+def build(pbf: Path, args) -> Path:
+    try:
+        import osmium
+    except ImportError:
+        raise SystemExit("pyosmium is not installed here.  Install it with "
+                         "`.venv/bin/pip install osmium` and run this script with "
+                         "the same interpreter.")
+
+    out = Path(args.out).resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    ident = args.id or ark_maps.slug(args.name)
+    version = args.version or data_date_of(pbf, args.data_date)
+    final = out / ("%s-%s" % (ident, version))
+    if final.exists() and not args.force:
+        raise SystemExit("%s already exists.  A pack version is immutable; build a "
+                         "new version or pass --force to replace this one." % final)
+
+    source_url = args.source_url or args.download or ("file://%s" % pbf)
+    source_sha = sha256_file(pbf)
+    source_bytes = pbf.stat().st_size
+    date = data_date_of(pbf, args.data_date)
+
+    builder = ark_maps.PackBuilder(max_points=args.max_points,
+                                   max_places=args.max_places,
+                                   max_buildings=args.max_buildings)
+
+    class Handler(osmium.SimpleHandler):
+        def __init__(self):
+            super().__init__()
+            self.unresolved = 0
+            self.ways_seen = 0
+
+        def node(self, node):
+            if not node.tags:
+                return
+            try:
+                builder.add_point(node.id, tags_of(node),
+                                  node.location.lat, node.location.lon)
+            except Exception:            # noqa: BLE001 — one odd node must not stop a build
+                pass
+
+        def way(self, way):
+            self.ways_seen += 1
+            points = []
+            for ref in way.nodes:
+                if not ref.location.valid():
+                    self.unresolved += 1
+                    return
+                points.append((ref.ref, ref.location.lat, ref.location.lon))
+            if len(points) < 2:
+                return
+            builder.add_way(way.id, tags_of(way), points)
+
+        def relation(self, relation):
+            tags = tags_of(relation)
+            if (tags.get("type") or "").strip().lower() != "restriction":
+                return
+            members = [(member.role, member.ref, member.type) for member in relation.members]
+            builder.add_restriction(members, tags)
+
+    handler = Handler()
+    print("reading %s (%s)…" % (pbf, human_bytes(source_bytes)))
+    started = time.time()
+    handler.apply_file(str(pbf), locations=True)
+    print("read %d ways in %.1f s" % (handler.ways_seen, time.time() - started))
+
+    made = builder.finish()
+    stats = made["stats"]
+    limitations = args.limitations or (
+        "Turn restrictions that use a via way or a conditional time are not carried "
+        "(%d skipped). Speeds are road-class defaults, not surveyed limits. Street "
+        "addresses are not included; named places and points of interest are. "
+        "Building footprints are capped at %d. Mapped water is not a claim that it "
+        "is safe to drink, and a mapped facility is not a claim that it is open."
+        % (stats.get("restrictions_skipped", 0), args.max_buildings))
+    if stats.get("buildings_dropped"):
+        limitations += " %d further buildings were left out to keep the pack small." % (
+            stats["buildings_dropped"],)
+
+    staging = out / (".build-%s-%s-%d" % (ident, version, os.getpid()))
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True)
+    try:
+        manifest = ark_maps.write_pack(
+            str(staging), graph=made["graph"], places=made["places"],
+            layers=made["layers"], bounds=made["bounds"],
+            source_url=source_url, source_sha256=source_sha,
+            region_name=args.name, region=args.code, pack_version=version,
+            data_date=date, source_bytes=source_bytes, source_path=str(pbf),
+            notes=args.notes, built=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            limitations=limitations, min_zoom=args.min_zoom, max_zoom=args.max_zoom,
+            pack_id=ident)
+        report = ark_maps.verify_pack(str(staging))
+        if not report["ok"]:
+            raise SystemExit("the pack did not pass its own verifier:\n  - "
+                             + "\n  - ".join(report["problems"][:20]))
+        if final.exists():
+            old = out / (".old-%s-%s-%d" % (ident, version, os.getpid()))
+            os.replace(final, old)
+            try:
+                os.replace(staging, final)
+            except Exception:
+                # Put the old pack back exactly where it was: a failed
+                # replacement must not be the way a working pack disappears.
+                os.replace(old, final)
+                raise
+            else:
+                shutil.rmtree(old, ignore_errors=True)
+        else:
+            os.replace(staging, final)
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+
+    print("\nbuilt %s" % final)
+    print("  region      %s (%s)" % (manifest["region"]["name"], manifest["region"]["code"] or "—"))
+    print("  data date   %s" % date)
+    print("  pack        %s, %s bytes" % (version, manifest["total_bytes"]))
+    print("  graph       %d points, %d edges, %d names, %d turn restrictions"
+          % (manifest["graph"]["nodes"], manifest["graph"]["edges"],
+             manifest["graph"]["names"], manifest["graph"]["turn_restrictions"]))
+    print("  places      %d" % manifest["places"]["count"])
+    print("  layers      " + ", ".join("%s %d" % (k, v)
+                                        for k, v in manifest["map"]["counts"].items()))
+    print("  routing     %s" % ", ".join(manifest["capabilities"]["routing"]))
+    print("  verified    %d bytes, every fingerprint matches" % report["bytes"])
+    if args.bundle:
+        bundle = Path(args.bundle).resolve()
+        bundle.parent.mkdir(parents=True, exist_ok=True)
+        part = bundle.with_suffix(bundle.suffix + ".part")
+        with zipfile.ZipFile(part, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+            for path in sorted(final.rglob("*")):
+                if path.is_file():
+                    archive.write(path, "%s/%s" % (final.name, path.relative_to(final)))
+        os.replace(part, bundle)
+        print("  bundle      %s (%s)" % (bundle, human_bytes(bundle.stat().st_size)))
+    return final
+
+
+def verify(folder: str) -> int:
+    report = ark_maps.verify_pack(folder)
+    print(json.dumps(report, indent=2, sort_keys=True)[:20000])
+    return 0 if report["ok"] else 1
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Build one regional offline map pack for Project ARK.")
+    source = parser.add_mutually_exclusive_group(required=False)
+    source.add_argument("--pbf", help="an OpenStreetMap .osm.pbf file")
+    source.add_argument("--download", help="download this extract first")
+    source.add_argument("--verify", help="check an existing pack folder and exit")
+    parser.add_argument("--name", help="human-readable region name")
+    parser.add_argument("--code", default="", help="short region code, e.g. LI")
+    parser.add_argument("--id", default="", help="stable pack id (default: from the name)")
+    parser.add_argument("--version", default="", help="immutable version (default: data date)")
+    parser.add_argument("--data-date", default="", help="YYYY-MM-DD; default: from the PBF header")
+    parser.add_argument("--source-url", default="", help="where the extract came from")
+    parser.add_argument("--out", default="", help="folder that will hold the pack folder")
+    parser.add_argument("--cache", default=str(ROOT / "logs" / "maps"),
+                        help="where downloaded extracts are kept")
+    parser.add_argument("--bundle", default="", help="also write a .zip of the pack here")
+    parser.add_argument("--notes", default="", help="a sentence for the manifest")
+    parser.add_argument("--limitations", default="", help="coverage limitations (default: generated)")
+    parser.add_argument("--min-zoom", type=int, default=6)
+    parser.add_argument("--max-zoom", type=int, default=17)
+    parser.add_argument("--max-points", type=int, default=ark_maps.MAX_GRAPH_POINTS)
+    parser.add_argument("--max-places", type=int, default=ark_maps.MAX_PLACES)
+    parser.add_argument("--max-buildings", type=int, default=ark_maps.MAX_BUILDINGS)
+    parser.add_argument("--force", action="store_true", help="replace an existing pack version")
+    args = parser.parse_args(argv)
+
+    if args.verify:
+        return verify(args.verify)
+    if not args.name:
+        parser.error("--name is required when building")
+    if not args.out:
+        parser.error("--out is required when building")
+    if args.pbf:
+        pbf = Path(args.pbf).resolve()
+        if not pbf.exists():
+            parser.error("no such file: %s" % pbf)
+    elif args.download:
+        pbf = download(args.download, Path(args.cache).resolve())
+    else:
+        parser.error("give --pbf, --download or --verify")
+    build(pbf, args)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

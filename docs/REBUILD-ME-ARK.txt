@@ -89,6 +89,11 @@ address, for whoever maintains the box.
                                ready or not, with the plain reason and next step
   https://ark.lan:8445/arcade/ the player's own TLS origin: sign in for saves,
                                export/import; 404 for /admin; never on port 80
+  https://ark.lan:8446/maps/  the maps application and the map packs a reader may
+                               download.  Same certificate as :8443; 404 for
+                               /admin; no upload door.  /maps on :80 redirects here.
+                               A region downloaded here keeps working with the Ark
+                               and the internet gone.
 
 Asking a script "is it usable?" has one honest answer: /api/ready, 200 only when
 every part a reader needs actually answered, 503 with the reasons when one did
@@ -222,6 +227,7 @@ Services (all enabled AND started; this is the cold-boot contract):
                               :8443  the owner's door (TLS, /admin only)
                               :8444  loopback-only setup listener, unclaimed box
                               :8445  the player's TLS origin (/arcade only)
+                              :8446  the maps origin (/maps only, TLS)
   ark-kiwix.service           :8081  kiwix-serve --urlRootLocation=/kiwix
   ark-calibre.service         :8083  calibre-web, served under /books
   ark-api.service             :8085  FastAPI: /api, /search, /board, /files, /arcade
@@ -327,6 +333,15 @@ popup resolves to the portal instead of a "no internet" dead end.
                   Proof: :80/admin is 404, :8443 needs TLS and a sign-in,
                   :8444 only answers through the tunnel, recovery is 0700 root,
                   :8445 answers /arcade/player and 404 for /admin.
+  66  maps        the maps application (pi/maps/web -> /srv/ark/maps/web), the
+                  shelf (/srv/ark/maps/{packs,incoming,tmp}), the nginx :8446
+                  listener (same certificate, /maps only, 404 for /admin), and
+                  /usr/local/sbin/ark-maps.  Builds no pack: a pack comes from
+                  scripts/ark-map-pack on a computer and is imported by the owner.
+                  Proof: :8446 /maps/ and /maps/api/catalog answer 200, sw.js carries
+                  Service-Worker-Allowed: /maps/, /certificate.crt answers on :80,
+                  and /admin/maps answers 303 behind the sign-in.  A box with no
+                  pack is a working box and says so.
   70  network     NM hotspot profile (ipv4.method shared, 10.42.0.1/24, ch 6),
                   dnsmasq-shared.d wildcard for ark.lan/ark.local, boot guard,
                   ark-mode (auto|home|hotspot|lan|test|status|boot|request-lan),
@@ -833,6 +848,10 @@ any failure. Categories:
   game shelf  /arcade/ answers on :80; the player origin :8445 answers
               /arcade/player and 404 for /admin; games, player names and saves
               are counted; the last discovery line is reported
+  maps        :8446 /maps/ and /maps/api/catalog answer 200; sw.js carries
+              Service-Worker-Allowed: /maps/; /certificate.crt answers on :80;
+              /admin/maps answers 303 behind the sign-in.  A box with no pack is
+              a working box: the catalogue is empty and the page says so
   file box    drop/files and drop/tmp exist, and the count of shared files is
               reported (a missing folder means phase 20 was skipped)
   content     collections on disk + titles indexed in library.xml, books in
@@ -855,6 +874,10 @@ any failure. Categories:
     □ one guide opens and its PDF prints
     □ /arcade/ plays with the internet unplugged; `:8445/arcade/player` answers
       with the box's certificate, a name keeps a save, and export/import works
+    □ a map region downloads on a phone, says Ready offline, and then — with the
+      Ark and the internet both unreachable — reopens, searches a new place and
+      calculates a NEW route with written directions (the defining test; desktop
+      Chromium is automated, a real phone is a human step)
     □ `sudo ark-backup --to /srv/ark/backup` writes a folder, `--verify` re-reads
       every byte, and `http://ark.lan/recovery.txt` prints
     □ services survive `sudo reboot` (cold-boot test done by a human who can
@@ -994,7 +1017,7 @@ any failure. Categories:
     pi/install-ark.sh                       phase runner, lock, summary
     pi/lib/common.sh                        logging, ark_write (compare-first),
                                             apt helpers, http probes, free bytes
-    pi/steps/{10,15,20,30,40,50,58,60,62,65,70,95,90}-*.sh  the thirteen phases (95 before 90,
+    pi/steps/{10,15,20,30,40,50,58,60,62,65,66,70,95,90}-*.sh  the phases (95 before 90,
                                             so the gate can see the backup tools;
                                             15 before 20 and 58 before 60 because
                                             each installs what the later one assumes)
@@ -1092,6 +1115,13 @@ any failure. Categories:
     pi/nginx/ark-admin.conf                 :8443 management + :8444 loopback
                                             setup, unknown Host rejected
     pi/nginx/ark-players.conf               :8445 player origin, /arcade only
+    pi/nginx/ark-maps.conf                  :8446 maps origin, /maps only, 404 for /admin
+    pi/maps/web/                            the maps application (HTML/CSS/JS, worker, SW)
+    pi/api/ark_maps.py                      the pack format: graph v2, places, layers, manifest
+    pi/api/ark_map_store.py                 the shelf: safe import, immutable versions, publish
+    pi/api/ark_map_web.py                   catalogue, app assets and range downloads
+    pi/api/ark_map_admin.py                 the owner's Maps page markup
+    scripts/ark-map-pack                    workstation builder (pyosmium); not installed on the Pi
     pi/bin/ark-tls-cert                     the box's own certificate (SANs,
                                             --show fingerprint, 30-day renew)
     pi/bin/ark-admin-recover                0700 root:root, runs Python as pi

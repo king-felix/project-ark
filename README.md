@@ -25,6 +25,8 @@ down, and the portal address does not serve it at all.
 | `/kiwix/` | the offline library (encyclopedias, medical, repair, food, water) |
 | `/books/` | the book shelf (EPUB/PDF, read in the browser or download) |
 | `/media/` | the film shelf: pictures, a player with captions and resume, a download — only what the owner published |
+| `/maps` | the way in to Maps; it sends the reader to the secure address the page needs |
+| `https://<host>:8446/maps/` | Maps: download one region, then browse, search and plan new routes with no Ark and no internet |
 | `/vault/` | survival manuals + repair guides, each with a printable PDF |
 | `/board` | a message board anyone can post to (the owner can pin, sort out, hide) |
 | `/files` | a file box anyone can drop things into (2 GB per file, 8 GB for a film — a film goes to the owner for a look first) |
@@ -35,6 +37,8 @@ down, and the portal address does not serve it at all.
 | `/help.html` | how it works, in plain words |
 
 Addresses: `http://ark.lan` · `http://ark.local` · `http://10.42.0.1`
+Maps has its own secure address: `https://ark.local:8446/maps/` (the
+certificate is explained below).
 
 Everything in that table is public and password-free. The owner's door — the
 sign-in for whoever looks after the box — is a separate address entirely (see
@@ -394,6 +398,72 @@ added.
 
 ---
 
+## Maps — a region to carry away
+
+Maps is the one part of the box that is meant to keep working after the box is
+out of reach. A phone downloads one region while it is on the Ark's Wi-Fi; after
+that the map, the place search and **new** route calculation run entirely on the
+phone, with no Ark and no internet. A saved screenshot, a cached viewport or a
+route calculated earlier by the Pi does not count, and Maps does not pretend it
+does: `Ready offline` appears only after every component has arrived and been
+checked against the fingerprint in its manifest.
+
+**What runs where.**
+
+* **The workstation** builds the region. `scripts/ark-map-pack` reads an
+  OpenStreetMap `.osm.pbf` (Geofabrik extracts are the usual source), and writes
+  a pack: `manifest.json`, a routing graph (`graph.bin`/`graph.json`), a search
+  index (`places.json`), six drawing layers and the attribution. Building a
+  country is workstation work; the Pi never parses a PBF.
+* **The Ark** stores the finished, immutable version under `/srv/ark/maps/packs/`,
+  offers it in a catalogue, and serves it with real HTTP range requests so a
+  phone can resume. It also serves the application itself.
+* **The phone** downloads the pack into its own browser storage (IndexedDB, one
+  MiB at a time), verifies every file, and then reads the graph and layers from
+  the device. The router is a small A* over the stored graph; the search is a
+  scan of the pack's own names; the renderer is a 2D canvas over the pack's
+  GeoJSON. No tile server, no CDN, no online geocoder.
+
+**Build and import one.**
+
+```bash
+# on the Mac (needs .venv with pyosmium: .venv/bin/pip install osmium)
+.venv/bin/python scripts/ark-map-pack --download \
+  https://download.geofabrik.de/europe/liechtenstein-latest.osm.pbf \
+  --name Liechtenstein --code LI --out logs/maps/packs \
+  --bundle logs/maps/liechtenstein-demo.zip
+
+# then, on the Ark: owner pages → Maps → choose the .zip → Check and add
+# (or: /usr/local/sbin/ark-maps --import /srv/ark/maps/incoming/<file>.zip)
+```
+
+A pack version is immutable. Importing a new version leaves the old one in place;
+the owner publishes the new one when it has passed its check, and only then do
+readers see it. Deleting a version on the Ark does not reach a phone that already
+downloaded it.
+
+**Why Maps is on a different address.** A service worker — the browser feature
+that lets the page reopen with nothing reachable — is only allowed on a secure
+origin the device trusts. `http://ark.local` is not one, and clicking through a
+certificate warning does **not** enable it. The box makes its own certificate;
+install it once (the portal offers it at `/certificate.crt`, and the Maps help
+page walks through iPhone, Android and laptop steps), then open
+`https://<name>:8446/maps/` and add it to the home screen. The certificate is the
+same one the owner's pages use; the Maps listener serves only `/maps/` and never
+`/admin`.
+
+**What it deliberately cannot do.** Search covers named places and points of
+interest, not street addresses (most extracts have no address index). One-way
+and access rules and the turn restrictions carried in the data are respected;
+restrictions whose `via` is a whole way, and time-conditional restrictions, are
+not. Times use road-class speeds, not live traffic, closures or weather. Mapped
+water is not a claim that it is drinkable, and a mapped clinic is not a claim
+that it is open. Map regions are reproducible content, not records: they are not
+in `ark-backup`, and a restored card reports no packs until they are built or
+imported again — which is the truth, not a silent "ready". Attribution
+(© OpenStreetMap contributors, ODbL 1.0) stays on the map and on every route
+sheet.
+
 ## The offline library
 
 `50-kiwix.sh` writes a queue from `pi/kiwix/catalog.tsv` and
@@ -627,9 +697,10 @@ SQLite's own backup call, never a file copy (the live file is WAL). A restore
 proves every byte first, refuses to overwrite an occupied box without `--force`,
 never replaces a shared file that is already there (and keeps a game save already
 on the box rather than replacing it), and refuses a manifest that
-points outside the box. The offline library, the book shelf and the game files
-themselves stay out of a copy on purpose — they are content, fetched or imported
-again; named players' saves are state and do travel.
+points outside the box. The offline library, the book shelf, the game files and the map regions
+themselves stay out of a copy on purpose — they are content, fetched, imported or
+built again; named players' saves are state and do travel. A restored card with
+no map packs says so, rather than claiming a region whose bytes are absent.
 
 **A copy on the box is not insurance:** copy `/srv/ark/backup/ark-backup-*` to a
 stick or a computer. The page for the day the card does not boot is

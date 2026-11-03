@@ -149,6 +149,8 @@ check_says "/media/"              "films shelf words" "Films kept on this box"
 check_page "/arcade/static/ark-arcade.css" "game shelf stylesheet"
 check_page "/arcade/emulator/loader.js"    "game player"
 check_page "/api/status"          "live status"
+check_page "/maps"                "maps sends you to its secure origin" "301"
+check_page "/certificate.crt"     "the Ark certificate is offered" "200"
 check_page "/vault/"              "manuals index"
 check_says "/household"           "household page" "The page for the day something goes wrong"
 check_says "/cards"               "cards for the wall" "Three addresses, three squares"
@@ -284,6 +286,38 @@ games_admin_code="$(ark_tls_code ark.lan:8443 /admin/arcade)"
 case "$games_admin_code" in
   200|303|403) say_ok "Games page behind the sign-in" "HTTP $games_admin_code" ;;
   *)           say_bad "Games page behind the sign-in" "HTTP ${games_admin_code:-none}" ;;
+esac
+
+# ---- maps: the app, the secure origin, and the one certificate ---------------
+maps_code="$(ark_tls_code ark.lan:8446 /maps/)"
+case "$maps_code" in
+  200) say_ok "maps application :8446" "HTTP $maps_code" ;;
+  *)   say_bad "maps application :8446" "HTTP ${maps_code:-none} — run phase 66-maps" ;;
+esac
+
+maps_catalog="$(ark_tls_code ark.lan:8446 /maps/api/catalog)"
+case "$maps_catalog" in
+  200) say_ok "maps catalogue" "HTTP $maps_catalog (a box with no packs is still a working box)" ;;
+  *)   say_bad "maps catalogue" "HTTP ${maps_catalog:-none}" ;;
+esac
+
+maps_sw="$(ark_tls_header ark.lan:8446 /maps/sw.js service-worker-allowed || true)"
+case "$maps_sw" in
+  *"/maps/"*) say_ok "maps offline scope" "the page may keep /maps/ for reopening with the Ark gone" ;;
+  *)          say_bad "maps offline scope" "the service-worker header is missing — offline reopening cannot work" ;;
+esac
+
+maps_cert="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: ark.lan' \
+  http://127.0.0.1/certificate.crt || true)"
+case "$maps_cert" in
+  200) say_ok "maps certificate download" "the public certificate is offered on the ordinary portal" ;;
+  *)   say_soft "maps certificate download" "HTTP ${maps_cert:-none} — no certificate on this box yet" ;;
+esac
+
+maps_admin="$(ark_tls_code ark.lan:8443 /admin/maps)"
+case "$maps_admin" in
+  200|303|403) say_ok "Maps page behind the sign-in" "HTTP $maps_admin" ;;
+  *)           say_bad "Maps page behind the sign-in" "HTTP ${maps_admin:-none}" ;;
 esac
 
 if [[ -d "$ARK_ROOT/drop/files" && -d "$ARK_ROOT/drop/tmp" ]]; then

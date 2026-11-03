@@ -36,6 +36,8 @@ import ark_essentials
 import ark_health
 import ark_household
 import ark_ingest
+import ark_map_admin
+import ark_map_store
 import ark_media
 import ark_media_jobs
 import ark_media_web
@@ -240,6 +242,7 @@ ADMIN_NAV = (
     ("/admin/health", "What is working"),
     ("/admin/upload", "Add files"),
     ("/admin/media", "Media"),
+    ("/admin/maps", "Maps"),
     ("/admin/network", "Network"),
     ("/admin/household", "Household"),
     ("/admin/arcade", "Games"),
@@ -2761,6 +2764,166 @@ MEDIA_STATES = (("", "Everything"), ("published", "On the shelf"),
 #: How many films one screen shows.  A shelf of a thousand films is paged, not
 #: downloaded: each card is one picture and two lines of text.
 MEDIA_PER_PAGE = 20
+
+
+# ---------------------------------------------------------------------------
+#  MAPS — the region shelf
+# ---------------------------------------------------------------------------
+def _map_flash(request: Request) -> str:
+    return request.query_params.get("ok") or ""
+
+
+def _map_redirect(ok: str = "", err: str = "") -> RedirectResponse:
+    query = {}
+    if ok:
+        query["ok"] = ok[:300]
+    if err:
+        query["err"] = err[:300]
+    suffix = ("?" + urllib.parse.urlencode(query)) if query else ""
+    return RedirectResponse("/admin/maps" + suffix, status_code=303)
+
+
+@router.get("/maps")
+def maps_page(request: Request):
+    """What regions are on the card, what state each is in, and how to change it."""
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.read() as conn:
+        ctx = _load_ctx(conn, request, ark_db.session_epoch(conn))
+        if (blocked := _need_session(ctx, request)) is not None:
+            return blocked
+    store = ark_map_store.Store()
+    try:
+        rows = store.rows()
+        storage = store.storage()
+        incoming = store.incoming_items()
+    except Exception as exc:                  # noqa: BLE001 — a page must still render
+        rows, storage, incoming = [], {}, []
+        error = "The shelf could not be read: %s" % (exc,)
+    else:
+        error = request.query_params.get("err") or ""
+    body = ark_map_admin.page_body(rows, storage, incoming, ctx, ctx.csrf,
+                                   flash=_map_flash(request), error=error)
+    return shell("Maps", body, ctx=ctx,
+                 tagline="Regions a reader can carry away — built elsewhere, proved here.")
+
+
+@router.post("/maps/import")
+async def maps_import(request: Request, file: UploadFile = File(...),
+                      csrf: str = Form("")):
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.read() as conn:
+        ctx = _load_ctx(conn, request, ark_db.session_epoch(conn))
+        if (blocked := _need_session(ctx, request)) is not None:
+            return blocked
+    if (blocked := _need_csrf(ctx, csrf)) is not None:
+        return blocked
+    if not file or not file.filename:
+        return _map_redirect(err="No file was chosen.")
+    store = ark_map_store.Store()
+    try:
+        row = store.import_zip(file.file, filename=file.filename)
+    except (ark_map_store.Refused, ark_space.Refused) as exc:
+        return _map_redirect(err=str(exc))
+    except Exception as exc:                  # noqa: BLE001 — a bad archive is not a 500 page
+        return _map_redirect(err="That archive could not be added: %s" % (exc,))
+    finally:
+        try:
+            await file.close()
+        except Exception:                     # noqa: BLE001
+            pass
+    return _map_redirect(ok="%s version %s was checked and added, and is not offered yet."
+                             % (row.get("name") or row.get("id"), row.get("version")))
+
+
+@router.post("/maps/import-incoming")
+def maps_import_incoming(request: Request, name: str = Form(""), csrf: str = Form("")):
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.read() as conn:
+        ctx = _load_ctx(conn, request, ark_db.session_epoch(conn))
+        if (blocked := _need_session(ctx, request)) is not None:
+            return blocked
+    if (blocked := _need_csrf(ctx, csrf)) is not None:
+        return blocked
+    store = ark_map_store.Store()
+    try:
+        row = store.import_path(store.incoming / name)
+    except (ark_map_store.Refused, ark_space.Refused) as exc:
+        return _map_redirect(err=str(exc))
+    except Exception as exc:                  # noqa: BLE001
+        return _map_redirect(err="That incoming item could not be added: %s" % (exc,))
+    return _map_redirect(ok="%s version %s was checked and added."
+                             % (row.get("name") or row.get("id"), row.get("version")))
+
+
+@router.post("/maps/check")
+def maps_check(request: Request, id: str = Form(""), version: str = Form(""),
+               csrf: str = Form("")):
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.read() as conn:
+        ctx = _load_ctx(conn, request, ark_db.session_epoch(conn))
+        if (blocked := _need_session(ctx, request)) is not None:
+            return blocked
+    if (blocked := _need_csrf(ctx, csrf)) is not None:
+        return blocked
+    store = ark_map_store.Store()
+    try:
+        report = store.verify(id, version)
+    except (ark_map_store.Refused, ark_space.Refused) as exc:
+        return _map_redirect(err=str(exc))
+    if not report.get("ok"):
+        first = (report.get("problems") or ["the check did not pass"])[0]
+        return _map_redirect(err="The check found a problem: %s" % (first,))
+    return _map_redirect(ok="%s version %s passed the byte check (%d bytes)."
+                             % (id, version, int(report.get("bytes") or 0)))
+
+
+@router.post("/maps/publish")
+def maps_publish(request: Request, id: str = Form(""), version: str = Form(""),
+                 on: str = Form("1"), csrf: str = Form("")):
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.read() as conn:
+        ctx = _load_ctx(conn, request, ark_db.session_epoch(conn))
+        if (blocked := _need_session(ctx, request)) is not None:
+            return blocked
+    if (blocked := _need_csrf(ctx, csrf)) is not None:
+        return blocked
+    store = ark_map_store.Store()
+    try:
+        store.publish(id, version, on=str(on).strip() == "1")
+    except (ark_map_store.Refused, ark_space.Refused) as exc:
+        return _map_redirect(err=str(exc))
+    return _map_redirect(ok="%s version %s is now %s."
+                             % (id, version, "offered" if str(on).strip() == "1" else "hidden"))
+
+
+@router.post("/maps/delete")
+def maps_delete(request: Request, id: str = Form(""), version: str = Form(""),
+                confirm: str = Form(""), current_password: str = Form(""),
+                csrf: str = Form("")):
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.read() as conn:
+        ctx = _load_ctx(conn, request, ark_db.session_epoch(conn))
+        if (blocked := _need_session(ctx, request)) is not None:
+            return blocked
+    if (blocked := _need_csrf(ctx, csrf)) is not None:
+        return blocked
+    if confirm != "yes":
+        return _map_redirect(err="Nothing was deleted: the confirmation was not ticked.")
+    if not _reauth(ctx.admin, current_password):
+        return _map_redirect(err="Nothing was deleted: the password did not match.")
+    store = ark_map_store.Store()
+    try:
+        store.delete(id, version)
+    except (ark_map_store.Refused, ark_space.Refused) as exc:
+        return _map_redirect(err=str(exc))
+    return _map_redirect(ok="%s version %s was removed from the Ark. Phones that already "
+                             "downloaded it keep their own copy." % (id, version))
 
 
 def _media_plan_words(row) -> str:

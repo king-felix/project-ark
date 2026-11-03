@@ -450,6 +450,9 @@ household member has opened `/household` on a phone.
 | R9 | DONE (code + test + proved on the box) | all; search quality unmeasured |
 | R10 | DONE (code + test) | all on the Mac; **no model on the box, nothing in a browser, not deployed** |
 | R11 | DONE (code + test) | the pass and its settings yes; **never met a real power cut, phase not run on the box** |
+| R12 | DONE (code + test) | batch upload + every door named; real 2 GiB press is human work |
+| R13 | DONE (code + test) | shelf, ranges, worker; real phone playback is human work |
+| R14 | DONE (code + real-browser test) | desktop Chromium offline journey yes; **no real phone, no owner region, eviction unproven** |
 | A | PARTIAL | accounts/community/games/health yes; players/services/backup UI no |
 | B | PARTIAL (early) | guest play + named saves + preferences yes; history/metadata/visuals no |
 | C | PARTIAL | stage 3–6 fixes yes; thermal/jobs/search cancellation no |
@@ -668,6 +671,38 @@ never publishes a visitor's film without the owner.
 **Not proved here:** how a real phone's browser plays each codec, how a Pi 4 feels while
 it converts a feature film, and whether a person finds the shelf pleasant. Those are
 `docs/HUMAN-TEST-LIST.md` entries, not code claims.
+
+---
+
+## R14 — maps, search and NEW routes with no Ark and no internet
+
+**Status: DONE + tested in a real desktop Chromium; a real iPhone/Android device and
+the owner's chosen region are human work (`docs/HUMAN-TEST-LIST.md` §22).** The
+application, the graph, the search index and the drawing layers live on the device
+after one deliberate download. Reopening is served by the service worker; the router
+is a local A* over the pack's graph; the search is a local scan; no request is needed
+or made for any of the defining journey.
+
+| Acceptance sentence | Where | Test |
+|---|---|---|
+| A pack is a finished, self-describing folder; a missing source, date, version or fingerprint is refused before a byte is written | `ark_maps.write_pack()`, `manifest_problems()` | `test_maps.py::test_a_pack_must_say_where_it_came_from`; `::test_pack_round_trip` |
+| A one-way street is one-way for a car and still walkable; a car may not use a path | graph v2 `modes`, `direction_modes()`, `access_modes()` | `test_maps.py::test_oneway_is_one_way_for_a_car_and_not_for_feet` |
+| Turn restrictions with a via node are carried and checked at the junction | `Graph.add_turn()`, `Router._turnAllowed()` | `test_maps.py::test_turn_restriction_is_in_the_description`; `tests/js/router.test.mjs` |
+| A changed byte is caught before publication | `ark_maps.verify_pack()` | `test_maps.py::test_a_changed_byte_is_caught` |
+| An archive cannot escape its folder, and an unchecked folder is never offered | `Store._zip_entries()`, `Store.publish()` | `test_maps.py::test_a_zip_cannot_escape_the_incoming_folder`; `::test_an_unchecked_folder_is_not_offered` |
+| A pack is immutable; a new version publishes beside the old one; deleting on the Ark does not pretend to reach a phone | `Store._publish_folder()`, `Store.delete()` | `test_maps.py::test_import_publish_and_delete`; admin page copy |
+| Download resumes with real ranges: 206, suffix ranges, 416, `HEAD`, ETag | `ark_map_web._parse_range()`, `pack_file()` | `test_maps.py::test_catalogue_and_range_downloads` |
+| Admin management is behind TLS, session, CSRF and password on delete; public read is open | `ark_admin.maps_*`, `ark_map_web` | `test_maps.py::test_the_admin_maps_page_is_behind_the_sign_in` |
+| The app is served with a worker scope and a CSP that cannot reach `/admin` | `ark_map_web._serve_asset()` | `test_maps.py::test_the_app_is_served_with_a_worker_scope` |
+| **The defining journey:** download → make the Ark and internet unreachable → close/reopen → pan → search a new place → calculate a NEW route → directions → route sheet → GPX, with no successful network response | `pi/maps/web/*`, IndexedDB, service worker | `test_maps_browser.py::test_a_downloaded_region_reopens_and_routes_with_no_network` |
+| Pause keeps the received pieces; continue finishes; cancel leaves nothing | `app.js` download lifecycle, `store.deletePack()` | `test_maps_browser.py::test_a_paused_download_keeps_its_pieces_and_resumes` |
+| A certificate error does **not** enable a service worker; a trusted certificate does | browser behaviour, `help.html` | proved by the probe recorded in `docs/IMPLEMENTATION-LOG.md` §44; the browser test pins the certificate exactly as a device would |
+| Space is the one shared policy; an import reserves before extracting and releases however it ends | `ark_map_store.import_zip()`, `ark_space.hold()` | `test_maps.py::test_import_publish_and_delete`; `test_space.py` |
+
+**Not proved here:** a real iPhone or Android phone (Add to Home Screen, certificate
+installation, memory and battery); the owner's actual region choice; browser eviction
+under real quota pressure; a pack larger than the demonstration; and voice/continuous
+navigation, which is not implemented and is not promised.
 
 ---
 

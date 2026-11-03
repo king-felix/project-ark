@@ -3,27 +3,39 @@
 A *map pack* is one folder on the card:
 
     manifest.json    what it is, where the bytes came from, every fingerprint
-     graph.json      how to read graph.bin (node/edge counts, street names)
+     graph.json      how to read graph.bin (counts, names, profiles, turns)
      graph.bin       the routing graph: a header, node points, an index, edges
    places.json       what can be searched for: names, kinds, points
     base-major.geojson / base-minor.geojson / water.geojson / forest.geojson /
-    boundary.geojson
+    boundary.geojson / buildings.geojson
      attribution.txt one line that must stay on the screen
 
 Everything here is a *format*: this module writes and reads those files and knows
 nothing about OSM downloaders, browsers, nginx or the card.  The host-side
 builder (`scripts/ark-map-pack`, which needs pyosmium) reads an .osm.pbf and calls
-`build_graph()` / `write_pack()`; the browser reads the same bytes with
+`build_pack()`; the browser reads the same bytes with
 `pi/maps/web/router.js`, which knows `GRAPH_LAYOUT` by heart.
 
-Two rules this file keeps:
+Three rules this file keeps:
 
 * **A pack says where it came from.**  `manifest.json` carries the source URL, the
-  source file's sha256 and the licence (ODbL-1.0 for OpenStreetMap data), and
-  `attribution.txt` is the sentence that has to stay visible.  A pack without it
-  is a pack nobody may publish.
+  source file's sha256 and sha256 of the source bytes, the date of the data, the
+  licence (ODbL-1.0 for OpenStreetMap data) and `attribution.txt` is the sentence
+  that has to stay visible.  A pack without any of it is a pack nobody may
+  publish.
+* **A pack says what it can do.**  The manifest names the routing profiles the
+  graph actually supports, whether turn restrictions were carried, whether the
+  search index has addresses, and the zoom range the drawing layers were built
+  for.  The browser refuses a pack whose engine or application version it does
+  not understand instead of opening half of it.
 * **Nothing here decides what runs.**  No service, no path on the live box, no
   certificate: this is data and the arithmetic that reads it.
+
+The graph is version 2.  Version 1 (the first prototype) had one edge per
+direction with no way id and no mode mask, which made a one-way street one-way
+for a walker and made a turn restriction impossible to express.  Version 2
+adds the two fields that fix both, and a reader refuses a version it does not
+know rather than guessing.
 """
 
 from __future__ import annotations
@@ -33,6 +45,7 @@ import io
 import json
 import math
 import os
+import re
 import struct
 import time
 import unicodedata
@@ -43,7 +56,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 # -----------------------------------------------------------------------------
 #
 #   0  magic       4s   b"ARKG"
-#   4  version     H    1
+#   4  version     H    2
 #   6  flags       H    0 (reserved)
 #   8  nodeCount   I
 #  12  edgeCount   I    directed
@@ -53,49 +66,54 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 #  24  nodes       nodeCount  * 8   int32 lat_e6, int32 lon_e6
 #      offsets     (nodeCount+1) * 4 uint32, ascending: node i owns
 #                                    edges[offsets[i]:offsets[i+1]]
-#      edges       edgeCount  * 12  uint32 to, float32 metres, uint16 cls,
-#                                    uint16 nameId (0xFFFF = no name)
+#      edges       edgeCount  * 18  uint32 to, float32 metres, uint16 class,
+#                                    uint16 name, uint32 way, uint16 modes
 #
-# A node's edges are its *outgoing* edges; a two-way street therefore appears
-# twice, once from each end, and the router never has to think about direction.
+# A node's edges are its *outgoing* edges.  A street usable in both directions is
+# two edges, one from each end, and that is on purpose: direction is stored, not
+# inferred at query time.  `modes` is a bit mask (car=1, bike=2, foot=4), so a
+# one-way street can be one-way for a car and still walkable back up the hill.
+# `way` is the OpenStreetMap way id, which is what a turn restriction names.
 GRAPH_MAGIC = b"ARKG"
-GRAPH_VERSION = 1
+GRAPH_VERSION = 2
 GRAPH_HEADER = struct.Struct("<4sHHIIII")
 _NODE = struct.Struct("<ii")
 _OFFSET = struct.Struct("<I")
-_EDGE = struct.Struct("<IfHH")
+_EDGE = struct.Struct("<IfHHIH")
 NO_NAME = 0xFFFF
 GRAPH_LAYOUT = (
     "header 24B (magic ARKG, version, flags, nodes, edges, names, reserved); "
     "nodes nodeCount*8B (int32 lat*1e6, int32 lon*1e6); "
-    "offsets (nodeCount+1)*4B; edges edgeCount*12B (uint32 to, float32 metres, "
-    "uint16 class, uint16 name)"
+    "offsets (nodeCount+1)*4B; edges edgeCount*18B (uint32 to, float32 metres, "
+    "uint16 class, uint16 name, uint32 way, uint16 modes)"
 )
 
+#: How many bytes one edge occupies.  The browser and the tests read this number.
+EDGE_BYTES = _EDGE.size
+
 # -----------------------------------------------------------------------------
-# Road classes — the numbers are frozen
+# Profiles and access — who may use an edge
 # -----------------------------------------------------------------------------
-#
-# A class is a small integer written into every edge, and the browser's router
-# turns it into a speed and a drawing weight.  The order below is therefore
-# append-only: an existing class keeps its number for ever, and a class we do not
-# know yet goes on the end (`ROAD_CLASSES.index` is the number).  A pack built by
-# an older builder keeps working in a newer browser, which is the only reason
-# this is a list and not a dict.
+MODE_CAR = 1
+MODE_BIKE = 2
+MODE_FOOT = 4
+ALL_MODES = MODE_CAR | MODE_BIKE | MODE_FOOT
+MODE_BITS: Dict[str, int] = {"car": MODE_CAR, "bike": MODE_BIKE, "foot": MODE_FOOT}
+
+# The road classes, frozen and append-only: the number is written into every edge
+# and the browser turns it into a width and a speed.  A class we do not know goes
+# on the end; a pack built by an older builder keeps working in a newer browser.
 ROAD_CLASSES = (
-    "path",       # 0  footway, steps, bridleway, pedestrian
-    "track",      # 1  track, byway, service
-    "residential",  # 2 residential, unclassified, living_street
-    "tertiary",   # 3
-    "secondary",  # 4
-    "primary",    # 5
-    "trunk",      # 6
-    "motorway",   # 7
+    "path",         # 0  footway, steps, bridleway, pedestrian
+    "track",        # 1  track, byway, service
+    "residential",  # 2  residential, unclassified, living_street
+    "tertiary",     # 3
+    "secondary",    # 4
+    "primary",      # 5
+    "trunk",        # 6
+    "motorway",     # 7
 )
 
-# Unknown tags on a routable way are `residential`, never `path`: a way tagged
-# `highway=yes` in the wild is a road, and guessing "footway" would keep a car off
-# it for no reason the data gives.
 HIGHWAY_CLASS: Dict[str, str] = {
     "motorway": "motorway",
     "motorway_link": "motorway",
@@ -120,17 +138,14 @@ HIGHWAY_CLASS: Dict[str, str] = {
     "steps": "path",
     "bridleway": "path",
     "cycleway": "path",
+    "corridor": "path",
 }
 
-# The classes drawn on the "major" layer; everything else goes on "minor", so the
-# browser can show a thin network at a low zoom and thicken it as you come in.
+# The classes drawn on the "major" layer; everything else goes on "minor".
 MAJOR_CLASSES = frozenset(("primary", "trunk", "motorway"))
 
 # Metres per second at the class's own limit — a planning number, not a promise.
-# `ark_maps` is honest about this in the pack: `manifest.json` records
-# `"speeds": "class defaults, not measured"`, because a routing graph without a
-# `maxspeed` survey travels at the class's speed.  Driving on a track at 16 km/h
-# is a guess and it says so.
+# `manifest.json` records that these are class defaults, not a measured survey.
 SPEEDS_KMH: Dict[str, float] = {
     "motorway": 110.0,
     "trunk": 90.0,
@@ -142,38 +157,53 @@ SPEEDS_KMH: Dict[str, float] = {
     "path": 5.0,
 }
 
-# What each way of travelling may use, and how fast it really goes.  The speed is
-# a fraction of the class speed so one table serves every profile: a bicycle on a
-# primary road does not do 70.
+# Which classes each profile may use at all.  Access tags narrow this further.
+PROFILE_CLASSES: Dict[str, Tuple[str, ...]] = {
+    "car": ("motorway", "trunk", "primary", "secondary", "tertiary",
+            "residential", "track"),
+    "bike": ("primary", "secondary", "tertiary", "residential", "track", "path"),
+    "foot": ("primary", "secondary", "tertiary", "residential", "track", "path"),
+}
+
+# A speed factor per class, so one table serves every profile: a bicycle on a
+# primary road does not do 70.  Feet are the exception — walking is walking, and
+# the class decides *whether* you may go, not how fast.
+PROFILE_FACTOR: Dict[str, Dict[str, float]] = {
+    "car": {"motorway": 1.0, "trunk": 1.0, "primary": 1.0, "secondary": 1.0,
+            "tertiary": 1.0, "residential": 1.0, "track": 0.6},
+    "bike": {"primary": 0.35, "secondary": 0.4, "tertiary": 0.45,
+             "residential": 0.55, "track": 0.55, "path": 0.5},
+    "foot": {},
+}
+
+FOOT_KMH = 4.8
+
+# What each way of travelling is called on the screen, and whether a one-way rule
+# applies to it at all.  A walker ignores `oneway=yes`; a bicycle obeys it unless
+# the way says `oneway:bicycle=no`.
 PROFILES: Dict[str, Dict[str, object]] = {
     "car": {
         "label": "By car",
-        "classes": ("motorway", "trunk", "primary", "secondary", "tertiary",
-                    "residential", "track"),
-        "factor": {"motorway": 1.0, "trunk": 1.0, "primary": 1.0,
-                   "secondary": 1.0, "tertiary": 1.0, "residential": 1.0,
-                   "track": 0.6},
+        "classes": PROFILE_CLASSES["car"],
+        "factor": PROFILE_FACTOR["car"],
         "oneway": True,
+        "speed_kmh": SPEEDS_KMH["motorway"],
     },
     "bike": {
         "label": "By bicycle",
-        "classes": ("primary", "secondary", "tertiary", "residential", "track",
-                    "path"),
-        "factor": {"primary": 0.35, "secondary": 0.4, "tertiary": 0.45,
-                   "residential": 0.55, "track": 0.55, "path": 0.5},
+        "classes": PROFILE_CLASSES["bike"],
+        "factor": PROFILE_FACTOR["bike"],
         "oneway": True,
+        "speed_kmh": SPEEDS_KMH["residential"],
     },
     "foot": {
         "label": "On foot",
-        "classes": ("primary", "secondary", "tertiary", "residential", "track",
-                    "path"),
-        # Walking is walking: the class decides *whether* you may go, not how fast.
-        "factor": {"primary": 1.0, "secondary": 1.0, "tertiary": 1.0,
-                   "residential": 1.0, "track": 1.0, "path": 1.0},
+        "classes": PROFILE_CLASSES["foot"],
+        "factor": PROFILE_FACTOR["foot"],
         "oneway": False,
+        "speed_kmh": FOOT_KMH,
     },
 }
-FOOT_KMH = 4.8
 DEFAULT_PROFILE = "car"
 
 # A turn costs time even when the two streets are the same length.  Without it a
@@ -181,6 +211,10 @@ DEFAULT_PROFILE = "car"
 # the answer reads like something a person would drive.  Seconds, per turn kind.
 TURN_PENALTY_S = 4.0
 TURN_PENALTY_UTURN_S = 20.0
+
+# Restriction kinds written into graph.json.
+TURN_NO = 0      # may not go from way A to way B through this node
+TURN_ONLY = 1    # the only way out of this node from way A is way B
 
 
 def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -204,41 +238,102 @@ def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 # routable, full stop.
 _ROUTABLE_HIGHWAY = frozenset(HIGHWAY_CLASS)
 
-# A way carrying any of these is not a way to travel on.  `construction` is
-# checked too: a road being built is not a road, and routing through one is how a
-# directions list sends somebody into a hole in the ground.
-_REFUSE_ACCESS = frozenset((
+# `highway=construction` / `proposed` / `abandoned` and friends are not roads yet.
+_REFUSE_HIGHWAY = frozenset(("construction", "proposed", "abandoned", "razed",
+                             "disused", "platform", "elevator", "raceway"))
+
+# Values of an access tag that mean "keep out".  `destination` is deliberately
+# *not* here: a street signed "residents only" is still a street a visitor may
+# walk down, and refusing it would cut a village in half.
+_ACCESS_NO = frozenset((
     "no", "private", "agricultural", "forestry", "military", "customers",
 ))
 
-# `highway=construction` / `proposed` / `abandoned` and friends are not roads yet.
-_REFUSE_HIGHWAY = frozenset(("construction", "proposed", "abandoned", "razed",
-                             "disused", "platform", "elevator"))
+# Values that mean "yes, you may" even after a broader `access=no`.
+_ACCESS_YES = frozenset((
+    "yes", "designated", "official", "permissive", "destination", "customers",
+))
 
 
-def is_routable(tags: Dict[str, str]) -> bool:
-    """Is this way something the graph should carry?
+def _yes_no(raw: Optional[str]) -> Optional[bool]:
+    """`True`/`False` for an access value, `None` when the tag says nothing."""
+    value = (raw or "").strip().lower()
+    if not value:
+        return None
+    if value in _ACCESS_NO:
+        return False
+    if value in _ACCESS_YES:
+        return True
+    return None
 
-    Deliberately conservative: a way we leave out is a missing street on a map,
-    while a way we wrongly include sends somebody through a locked gate or into a
-    building site.  Both are wrong; only one is dangerous.
-    """
+
+def _base_modes(tags: Dict[str, str]) -> int:
+    """Modes allowed by the highway class alone, before access tags."""
     highway = (tags.get("highway") or "").strip().lower()
     if not highway or highway not in _ROUTABLE_HIGHWAY:
-        return False
+        return 0
     if highway in _REFUSE_HIGHWAY:
-        return False
-    for key in ("access", "vehicle", "motor_vehicle", "motorcar"):
-        if (tags.get(key) or "").strip().lower() in _REFUSE_ACCESS:
-            return False
+        return 0
     if (tags.get("area") or "").strip().lower() == "yes":
-        return False
+        return 0
     if (tags.get("service") or "").strip().lower() == "parking_aisle":
         # A car park's aisles are a maze, not a network: keeping them adds edges
         # that are never the right answer and make the graph read as denser than
         # the streets really are.
-        return False
-    return True
+        return 0
+    klass = HIGHWAY_CLASS[highway]
+    modes = 0
+    for profile, classes in PROFILE_CLASSES.items():
+        if klass in classes:
+            modes |= MODE_BITS[profile]
+    if not modes:
+        return 0
+    # A footway is for feet unless it says otherwise; a bicycle on it is a
+    # decision the survey made, not one we may guess.  `path` and `cycleway`
+    # keep their bicycles.
+    if highway in ("footway", "steps", "pedestrian", "corridor"):
+        if _yes_no(tags.get("bicycle")) is not True:
+            modes &= ~MODE_BIKE
+    # A motorway is not for bicycles or feet, whatever the class table says.
+    if klass in ("motorway", "trunk"):
+        modes &= ~(MODE_BIKE | MODE_FOOT)
+    return modes
+
+
+def access_modes(tags: Dict[str, str]) -> int:
+    """The modes that may use this way in *some* direction, as a bit mask.
+
+    `access=no` closes the way to everything, then a specific `foot=yes` (or
+    `bicycle=yes`) opens that one mode again — which is exactly how OSM reads.
+    A way we leave out is a missing street on a map; a way we wrongly include
+    sends somebody through a locked gate, so the refusal wins ties.
+    """
+    modes = _base_modes(tags)
+    if not modes:
+        return 0
+    general = _yes_no(tags.get("access"))
+    if general is False:
+        modes = 0
+    # `vehicle` covers car and bicycle, never feet.
+    vehicle = _yes_no(tags.get("vehicle"))
+    if vehicle is not None:
+        if vehicle:
+            modes |= _base_modes(tags) & (MODE_CAR | MODE_BIKE)
+        else:
+            modes &= ~(MODE_CAR | MODE_BIKE)
+    for key, mask in (("motor_vehicle", MODE_CAR), ("motorcar", MODE_CAR),
+                      ("bicycle", MODE_BIKE), ("foot", MODE_FOOT)):
+        allowed = _yes_no(tags.get(key))
+        if allowed is True:
+            modes |= _base_modes(tags) & mask
+        elif allowed is False:
+            modes &= ~mask
+    return modes
+
+
+def is_routable(tags: Dict[str, str]) -> bool:
+    """Is this way something the graph should carry?"""
+    return access_modes(tags) != 0
 
 
 def road_class(tags: Dict[str, str]) -> str:
@@ -265,11 +360,12 @@ def class_name(number: int) -> str:
 
 
 def oneway(tags: Dict[str, str]) -> int:
-    """Direction of travel: `1` forward, `-1` backward, `0` both ways.
+    """Direction of travel for vehicles: `1` forward, `-1` backward, `0` both.
 
-    `-1` is the cheapest honest way to draw and route a reversed one-way street:
-    the builder still emits the way's points in the order OSM gives them, and this
-    number says which way round they may be used.
+    A roundabout is one-way unless it says otherwise, and that is the one
+    implicit case worth honouring — a two-way roundabout is a mistake in the
+    data and driving it both ways is a mistake on the road.  Feet ignore this
+    number entirely; `direction_modes()` is where that is applied.
     """
     raw = (tags.get("oneway") or "").strip().lower()
     if raw in ("yes", "true", "1"):
@@ -278,9 +374,6 @@ def oneway(tags: Dict[str, str]) -> int:
         return -1
     if raw in ("no", "false", "0"):
         return 0
-    # A roundabout is one-way unless it says otherwise, and that is the one
-    # implicit case worth honouring — a two-way roundabout is a mistake in the
-    # data and driving it both ways is a mistake on the road.
     if (tags.get("junction") or "").strip().lower() == "roundabout":
         return 1
     if (tags.get("highway") or "").strip().lower() in ("motorway", "motorway_link"):
@@ -288,23 +381,57 @@ def oneway(tags: Dict[str, str]) -> int:
     return 0
 
 
+def direction_modes(tags: Dict[str, str]) -> Tuple[int, int]:
+    """`(forward_modes, backward_modes)` for one way.
+
+    A one-way street is one-way for a car and a bicycle (unless the survey says
+    `oneway:bicycle=no`), and two-way for a walker.  Storing the two masks on
+    the edges is what lets the router be honest without a second graph.
+    """
+    modes = access_modes(tags)
+    if not modes:
+        return 0, 0
+    forward = modes
+    backward = modes
+    direction = oneway(tags)
+    vehicles = modes & (MODE_CAR | MODE_BIKE)
+    if direction == 1:
+        backward &= ~vehicles
+    elif direction == -1:
+        forward &= ~vehicles
+    # A contraflow bicycle is common and explicitly surveyed.
+    if direction in (1, -1) and (modes & MODE_BIKE):
+        bicycle = _yes_no(tags.get("oneway:bicycle"))
+        opposite = (tags.get("cycleway") or "").strip().lower().startswith("opposite")
+        if bicycle is False or opposite:
+            if direction == 1:
+                backward |= MODE_BIKE
+            else:
+                forward |= MODE_BIKE
+    return forward, backward
+
+
 def speed_ms(class_name_: str, profile: str = DEFAULT_PROFILE) -> float:
     """Metres per second for a class under a profile — the router's cost basis."""
     if profile == "foot":
         return FOOT_KMH / 3.6
-    scale = PROFILES.get(profile) or PROFILES[DEFAULT_PROFILE]
-    factor = float((scale["factor"] or {}).get(class_name_, 1.0))
+    factor = float(PROFILE_FACTOR.get(profile, {}).get(class_name_, 1.0))
     return (SPEEDS_KMH.get(class_name_, 30.0) * factor) / 3.6
 
 
 # -----------------------------------------------------------------------------
 # The pack itself
 # -----------------------------------------------------------------------------
-PACK_VERSION = 1
+PACK_FORMAT = "ark-map-pack"
+PACK_SCHEMA = 2
 
-# The licence and the sentence that must stay on the screen.  A pack without
-# these is a pack nobody may publish, so `write_pack()` refuses without them
-# rather than writing a folder that looks complete and is not lawful to carry.
+#: The browser application this format was designed against.  A pack says which
+#: application versions may open it; the app refuses anything outside the range
+#: rather than opening half a pack and looking broken.
+APP_VERSION = 1
+APP_COMPAT = {"min": 1, "max": 1}
+ENGINE = {"graph": GRAPH_VERSION, "places": 1, "layers": 1}
+
 LICENCE = "ODbL-1.0"
 ATTRIBUTION = (
     "Map data \u00a9 OpenStreetMap contributors, available under the Open "
@@ -312,13 +439,29 @@ ATTRIBUTION = (
 )
 ATTRIBUTION_URL = "https://www.openstreetmap.org/copyright"
 
-# Drawn layers, in the order they are stacked.  One GeoJSON file each, so the
-# browser fetches only what it is about to draw and a thin network is a small
-# file at a wide zoom.
-LAYERS = ("base-major", "base-minor", "water", "forest", "boundary")
-
+# Drawn layers, in the order they are stacked (lowest first).  One GeoJSON file
+# each, so the browser fetches only what it is about to draw and a thin network is
+# a small file at a wide zoom.  `buildings` is optional in a pack: a region with
+# no building footprints still draws, it just says so in the manifest.
+LAYERS = ("forest", "water", "boundary", "buildings", "base-minor", "base-major")
+REQUIRED_LAYERS = ("base-major", "base-minor")
 PACK_FILES = ("manifest.json", "graph.json", "graph.bin", "places.json",
               "attribution.txt") + tuple("%s.geojson" % name for name in LAYERS)
+
+# Bounds of a real region, used to refuse a manifest that claims a point or a
+# whole planet.  A pack is a *regional* extract; this is a sanity check, not a
+# political boundary.
+MAX_ABS_LAT = 85.0
+MAX_ABS_LON = 180.0
+MAX_PACK_BYTES = 4 * 1024 ** 3        # 4 GiB; larger belongs on a different tool
+MAX_GRAPH_POINTS = 400000
+MAX_PLACES = 40000
+MAX_BUILDINGS = 30000
+
+_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+_VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def name_key(text: str) -> str:
@@ -366,6 +509,16 @@ def _write_bytes(path: str, payload: bytes) -> int:
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(temp, path)
+    # The file's own bytes are on the card; the rename that published them is
+    # made durable too, or a cut could leave the old name in place.
+    try:
+        fd = os.open(folder, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except OSError:
+        pass
     return len(payload)
 
 
@@ -402,7 +555,8 @@ class Graph(object):
         self.refs: Dict[int, int] = {}          # OSM node id -> index
         self.names: List[str] = []
         self._name_ids: Dict[str, int] = {}
-        self.out: List[List[Tuple[int, float, int, int]]] = []
+        self.out: List[List[Tuple[int, float, int, int, int, int]]] = []
+        self.turns: List[Tuple[int, int, int, int, int]] = []
         self.ways = 0                           # ways that made it into the graph
         self.skipped = 0                        # ways refused by `is_routable`
         self.oneway_edges = 0
@@ -448,8 +602,9 @@ class Graph(object):
 
     # -- ways -----------------------------------------------------------------
 
-    def add_way(self, points: Sequence[int], tags: Dict[str, str]) -> bool:
-        """Add one way as edges.  Returns False when the way is not routable.
+    def add_way(self, points: Sequence[int], tags: Dict[str, str],
+                way_id: int = 0) -> bool:
+        """Add one way as edges.  Returns False when the way is not usable.
 
         `points` are already-resolved node indexes in OSM order.  A way with fewer
         than two points adds nothing: a single point is not a street.
@@ -460,9 +615,13 @@ class Graph(object):
             return False
         if len(points) < 2:
             return False
-        direction = oneway(tags)
+        forward, backward = direction_modes(tags)
+        if not forward and not backward:
+            self.skipped += 1
+            return False
         cls = class_id(klass)
         nid = self.name_id(tags.get("name") or tags.get("ref") or "")
+        way = int(way_id or 0) & 0xFFFFFFFF
         for a, b in zip(points, points[1:]):
             if a == b:
                 continue
@@ -472,13 +631,31 @@ class Graph(object):
                 # street: they add an edge that costs nothing and make a directions
                 # list say "turn left" twice in the same instant.
                 continue
-            if direction >= 0:
-                self.out[a].append((b, metres, cls, nid))
-            if direction <= 0:
-                self.out[b].append((a, metres, cls, nid))
-            if direction != 0:
+            if metres > 100000.0:
+                # A straight line longer than 100 km inside one way is not a
+                # street; it is a broken extract or a ferry crossing, and a
+                # router must not send a car across it as if it were tarmac.
+                continue
+            if forward:
+                self.out[a].append((b, metres, cls, nid, way, forward))
+            if backward:
+                self.out[b].append((a, metres, cls, nid, way, backward))
+            if forward and not backward or backward and not forward:
                 self.oneway_edges += 1
         self.ways += 1
+        return True
+
+    # -- turn restrictions ----------------------------------------------------
+
+    def add_turn(self, from_way: int, via_node: int, to_way: int,
+                 kind: int, modes: int = ALL_MODES) -> bool:
+        """Record one `no_*` or `only_*` restriction at a node."""
+        if from_way <= 0 or to_way <= 0 or not modes:
+            return False
+        if not (0 <= via_node < len(self.lat)):
+            return False
+        self.turns.append((int(from_way) & 0xFFFFFFFF, int(via_node),
+                           int(to_way) & 0xFFFFFFFF, int(kind), int(modes)))
         return True
 
     # -- writing --------------------------------------------------------------
@@ -498,8 +675,9 @@ class Graph(object):
                             int(round(self.lat[index] * 1e6)),
                             int(round(self.lon[index] * 1e6)))
             _OFFSET.pack_into(offsets, index * _OFFSET.size, at)
-            for to, metres, cls, nid in self.out[index]:
-                _EDGE.pack_into(body, at * _EDGE.size, to, float(metres), cls, nid)
+            for to, metres, cls, nid, way, modes in self.out[index]:
+                _EDGE.pack_into(body, at * _EDGE.size, to, float(metres), cls,
+                                nid, way, modes)
                 at += 1
         _OFFSET.pack_into(offsets, count * _OFFSET.size, at)
         return bytes(head) + bytes(nodes) + bytes(offsets) + bytes(body)
@@ -514,8 +692,18 @@ class Graph(object):
             "edges": self.edge_count(),
             "names": list(self.names),
             "classes": list(ROAD_CLASSES),
-            "profiles": {key: {"label": PROFILES[key]["label"]}
+            "modes": dict(MODE_BITS),
+            "speeds_kmh": dict(SPEEDS_KMH),
+            "foot_kmh": FOOT_KMH,
+            "profiles": {key: {"label": PROFILES[key]["label"],
+                               "classes": list(PROFILES[key]["classes"]),
+                               "factor": dict(PROFILES[key]["factor"]),
+                               "oneway": bool(PROFILES[key]["oneway"])}
                          for key in sorted(PROFILES)},
+            "turn_penalty_s": TURN_PENALTY_S,
+            "turn_penalty_uturn_s": TURN_PENALTY_UTURN_S,
+            # [from way, via node index, to way, kind, mode mask]
+            "turns": [list(row) for row in self.turns],
         }
 
     def bounds(self) -> List[float]:
@@ -532,6 +720,7 @@ class Graph(object):
             "skipped": self.skipped,
             "oneway_edges": self.oneway_edges,
             "names": len(self.names),
+            "turns": len(self.turns),
         }
 
 
@@ -573,6 +762,8 @@ class ReadGraph(object):
             raise ValueError("this map graph is %d bytes and its own header says it "
                              "should be %d — the file is cut or padded"
                              % (len(payload), self.expected))
+        if nodes == 0:
+            raise ValueError("this map graph has no points: there is nothing to route on")
 
     def point(self, index: int) -> Tuple[float, float]:
         lat_e6, lon_e6 = _NODE.unpack_from(self.payload, self.at_nodes + index * _NODE.size)
@@ -583,7 +774,7 @@ class ReadGraph(object):
         end = _OFFSET.unpack_from(self.payload, self.at_offsets + (index + 1) * _OFFSET.size)[0]
         return start, end
 
-    def edge(self, number: int) -> Tuple[int, float, int, int]:
+    def edge(self, number: int) -> Tuple[int, float, int, int, int, int]:
         return _EDGE.unpack_from(self.payload, self.at_edges + number * _EDGE.size)
 
     def problems(self) -> List[str]:
@@ -591,7 +782,8 @@ class ReadGraph(object):
 
         An empty list is the only healthy answer.  These are the checks the
         verifier runs: an edge that points past the last point, offsets that do
-        not ascend, a name id out of range, a length that is not a number.
+        not ascend, a name id out of range, a length that is not a number, a mode
+        mask that permits nobody or names a profile this reader never heard of.
         """
         found: List[str] = []
         last = 0
@@ -608,7 +800,7 @@ class ReadGraph(object):
             found.append("the offsets end at %d edges and the header says %d"
                          % (last, self.edges))
         for number in range(self.edges):
-            to, metres, cls, nid = self.edge(number)
+            to, metres, cls, nid, _way, modes = self.edge(number)
             if to >= self.nodes:
                 found.append("edge %d points at point %d, and there are %d"
                              % (number, to, self.nodes))
@@ -623,6 +815,10 @@ class ReadGraph(object):
             if nid != NO_NAME and nid >= self.name_count:
                 found.append("edge %d names street %d, and graph.json lists %d"
                              % (number, nid, self.name_count))
+                break
+            if modes == 0 or (modes & ~ALL_MODES):
+                found.append("edge %d permits modes %d, which is not a combination "
+                             "this reader knows" % (number, modes))
                 break
         return found
 
@@ -935,6 +1131,12 @@ def is_boundary(tags: Dict[str, str]) -> bool:
     return tags_match(tags, BOUNDARY_TAGS)
 
 
+def is_building(tags: Dict[str, str], closed: bool = False) -> bool:
+    """A building footprint, if the way is a closed shape and says it is one."""
+    value = (tags.get("building") or "").strip().lower()
+    return bool(closed) and bool(value) and value != "no"
+
+
 def layer_of(tags: Dict[str, str], closed: bool = False) -> str:
     """Which drawing layer this way belongs in, or `''` when it is not drawn."""
     if is_water(tags, closed):
@@ -943,6 +1145,8 @@ def layer_of(tags: Dict[str, str], closed: bool = False) -> str:
         return "forest"
     if is_boundary(tags):
         return "boundary"
+    if is_building(tags, closed):
+        return "buildings"
     klass = road_class(tags)
     if not klass:
         return ""
@@ -978,13 +1182,6 @@ def centroid(points: Sequence[Tuple[float, float]]) -> Tuple[float, float]:
 # with no point to fly to — and a drift is invisible until someone is standing in
 # the rain looking at a street the map believes in.
 
-# A cap, so a mis-typed region fails loudly on the host instead of producing a file
-# no phone can hold.  Liechtenstein measures 107,366 routable nodes; 400,000 is
-# roughly four of it, and a whole country would refuse here with a sentence rather
-# than fill the card.
-MAX_GRAPH_POINTS = 400000
-MAX_PLACES = 40000
-
 
 class PackBuilder(object):
     """One region's three products, accumulated as the source is read once.
@@ -1000,18 +1197,22 @@ class PackBuilder(object):
     """
 
     def __init__(self, max_points: int = MAX_GRAPH_POINTS,
-                 max_places: int = MAX_PLACES) -> None:
+                 max_places: int = MAX_PLACES,
+                 max_buildings: int = MAX_BUILDINGS) -> None:
         self.graph = Graph()
         self.layers: Dict[str, List[Dict[str, object]]] = {name: [] for name in LAYERS}
         self.places: List[Dict[str, object]] = []
         self.max_points = int(max_points)
         self.max_places = int(max_places)
+        self.max_buildings = int(max_buildings)
         self._seen: set = set()
         self._box: Optional[List[float]] = None   # [south, west, north, east]
         self.stats = {
             "ways": 0, "roads": 0, "routable_ways": 0, "refused_ways": 0,
             "other_ways": 0, "drawn": 0, "areas": 0, "points": 0,
             "places": 0, "repeats": 0, "places_dropped": 0,
+            "buildings": 0, "buildings_dropped": 0,
+            "restrictions": 0, "restrictions_skipped": 0,
         }
 
     # -- what the map opens on ------------------------------------------------
@@ -1081,8 +1282,8 @@ class PackBuilder(object):
 
         A way is looked at three ways and none of them may refuse the others: it may
         be a road the router can use, a shape the map can draw, and a place a person
-        can search for.  Most ways are none of the three (a building, a fence, a
-        bench) and cost one dictionary lookup each.
+        can search for.  Most ways are none of the three (a fence, a bench) and cost
+        one dictionary lookup each.
         """
         self.stats["ways"] += 1
         if len(nodes) < 2:
@@ -1106,7 +1307,7 @@ class PackBuilder(object):
                         % self.max_points)
                 index = [self.graph.node(int(nid), float(lat), float(lon))
                          for nid, lat, lon in nodes]
-                if self.graph.add_way(index, tags):
+                if self.graph.add_way(index, tags, way_id=osm_id):
                     self.stats["routable_ways"] += 1
                     used = True
                 else:
@@ -1120,10 +1321,13 @@ class PackBuilder(object):
         #    router, so what is drawn and what can be driven cannot disagree.
         value, words = poi_kind(tags, WAY_POI_KEYS)
         layer = layer_of(tags, closed)
+        if layer == "buildings" and len(self.layers["buildings"]) >= self.max_buildings:
+            self.stats["buildings_dropped"] += 1
+            layer = ""
         if layer:
             props = self._properties(tags, name, value, words)
             feature = None
-            if closed and layer in ("water", "forest", "boundary"):
+            if closed and layer in ("water", "forest", "boundary", "buildings"):
                 feature = polygon_feature(points, props)
             else:
                 feature = line_feature(points, props)
@@ -1131,6 +1335,8 @@ class PackBuilder(object):
                 self.layers[layer].append(feature)
                 self.stats["drawn"] += 1
                 used = True
+                if layer == "buildings":
+                    self.stats["buildings"] += 1
                 if closed and layer in ("water", "forest"):
                     self.stats["areas"] += 1
 
@@ -1142,6 +1348,78 @@ class PackBuilder(object):
                                 rank=search_rank(value), id=int(osm_id))):
                 used = True
         return used
+
+    # -- turn restrictions ----------------------------------------------------
+
+    def add_restriction(self, members: Sequence[Tuple[str, int, str]],
+                        tags: Dict[str, str]) -> bool:
+        """One OSM `type=restriction` relation, if it can be carried honestly.
+
+        Only a restriction with `from` and `to` ways and a `via` **node** is
+        stored.  A `via` way is a more complicated shape (the restriction covers a
+        whole stretch), and pretending a node restriction means the same thing
+        would forbid turns the survey permits — so it is counted and left out, and
+        the manifest says how many were left out.
+        """
+        if (tags.get("type") or "").strip().lower() != "restriction":
+            return False
+        from_way = to_way = 0
+        via_node = None
+        via_way = False
+        # OSM readers say `node`/`way`; pyosmium's member list says `n`/`w`.
+        # Both mean the same thing and neither is worth a second caller.
+        short = {"n": "node", "w": "way", "r": "relation"}
+        for role, ref, kind in members:
+            role = (role or "").strip().lower()
+            kind = short.get((kind or "").strip().lower(),
+                             (kind or "").strip().lower())
+            if kind == "way" and role == "from":
+                from_way = int(ref)
+            elif kind == "way" and role == "to":
+                to_way = int(ref)
+            elif kind == "node" and role == "via":
+                via_node = int(ref)
+            elif kind == "way" and role == "via":
+                via_way = True
+        if via_way or not from_way or not to_way or via_node is None:
+            self.stats["restrictions_skipped"] += 1
+            return False
+        index = self.graph.refs.get(via_node)
+        if index is None:
+            # The junction is not in the graph (one of the ways was refused), so a
+            # restriction there has nothing to restrict.
+            self.stats["restrictions_skipped"] += 1
+            return False
+        except_modes = 0
+        for word in (tags.get("except") or "").replace(";", ",").split(","):
+            word = word.strip().lower()
+            if word == "motorcar" or word == "motor_vehicle":
+                except_modes |= MODE_CAR
+            elif word == "bicycle":
+                except_modes |= MODE_BIKE
+            elif word == "foot":
+                except_modes |= MODE_FOOT
+        allowed = ALL_MODES & ~except_modes
+        added = False
+        for key, mask in (("restriction", ALL_MODES),
+                          ("restriction:motorcar", MODE_CAR),
+                          ("restriction:motor_vehicle", MODE_CAR),
+                          ("restriction:bicycle", MODE_BIKE),
+                          ("restriction:foot", MODE_FOOT)):
+            value = (tags.get(key) or "").strip().lower()
+            if not value:
+                continue
+            # A conditional restriction ("no_left_turn @ (Mo-Fr 07:00-09:00)")
+            # is a timetable, and this pack has no clock.  Leave it out.
+            if "@" in value or "conditional" in value:
+                self.stats["restrictions_skipped"] += 1
+                continue
+            kind = TURN_ONLY if value.startswith("only_") else TURN_NO
+            if self.graph.add_turn(from_way, index, to_way, kind, mask & allowed):
+                added = True
+        if added:
+            self.stats["restrictions"] = len(self.graph.turns)
+        return added
 
     @staticmethod
     def _properties(tags: Dict[str, str], name: str, value: str,
@@ -1157,7 +1435,11 @@ class PackBuilder(object):
         klass = road_class(tags)
         if klass:
             props["class"] = klass
-        if value:
+        building = (tags.get("building") or "").strip().lower()
+        if building and building != "no":
+            props["kind"] = "building"
+            props["label"] = "Building"
+        elif value:
             props["kind"] = value
             props["label"] = words
         return props
@@ -1174,32 +1456,52 @@ class PackBuilder(object):
 
 
 def build_from_source(source, max_points: int = MAX_GRAPH_POINTS,
-                      max_places: int = MAX_PLACES) -> Dict[str, object]:
+                      max_places: int = MAX_PLACES,
+                      max_buildings: int = MAX_BUILDINGS) -> Dict[str, object]:
     """Drive a `PackBuilder` from anything that can offer OSM objects.
 
-    `source` has two methods, in this shape::
+    `source` has three methods, in this shape::
 
-        points()  yields  (osm_id, tags, lat, lon)
-        ways()    yields  (osm_id, tags, [(node id, lat, lon), ...])
+        points()       yields  (osm_id, tags, lat, lon)
+        ways()         yields  (osm_id, tags, [(node id, lat, lon), ...])
+        relations()    yields  (osm_id, tags, [(role, ref, "node"|"way"), ...])
 
-    Two methods rather than one pass, because every reader of an .osm.pbf reads
-    nodes and ways differently (pyosmium included), and a host script that rereads a
-    3.5 MB file has lost nothing at all.  What this function will not do is import
-    pyosmium: it runs on the box in the test suite, where nothing can open a PBF.
+    Three methods rather than one pass, because every reader of an .osm.pbf reads
+    nodes, ways and relations differently (pyosmium included), and a host script
+    that rereads a file has lost nothing at all.  What this function will not do
+    is import pyosmium: it runs on the box in the test suite, where nothing can
+    open a PBF.  `relations()` is optional so a small made-up source can leave it
+    out.
     """
-    builder = PackBuilder(max_points=max_points, max_places=max_places)
+    builder = PackBuilder(max_points=max_points, max_places=max_places,
+                          max_buildings=max_buildings)
     for osm_id, tags, lat, lon in source.points():
         builder.add_point(osm_id, tags or {}, lat, lon)
     for osm_id, tags, nodes in source.ways():
         builder.add_way(osm_id, tags or {}, nodes)
+    relations = getattr(source, "relations", None)
+    if callable(relations):
+        for _osm_id, tags, members in relations():
+            builder.add_restriction(members, tags or {})
     return builder.finish()
 
 
+def _hex64(text: str) -> str:
+    candidate = (text or "").strip().lower()
+    if len(candidate) != 64 or any(ch not in "0123456789abcdef" for ch in candidate):
+        return ""
+    return candidate
+
+
 def build_pack(dest: str, source, *, source_url: str, region_name: str,
+               pack_version: str, data_date: str,
                region: str = "", source_path: str = "", source_sha256: str = "",
                source_bytes: int = 0, notes: str = "", built: str = "",
+               limitations: str = "", min_zoom: int = 6, max_zoom: int = 17,
+               pack_id: str = "",
                max_points: int = MAX_GRAPH_POINTS,
-               max_places: int = MAX_PLACES) -> Dict[str, object]:
+               max_places: int = MAX_PLACES,
+               max_buildings: int = MAX_BUILDINGS) -> Dict[str, object]:
     """Read a source once and write one finished pack — the whole job in one call.
 
     `write_pack()` is the authority on what a pack must carry and re-checks every
@@ -1210,6 +1512,8 @@ def build_pack(dest: str, source, *, source_url: str, region_name: str,
         built = ark_maps.build_pack("/tmp/pack", source,
                                     source_url="https://…/liechtenstein.osm.pbf",
                                     region_name="Liechtenstein", region="LI",
+                                    pack_version="2026-11-01",
+                                    data_date="2026-11-01",
                                     source_path="/tmp/arkmaps/liechtenstein.osm.pbf")
 
     Answers `{"manifest": …, "stats": …}`.  `manifest` is exactly the file on disk —
@@ -1227,6 +1531,12 @@ def build_pack(dest: str, source, *, source_url: str, region_name: str,
     if not label:
         raise ValueError("a map pack must say which region it covers: no region name "
                          "was given")
+    if not _VERSION_RE.match((pack_version or "").strip()):
+        raise ValueError("a map pack needs an immutable version made of letters, "
+                         "digits, dots, dashes or underscores: %r" % (pack_version,))
+    if not _DATE_RE.match((data_date or "").strip()):
+        raise ValueError("a map pack must record the date of the data it was built "
+                         "from, as YYYY-MM-DD: %r" % (data_date,))
     digest = _hex64(source_sha256)
     if not digest and source_path:
         digest = fingerprint(source_path)
@@ -1237,30 +1547,28 @@ def build_pack(dest: str, source, *, source_url: str, region_name: str,
     if not size and source_path:
         size = os.path.getsize(source_path)
 
-    made = build_from_source(source, max_points=max_points, max_places=max_places)
+    made = build_from_source(source, max_points=max_points, max_places=max_places,
+                             max_buildings=max_buildings)
     manifest = write_pack(dest, graph=made["graph"], places=made["places"],
                           layers=made["layers"], bounds=made["bounds"],
                           source_url=url, source_sha256=digest,
                           region_name=label, region=region,
+                          pack_version=pack_version, data_date=data_date,
                           source_bytes=size, source_path=source_path,
-                          notes=notes, built=built)
+                          notes=notes, built=built, limitations=limitations,
+                          min_zoom=min_zoom, max_zoom=max_zoom, pack_id=pack_id)
     return {"manifest": manifest, "stats": dict(made["stats"])}
-
-
-
-def _hex64(text: str) -> str:
-    candidate = (text or "").strip().lower()
-    if len(candidate) != 64 or any(ch not in "0123456789abcdef" for ch in candidate):
-        return ""
-    return candidate
 
 
 def write_pack(dest: str, *, graph: "Graph", places: Sequence[Dict[str, object]] = (),
                layers: Optional[Dict[str, Sequence[Dict[str, object]]]] = None,
                source_url: str, source_sha256: str,
                region_name: str = "", region: str = "", bounds: Optional[Sequence[float]] = None,
+               pack_version: str = "", data_date: str = "",
                source_bytes: int = 0, source_path: str = "",
-               notes: str = "", built: str = "") -> Dict[str, object]:
+               notes: str = "", built: str = "", limitations: str = "",
+               min_zoom: int = 6, max_zoom: int = 17,
+               pack_id: str = "") -> Dict[str, object]:
     """Write one complete map pack into `dest` and answer its manifest.
 
     Refusals happen **before** a byte is written, and each one names the thing
@@ -1271,10 +1579,13 @@ def write_pack(dest: str, *, graph: "Graph", places: Sequence[Dict[str, object]]
     * `source_path` given and its sha256 disagreeing with `source_sha256` — the
       pack would then carry a fingerprint of some *other* download;
     * a graph with no points — a pack nobody can route on;
-    * a layer name that is not in `LAYERS` — a file the browser never asks for.
+    * a layer name that is not in `LAYERS` — a file the browser never asks for;
+    * a region name, version or data date that is missing or malformed.
 
     `manifest.json` is written **last**, so a folder that stopped halfway has no
     manifest and is therefore visibly incomplete rather than plausibly complete.
+    An old manifest is removed first: a rebuild that stops halfway must not leave
+    the *previous* manifest describing files that have already been replaced.
     """
     url = (source_url or "").strip()
     if not url:
@@ -1296,14 +1607,25 @@ def write_pack(dest: str, *, graph: "Graph", places: Sequence[Dict[str, object]]
     if unknown:
         raise ValueError("these are not drawing layers this pack defines: %s (a pack "
                          "holds %s)" % (", ".join(unknown), ", ".join(LAYERS)))
-    # The region's name is checked here, with the other refusals, and not beside
-    # the manifest that records it: the docstring above promises that nothing is
-    # written when a pack is refused, and a check that runs after `graph.bin` has
-    # been published makes that sentence false.
     label = (region_name or "").strip()
     if not label:
         raise ValueError("a map pack must say which region it covers: no region name "
                          "was given")
+    version = (pack_version or "").strip()
+    if not _VERSION_RE.match(version):
+        raise ValueError("a map pack needs an immutable version made of letters, "
+                         "digits, dots, dashes or underscores: %r" % (pack_version,))
+    if not _DATE_RE.match((data_date or "").strip()):
+        raise ValueError("a map pack must record the date of the data it was built "
+                         "from, as YYYY-MM-DD: %r" % (data_date,))
+    ident = (pack_id or "").strip() or slug(label)
+    if not _SLUG_RE.match(ident):
+        raise ValueError("a map pack's identifier must be lower-case letters, digits "
+                         "and dashes: %r" % (ident,))
+    low, high = int(min_zoom), int(max_zoom)
+    if not (0 <= low <= high <= 22):
+        raise ValueError("zoom coverage must be 0…22 with min <= max: %r…%r"
+                         % (min_zoom, max_zoom))
     folder = os.path.abspath(dest)
     os.makedirs(folder, exist_ok=True)
     kept = [record for record in places if record]
@@ -1318,7 +1640,7 @@ def write_pack(dest: str, *, graph: "Graph", places: Sequence[Dict[str, object]]
         graph.to_json(), ensure_ascii=False, sort_keys=True,
         separators=(",", ":")).encode("utf-8"))
     publish("places.json", json.dumps(
-        {"format": "ark-map-places", "version": PACK_VERSION,
+        {"format": "ark-map-places", "version": ENGINE["places"],
          "count": len(kept), "places": kept},
         ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"))
     layer_counts: Dict[str, int] = {}
@@ -1345,24 +1667,50 @@ def write_pack(dest: str, *, graph: "Graph", places: Sequence[Dict[str, object]]
     manifest_path = os.path.join(folder, "manifest.json")
     if os.path.exists(manifest_path):
         os.remove(manifest_path)
+    modes_present = sorted(
+        profile for profile, bit in MODE_BITS.items()
+        if any(edge[5] & bit for edges in graph.out for edge in edges))
+    kinds = sorted({str(record.get("kind")) for record in kept if record.get("kind")})
+    total = sum(int(written[name]["bytes"]) for name in written)
     manifest: Dict[str, object] = {
-        "format": "ark-map-pack",
-        "version": PACK_VERSION,
-        "region": {"name": label, "slug": slug(label),
-                   "code": (region or "").strip(),
+        "format": PACK_FORMAT,
+        "schema": PACK_SCHEMA,
+        "id": ident,
+        "version": version,
+        "app": dict(APP_COMPAT),
+        "engine": dict(ENGINE),
+        "region": {"name": label, "code": (region or "").strip(),
                    "bounds": [_round(value) for value in heading]},
+        "coverage": {"bounds": [_round(value) for value in heading],
+                     "limitations": (limitations or "").strip()},
         "source": {"url": url, "sha256": digest,
-                   "bytes": int(source_bytes or 0)},
+                   "bytes": int(source_bytes or 0),
+                   "data_date": data_date.strip()},
         "licence": LICENCE,
         "attribution": {"text": ATTRIBUTION, "url": ATTRIBUTION_URL},
+        "capabilities": {
+            "map": True,
+            "search": True,
+            "routing": modes_present,
+            "turn_restrictions": bool(graph.turns),
+            "addresses": False,
+        },
+        "map": {"min_zoom": low, "max_zoom": high,
+                "layers": list(LAYERS), "required_layers": list(REQUIRED_LAYERS),
+                "counts": {name: layer_counts[name] for name in LAYERS}},
+        "search": {"count": len(kept), "kinds": kinds[:40],
+                   "addresses": False,
+                   "coverage": "named places and points of interest; street names "
+                               "are in the routing graph"},
         "graph": {"nodes": graph.node_count(), "edges": graph.edge_count(),
-                  "names": len(graph.names), "stats": graph.stats()},
+                  "names": len(graph.names), "stats": graph.stats(),
+                  "turn_restrictions": len(graph.turns),
+                  "turn_kinds": "no_* and only_* with a via node"},
         "places": {"count": len(kept), "file": "places.json"},
-        "layers": {"order": list(LAYERS),
-                   "counts": {name: layer_counts[name] for name in LAYERS}},
         "files": [[name, written[name]["bytes"], written[name]["sha256"]]
                   for name in sorted(written)],
-        "total_bytes": sum(int(written[name]["bytes"]) for name in written),
+        "total_bytes": total,
+        "installed_bytes": total,
         "built": stamp,
         "notes": (notes or "").strip(),
     }
@@ -1385,13 +1733,124 @@ def read_manifest(folder: str) -> Dict[str, object]:
     data = read_json_file(path)
     if not isinstance(data, dict):
         raise ValueError("manifest.json is not an object")
-    if data.get("format") != "ark-map-pack":
+    if data.get("format") != PACK_FORMAT:
         raise ValueError("manifest.json says this is %r, not an ark map pack"
                          % (data.get("format"),))
-    if data.get("version") != PACK_VERSION:
-        raise ValueError("this pack is version %r and this box reads version %d"
-                         % (data.get("version"), PACK_VERSION))
+    if data.get("schema") != PACK_SCHEMA:
+        raise ValueError("this pack uses schema %r and this box reads schema %d"
+                         % (data.get("schema"), PACK_SCHEMA))
     return data
+
+
+def _bounds_problems(bounds: object) -> List[str]:
+    if not (isinstance(bounds, (list, tuple)) and len(bounds) == 4):
+        return ["the coverage bounds are not four numbers"]
+    try:
+        south, west, north, east = (float(v) for v in bounds)
+    except (TypeError, ValueError):
+        return ["the coverage bounds are not four numbers"]
+    found = []
+    if not (-MAX_ABS_LAT <= south <= north <= MAX_ABS_LAT):
+        found.append("the south/north bounds are not a real latitude range")
+    if not (-MAX_ABS_LON <= west <= east <= MAX_ABS_LON):
+        found.append("the west/east bounds are not a real longitude range")
+    if (north - south) > 20 or (east - west) > 30:
+        found.append("these bounds cover more than a regional extract should; "
+                     "build a smaller region")
+    return found
+
+
+def manifest_problems(manifest: Dict[str, object]) -> List[str]:
+    """Everything wrong with a manifest, as sentences a person can act on.
+
+    This is the check the card's importer runs before it lets a folder into the
+    published area, and the one the browser repeats on the manifest it downloaded:
+    both need the same answer, so it lives here rather than in either caller.
+    """
+    found: List[str] = []
+    if not isinstance(manifest, dict):
+        return ["the manifest is not an object"]
+    if manifest.get("format") != PACK_FORMAT:
+        found.append("this is not an ark map pack")
+    if manifest.get("schema") != PACK_SCHEMA:
+        found.append("the pack schema is %r and this box reads %d"
+                     % (manifest.get("schema"), PACK_SCHEMA))
+    ident = str(manifest.get("id") or "")
+    if not _SLUG_RE.match(ident):
+        found.append("the pack identifier is missing or not a safe folder name")
+    version = str(manifest.get("version") or "")
+    if not _VERSION_RE.match(version):
+        found.append("the pack version is missing or not a safe name")
+    app = manifest.get("app")
+    if not isinstance(app, dict) or not isinstance(app.get("min"), int) \
+            or not isinstance(app.get("max"), int) or app["min"] > app["max"]:
+        found.append("the application compatibility range is missing or malformed")
+    engine = manifest.get("engine")
+    if not isinstance(engine, dict) or engine.get("graph") != GRAPH_VERSION:
+        found.append("this pack was built for graph engine %r and this box reads %d"
+                     % ((engine or {}).get("graph") if isinstance(engine, dict) else None,
+                        GRAPH_VERSION))
+    region = manifest.get("region")
+    if not isinstance(region, dict) or not str(region.get("name") or "").strip():
+        found.append("the pack does not name its region")
+    bounds = (manifest.get("coverage") or {}).get("bounds") \
+        if isinstance(manifest.get("coverage"), dict) else None
+    found.extend(_bounds_problems(bounds))
+    source = manifest.get("source")
+    if not isinstance(source, dict):
+        found.append("the pack does not say where its data came from")
+    else:
+        if not str(source.get("url") or "").strip():
+            found.append("the pack has no source URL")
+        if not _HEX64_RE.match(str(source.get("sha256") or "")):
+            found.append("the pack has no valid source fingerprint")
+        if not _DATE_RE.match(str(source.get("data_date") or "")):
+            found.append("the pack does not record the date of its data")
+    if manifest.get("licence") != LICENCE:
+        found.append("the pack does not carry the OpenStreetMap licence")
+    attribution = manifest.get("attribution")
+    if not isinstance(attribution, dict) or not str(attribution.get("text") or "").strip():
+        found.append("the pack does not carry its attribution sentence")
+    capabilities = manifest.get("capabilities")
+    if not isinstance(capabilities, dict):
+        found.append("the pack does not say what it can do")
+    else:
+        modes = capabilities.get("routing")
+        if not isinstance(modes, list) or not modes \
+                or any(mode not in MODE_BITS for mode in modes):
+            found.append("the pack's routing modes are missing or unknown")
+    for key in ("map", "search", "graph"):
+        if not isinstance(manifest.get(key), dict):
+            found.append("the pack does not describe its %s" % (key,))
+    files = manifest.get("files")
+    if not isinstance(files, list):
+        found.append("the pack does not list its files")
+        files = []
+    seen = set()
+    for row in files:
+        if not (isinstance(row, (list, tuple)) and len(row) == 3):
+            found.append("the pack lists a file in a shape this box cannot read")
+            continue
+        name, size, digest = str(row[0]), row[1], str(row[2])
+        if os.path.basename(name) != name or name in ("", ".", "..", "manifest.json"):
+            found.append("%r is not a bare file name a pack may carry" % (name,))
+            continue
+        if name in seen:
+            found.append("%s is listed twice" % (name,))
+        seen.add(name)
+        if name not in PACK_FILES:
+            found.append("%s is not a file this pack format defines" % (name,))
+        if not isinstance(size, int) or size < 0:
+            found.append("%s has no valid size" % (name,))
+        if not _HEX64_RE.match(digest):
+            found.append("%s has no valid fingerprint" % (name,))
+    for name in PACK_FILES:
+        if name != "manifest.json" and name not in seen:
+            found.append("the manifest does not name %s" % (name,))
+    total = manifest.get("total_bytes")
+    if not isinstance(total, int) or total <= 0 or total > MAX_PACK_BYTES:
+        found.append("the pack's total size is missing or outside what a pack may be")
+    return found
 
 
 def verify_pack(folder: str) -> Dict[str, object]:
@@ -1413,24 +1872,15 @@ def verify_pack(folder: str) -> Dict[str, object]:
         problems.append(str(exc))
         return report
     report["manifest"] = manifest
+    problems.extend(manifest_problems(manifest))
     listed = {}
     for row in manifest.get("files") or []:
         if not (isinstance(row, (list, tuple)) and len(row) == 3):
-            problems.append("the manifest lists a file in a shape this box cannot read")
             continue
         listed[str(row[0])] = (int(row[1]), str(row[2]))
-    for name in PACK_FILES:
-        if name == "manifest.json":
-            continue
-        if name not in listed:
-            problems.append("the manifest does not name %s" % (name,))
     total = 0
     for name, (size, digest) in sorted(listed.items()):
         path = os.path.join(root, name)
-        if os.path.basename(name) != name or name in ("", ".", ".."):
-            problems.append("%r is not a bare file name, so this pack is refused"
-                            % (name,))
-            continue
         if not os.path.exists(path):
             problems.append("%s is missing" % (name,))
             continue
@@ -1444,8 +1894,11 @@ def verify_pack(folder: str) -> Dict[str, object]:
             problems.append("%s does not match its fingerprint (%s… vs %s…)"
                             % (name, found[:12], digest[:12]))
     report["bytes"] = total
-    graph_problems = _verify_graph_files(root)
-    problems.extend(graph_problems)
+    if isinstance(manifest.get("total_bytes"), int) and total != manifest["total_bytes"]:
+        problems.append("the pack is %d bytes on disk and its manifest says %d"
+                        % (total, manifest["total_bytes"]))
+    problems.extend(_verify_graph_files(root))
+    problems.extend(_verify_places(root, manifest))
     report["ok"] = not problems
     return report
 
@@ -1483,13 +1936,90 @@ def _verify_graph_files(root: str) -> List[str]:
     if listed_names is not None and len(listed_names) != counted["names"]:
         problems.append("graph.json lists %d street names and graph.bin holds %d"
                         % (len(listed_names), counted["names"]))
-    places = os.path.join(root, "places.json")
-    if os.path.exists(places):
-        try:
-            body = read_json_file(places)
-        except (OSError, ValueError) as exc:
-            problems.append("places.json cannot be read: %s" % (exc,))
+    if described.get("modes") != MODE_BITS:
+        problems.append("graph.json does not describe the routing modes this reader uses")
+    # A turn restriction that names a node or a way the graph never carries is a
+    # rule about somewhere else; it is harmless but it means the builder and the
+    # graph disagree, so it is worth refusing publication over.
+    turns = described.get("turns")
+    if turns is not None:
+        if not isinstance(turns, list):
+            problems.append("graph.json's turn restrictions are not a list")
         else:
-            if not isinstance(body, dict) or not isinstance(body.get("places"), list):
-                problems.append("places.json does not hold a list of places")
+            for row in turns[:1000]:
+                if not (isinstance(row, list) and len(row) == 5):
+                    problems.append("a turn restriction is not five numbers")
+                    break
+                _from, via, _to, kind, modes = row
+                if not (0 <= int(via) < graph.nodes) or int(kind) not in (TURN_NO, TURN_ONLY) \
+                        or not (0 < int(modes) <= ALL_MODES):
+                    problems.append("a turn restriction points somewhere this graph "
+                                    "does not have")
+                    break
     return problems
+
+
+def _verify_places(root: str, manifest: Dict[str, object]) -> List[str]:
+    """The search half: a places file whose count matches the manifest."""
+    problems: List[str] = []
+    path = os.path.join(root, "places.json")
+    if not os.path.exists(path):
+        return problems
+    try:
+        body = read_json_file(path)
+    except (OSError, ValueError) as exc:
+        return ["places.json cannot be read: %s" % (exc,)]
+    if not isinstance(body, dict) or not isinstance(body.get("places"), list):
+        return ["places.json does not hold a list of places"]
+    places = body["places"]
+    wanted = ((manifest.get("search") or {}) if isinstance(manifest.get("search"), dict) else {}).get("count")
+    if isinstance(wanted, int) and wanted != len(places):
+        problems.append("places.json holds %d places and the manifest says %d"
+                        % (len(places), wanted))
+    for record in places[:500]:
+        if not isinstance(record, dict):
+            problems.append("places.json holds an entry that is not an object")
+            break
+        if not str(record.get("name") or "").strip() or not str(record.get("key") or "").strip():
+            problems.append("a place in places.json has no name or no search key")
+            break
+        try:
+            lat, lon = float(record.get("lat")), float(record.get("lon"))
+        except (TypeError, ValueError):
+            problems.append("a place in places.json has no usable point")
+            break
+        if not (-MAX_ABS_LAT <= lat <= MAX_ABS_LAT and -MAX_ABS_LON <= lon <= MAX_ABS_LON):
+            problems.append("a place in places.json is outside the real world")
+            break
+    return problems
+
+
+def pack_summary(folder: str) -> Dict[str, object]:
+    """A catalogue row for one pack folder — no byte is fingerprinted here.
+
+    `verify_pack()` is the expensive check; this is the cheap description a page
+    or a catalogue can build for every pack on the card without reading gigabytes
+    on every request.
+    """
+    manifest = read_manifest(folder)
+    problems = manifest_problems(manifest)
+    region = manifest.get("region") or {}
+    source = manifest.get("source") or {}
+    return {
+        "id": manifest.get("id"),
+        "version": manifest.get("version"),
+        "name": region.get("name") if isinstance(region, dict) else "",
+        "code": region.get("code") if isinstance(region, dict) else "",
+        "bounds": (manifest.get("coverage") or {}).get("bounds")
+        if isinstance(manifest.get("coverage"), dict) else [],
+        "data_date": source.get("data_date") if isinstance(source, dict) else "",
+        "built": manifest.get("built"),
+        "bytes": manifest.get("total_bytes"),
+        "capabilities": manifest.get("capabilities") or {},
+        "map": manifest.get("map") or {},
+        "search": manifest.get("search") or {},
+        "app": manifest.get("app") or {},
+        "licence": manifest.get("licence"),
+        "attribution": manifest.get("attribution") or {},
+        "problems": problems,
+    }

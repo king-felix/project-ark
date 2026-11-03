@@ -129,6 +129,16 @@ ark_tls_code() { # <host:port> <path> [extra curl arguments...]
   ark_http_code "https://$hp$path" -k --resolve "${hp}:127.0.0.1" "$@"
 }
 
+# One response header from a TLS door, asked by name so SNI is sent.  Used where a
+# status code is not enough — the maps service worker's `Service-Worker-Allowed`
+# is a header, and a worker limited to the wrong scope cannot keep the page.
+ark_tls_header() { # <host:port> <path> <header-name>
+  local hp=$1 path=$2 want=$3
+  curl -s -k -m 8 -D - -o /dev/null --resolve "${hp}:127.0.0.1" \
+    "https://$hp$path" 2>/dev/null | tr -d '\r' \
+    | awk -v want="$want" 'BEGIN { IGNORECASE=1 } tolower($0) ~ "^" tolower(want) ":" { print }'
+}
+
 # A plain-HTTP request to an SSL listener is *rejected* by nginx (400, or 497
 # for "plain HTTP sent to HTTPS port") or the connection does not complete
 # (000).  A completed HTTP response of any other kind means something served

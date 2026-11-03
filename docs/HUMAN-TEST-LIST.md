@@ -901,6 +901,58 @@ took for a known length. That last number is the one nobody can measure on a Mac
 
 ---
 
+## 22. Maps on a real phone, with the Ark gone (40 minutes + one region)
+
+**Why a person must do this:** the automated test runs desktop Chromium with the
+test certificate pinned by fingerprint. That proves the application, the storage,
+the router and the service worker, but it is not an iPhone, it is not Android's
+certificate store, and it is not a home-screen launch. This is the step that turns
+"works in Chromium" into "works in a pocket".
+
+**Prepare:** the Ark reachable; a region built and published (the demonstration
+region Liechtenstein is fine; the owner's real region is better); a phone you are
+willing to change one setting on.
+
+1. **Trust the certificate.** On the ordinary portal, tap *the Ark's certificate*.
+   - iPhone/iPad: Settings → Profile Downloaded → Install; then Settings → General →
+     About → Certificate Trust Settings → full trust for “Project ARK”.
+   - Android: Settings → Security → Encryption & credentials → Install a
+     certificate → CA certificate → choose the file.
+   Write down the fingerprint the Ark prints (`sudo ark-tls-cert --show`) and compare
+   it with what the phone shows before trusting it.
+2. Open **https://ark.local:8446/maps/** in the phone's browser. The lock must be a
+   real trusted lock, not a warning you tapped through. Add it to the home screen
+   (iPhone: Share → Add to Home Screen; Android: menu → Add to Home screen).
+3. Open the region, tap **Download for offline use**, and watch it through. Pause it
+   once and continue; then let it finish. The badge must say **Ready offline**.
+4. **Leave the Ark.** Turn the phone's Wi-Fi off entirely (not just leave the
+   building), or put it in aeroplane mode with Wi-Fi off. Wait ten seconds.
+5. Open Maps from the **home-screen icon**, not by typing the address. It must open
+   the map, not an error page. Pan to a corner you never looked at, zoom in, and
+   search for a place you never searched before.
+6. Choose a start and a destination you have never used, pick **On foot** and then
+   **Car**, and calculate a **new** route each time. Read the directions out loud:
+   are they ordered, named, and believable? Print or download the route sheet;
+   download the GPX and open it in another program if you have one.
+7. Turn Wi-Fi back on, reconnect to the Ark, and open Maps. The page must still open;
+   the catalogue may show an update. Nothing should have been lost.
+8. Remove the region from the device, then download it again. It must say **Ready
+   offline** a second time. If the phone reports low storage, do not fill it to find
+   out what happens; use a spare device.
+9. Record: phone model, OS version, browser, region and data date, pack size,
+   installed size, time to download, time to first map, route/search latency, any
+   warning, and whether the home-screen icon survived a phone restart.
+
+**Pass:** every step works with the Ark and the internet both unreachable, the route
+is new (not a saved sheet), and the page says **Ready offline** only after the check.
+
+**If it fails:** note whether it is the certificate (no lock / no offline), the
+download (badge absent), the home-screen launch (address typed instead), or the
+route (a sentence from the page). Those are four different problems; do not report
+them as "Maps does not work".
+
+---
+
 ## What is *not* on this list, on purpose
 
 

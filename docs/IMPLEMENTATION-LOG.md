@@ -4875,3 +4875,101 @@ already promised to a running job.
 The suite grew by ten tests that exercise exactly those paths — including a real
 **cancel during a real encode**, which fails without `-progress`. **748 passed,
 2 skipped.**
+
+### 44. Maps — a region that keeps working when the Ark does not, 2 Nov 2026
+
+**What was actually built.** The prototype that arrived as `pi/api/ark_maps.py`
+(format only, no caller, no test, no browser) is now a complete pipeline:
+
+* **The format, version 2.** `graph.bin` is still a header, node points, a CSR
+  index and directed edges, but an edge now carries three things the first
+  version could not: the OpenStreetMap **way id**, a **mode mask** (car / bike /
+  foot) and — through the manifest — the turn restrictions that name those ways.
+  A one-way street is therefore one-way for a car and still walkable back; a
+  `no_left_turn` is checked at the junction instead of being discovered
+  afterwards. A `buildings` layer joined the five drawing layers, and the
+  manifest now states the schema, application compatibility, data date, zoom
+  coverage, search coverage, supported modes, turn-restriction count and the
+  limitations in plain words.
+* **The host builder** `scripts/ark-map-pack` (pyosmium, workstation only) reads
+  an `.osm.pbf`, writes a pack into a staging folder, proves it with the same
+  verifier the box runs, and only then renames it into place. It refuses a
+  missing source URL, fingerprint, version or data date before reading the
+  source, and it can emit a `.zip` for the owner's import page.
+* **The shelf** `pi/api/ark_map_store.py` is the only writer under
+  `/srv/ark/maps/`: safe zip import (no absolute paths, `..`, symlinks, encrypted
+  entries, duplicate names, over-large members or too many entries), a full
+  byte check before publication, **immutable** `packs/<id>/<version>/` folders,
+  publication state in an atomic `catalog.json`, and deletion that never
+  pretends to reach a phone. It uses `ark_space.hold()` — the one storage
+  policy — and releases the reservation however an import ends.
+* **The public door** `pi/api/ark_map_web.py` serves the application, the
+  catalogue, the pack bytes with real range support (206 / 416 / HEAD / ETag)
+  and the public certificate. **The application** (`pi/maps/web/`) is a canvas
+  renderer with a spatial grid, a local search index, an edge-based A* in a
+  worker, IndexedDB storage in 1 MiB chunks with a streaming SHA-256, and a
+  service worker that caches only the shell. **The owner's page**
+  (`/admin/maps`) imports, checks, publishes, hides and deletes behind the
+  existing TLS, session, CSRF and password rules. **The listener** is `:8446`,
+  the same certificate as `:8443`, `/maps/` only, `/admin` 404.
+
+**Measured, not assumed.** The demonstration region is Liechtenstein, built from
+the Geofabrik extract whose header carries `2026-11-02`:
+
+| | |
+|---|---|
+| Pack | `liechtenstein-2026-11-02`, **15,485,807 bytes** (3.6 MB zipped) |
+| Graph | **105,605 points, 222,015 directed edges, 1,034 street names, 85 turn restrictions** |
+| Search | **1,734** named places / points of interest |
+| Layers | forest 647, water 919, boundary 113, buildings 17,875, minor roads 13,823, major roads 299 |
+| Routing | car, bicycle, foot — all three carried; turn restrictions with a via node |
+| Verify | every file matches its manifest fingerprint |
+
+On the Mac, the real browser (Chromium 148.0.7778.96) downloaded the whole pack,
+went offline (`context.set_offline(True)` and the test server unreachable),
+reloaded, reopened a **new page**, panned and zoomed to a place never viewed,
+searched a place never searched, calculated a **new** route, read the ordered
+directions, downloaded a **695,214-byte route sheet** containing an SVG map and
+the directions, and downloaded a GPX — with **no successful non-service-worker
+network response after the disconnect**. A second browser test paused a download
+mid-flight, reloaded, continued it to `Ready offline`, removed the pack, started
+again and cancelled; the partial copy left nothing behind. Evidence screenshots
+are under `logs/maps/evidence/` (gitignored).
+
+**The secure-origin question, answered by probe.** With `ignoreHTTPSErrors` and a
+self-signed certificate, the page reported `isSecureContext: true` but
+`navigator.serviceWorker.register()` failed with “an unknown error occurred when
+fetching the script”. Clicking through a certificate warning is therefore *not*
+enough, exactly as the brief warned. Pinning the certificate's SPKI — the browser
+equivalent of a device installing the Ark's certificate — made registration and
+an offline reload work. That is the deployment path: the public certificate is
+offered at `/certificate.crt`, the help page gives the iPhone/Android/laptop
+steps, and the automated test uses the same trust decision.
+
+**Defects this work found and fixed.** The turn-penalty bearing used the junction
+as both endpoints on same-name transitions, inventing a 4-second turn at almost
+every node (a 20.6 km route read as 62 minutes; it is 22). Route geometry was
+indexed by graph node number instead of path position, so the canvas and the
+route sheet threw `Cannot read properties of undefined (reading 'lat')`.
+`activePackKey()` unwrapped the stored value twice, so a freshly reopened page
+saw no active pack. `deletePack()` advanced the IDB *request* instead of the
+cursor, so removing a pack never deleted anything. A first install could show a
+false “new version” banner; the banner was removed, and the service worker now
+waits silently and applies on the next launch (no mid-route replacement). The
+test fixture itself wrote edges in array order while CSR offsets assume
+source-grouped order — caught by the Node router tests.
+
+**What is deliberately not built.** Street-address search (no address index in
+these extracts), turn restrictions whose `via` is a way or that are time
+conditional, live traffic/closures/weather, elevation, background GPS or voice
+navigation, server push of updates to phones, automatic deletion of regions, and
+map packs in `ark-backup` (they are reproducible content; a restored card reports
+none). A real iPhone/Android, the owner's actual region choice and browser
+eviction under real quota pressure remain human tests
+(`docs/HUMAN-TEST-LIST.md` §22). The open letter is untouched.
+
+**Tests.** `766 passed, 2 skipped` across 32 pytest files (the two browser tests
+are among them; they skip only when Playwright/Chromium or openssl is absent),
+plus **14 Node tests** for the router, search and streaming SHA-256
+(`node --test tests/js/`). The new pytest files are `tests/test_maps.py` (16) and
+`tests/test_maps_browser.py` (2).

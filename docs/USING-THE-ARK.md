@@ -476,6 +476,69 @@ stranger is most likely to try.
 **If the shelf is empty:** nothing has been published yet. The owner adds films from
 `/admin/media`.
 
+### 3.12 Maps — a region to carry with you
+
+**What it is for:** leaving the Ark behind and still having a map, a place search
+and **new** directions. The region is downloaded once, while you are on the Ark's
+Wi-Fi, and lives on your phone. After that nothing needs the Ark or the internet.
+
+**The one-time setup on each phone or laptop.** A page can only reopen without the
+Ark when it is served over a secure connection the device trusts. The Ark makes its
+own certificate; the front page offers it as **the Ark's certificate**.
+
+1. On the front page, tap **the Ark's certificate** and install it.
+   * **iPhone/iPad:** Settings → Profile Downloaded → Install; then Settings →
+     General → About → Certificate Trust Settings, and switch on full trust for
+     “Project ARK”.
+   * **Android:** Settings → Security → Encryption & credentials → Install a
+     certificate → CA certificate, and choose the downloaded file.
+   * **Laptop:** import it into the operating system's trusted certificates.
+2. Open **https://ark.local:8446/maps/** — the address must start with `https` and
+   end with `:8446`. The ordinary `http://ark.local/maps` link sends you there.
+3. Add the page to the home screen (iPhone: Share → Add to Home Screen; Android:
+   Chrome menu → Add to Home screen) or bookmark it.
+
+If you cannot do the certificate step, Maps still works while the Ark is reachable;
+it just cannot promise to reopen with the Ark gone. **Clicking through a certificate
+warning is not enough** — the browser will not keep the page offline that way.
+
+**Downloading a region.** Open Maps, choose the region the owner prepared, and tap
+**Download for offline use**. The page shows the size, the room this device reports,
+and the progress. You can pause and continue, even after closing the page. The
+badge **Ready offline** appears only after every part has arrived and been checked.
+**Opening the page once does not download a region**, and a map you looked at once
+is not a region either.
+
+**Using it away from the Ark.** Open the home-screen icon or bookmark. Pan and zoom
+anywhere inside the region, including places you never looked at before. Type a
+place name (or coordinates) into **Start** and **Destination**, or tap **Pick on
+map**. Choose **On foot**, **Bicycle** or **Car**, then **Show route**. The route is
+drawn on the map, and the directions below it are ordered and readable. The dashed
+line on the map is the edge of the downloaded region; outside it the page says so
+instead of showing a blank square.
+
+**Taking it with you on paper.** **Print route sheet** prints a map and the
+directions; **Download route sheet** saves the same page as a file; **Download
+GPX** saves the route for another program. A saved sheet is a paper fallback, not a
+substitute for calculating a new route offline — Maps does that itself.
+
+**Privacy.** Searches, saved places, your last view and route history stay on the
+device. They are not sent to the Ark. **Saved places** never leave the device, and
+**Remove from this device** removes only that device's copy of a region.
+
+**What it cannot know.** Search finds named places and points of interest, not street
+addresses (most map extracts have none). Times use the speed of each kind of road,
+not live traffic, closures or weather. One-way streets and access rules are
+respected, but turn restrictions that cover a whole stretch, and restrictions that
+depend on a time of day, are not carried. A mapped water source is not a promise
+that it is drinkable, and a mapped clinic is not a promise that it is open.
+
+**If something goes wrong.** **Check this copy** reads every part and compares it
+with its fingerprint. If a part is missing or damaged, remove the copy and download
+the region again while the Ark is reachable. If the badge does not appear, read the
+sentence on the page — it says whether the download, the page itself, or the
+certificate is the thing still missing.
+
 ---
 
 ## 4. Getting books onto it

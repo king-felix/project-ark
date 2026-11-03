@@ -4,7 +4,6 @@ THE ARK — WHAT TO DO WHEN IT STOPS WORKING
 Print this page.  Keep it with the box, never on it.
 If the box is dead, nothing stored on the box can be read.
 
-
 FIRST, THE FOUR THINGS TO CHECK
 -------------------------------
   1. Is it plugged in, and is the little light solid rather than blinking?
@@ -15,7 +14,6 @@ FIRST, THE FOUR THINGS TO CHECK
 If phones still cannot find it, the same four checks apply again after
 another five minutes.  Most "dead box" reports are one of those four.
 
-
 DO NOT, EVER
 ------------
   * Do not pull the memory card out while the box is switched on.
@@ -23,7 +21,6 @@ DO NOT, EVER
   * Do not copy new files onto the card.  Nothing good comes of it.
   * Do not throw the card away because the box will not start — it almost
     always still holds everything.
-
 
 IF IT STILL WILL NOT START: USE THE SPARE CARD
 ----------------------------------------------
@@ -38,7 +35,6 @@ a computer.  Nothing else.
 
 The box comes up empty.  That is expected — the next part brings the
 messages, shared files and game saves back.
-
 
 PUTTING THE MESSAGES, FILES AND GAME SAVES BACK
 -----------------------------------------------
@@ -62,7 +58,6 @@ RESTORE-ME.txt that repeats the steps.
      the ones you are willing to lose, add --force to the same line.
   5. Switch the box off and on.  Open http://ark.lan on a phone.
 
-
 MAKING A NEW BACKUP
 -------------------
 After a busy week, or a new person added to the household:
@@ -77,6 +72,11 @@ To prove a backup really is whole, read every byte back:
 
       sudo ark-backup --verify /srv/ark/backup/ark-backup-<date>-<time>
 
+MAPS ARE NOT IN THE BACKUP
+-------------------------
+A map region is large and can be made again; it is not in these folders.
+Ask whoever looks after the box to put it back.  A phone that already
+downloaded one keeps its own copy.
 GOOD HABITS
 -----------
   * Keep one backup off the box — a USB stick in a drawer, or another

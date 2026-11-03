@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#000000">
+<title>How Maps works — Project Ark</title>
+<link rel="manifest" href="app.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to the main content</a>
+<div class="wrap">
+  <header class="top">
+    <div><span class="logo">Project Ark</span><h1>How Maps works</h1></div>
+    <a class="help-link" href="./">Back to Maps</a>
+  </header>
+
+  <main id="main">
+    <p class="lede">Maps is meant to be useful after the Ark is out of reach. That means
+      three separate things have to be true: the region must be downloaded, the page
+      itself must be kept on the device, and the device must trust the Ark’s secure
+      address. This page explains each one in plain words.</p>
+
+    <section class="panel">
+      <h2>1. Download a region</h2>
+      <p>Open <b>Maps</b> while you are connected to the Ark. Choose a region and tap
+        <b>Download for offline use</b>. The page shows how large it is, how much room
+        this device reports, and how the download is going.</p>
+      <p><b>Opening this page does not download a region.</b> Looking at a map once, or
+        leaving the page open, is not a download either. A region is installed only
+        after every part has arrived and been checked against its fingerprint.</p>
+      <p>The badge <b>Ready offline</b> appears when the pack is installed <i>and</i>
+        the page itself is being kept by the browser. If the badge is missing, the
+        page tells you what is still needed.</p>
+    </section>
+
+    <section class="panel">
+      <h2>2. Make the page open without the Ark</h2>
+      <p>Browsers only let a page work offline when it is served over a connection the
+        device trusts. The Ark makes its own certificate because it has no public name
+        and may have no internet. Trusting it once, on that device, is what turns
+        <b>Downloaded</b> into <b>Ready offline</b>.</p>
+      <ol>
+        <li>On the Ark’s ordinary page, tap <b>Download the Ark’s certificate</b>.
+          (The file is also offered at <b>http://ark.local/certificate.crt</b>.)</li>
+        <li>Install it as a trusted certificate on the device — the steps for each
+          kind of device are below.</li>
+        <li>Open <b>https://ark.local:8446/maps/</b> in the browser. The address must
+          begin with <b>https</b> and end with <b>:8446</b>; the ordinary
+          <b>http://ark.local</b> cannot keep a page offline.</li>
+        <li>Add the page to the home screen, or bookmark it. That is the way back in
+          when the Ark is gone.</li>
+      </ol>
+
+      <h3>iPhone or iPad</h3>
+      <p>Download the certificate, then open <b>Settings</b> → <b>Profile Downloaded</b>
+        → <b>Install</b>. Then open <b>Settings</b> → <b>General</b> → <b>About</b> →
+        <b>Certificate Trust Settings</b> and switch on full trust for “Project ARK”.
+        Open the Maps address in Safari, tap <b>Share</b>, then <b>Add to Home Screen</b>.</p>
+
+      <h3>Android</h3>
+      <p>Download the certificate, then open <b>Settings</b> → <b>Security</b> →
+        <b>Encryption &amp; credentials</b> → <b>Install a certificate</b> →
+        <b>CA certificate</b>. Choose the downloaded file. Open the Maps address in
+        Chrome, open the menu, then <b>Add to Home screen</b>.</p>
+
+      <h3>Laptop</h3>
+      <p>Import the certificate into the operating system’s trusted certificates, open
+        the Maps address, and bookmark it. On macOS, Keychain Access can trust a
+        certificate for this device only; on Windows, use “Trusted Root Certification
+        Authorities”.</p>
+
+      <p class="fine">If you cannot trust the certificate, Maps still works while the
+        Ark is reachable — it just cannot promise to reopen with the Ark gone. Never
+        install a certificate you have not compared with the fingerprint shown by the
+        Ark’s owner.</p>
+    </section>
+
+    <section class="panel">
+      <h2>3. Use the map away from the Ark</h2>
+      <p>Open the Maps icon or bookmark. The page, the region, the search index and the
+        routing graph are all read from the device. Pan and zoom anywhere in the
+        downloaded region — including places you never looked at before — search for a
+        name, choose a start and a destination, and tap <b>Show route</b>.</p>
+      <p>The route is calculated on the device. You can print a route sheet, download
+        one as a file, or download the route as GPX for another program. A saved route
+        sheet is a paper fallback; it is not a substitute for calculating a new route
+        offline, which Maps does itself.</p>
+      <p>Outside the downloaded region the map says so instead of showing a blank
+        square. The dashed line marks the edge of what was downloaded.</p>
+    </section>
+
+    <section class="panel">
+      <h2>What the directions can and cannot know</h2>
+      <ul>
+        <li>One-way streets, access rules and the turn restrictions carried in the map
+          data are respected. Restrictions that use a whole road as their “via” part,
+          or that depend on a time of day, are not carried.</li>
+        <li>Times use the speed of each kind of road, not live traffic, closures,
+          weather or roadworks.</li>
+        <li>Street addresses are usually incomplete or absent. Search finds named
+          places, settlements and points of interest; you can also type coordinates
+          or tap a point on the map.</li>
+        <li>A mapped water source is not a claim that the water is drinkable. A mapped
+          clinic, shop or shelter is not a claim that it is open, stocked or staffed.
+          Maps is a map, not a promise about the world.</li>
+        <li>On foot, a route ignores car one-way rules, but it can only use roads and
+          paths that are in the pack.</li>
+      </ul>
+    </section>
+
+    <section class="panel">
+      <h2>If something is missing or damaged</h2>
+      <p>Open <b>Packs on this device</b> and use <b>Check this copy</b>. It reads every
+        part and compares it with the fingerprint recorded when the pack was built.
+        If a part is missing or does not match, remove the copy and download it again
+        while the Ark is reachable. A half-finished download can be continued; the
+        pieces already received are kept.</p>
+      <p>Browsers may remove stored data when the device runs out of room. Maps asks the
+        browser to keep it and says whether that request was granted. Keeping the Ark
+        reachable, or keeping a second device with the same pack, is the practical
+        backup.</p>
+    </section>
+
+    <section class="panel">
+      <h2>Privacy</h2>
+      <p>Searches, saved places, the current location (if you choose to use it), the
+        last view and route history stay on this device. Maps does not send them to the
+        Ark. The map is drawn from a pack; there is no online map service, no account
+        and no tracking.</p>
+      <p>You can remove saved places and route history from this device at any time from
+        the map page, and remove a pack from <b>Packs on this device</b>. Removing a pack
+        here does not remove the Ark’s copy or a copy on another phone.</p>
+    </section>
+
+    <p class="fine">Map data © OpenStreetMap contributors, available under the Open
+      Database Licence (ODbL 1.0). Attribution stays on the map and on every route
+      sheet.</p>
+  </main>
+
+  <footer>
+    <p><a href="./">Back to Maps</a></p>
+    <p class="fine">Project Ark — maps that work when the network does not.</p>
+  </footer>
+</div>
+</body>
+</html>

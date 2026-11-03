@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#000000">
+<title>Maps — Project Ark</title>
+<link rel="manifest" href="app.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to the main content</a>
+<div class="wrap">
+  <header class="top">
+    <div>
+      <span class="logo">Project Ark</span>
+      <h1>Maps</h1>
+    </div>
+    <a class="help-link" href="help.html">How this works</a>
+  </header>
+
+  <p id="net-note" class="note" role="status" aria-live="polite"></p>
+
+  <main id="main">
+    <!-- ------------------------------------------------------------------ -->
+    <!--  choosing and downloading a region                                  -->
+    <!-- ------------------------------------------------------------------ -->
+    <section id="packs-view" aria-labelledby="packs-heading">
+      <h2 id="packs-heading">Carry a region with you</h2>
+      <p class="lede">Download a region while the Ark is reachable. After that the map,
+        the search and new directions work with no Ark and no internet — the work
+        happens on this device.</p>
+
+      <div class="storage-line" id="storage-line">Checking this device's storage…</div>
+      <div id="install-status" class="status" role="status" aria-live="polite"></div>
+      <div id="catalog-list" class="cards"></div>
+
+      <details id="installed-block" class="panel">
+        <summary>Packs on this device</summary>
+        <div id="installed-list" class="cards"></div>
+        <p class="fine">Removing a pack here removes only this device's copy. The Ark's
+          copy, and any copy on another phone, is untouched.</p>
+      </details>
+
+      <p class="fine">Opening this page does not download a region, and a page you
+        looked at earlier is not a region. A pack says <b>Ready offline</b> only
+        after every part has arrived and been checked.</p>
+    </section>
+
+    <!-- ------------------------------------------------------------------ -->
+    <!--  the map, the planner and the directions                            -->
+    <!-- ------------------------------------------------------------------ -->
+    <section id="map-view" hidden aria-labelledby="map-heading">
+      <div class="map-toolbar">
+        <button type="button" id="back-to-packs" class="ghost">Packs</button>
+        <div class="map-title">
+          <h2 id="map-heading">Map</h2>
+          <p id="pack-caption" class="fine"></p>
+        </div>
+        <span id="offline-badge" class="badge" hidden>Ready offline</span>
+      </div>
+
+      <div class="map-wrap">
+        <canvas id="map" tabindex="0" role="application"
+                aria-label="Map of the downloaded region. Use arrow keys to move, plus and minus to zoom."></canvas>
+        <div class="map-controls" aria-label="Map controls">
+          <button type="button" id="zoom-in" aria-label="Zoom in">+</button>
+          <button type="button" id="zoom-out" aria-label="Zoom out">−</button>
+          <button type="button" id="zoom-home" aria-label="Show the whole region">⌂</button>
+          <button type="button" id="locate" aria-label="Use my location">◎</button>
+        </div>
+        <div id="pick-hint" class="pick-hint" hidden>Tap the map to choose the <b>start</b>.</div>
+        <div id="coverage-note" class="coverage-note" hidden></div>
+        <p id="map-live" class="visually-hidden" aria-live="polite"></p>
+      </div>
+
+      <div class="planner">
+        <div class="endpoints">
+          <label class="field">
+            <span>Start</span>
+            <input id="from-input" type="text" autocomplete="off" spellcheck="false"
+                   placeholder="Search a place, or tap the map">
+            <button type="button" class="mini" data-pick="from">Pick on map</button>
+          </label>
+          <div id="from-suggestions" class="suggestions" role="list"></div>
+
+          <label class="field">
+            <span>Destination</span>
+            <input id="to-input" type="text" autocomplete="off" spellcheck="false"
+                   placeholder="Search a place, or tap the map">
+            <button type="button" class="mini" data-pick="to">Pick on map</button>
+          </label>
+          <div id="to-suggestions" class="suggestions" role="list"></div>
+
+          <fieldset class="modes">
+            <legend>How are you travelling?</legend>
+            <label><input type="radio" name="profile" value="foot"> On foot</label>
+            <label><input type="radio" name="profile" value="bike"> Bicycle</label>
+            <label><input type="radio" name="profile" value="car" checked> Car</label>
+          </fieldset>
+
+          <div class="route-row">
+            <button type="button" id="route-button" class="primary">Show route</button>
+            <label class="units">Units
+              <select id="units">
+                <option value="metric">km / m</option>
+                <option value="imperial">miles / feet</option>
+              </select>
+            </label>
+          </div>
+          <p id="route-status" class="status" role="status" aria-live="polite"></p>
+        </div>
+
+        <div id="route-panel" class="route-panel" hidden>
+          <h3>Directions</h3>
+          <p id="route-summary" class="route-summary"></p>
+          <p id="route-note" class="fine"></p>
+          <ol id="directions" class="directions"></ol>
+          <div class="route-actions">
+            <button type="button" id="print-sheet" class="ghost">Print route sheet</button>
+            <button type="button" id="download-sheet" class="ghost">Download route sheet</button>
+            <button type="button" id="download-gpx" class="ghost">Download GPX</button>
+            <button type="button" id="clear-route" class="ghost">Clear route</button>
+          </div>
+        </div>
+
+        <details class="panel saved">
+          <summary>Saved places on this device</summary>
+          <p class="fine">Saved places never leave this device. They are not sent to the Ark.</p>
+          <div id="saved-list" class="saved-list"></div>
+          <button type="button" id="save-current" class="ghost">Save the destination</button>
+        </details>
+
+        <details class="panel">
+          <summary>About this pack</summary>
+          <div id="pack-facts" class="facts"></div>
+          <button type="button" id="check-copy" class="ghost">Check this copy</button>
+          <p id="check-status" class="status" role="status" aria-live="polite"></p>
+        </details>
+
+        <p class="fine">Map data © OpenStreetMap contributors, available under the
+          Open Database Licence. A mapped water source is not a claim that the water
+          is drinkable, and a mapped facility is not a claim that it is open.</p>
+      </div>
+    </section>
+
+    <!-- ------------------------------------------------------------------ -->
+    <!--  download progress                                                  -->
+    <!-- ------------------------------------------------------------------ -->
+    <section id="download-view" hidden aria-labelledby="download-heading">
+      <h2 id="download-heading">Downloading a region</h2>
+      <p id="download-name" class="lede"></p>
+      <progress id="download-bar" max="100" value="0"></progress>
+      <p id="download-detail" class="status" role="status" aria-live="polite"></p>
+      <div class="route-actions">
+        <button type="button" id="pause-download" class="ghost">Pause</button>
+        <button type="button" id="cancel-download" class="danger">Cancel and remove the partial copy</button>
+      </div>
+      <p class="fine">A paused download keeps what has arrived. You can close this page
+        and continue later; the pieces are already on this device.</p>
+    </section>
+
+    <!-- ------------------------------------------------------------------ -->
+    <!--  a printable route sheet, hidden until it is printed                -->
+    <!-- ------------------------------------------------------------------ -->
+    <section id="print-sheet" class="print-sheet" aria-hidden="true"></section>
+  </main>
+
+  <footer>
+    <p><b>Project Ark</b> — maps that work when the network does not.</p>
+    <p class="fine">This page is served from the Ark. Once a region is installed,
+      nothing on it needs the Ark to browse, search or plan a new route.</p>
+  </footer>
+</div>
+
+
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

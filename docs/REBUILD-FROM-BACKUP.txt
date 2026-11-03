@@ -11,8 +11,9 @@ restore tools with their printed recovery sheet, ARK Arcade (the game
 shelf, player names and game saves), the household layer (the emergency
 pages, the printed cards and the pack to carry away), Ask the Ark (a helper
 that answers from a model on the card), the power-cut repair pass, and the
-owner's Network page (save a Wi-Fi network, and ask for one restart on it) —
-is NOT in a folder built from that tag.
+owner's Network page (save a Wi-Fi network, and ask for one restart on it), and
+Maps (one region downloaded, then maps, search and NEW routes with no Ark and no
+internet) — is NOT in a folder built from that tag.
 Regenerate with section 5 before handing a folder to anyone, and check the
 date line at the top of REBUILD-ME-ARK.txt against the code you expect: it is
 revised whenever the box changes shape.
@@ -37,6 +38,9 @@ DELIBERATELY NOT IN HERE
   · the Raspberry Pi OS image (~1.2 GB, re-downloaded by the flash script)
   · the library content (~21 GiB of .zim + books) — cheapest to re-fetch, or
     copy it from a running box, section 3
+  · map regions (a pack is reproducible content, built with scripts/ark-map-pack
+    on a computer and imported from the owner's Maps page; they are never in
+    ark-backup, and a restored card honestly reports none)
   · a copy of the household's own records — that is a different artefact: run
     `sudo ark-backup --to /srv/ark/backup` on the running box and keep the
     dated folder (notes, shared files, accounts, book-import list, named
