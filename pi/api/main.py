@@ -53,6 +53,7 @@ import ark_health
 import ark_household
 import ark_map_store
 import ark_map_web
+import ark_library
 import ark_media
 import ark_media_web
 import ark_review
@@ -184,7 +185,7 @@ def esc(value) -> str:
     return html.escape(str(value if value is not None else ""), quote=True)
 
 
-NAV = [("/", "Home"), ("/search", "Search"), ("/ask", "Ask"), ("/kiwix/", "Library"),
+NAV = [("/", "Home"), ("/search", "Search"), ("/ask", "Ask"), ("/library", "Library"),
        ("/books/", "Books"), ("/media/", "Media"), ("/vault/", "Manuals"),
        ("/maps", "Maps"), ("/board", "Messages"), ("/files", "File box"),
        ("/household", "Household")]
@@ -453,6 +454,73 @@ def _media_status() -> dict:
 
 
 # ---------------------------------------------------------------------------
+#  the library door — the card's collections, filed by what they are for
+# ---------------------------------------------------------------------------
+#: The one line each shelf's card carries when the collection is a film shelf.
+#: A video bundle has no word index (``_ftindex:no``), so the search box cannot
+#: look inside it — saying that on the card is cheaper than a person typing a
+#: word, getting nothing, and concluding the box has no films.
+FILM_SHELF_NOTE = "Films and videos. The search box cannot look inside this one — open it and browse."
+
+
+@app.get("/library", response_class=HTMLResponse)
+def library():
+    """Every collection on the card, on a shelf a person can choose from.
+
+    The full A–Z browser is still one tap away, and is what a card opens: this page
+    only answers *where do I start*.  Nothing here is invented — a shelf appears
+    because the catalogue files a book on it, and a book appears because the
+    library index lists it as present.
+    """
+    books = library_books()
+    groups = ark_library.shelves(books)
+    total_bytes = sum(int(b.get("size") or 0) for b in books) or library_bytes()
+
+    if not books:
+        return page("Offline Library", """
+  <p class="status"><span class="dot wait" aria-hidden="true"></span>
+    <span>The library is still filling up.</span></p>
+  <p class="note">Collections arrive in the background, smallest first, so the box is
+    useful within minutes of being switched on. Nothing here needs doing.</p>
+  <div class="nav"><a href="/">Back to the home page</a></div>""",
+                    here="/library",
+                    tagline="Everything that is on this box to read or watch, filed by what it is for.")
+
+    chips = "".join(
+        f'<a class="chip" href="#{esc(g["key"])}">{esc(g["title"])}</a>'
+        for g in groups if g["key"] != ark_library.OTHER[0]
+    )
+    sections = []
+    for group in groups:
+        cards = []
+        for book in group["books"]:
+            stem = book.get("stem") or book["id"]
+            note = FILM_SHELF_NOTE if book.get("searchable") is False else \
+                "Tap to open it in your browser."
+            verb = "Tap to watch" if book.get("searchable") is False else "Read in browser"
+            cards.append(f'''<a class="card" href="/kiwix/content/{esc(stem)}/">
+  <span class="t">{esc(book["title"])}</span>
+  <span class="d">{esc(note)}</span>
+  <span class="go">{verb} · {esc(human_size(book.get("size")))}</span>
+</a>''')
+        sections.append(f'''<h2 id="{esc(group["key"])}">{esc(group["title"])}</h2>
+  <p class="hint">{esc(group["blurb"])}</p>
+  <div class="grid two">{''.join(cards)}</div>''')
+
+    part = "collection" if len(books) == 1 else "collections"
+    body = f'''
+  <p class="status"><span class="dot" aria-hidden="true"></span>
+    <span><b>{len(books)}</b> {part} on this box — {esc(human_size(total_bytes))}, all readable with no internet.</span></p>
+  <p class="chips">{chips}</p>
+  {"".join(sections)}
+  <h2>Everything, A–Z</h2>
+  <p class="hint">The full list, with every cover and a search box of its own.</p>
+  <div class="nav"><a href="/kiwix/">Browse every collection</a><a href="/search">Search inside them</a></div>'''
+    return page("Offline Library", body, here="/library",
+                tagline="Everything that is on this box to read or watch, filed by what it is for.")
+
+
+# ---------------------------------------------------------------------------
 #  search — library + guides + bookshelf, one box
 # ---------------------------------------------------------------------------
 def _public_link(raw: str) -> str:
@@ -691,6 +759,12 @@ def _search_report(pattern: str) -> dict:
     * ``available`` — how many collections the box holds, so that a search which could
                     only ask *some* of them says so instead of quietly counting its own
                     cap as the whole library (the fault that started all of this).
+    * ``unsearchable`` — how many of the box's collections have no word index at all
+                    (a film shelf, ``_ftindex:no``).  They are **not asked**: asking
+                    them answers nothing whatever they contain, which would be
+                    indistinguishable from *"searched, nothing there"*.  They are
+                    counted here so the page can say so once, in plain words, instead
+                    of letting a reader believe a word search reached the films.
 
     Anything un-asked or un-answered is a gap in the search, not a gap in the books,
     and ``library_state()`` turns that into one of five words the page can word
@@ -701,10 +775,12 @@ def _search_report(pattern: str) -> dict:
     block itself is chosen by ``_spread()``, because *which* of the arrived answers
     reach the page is a second way to answer from half a library.
     """
-    books_on_card = library_books()
+    shelf = library_books()
+    books_on_card = [b for b in shelf if b.get("searchable", True)]
     books = books_on_card[:MAX_COLLECTIONS]
     report = {"hits": [], "asked": len(books), "available": len(books_on_card),
-              "answered": 0, "failed": 0, "late": 0}
+              "answered": 0, "failed": 0, "late": 0,
+              "unsearchable": len(shelf) - len(books_on_card)}
     if not books:
         return report
     by_id: dict[str, dict] = {}
@@ -890,6 +966,9 @@ def search(q: str = ""):
     total = len(library) + len(guides) + len(books)
     asked, answered = report["asked"], report["answered"]
     available = report.get("available", asked)
+    #: Collections with no word index (film shelves).  Counted by the report, never
+    #: asked, so a search can say so once instead of pretending it reached them.
+    no_search = report.get("unsearchable", 0)
     again = f"/search?q={urllib.parse.quote_plus(pattern)}"
 
     def shortfall() -> str:
@@ -934,15 +1013,21 @@ def search(q: str = ""):
                          f'the manuals and the bookshelf. <a href="{esc(again)}">Try again</a> in '
                          f'a moment.</p>')
         elif state == "no-books":
-            parts.append('<p class="note">There are no collections on this box yet, so everything '
-                         'above comes from the manuals and the bookshelf. The Offline Library '
-                         'fills up as the box has time.</p>')
+            if no_search:
+                parts.append(f'<p class="note">This box’s library holds only films and videos '
+                             f'just now, and those cannot be word-searched, so everything above '
+                             f'comes from the manuals and the bookshelf. '
+                             f'<a href="/library">Open the library</a> to browse them.</p>')
+            else:
+                parts.append('<p class="note">There are no collections on this box yet, so everything '
+                             'above comes from the manuals and the bookshelf. The Offline Library '
+                             'fills up as the box has time.</p>')
     elif state == "empty":
         parts.append(f"""<p class="status"><span class="dot" aria-hidden="true"></span>
       <span>Nothing matched <b>“{esc(pattern)}”</b> yet.</span></p>
   <p class="note">All {asked} collections were asked and none of them had it. Try a shorter
      word, or a different word for the same thing.</p>
-  <div class="nav"><a href="/kiwix/">Open the Offline Library</a><a href="/vault/">Open the manuals</a></div>""")
+  <div class="nav"><a href="/library">Open the Offline Library</a><a href="/vault/">Open the manuals</a></div>""")
     elif state == "partial":
         # Amber, not red: some collections answered, and a second try often gets
         # further.  ``dot wait`` is this box's word for "fine, but not finished".
@@ -952,7 +1037,7 @@ def search(q: str = ""):
   <p class="note">{esc(shortfall())}. Nothing was found in those, and the rest were not
      heard from.
      <a href="{esc(again)}">Look again</a> — a second try often gets further.</p>
-  <div class="nav"><a href="/kiwix/">Open the Offline Library</a><a href="/vault/">Open the manuals</a></div>""")
+  <div class="nav"><a href="/library">Open the Offline Library</a><a href="/vault/">Open the manuals</a></div>""")
     elif state == "silent":
         # Red: nothing answered, which is a fault and must never read as an answer.
         parts.append(f"""<p class="status"><span class="dot no" aria-hidden="true"></span>
@@ -960,14 +1045,34 @@ def search(q: str = ""):
   <p class="note">That is not the same as “nothing found” — none of the {asked} collections
      answered at all. The manuals and the bookshelf were searched and are below if they
      have anything. <a href="{esc(again)}">Try again</a> in a moment.</p>
-  <div class="nav"><a href="/kiwix/">Open the Offline Library</a><a href="/vault/">Open the manuals</a></div>""")
+  <div class="nav"><a href="/library">Open the Offline Library</a><a href="/vault/">Open the manuals</a></div>""")
+    elif no_search:
+        # Nothing to ask because everything on the card is a film shelf.  Saying
+        # "there are no collections" here would be false about a box holding 4 GiB
+        # of them, and sending a reader to look for something that is not missing.
+        parts.append(f"""<p class="status"><span class="dot wait" aria-hidden="true"></span>
+      <span>The films and videos on this box cannot be word-searched.</span></p>
+  <p class="note">This box’s library holds only films and videos just now, so nothing
+     was read page by page. The manuals and the bookshelf were still searched and are
+     below if they have anything. <a href="/library">Open the library</a> to browse
+     what is there.</p>
+  <div class="nav"><a href="/library">Open the Offline Library</a><a href="/vault/">Open the manuals</a></div>""")
     else:
         parts.append(f"""<p class="status"><span class="dot wait" aria-hidden="true"></span>
       <span>The Offline Library has no list of its books yet, so the big look-up had
       nothing to read.</span></p>
   <p class="note">The manuals and the bookshelf were still searched. The Offline Library
      fills up as the box has time.</p>
-  <div class="nav"><a href="/kiwix/">Open the Offline Library</a><a href="/vault/">Open the manuals</a></div>""")
+  <div class="nav"><a href="/library">Open the Offline Library</a><a href="/vault/">Open the manuals</a></div>""")
+    if no_search and asked:
+        if no_search == 1:
+            said = ("1 of the box’s collections is a film shelf, which the search box "
+                    "cannot look inside")
+        else:
+            said = (f"{no_search} of the box’s collections are film shelves, which the "
+                    "search box cannot look inside")
+        parts.append(f'<p class="note">{said} — <a href="/library">open the library</a> '
+                     f'to browse them.</p>')
     parts.append(block("From the library", library))
     parts.append(block("From the manuals", guides))
     parts.append(block("From the bookshelf", books))

@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""Project ARK — the published checksum for a library download, and its verdict.
+
+Every bundle the Kiwix mirrors publish carries the digest of the exact bytes they
+serve: a Metalink document beside the file (``<name>.zim.meta4``) and, more often
+than not, a plain ``<name>.zim.sha256`` beside that.  The downloader asked for
+neither for two years of this project's life: it compared the byte count against
+the catalogue and counted the blocks on disk, which catches a stalled transfer
+and a hole-punched resume, but not a mirror that served the *wrong file* of the
+right length.  A wrong file of the right length opens as a library with no books
+in it, and nothing anywhere says why.
+
+This helper is that missing check, and nothing else:
+
+    ark-zim-checksum --url URL                 print the published sha-256
+    ark-zim-checksum --url URL --file FILE     verify FILE against it
+
+Exit codes, which the shell cares about:
+
+    0  the digest was found (and, with --file, the file matches it)
+    1  the file does not match the published digest
+    2  bad arguments, or a file that cannot be read
+    3  no published checksum could be found — unknown is not the same as wrong
+
+``3`` is deliberately separate from ``1``: a mirror that publishes no digest must
+not fail a download that is otherwise sound, and it must not be counted as
+verified either.  The caller says which of those it is doing.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import sys
+import urllib.parse
+import urllib.request
+import xml.etree.ElementTree as ET
+
+TIMEOUT = 30
+CHUNK = 1 << 20
+MAX_META = 4 << 20          # a Metalink for a 200 GiB bundle is still small
+UA = "project-ark/1.0"
+
+
+def _read(url: str, limit: int) -> bytes:
+    """Fetch up to ``limit`` bytes of a small document (http, https or file)."""
+    scheme = urllib.parse.urlsplit(url).scheme
+    if scheme not in ("http", "https", "file"):
+        raise ValueError(f"unsupported scheme {scheme!r}")
+    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+        return resp.read(limit)
+
+
+def from_metalink(url: str) -> str:
+    """The sha-256 inside ``<url>.meta4`` (top-level <hash>, not the block hashes)."""
+    try:
+        raw = _read(url + ".meta4", MAX_META)
+    except Exception:
+        return ""
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError:
+        return ""
+    for node in root.iter():
+        tag = node.tag.rsplit("}", 1)[-1]
+        if tag != "hash" or (node.get("type") or "").lower() != "sha-256":
+            continue
+        digest = (node.text or "").strip().lower()
+        if len(digest) == 64:
+            return digest
+    return ""
+
+
+def from_sha256_file(url: str) -> str:
+    """The first 64 hex characters of ``<url>.sha256`` (``sha256sum`` format)."""
+    try:
+        raw = _read(url + ".sha256", MAX_META)
+    except Exception:
+        return ""
+    text = raw.decode("utf-8", "replace")
+    for token in text.replace("*", " ").split():
+        token = token.strip().lower()
+        if len(token) == 64 and all(c in "0123456789abcdef" for c in token):
+            return token
+    return ""
+
+
+def published(url: str) -> str:
+    """The digest the mirror publishes for ``url``, or "" when it publishes none."""
+    return from_metalink(url) or from_sha256_file(url)
+
+
+def digest_of(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        while True:
+            block = fh.read(CHUNK)
+            if not block:
+                break
+            h.update(block)
+    return h.hexdigest()
+
+
+def main(argv) -> int:
+    ap = argparse.ArgumentParser(add_help=True)
+    ap.add_argument("--url", required=True, help="the bundle's own download URL")
+    ap.add_argument("--file", default="", help="the file to check against it")
+    args = ap.parse_args(argv)
+
+    want = published(args.url)
+    if not want:
+        print(f"no published checksum for {args.url}", file=sys.stderr)
+        return 3
+    if not args.file:
+        print(want)
+        return 0
+    try:
+        got = digest_of(args.file)
+    except OSError as exc:
+        print(f"cannot read {args.file}: {exc}", file=sys.stderr)
+        return 2
+    if got != want:
+        print(f"mismatch: published {want}, file {got}", file=sys.stderr)
+        return 1
+    print(want)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

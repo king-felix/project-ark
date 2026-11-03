@@ -953,6 +953,52 @@ them as "Maps does not work".
 
 ---
 
+## 23. The shelves, and a film that actually plays (20 minutes, needs a phone)
+
+**Why a person must do this:** the automated tests prove the page is built from the
+card's own index, that a film shelf is never counted as a searched shelf, and that the
+digest of every downloaded file matched the one the mirror published. None of them can
+prove that a phone decodes these particular films, that a shelf name means something to
+somebody who has never heard of *Stack Exchange*, or that the films are any good.
+
+**Prepare:** the Ark on, three collections from the new shelves (a film shelf, the
+home-improvement Q&A, and Low-tech Magazine), and a phone with sound.
+
+1. Open `http://ark.lan/library`. Count the shelves. Do the names tell you where you
+   would look for: *a leaking tap*, *a car that will not start*, *keeping food for a
+   year*, *what to do about a cut*, *a radio that will not receive*?
+2. Tap **Prepared and planning**, then the **Urban Prepper** card. It must say on the
+   card that the search box cannot look inside it. Open it.
+3. Pick any film. Note its title and length. Tap it.
+   - Does the picture appear within a few seconds?
+   - Does the sound play, and can you turn it up?
+   - Drag the progress bar to the middle. Does it jump there, or restart?
+   - Pinch to full screen (iPhone: the full-screen button in Safari's video player;
+     Android: the same in Chrome).
+   - Turn the phone's Wi-Fi **off while the film plays**. It should keep playing for
+     the part already fetched; it is not a stream from the internet.
+4. Go back and open **Fix it** → **Home improvement Q&A**. Type `leaking tap` into the
+   collection's own search box. Do the answers look like answers to the question?
+5. Go back to the portal's top search box and search `leaking tap`. The results must
+   include the home-improvement collection, and the page must say once that the film
+   shelves cannot be looked inside — it must not say *nothing matched* while the films
+   sit unsearched.
+6. Open **Water, power and shelter** → **Low-tech living**. Read one article. Is it the
+   magazine, with its pictures and its own dates on the page?
+7. Record: phone model, browser, which shelf names landed and which did not, which film,
+   time to first picture, whether seeking and full screen worked, whether sound was in
+   sync, and any film that failed to play at all (title + what the screen said).
+
+**Pass:** every collection on the page opens, one film plays with sound and seeks, the
+search finds the Q&A archive, and the page never claims a film shelf was searched.
+
+**If it fails:** note whether it is the page (a shelf missing), the collection (a card
+that will not open), the film (a spinner, a black screen, or “cannot play this file”),
+or the search wording. Those are four different problems; do not report them as
+"the library does not work".
+
+---
+
 ## What is *not* on this list, on purpose
 
 

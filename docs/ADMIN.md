@@ -1759,6 +1759,96 @@ its own start date.
 
 ---
 
+## 20. The offline library — the catalogue, the shelves, and the digests
+
+### One file describes the library
+
+`pi/kiwix/catalog.tsv` is the box's definition of what its library holds. One row per
+collection, seven tab-separated columns:
+
+```
+name            the catalogue id — becomes <name>_<YYYY-MM>.zim on the card
+flavour         maxi | nopic | mini | -        (largest to smallest)
+size_gib        last measured download size, used by the disk budget
+tier            essential | core | extra        (order and profiles)
+label           the friendly name the owner sees
+query           keyword sent to the public catalogue to find this entry
+topic           which shelf /library files it under
+```
+
+`ark-zim-resolve` asks the public catalogue once per `query`, picks the **newest**
+edition of the exact `name`, and pins it to `/etc/ark/zim-queue.tsv`. Nothing in the
+queue is a guess and nothing in it is a fixed URL you have to maintain by hand: a
+new edition is picked up by re-running the resolver.
+
+```bash
+sudo ark-zim-resolve --profile core     # rewrite the queue from the catalogue
+sudo systemctl status ark-zim-downloader
+/usr/local/bin/ark-zim-resolve --profile core --queue /tmp/q.tsv --zim-dir /tmp/x
+```
+
+**Adding a collection** is one line in `catalog.tsv` plus a deploy of `50-kiwix`:
+choose a `name` that the catalogue actually lists (ask it:
+`curl 'https://library.kiwix.org/catalog/v2/entries?q=<word>&count=20'`), a plain
+label, a real `topic`, and a size you measured rather than guessed. A name the
+catalogue does not know is reported as *unresolved* and simply never downloaded —
+it cannot corrupt the queue.
+
+**Removing one** is deleting its row and the `.zim` from `/srv/ark/kiwix`, then
+`sudo /usr/local/bin/ark-kiwix-library && sudo systemctl restart ark-kiwix`. A
+collection that is still in the queue but missing from the card is fetched again;
+there is no "delete" button and nothing is ever deleted on its own.
+
+### The shelves
+
+`/library` is the public page a person starts from; `/kiwix/` is the full browser
+behind it. `pi/api/ark_library.py` groups what `ark_health.library_books()` found
+onto the shelves named in the `topic` column, in a fixed order:
+
+`repair` · `vehicles` · `food` · `health` · `home` · `prep` · `outdoors` · `radio` · `learn`
+
+Three properties are tested (`tests/test_library.py`): every book lands on exactly
+one shelf, an empty shelf is not drawn, and a bundle copied onto the card by hand
+(with no catalogue row) appears under *Everything else* rather than disappearing.
+A shelf with a wrong topic key in the catalogue would silently fall to *Everything
+else*, which is why the catalogue's shape is a test and not a convention.
+
+### Film shelves are not word-searchable
+
+A video bundle is built with `_ftindex:no`: there is no word index, so asking it
+for a pattern answers nothing **whatever the films contain**. The search fan-out
+therefore leaves those collections out of `asked` and `available`, counts them in
+`unsearchable`, and the page says once, in plain words, that the film shelves
+cannot be looked inside. Without that, adding 7 GiB of films would have quietly
+turned every narrow search into a confident *“nothing matched”*.
+
+### The digest
+
+Every bundle the mirrors publish has a sha-256 beside it (`.meta4`, or
+`.sha256`). `ark-zim-checksum` reads the published digest and compares it with the
+bytes on disk; `ark-zim-download` runs it **before** the `.part` file is given its
+final name.
+
+| exit | meaning | what the downloader does |
+|---|---|---|
+| 0 | the file is the published file | keeps the digest at `state/<name>.sha256`, publishes |
+| 1 | different bytes | deletes the file, counts a failure, fetches it again |
+| 2 | the file cannot be read | counts a failure, starts it again |
+| 3 | the mirror publishes no digest | **keeps** the file, logs it as *unverified* — never as checked |
+
+Exit 3 exists because a mirror without a digest must not fail an otherwise sound
+download; it must not be counted as verified either. The log line is the record.
+
+### Space
+
+One policy: `ark-space`. The downloader asks it before every fetch, promising the
+whole remaining size of the bundle rather than discovering at 99 % that it does not
+fit, and `/usr/local/sbin/ark-space --status` prints what may still be added. A
+collection that would cross the reserve is left in the queue and retried later;
+nothing is deleted to make room.
+
+---
+
 ## 16. Tested / not tested
 
 **Tested** — 567 automated tests, disposable databases, `pytest` (the per-requirement verdict is `docs/REQUIREMENTS-MATRIX.md`):

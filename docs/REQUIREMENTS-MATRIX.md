@@ -453,6 +453,7 @@ household member has opened `/household` on a phone.
 | R12 | DONE (code + test) | batch upload + every door named; real 2 GiB press is human work |
 | R13 | DONE (code + test) | shelf, ranges, worker; real phone playback is human work |
 | R14 | DONE (code + real-browser test + live Pi) | live Pi and desktop Chromium offline journey yes; **no real phone, no owner region, eviction unproven** |
+| R15 | DONE (code + test + live Pi) | shelves, films-not-searched, digests yes; real phone playback and a person's judgement of the shelves are human work |
 | A | PARTIAL | accounts/community/games/health yes; players/services/backup UI no |
 | B | PARTIAL (early) | guest play + named saves + preferences yes; history/metadata/visuals no |
 | C | PARTIAL | stage 3–6 fixes yes; thermal/jobs/search cancellation no |
@@ -705,6 +706,34 @@ under real quota pressure (refusal at a tiny quota is tested, eviction is not); 
 larger than the demonstration; and voice/continuous navigation, which is not
 implemented and is not promised.  The live Pi run used the real certificate pinned by
 SPKI over its Wi-Fi address and is recorded in `docs/IMPLEMENTATION-LOG.md` §44.
+
+---
+
+## R15 — the library a person can actually navigate, and a download that is the file it claims
+
+**Status: DONE + tested on the Mac, deployed and measured on the live Pi on 3 November
+2026; the phone walk-through is human work (`docs/HUMAN-TEST-LIST.md` §23).** The card
+holds 27 collections in two kinds — pages and films — and neither the shelf page nor the
+search box is allowed to be vague about which is which.
+
+| Acceptance sentence | Where | Test |
+|---|---|---|
+| Every collection on the card appears on exactly one shelf, and none is lost | `ark_library.shelves()` | `test_library.py::test_every_book_lands_on_exactly_one_shelf` |
+| The filing comes from the catalogue, not from a second list in code | `catalog.tsv` column 7 → `ark_library.read_catalogue()` | `test_library.py::test_every_catalogue_row_is_complete_and_filed_on_a_real_shelf`; `::test_the_requested_collections_are_in_the_catalogue_on_the_right_shelves` |
+| A bundle with no catalogue row is shown, not hidden | `ark_library.OTHER` | `test_library.py::test_every_book_lands_on_exactly_one_shelf`; `::test_a_missing_catalogue_is_an_empty_map_not_a_crash` |
+| An empty box gets a friendly page, not an error | `main.library` | `test_library.py::test_an_empty_library_is_a_friendly_page_not_an_error` |
+| A film shelf says it cannot be word-searched, and is offered as something to watch | `main.FILM_SHELF_NOTE` | `test_library.py::test_the_shelf_page_shows_every_collection_and_links_to_it` |
+| A collection with no word index is never asked, and is counted instead | `_search_report()` → `searchable` from the index tags | `test_library.py::test_a_film_shelf_is_deliberately_not_asked` |
+| A box of only films does not claim it has no collections | `main.search` `elif no_search:` | `test_library.py::test_a_box_of_only_films_does_not_say_it_has_no_collections` |
+| The page uses plain words only | `ark_library.TOPICS` | `test_library.py::test_no_shelf_label_uses_a_word_the_reader_does_not_know`; `::test_the_shelf_page_uses_the_plain_words_and_escapes_a_title` |
+| The proxy really carries `/library` (an unnamed route is the front page with a 200) | `pi/nginx/ark.conf` on-the-fly location | `test_library.py::test_every_page_the_backend_builds_is_named_by_the_proxy`; `::test_the_library_page_is_not_reachable_without_the_proxy_naming_it` |
+| A new backend module that the installer never copies is a failing test, not an inactive service | `60-portal.sh` file list | `test_library.py::test_every_backend_module_the_portal_imports_is_installed` |
+| The published digest is checked before a download gets its name | `ark-zim-checksum`, `ark-zim-download` `fetch_one()` | `test_library.py::test_the_downloader_checks_the_digest_before_it_publishes`; `::test_the_metalink_digest_is_found_and_the_file_matches_it` |
+| A different file of the right length is refused; an unpublished digest is *unknown*, not *wrong* | exit codes 1 / 3 | `test_library.py::test_a_file_that_is_not_the_published_one_is_refused`; `::test_no_published_digest_is_unknown_not_wrong` |
+
+**Not proved here:** that a real phone plays these films smoothly, that a person finds the
+shelves well named, or that a 2 GB video shelf is pleasant to browse on a small screen.
+Those are `docs/HUMAN-TEST-LIST.md` §23, not code claims.
 
 ---
 

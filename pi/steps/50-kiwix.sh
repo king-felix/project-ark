@@ -23,16 +23,21 @@ RESOLVE=/usr/local/bin/ark-zim-resolve
 ark_ensure_dir "$ZIM_DIR" 755 "$ARK_PI_USER:$ARK_PI_GROUP"
 ark_ensure_dir "$STATE" 755 "$ARK_PI_USER:$ARK_PI_GROUP"
 
-for b in ark-zim-resolve ark-zim-download ark-kiwix-library; do
+for b in ark-zim-resolve ark-zim-download ark-zim-checksum ark-kiwix-library; do
   ark_copy "$ARK_SRC/bin/$b" "/usr/local/bin/$b" 755 root:root
 done
 ark_ensure_dir /usr/local/share/ark 755 root:root
 ark_copy "$ARK_SRC/kiwix/catalog.tsv" "$CATALOG" 644 root:root
 
 # ---- how much of the catalogue to install -----------------------------------
-# core  = the survival spine, ~87 GiB (fits a 128 GB card with room to spare)
-# mini  = essentials only, ~12 GiB (slow links, small cards)
-# full  = core + photo Wikipedia, ~210 GiB (256 GB card only)
+# core  = the survival spine, ~98 GiB.  It fitted a 128 GB card with room to
+#         spare until 3 Nov 2026; the prepper film shelves and the home/vehicle
+#         Q&A archives added here push it past that, so a 128 GB card now wants
+#         `mini` (or the owner's own trim of the catalogue).  A 256 GB card holds
+#         it with ~90 GiB to spare.
+# mini  = essentials only, ~9 GiB (slow links, small cards)
+# full  = core + photo Wikipedia + the electronics/technology extras, ~235 GiB
+#         (256 GB card, and nothing else on it)
 if [[ ! -s "$PROFILE_FILE" ]]; then
   printf '%s\n' "${ARK_ZIM_PROFILE:-core}" | ark_write "$PROFILE_FILE" 644 root:root
 fi

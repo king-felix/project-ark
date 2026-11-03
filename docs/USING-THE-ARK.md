@@ -171,33 +171,50 @@ word or a sentence and says so with `…`, so it never leaves you reading half a
 **If it still finds nothing,** narrower search boxes inside each collection often find more
 than the global one.
 
-### 3.2 Offline library — `http://ark.lan/kiwix/`
+### 3.2 Offline library — `http://ark.lan/library`
 
-**What it is:** whole websites, frozen and stored on the box. They open in the browser and
-behave like the real sites — search, links, pictures, no internet.
+**What it is:** whole websites and whole video channels, frozen and stored on the box. They
+open in the browser and behave like the real sites — search, links, pictures, video — with no
+internet.
 
-Currently installed (24 Oct 2026 — 8 collections, about 9 GB):
+**Two doors.** `/library` is the one to start with: it files every collection on a shelf by what
+it is *for*, in plain words, and says how big each one is. `/kiwix/` is the full browser behind
+it — every cover, every collection, an alphabetical list and a language filter.
 
-| Collection | Size |
-|---|---|
-| iFixit repair guides | 3.3 GB |
-| WikiMed medical encyclopedia | 1.7 GB |
-| Wikivoyage travel guide | 1.0 GB |
-| WikEM emergency medicine | 256 MB |
-| Cooking Q&A | 227 MB |
-| Woodworking Q&A | 102 MB |
-| Amateur Radio Q&A | 74 MB |
-| Medical Sciences Q&A | 58 MB |
+**The shelves** (27 collections, 3 Nov 2026):
 
-**How to use it:** open a collection → type in its search box → read. The arrow at the top
-returns you to the shelf of collections.
+* **Fix it** — iFixit repair guides, home-improvement Q&A, woodworking Q&A, electronics Q&A.
+* **Vehicles** — motor-vehicle maintenance and repair Q&A (cars, trucks, motorcycles).
+* **Food and garden** — cooking Q&A, gardening Q&A, Gutenberg's farming shelf.
+* **Health and first aid** — WikiMed, WikEM, medical-sciences Q&A, Gutenberg's medicine shelf.
+* **Water, power and shelter** — Ready.gov, the self-reliance library, Low-tech Magazine.
+* **Prepared and planning** — Urban Prepper and Canadian Prepper film shelves, TruePrepper's
+guides.
+* **Outdoors and getting about** — outdoors and camping Q&A, bicycle repair Q&A, Wikivoyage.
+* **Keep in touch** — amateur-radio Q&A.
+* **Learn and look things up** — Wikipedia, Wiktionary, Wikibooks, Wikiversity, Wikiquote,
+Gutenberg.
+
+**The film shelves** are *video*, not pages. The search box at the top of the portal cannot look
+inside them — nothing in a film has been turned into searchable words — so the page says so on
+the card, and you open the shelf and pick a film from its own list. Tap a film to watch it in
+the browser; it plays from the box, with no internet and no app.
+
+**How to use it:** open a shelf → open a collection → type in its own search box → read (or tap
+a film to watch). The arrow at the top returns you to the shelf of collections.
+
+**How current it is:** each collection is a copy taken on a date — the day it was frozen, not
+the day you open it. A collection built in August 2026 holds the films that channel had put out
+by then; a 2025 build of a magazine holds the articles up to 2025. The card gives the size, and
+the collection's own pages carry the dates of the articles.
 
 **Reading on a phone with no network:** works — that is the entire point. The collection lives
 on the box, the box broadcasts Wi-Fi, the phone reads it.
 
 **About the “Download” button** inside each collection: it hands you the whole collection as a
-single `.zim` file. That is only useful if you already run an offline-reader app on that device;
-the supported path is to read in the browser, which needs nothing installed.
+single file. That is only useful if you already run a matching offline-reader app on that
+device; the supported path is to read in the browser, which needs nothing installed. A film
+shelf is many gigabytes — do not start that download on a phone by accident.
 
 ### 3.3 Books — `http://ark.lan/books/`
 

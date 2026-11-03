@@ -22,7 +22,8 @@ down, and the portal address does not serve it at all.
 |---|---|
 | `/` | the portal: one search box, big plain-English cards |
 | `/search?q=…` | one search that covers the encyclopedias, the manuals and the books |
-| `/kiwix/` | the offline library (encyclopedias, medical, repair, food, water) |
+| `/library` | the shelves: every collection filed by what it is for — repairs, vehicles, food, health, water and power, getting prepared, outdoors, radio, learning |
+| `/kiwix/` | the offline library, A–Z, with every cover (the full browser behind `/library`) |
 | `/books/` | the book shelf (EPUB/PDF, read in the browser or download) |
 | `/media/` | the film shelf: pictures, a player with captions and resume, a download — only what the owner published |
 | `/maps` | the way in to Maps; it sends the reader to the secure address the page needs |
@@ -468,10 +469,15 @@ sheet.
 
 `50-kiwix.sh` writes a queue from `pi/kiwix/catalog.tsv` and
 `ark-zim-download` fetches one collection at a time, resuming after any
-interruption. Profiles: `mini` (the essentials, roughly 1 GiB), `core`
-(roughly 5 GiB) and `full` (everything that fits, leaving 12 GiB free) — the
-sizes come from the catalog, and `ark-zim-resolve` prints the real total for
-the profile you choose.
+interruption. Profiles: `mini` (the essentials, ~9 GiB), `core` (~98 GiB) and
+`full` (everything that fits, ~235 GiB) — the sizes come from the catalogue, and
+`ark-zim-resolve` prints the real total for the profile you choose.
+
+Every row also names a **shelf** (`repair`, `vehicles`, `food`, `health`, `home`,
+`prep`, `outdoors`, `radio`, `learn`), and `http://ark.lan/library` is the page
+that draws them: each collection is filed by what it is *for*, with a one-line
+plain-English note, and a film shelf says so on its card. `http://ark.lan/kiwix/`
+remains the full A–Z browser with every cover.
 
 ```bash
 sudo ark-zim-resolve --profile core   # rewrite the queue
@@ -490,9 +496,13 @@ the mirrors behind the redirector freeze when asked for several connections; a
 A `.zim` that is present but truncated, or full-sized but not readable, is *not*
 counted as installed: the downloader compares on-disk size with the catalogue,
 compares allocated blocks (`du -B1`) with the claimed size to catch hole-filled
-files, and only trusts a bundle once `library.xml` lists it. Anything suspect is
-moved to `/srv/ark/quarantine` and fetched again. While a bundle is in flight the
-home strip shows a live `n% of <name> (x GB of y GB)`.
+files, **compares the published sha-256** (`ark-zim-checksum`, which reads the
+mirror's `.meta4` or `.sha256`), and only trusts a bundle once `library.xml`
+lists it. Anything suspect is moved to `/srv/ark/quarantine` and fetched again,
+and the digest that passed is kept beside the queue at
+`/srv/ark/kiwix/state/<name>.sha256`. A mirror that publishes no digest is logged
+as *unverified*, never counted as checked. While a bundle is in flight the home
+strip shows a live `n% of <name> (x GB of y GB)`.
 
 ### Book library notes
 
