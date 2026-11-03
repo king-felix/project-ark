@@ -26,3 +26,4 @@ venv/
 staging/*.zip
 .pytest_cache/
 .codewhale/
+logs/install.done

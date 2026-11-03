@@ -4800,3 +4800,46 @@ Per-person media quotas; a trash/undo for films; embedded (bitmap) subtitle
 extraction; hardware-accelerated encoding (the Pi's `h264_v4l2m2m` is not
 assumed — the box uses x264 and says it is slow); multi-user watch history
 (resume is browser-local by design); a backup that carries films.
+
+### 43.6 Deployed — 3 Nov 2026
+
+`feature/admin-hardening` at `e93fc8b`, deployed in three passes after the first
+one found two defects the code review had not:
+
+| Pass | What it proved |
+|---|---|
+| 1 | `20-storage` `62-media` `65-admin` ok; `60-portal` **failed**: `ark-api` would not start because its `ReadWritePaths` named `/srv/ark/media` before anything had created it (`226/NAMESPACE`, 31 restarts); `90-verify` **failed** on `ark-media-worker` (`/srv/ark/bin/ark-media-worker` does not exist — the phase installs to `/usr/local/sbin`), and reported "video reader: not fitted" although FFmpeg was installed |
+| 2 | the three fixes below; `20-storage` `60-portal` `62-media` `90-verify` **all ok**, `everything a visitor touches is working` |
+| 3 | after the measured-numbers correction; `60-portal` `90-verify` ok |
+
+The three fixes (commit `4d2eab7`):
+
+1. the unit started a path the phase does not install — it now names
+   `/usr/local/sbin/ark-media-worker`, and the script finds `/srv/ark/api` by
+   itself when run from anywhere;
+2. `ffmpeg … | grep -q libx264` under `set -o pipefail` answers 141 (grep exits,
+   ffmpeg takes SIGPIPE) — a build *with* the encoder was called "not fitted".
+   Both the phase and `90-verify` now capture the list first;
+3. `/srv/ark/media` is part of the storage tree (phase 20) and the API unit uses
+   the `-` prefix, so a missing folder can never stop the portal.
+
+**The deployed box, measured** (`/api/ready` 200, `/srv/ark/logs/install.log`):
+
+* `ark-media-worker.service` **enabled + active**; `ffmpeg 7.1.5` at
+  `/usr/bin/ffmpeg`, `libx264` present; `/media/` answers **200**; the admin door
+  `/admin/media` answers **303** (sign-in) on `:8443`.
+* Storage: 229.0 GB card, **16.0 GB kept back** (7.0 %), 0 B promised, 107.6 GB
+  admissible at the time of measurement.
+* End to end through the real proxy: two films uploaded from the public File Box
+  arrived as `pending` (invisible on the shelf, 404 on every public address); both
+  were published and the worker prepared them; a `.mkv` was repacked to
+  `media/play/m2.mp4` (963,556 bytes) and both posters were written. `GET`
+  **200** `video/mp4` 9,225,090 bytes; `Range: bytes=100-199` **206** with
+  `Content-Range: bytes 100-199/9225090`; a range past the end **416** with
+  `bytes */9225090`; `HEAD` the right length; the poster **image/jpeg**; the
+  download an attachment. The demo films were then deleted through
+  `ark_media.delete()` — the shelf, `media/play`, `media/thumbs` and the File Box
+  are all empty again, and the shelf says so.
+* Deployed files are byte-identical to the repo (`sha256sum` of `ark_media.py`,
+  `ark_media_web.py`, `ark_space.py`, `ark_admin.py`, `main.py`,
+  `ark-media-worker`, `ark-space`).
