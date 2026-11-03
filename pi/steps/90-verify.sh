@@ -311,7 +311,7 @@ maps_cert="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: ark.lan' \
   http://127.0.0.1/certificate.crt || true)"
 case "$maps_cert" in
   200) say_ok "maps certificate download" "the public certificate is offered on the ordinary portal" ;;
-  *)   say_soft "maps certificate download" "HTTP ${maps_cert:-none} — no certificate on this box yet" ;;
+  *)   say_soft "maps certificate download" "HTTP ${maps_cert:-none} — the public certificate is not readable yet; re-run phase 66-maps" ;;
 esac
 
 maps_admin="$(ark_tls_code ark.lan:8443 /admin/maps)"

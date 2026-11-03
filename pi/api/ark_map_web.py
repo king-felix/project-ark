@@ -76,7 +76,20 @@ _RANGE = re.compile(r"^bytes=(\d*)-(\d*)$")
 
 
 def certificate_path() -> Path:
-    return Path(os.environ.get("ARK_CERT_PATH", "/etc/ssl/ark/ark-admin.crt"))
+    """The public certificate, from a place the API's user may actually read.
+
+    `/etc/ssl/ark` is 0700 root:root because the private key lives there.  The
+    API runs as `pi`, so it cannot traverse it; phase 66 publishes a 0644 copy
+    of the *public* half beside the map shelf, and `ark-tls-cert` refreshes that
+    copy whenever the certificate is renewed.
+    """
+    override = os.environ.get("ARK_CERT_PATH")
+    if override:
+        return Path(override)
+    public = Path(os.environ.get("ARK_ROOT", "/srv/ark")) / "maps" / "ark-certificate.crt"
+    if public.is_file():
+        return public
+    return Path("/etc/ssl/ark/ark-admin.crt")
 
 
 def certificate_response() -> Response:

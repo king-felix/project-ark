@@ -41,6 +41,11 @@ if [[ ! -r /etc/ssl/ark/ark-admin.crt || ! -r /etc/ssl/ark/ark-admin.key ]]; the
   ark_info "no certificate yet — creating one so the maps door can start"
   bash "$ARK_SRC/bin/ark-tls-cert" || ark_die "the maps listener needs the Ark certificate"
 fi
+# The API runs as pi and cannot traverse /etc/ssl/ark (0700 root).  Publish only
+# the public half where it can read it; the private key stays 0600 root.
+install -m 644 -o "$ARK_PI_USER" -g "$ARK_PI_GROUP" \
+  /etc/ssl/ark/ark-admin.crt "$MAPS/ark-certificate.crt"
+ark_ok "the public certificate is readable by the maps application"
 MAPS_SITE=/etc/nginx/sites-available/ark-maps
 ark_copy "$ARK_SRC/nginx/ark-maps.conf" "$MAPS_SITE" 644 root:root
 ln -sfn "$MAPS_SITE" /etc/nginx/sites-enabled/ark-maps

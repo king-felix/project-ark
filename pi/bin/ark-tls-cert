@@ -72,6 +72,13 @@ install -m 644 -o root -g root "$tmpdir/ark-admin.crt" "$CRT"
 openssl x509 -in "$CRT" -noout -checkend "$RENEW_BEFORE" >/dev/null \
   || ark_die "the new certificate is already close to expiry — check the box's clock"
 
+# The maps application runs as the ordinary user and cannot traverse the
+# root-only certificate folder; keep a readable copy of the PUBLIC half only.
+if [[ -d "${ARK_ROOT:-/srv/ark}/maps" ]]; then
+  install -m 644 -o "${ARK_PI_USER:-pi}" -g "${ARK_PI_GROUP:-pi}" "$CRT" \
+    "${ARK_ROOT:-/srv/ark}/maps/ark-certificate.crt" 2>/dev/null || true
+fi
+
 ark_ok "certificate written to $CRT (key: $KEY, 0600 root:root)"
 printf '   %s valid for %s days, names: %s\n' "→" "$DAYS" "$SANS"
 printf '   %s SHA-256 fingerprint: %s\n' "→" "$(show)"
