@@ -478,11 +478,12 @@ def restore(bundle_path: Path, *, force: bool, dry: bool, no_files: bool,
                         "so the backup was not put back and nothing was changed.  Try "
                         "again in a moment.")
         if why and not force:
-            return stop(f"{why}.  Putting a backup over it would replace those records.\n"
-                        "  If that is really what you want, run the same command again with "
-                        "--force on the end.\n  Nothing has been changed.")
+            return stop(f"{why[0].upper()}{why[1:]}.  Putting a backup over it would "
+                        "replace those records.\n  If that is really what you want, run "
+                        "the same command again with --force on the end.\n  Nothing has "
+                        "been changed.")
         if why and force:
-            say(f"This box {why}; replacing it because you said --force.")
+            say(f"{why[0].upper()}{why[1:]}; replacing it because you said --force.")
 
         paused: list[str] = []
         if not no_service:
@@ -593,11 +594,12 @@ def plan_restore(data: dict, bundle_path: Path, paths: dict, *, force: bool,
         return stop("the records are being changed by another program right now, so "
                     "the plan could not be made.  Try again in a moment.")
     if why and not force:
-        return stop(f"{why}.  Putting a backup over it would replace those records.\n"
-                    "  If that is really what you want, run the same command again with "
-                    "--force on the end.\n  Nothing has been changed.")
+        return stop(f"{why[0].upper()}{why[1:]}.  Putting a backup over it would "
+                    "replace those records.\n  If that is really what you want, run the "
+                    "same command again with --force on the end.\n  Nothing has been "
+                    "changed.")
     if why and force:
-        say(f"This box {why}; replacing it because you said --force.")
+        say(f"{why[0].upper()}{why[1:]}; replacing it because you said --force.")
     if not no_service:
         _paused, problem = quiesce(True)
         if problem:

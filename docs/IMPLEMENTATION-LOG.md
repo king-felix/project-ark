@@ -5803,7 +5803,10 @@ fact, not two facts that can drift apart.
   what it stopped and only when safe; a post-copy journal failure is `safe_to_start=False`
   and leaves the box dark with a sentence saying why.
 * `pi/bin/ark_bundle.py`, `pi/bin/ark-backup` — the database copy takes the shared gate
-  too, so a backup cannot copy a file that is halfway out of the door.
+  too, so a backup cannot copy a file that is halfway out of the door.  A side effect
+  worth naming: `ark-backup` now finds `ark_space` on the box (the module path is
+  prepared by `ark_bundle`), so its space check actually runs there instead of being
+  silently skipped.  `require()` is a read-only check against the reserve.
 * `pi/api/main.py` — a request during a maintenance window answers 503 with a plain
   sentence instead of a 500.
 * Phases `15-resilience`, `60-portal` and `95-backup` install the new module (a module the
