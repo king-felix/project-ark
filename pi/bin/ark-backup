@@ -36,6 +36,18 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ark_bundle as bundle_tools          # noqa: E402 — sibling module, by design
 
+# The one storage policy, imported from the API tree beside this tool.  A backup
+# is a big write too: it must not be the thing that takes the card into the space
+# the portal keeps back.  Missing (an older tree) is a supported state — the
+# check is skipped rather than the backup refused for the wrong reason.
+_API = Path(__file__).resolve().parent.parent / "api"
+if str(_API) not in sys.path:
+    sys.path.insert(0, str(_API))
+try:
+    import ark_space
+except Exception:                            # noqa: BLE001 — see above
+    ark_space = None
+
 DEFAULT_KEEP = 2
 RESTORE_ME = """\
 This folder is a copy of the Ark, made {when}.
@@ -199,6 +211,22 @@ def take(dest: Path, keep: int, no_files: bool, quiet: bool, dry: bool) -> int:
             say("  import list:  yes")
         say("Nothing was written (--dry-run).")
         return 0
+
+    # What this bundle will occupy, measured before a byte is written: the
+    # database plus every shared file and save that goes in.  The manifest and
+    # the restore sheet are small, so a margin covers them.
+    need = paths["db"].stat().st_size + sum(s.stat().st_size for s, _rel, _to in shared)
+    need += 256 * 1024
+    if ark_space is not None:
+        try:
+            ark_space.require(dest, need)
+        except ark_space.Refused as exc:
+            return fail(str(exc))
+        room = ark_space.account(dest)
+        if not quiet:
+            say(f"Room after this copy: about {bundle_tools.human_size(room['usable_bytes'])} "
+                f"may still be added; {bundle_tools.human_size(room['reserve_bytes'])} is kept "
+                "back for the box.")
 
     dest.mkdir(parents=True, exist_ok=True)
     os.chmod(dest, 0o700)

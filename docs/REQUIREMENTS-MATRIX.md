@@ -267,30 +267,40 @@ still refused, and `"no-text"` is no longer mistaken for a language called `no`.
 
 ## R8 — uploads and installs cannot fill the card or starve each other
 
-**Status: PARTIAL.** Per-file refusal and a reserve exist on the File Box and on game
-install. One coordinated budget across every writer does not, and there is no admission
-control before a request body is ingested.
+**Status: DONE, with two stated limits.** One policy (`ark_space`) owns the reserve,
+every growth path asks it, and a job whose size is known takes a cross-process
+reservation before it writes. The two limits are named at the bottom of this section:
+a request body is still spilled to the card by the web framework before the route can
+refuse it (peak = twice the file), and per-person quotas remain deliberately absent.
 
 | Acceptance sentence | Where | Test |
 |---|---|---|
 | A file over the per-file cap is refused while streaming | `ark_storage.spool()` | `test_storage.py` |
-| A write that would leave less than the reserve is refused | `spool()` 512 MiB reserve | `test_storage.py` |
-| nginx and the app agree on the maximum body | `client_max_body_size 2064m` ↔ `MAX_FILE` | `test_config.py::test_nginx_allows_the_app_limit_plus_framing_only` |
-| A game install checks free space before writing | `_ensure_room()` | `test_arcade_install.py::test_a_full_card_is_refused_before_a_game_is_fetched` |
+| A write that would leave less than the reserve is refused | `spool()` → `ark_space.reserve_bytes()` | `test_storage.py::test_a_full_box_refuses_before_writing` |
+| The reserve is 7 % of the receiving filesystem, or 2 GiB, measured with `f_bavail` | `ark_space.reserve_for()`, `ark_space.facts()` | `test_space.py::test_the_reserve_is_seven_percent_of_the_card_that_holds_the_bytes`; `::test_a_small_card_still_keeps_two_gibibytes`; `::test_free_space_is_what_an_ordinary_account_may_write` |
+| nginx and the app agree on the maximum body | `client_max_body_size 2064m` ↔ `MAX_FILE`; `= /files` and `= /admin/media/upload` 8208m ↔ `MAX_MEDIA` | `test_config.py::test_nginx_allows_the_app_limit_plus_framing_only`; `::test_the_file_box_door_allows_a_film_and_the_server_keeps_the_smaller_cap` |
+| A game install checks free space before writing | `_ensure_room()` → `ark_space.require()` | `test_arcade_install.py::test_a_full_card_is_refused_before_a_game_is_fetched` |
 | A game download that hits `ENOSPC` leaves no temp file | `_copy_to_temp` | `test_arcade_install.py::test_a_card_that_fills_while_copying_leaves_nothing_behind` |
 | A named player's save is bounded in size | save layer limits | `test_arcade.py::test_a_save_that_is_too_large_is_refused_before_it_is_written` |
-| **One** reservation across File Box + games + saves, enforced before any write | each writer measures its own free space | **absent** |
-| Request body refused before it is ingested when the card is nearly full | nginx buffers/streams to a temp location first | **absent** |
-| Aggregate caps/quotas for File Box, games and saves | — | **absent** |
-| A cross-process lock so two installs cannot both pass the check | no shared lock | **absent** |
-| A concurrency test (two writers, one card) | — | **absent** |
+| **One** reservation across every writer, enforced before any write | `ark_space.reserve()` / `hold()`; `space_reservations` table | `test_space.py::test_two_jobs_cannot_both_be_promised_the_same_bytes`; `::test_a_known_size_operation_is_refused_before_it_crosses_the_reserve` |
+| Bytes already written are not counted twice | `space_reservations.written`, `ark_space.touch()` | `test_space.py::test_bytes_already_written_are_not_counted_twice` |
+| A promise is released on success, failure and cancellation | `ark_space.hold()` | `test_space.py::test_a_hold_is_released_even_when_the_work_fails` |
+| A promise left by a crashed process is reconciled away | `ark_space.reconcile()`, called at portal and worker start | `test_space.py::test_a_promise_nobody_refreshed_is_released` |
+| A conversion's output is bounded, not just its input | `ark_media_jobs.output_budget()`, `-fs` in `build_command()` | `test_media.py::test_a_codec_a_browser_cannot_read_is_converted` (the command is unit-tested) |
+| The shell paths ask the same policy | `ark-space --check --need N` in `ark-zim-download`, `ark-ai-model-fetch`, `ark-backup` | `test_space.py::test_the_command_says_yes_quietly_and_no_with_a_reason` |
+| The owner can see total, free, kept back, promised and usable | `ark_space.account()`, `/admin/health`, `/admin/media` | `test_media.py::test_the_owner_page_lists_films_and_can_publish_one` |
+| Per-person quotas | — | **absent by design** (a box in a room, not a service) |
 | A request body waits **on the card**, not in the 256 MB tmpfs | `client_body_temp_path /srv/ark/tmp/nginx` (all three vhosts), `TMPDIR=/srv/ark/tmp` in `ark-api.service` | `test_config.py::test_a_body_on_its_way_to_disk_waits_on_the_card`; `test_config.py::test_the_app_spills_an_upload_onto_the_card_too` |
 | The folder a body waits in exists before nginx is asked to start | `20-storage.sh`, `60-portal.sh`, `65-admin.sh` (`$ARK_ROOT/tmp`, `775`, the `pi` account) | `test_config.py::test_a_body_on_its_way_to_disk_waits_on_the_card` |
 | Retention/cleanup of half-arrived bodies | `drop/tmp` and `arcade/tmp` swept by pattern and age; **`/srv/ark/tmp` deliberately not swept** | `test_self_heal.py::test_old_temp_files_are_swept_and_fresh_ones_are_left` |
 
-**The honest sentence:** no single upload or install can silently fill the card. Two of them
-at the same time, on different paths, still can — each sees enough room and each takes it.
-That is the gap this requirement names, and it is not closed.
+**The honest sentence:** no application write can now take the card into the space the
+box keeps back, and two jobs started together cannot both be promised the same bytes.
+Two limits stay, and both are stated on the pages that do the work: a request body is
+still spilled to the card by the web framework (`TMPDIR=/srv/ark/tmp`) before the route
+checks anything, so a multi-gigabyte upload peaks at about twice its size; and a process
+outside the application (a package, a log) can still fill the card — the reserve is an
+admission policy, not a partition.
 
 ---
 
@@ -625,6 +635,39 @@ prints the list from the code.
 The behaviour of a phone's file picker, a slow upload over the hotspot, and the moment
 `ark-book-import` fires while the request is still open are all one human's thumb away —
 `docs/HUMAN-TEST-LIST.md` §18.
+
+---
+
+## R13 — a film is promised only what its own bytes can do
+
+**Status: DONE + tested on the Mac; the browser and phone walk-through is human work
+(`docs/HUMAN-TEST-LIST.md`).** The shelf reads every film with `ffprobe`, keeps four
+verdicts apart (direct / remux / convert / unsupported), serves bytes in ranges, and
+never publishes a visitor's film without the owner.
+
+| Acceptance sentence | Where | Test |
+|---|---|---|
+| An extension is a routing hint, never a promise | `ark_media.probe()`, `plan_for()` | `test_media.py::test_the_extension_only_decides_that_a_file_should_be_looked_at` |
+| A renamed archive is refused with a sentence and leaves no file | `ark_media.accept()` | `test_media.py::test_a_broken_file_is_refused_and_leaves_nothing_behind`; `::test_a_renamed_archive_is_not_a_film` |
+| A film from the File Box waits for the owner and is not downloadable meanwhile | `main.files_post` → `ark_media.accept(state=pending)`, carrier row `hidden=1` | `test_media.py::test_a_film_shared_in_the_file_box_waits_for_the_owner` |
+| An unpublished film answers 404 on every public address | `/media/<id>` and its stream, poster, download, captions | `test_media.py::test_an_unpublished_film_is_not_reachable_by_guessing_its_number` |
+| The owner publishes, hides and deletes behind session + token | `/admin/media/{id}/state`, `/delete` | `test_media.py::test_the_owner_page_lists_films_and_can_publish_one`; `::test_the_owner_page_refuses_a_form_without_the_token`; `::test_a_deleted_film_from_the_owner_page_says_what_went` |
+| Seeking works: 200, 206, suffix ranges, 416, `HEAD`, `Accept-Ranges` | `ark_media_web.ranged()` | `test_media.py::test_a_published_film_plays_as_it_is_and_in_pieces` |
+| A repack keeps the original and serves a real MP4 | `ark_media_jobs.make_derivative()` | `test_media.py::test_a_film_that_needs_repacking_is_prepared_once_and_the_original_is_kept` |
+| A codec a browser cannot read is converted to H.264/AAC, bounded by `-fs` | `build_command()`, `output_budget()` | `test_media.py::test_a_codec_a_browser_cannot_read_is_converted` |
+| The picture is chosen once, from inside the film, and never blocks a playable film | `ark_media_jobs.make_thumbnail()` | `test_media.py::test_a_film_that_needs_repacking_is_prepared_once_and_the_original_is_kept` |
+| A film with no picture still has a neutral card | `ark_media_web.fallback_poster()` | `test_media.py::test_the_poster_falls_back_to_a_neutral_card_when_there_is_none` |
+| Captions become WebVTT and belong to one film | `ark_media.srt_to_vtt()`, `/media/{id}/captions/{lang}` | `test_media.py::test_srt_becomes_webvtt_without_losing_a_line`; `::test_captions_travel_with_their_film_and_nobody_elses` |
+| A job interrupted by a cut is queued again; three honest failures stop it | `ark_media.recover()` | `test_media.py::test_an_interrupted_job_is_put_back_in_the_queue`; `::test_a_job_that_stopped_three_times_is_not_retried_for_ever` |
+| Stopping a job keeps the original and kills nothing else | `ark_media.cancel()` | `test_media.py::test_stopping_a_job_is_recorded_and_the_original_is_untouched` |
+| Deleting removes picture, copy and bytes, and is idempotent | `ark_media.delete()` | `test_media.py::test_deleting_a_film_removes_its_picture_its_copy_and_its_bytes` |
+| A File Box film can be adopted without a second copy | `ark_media.adopt()` | `test_media.py::test_an_owner_can_put_a_film_from_the_file_box_on_the_shelf_without_copying_it` |
+| The catalogue searches, sorts and pages; `%` and `_` are characters | `ark_media.listing()` | `test_media.py::test_search_sort_and_pages_never_show_more_than_one_screen`; `::test_a_search_wildcard_is_a_character_not_a_pattern` |
+| The proxy does not break seeking; the worker is a background neighbour | `pi/nginx/ark.conf`, `ark-media-worker.service` | `test_config.py::test_the_film_door_passes_ranges_through_and_never_buffers_a_player`; `::test_the_media_worker_is_a_background_neighbour_not_a_second_portal` |
+
+**Not proved here:** how a real phone's browser plays each codec, how a Pi 4 feels while
+it converts a feature film, and whether a person finds the shelf pleasant. Those are
+`docs/HUMAN-TEST-LIST.md` entries, not code claims.
 
 ---
 

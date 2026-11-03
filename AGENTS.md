@@ -91,6 +91,7 @@ Required enabled units (final state):
 | `ark-book-import.path` (+ `ark-book-import.service`) | — | fires the book importer whenever something lands in `drop/files` or `calibre-incoming`; `TimeoutStartSec=1800` |
 | `ark-arcade-discover.timer` (+ `ark-arcade-discover.service`) | — | 15 min after boot then weekly: pinned first shelf + discovery; installs only when the owner's auto-install switch is on |
 | `ark-self-heal.timer` (+ `ark-self-heal.service`) | — | **before `ark-api`, then daily at 04:17 ±20 m**: the power-cut repair (§8.1, log §26). The same unit runs at boot (`Before=ark-api.service`), so "enabled + active" is the timer and the boot run has already happened |
+| `ark-media-worker.service` | — | **one** background worker that prepares films (probe, picture, repack/convert), one job at a time. `Nice=10`, idle I/O, `CPUQuota=150%`, `MemoryMax=1G`, `Restart=always`; a missing FFmpeg is a supported state and never blocks the portal |
 | `ark-ai.service` | 8089 (loopback) | the helper's engine. **Enabled on purpose but *inactive* when there is no model on the card** — that is a supported state, not a failure. `systemctl is-enabled` must say `enabled`; `is-active` says `inactive` until a `.gguf` lands in `/srv/ark/ai/models/` — and **`active` on this box since 26 Oct 2026** (engine at `/usr/local/bin/llama-server`, 1.5B model, log §31) |
 | `ssh.service`, `NetworkManager`, `avahi-daemon` | — | access |
 | `dnsmasq` | — | only via NM `ipv4.method shared` (do not enable the standalone unit) |
@@ -183,15 +184,21 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 |---|---|
 | Released tag | `v1.0.5` = `dd3336c` (never move a tag, never force-push) |
 | Active branch | `feature/admin-hardening` (fast-forwarded to `main` at `acf5d29`) |
-| Schema version | `SCHEMA_VERSION = 6` (`pi/api/ark_db.py`) |
-| Test suite | `691 passed, 2 skipped` across 28 files (`tests/`) |
-| Live Pi state | Deployed through log §41 + `acf5d29`; `ready.ok: true`, `blocking: []`, `mode: home` (`BOOT_MODE="auto"`), `card_check: withdrawn`, 20 collections (86.5 GiB), 1291 books, 67 games, 11 guides, 1.5B AI helper active, 116.3 GiB free |
+| Schema version | `SCHEMA_VERSION = 7` (`pi/api/ark_db.py`) — migration 7 adds the film shelf and the space ledger |
+| Test suite | `735 passed, 2 skipped` across 30 files (`tests/`) |
+| Live Pi state | Deployed through log §43; `ready.ok: true`, `blocking: []`, `mode: home` (`BOOT_MODE="auto"`), `card_check: withdrawn`, 20 collections (86.5 GiB), 1291 books, 67 games, 11 guides, 1.5B AI helper active, FFmpeg + media worker fitted; reserve 7 % (16.0 GiB of the 229 GiB card) |
 | Owner decisions pending | History rewrite + force-push for pre-`a926296` commits (log §37.6, §38.7); rotate GitHub & Pi passwords; licence choice |
 
 ### 8.1 What exists, and what each piece owns
 
 | Piece | Owns |
 |---|---|
+| `pi/api/ark_space.py` | **the only storage policy**: `reserve_for()` = max(7 % of *this* filesystem, 2 GiB), `facts()` (statvfs, `f_bavail` — never `f_bfree`), `reserve()`/`touch()`/`release()`/`reconcile()` over `space_reservations`, `hold()` for a known-size job, `account()` for the pages. `Refused` lives here; `ark_storage.Refused` is an alias |
+| `pi/api/ark_media.py` | the film shelf's model: `probe()` (ffprobe), `plan_for()` (direct/remux/convert/unsupported), `mp4_faststart()`, `accept()`/`adopt()`, `srt_to_vtt()`/`add_captions()`, the durable job queue, the catalogue (`listing`, escaped LIKE, `PAGE = 24`), `delete()`/`delete_many()`, `playable()` |
+| `pi/api/ark_media_jobs.py` | the work itself: bounded `ffmpeg`/`ffprobe` (argument arrays, deadline, temp-file stderr), thumbnail candidates scored in pure Python (no image library), `build_command()` (stream copy where possible, x264 where not), `output_budget()` + `-fs`, `prepare`/`thumbnail` bodies, `startup()` reconciliation |
+| `pi/api/ark_media_web.py` | the public shelf: `build_router(page)`, `ranged()` (206/416/HEAD/`Accept-Ranges`/`If-Range`), library + player pages, fallback poster SVG, browser-local resume |
+| `pi/bin/ark-media-worker` | the one background process (`--once`, `--status`): claims one job, does it, sleeps |
+| `pi/bin/ark-space` | the shell door to the policy: `--status [--json]`, `--check --need N` (exit 3 with a sentence) |
 | `pi/api/main.py` | public FastAPI app: `/api/status`, `/api/ready`, `/api/health` (liveness only), `/search`, `/board`, `/files`, `/ask` + `/api/ask/stream` + `/api/ask/status` (closed by `public_ask`, 403 both); mounts admin and public arcade routers; bumps `session_epoch` at start. Search uses `_search_report()` + `library_state(report)` (`found` / `empty` / `partial` / `silent` / `no-books` — only `empty` may say "nothing matched"), `shortfall()`, `_parse_feed()` (`list \| None`), `_FEED_ROOTS`/`_tag()`, `shorten()` (`SNIPPET_CHARS = 220`), and `_spread(hits, LIBRARY_HITS)` (`HITS_PER_COLLECTION = 4`, `LIBRARY_HITS = 24`, `MAX_COLLECTIONS = 20`, `SEARCH_DEADLINE = 8.0`) |
 | `pi/api/ark_health.py` | **the only place that decides readiness**: path helpers read at call time, content facts, cached loopback probe, **nine** per-section builders each with `ready`/`reason`/`action`/`content` (**six** blocking — `ask`, `downloads`, and `backup` never block), measured `progress()`, `storage_breakdown()` + `card_facts()` + `card_room()` (filesystem's own `free`), `uptime_seconds()`/`uptime_words()`, `_scan_copies()`/`copies()`/`copies_unreadable()`/`backup_section()`, `files_section()` (counts openable files via `present_names()`), `ask_section()`, `report()` |
 | `pi/bin/ark-net-watch` | **the only place that decides the network after boot**: pure `decide()`, `--dry-run` observer, counters in `net-watch.state`, decisions in `net-watch.log`, acts only by calling `ark-mode` |
@@ -202,7 +209,7 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 | `pi/bin/ark-wifi-add` | the only writer of a NetworkManager client profile: `--ssid NAME [--autoconnect yes\|no] [--check]`, passphrase from **stdin**, profile `ark-wifi-<slug>-<digest>`, `0600 root:root`, `autoconnect=false` + `autoconnect-retries=0` so **saving never joins** |
 | `pi/api/ark_db.py` | one connection policy (`read()` / `tx()`, always closed, nested-aware), numbered migrations in one transaction, audit helper, install marker, `SCHEMA_VERSION` (**6**), `synchronous=FULL` on every connection |
 | `pi/api/ark_security.py` | scrypt hashing, length-only policy (12…1024, reject never truncate), opaque sessions, CSRF, per-account + per-IP throttling, `DUMMY_HASH` constant-work unknown-user verification |
-| `pi/api/ark_admin.py` | `/admin` routes: login, forced setup, password, accounts, reset/enable/disable, audit, **logout** (`POST /admin/logout` behind TLS + CSRF), **overview** (`_dashboard`/`_stat`: 4 live figures), **`ADMIN_NAV`** (11-page tuple), **Community**, **Games**, **Add files** (`/admin/upload`), **Addresses** (`/admin/doors`), **`/admin/health`**, **Network** (`/admin/network`) |
+| `pi/api/ark_admin.py` | `/admin` routes: login, forced setup, password, accounts, reset/enable/disable, audit, **logout** (`POST /admin/logout` behind TLS + CSRF), **overview** (`_dashboard`/`_stat`: 4 live figures), **`ADMIN_NAV`** (12-page tuple), **Community**, **Games**, **Media** (`/admin/media`: upload, publish/hide, prepare, picture, stop, title, captions, delete single/bulk, adopt, largest, storage arithmetic), **Add files** (`/admin/upload`), **Addresses** (`/admin/doors`), **`/admin/health`**, **Network** (`/admin/network`) |
 | `pi/api/ark_ingest.py` | **the batch door's model, and the only creator of a file in `calibre-incoming`**: `classify()`, `BOOK_EXT` (tied to `ark-import-books` by `ast`), `GAME_EXT`, `spool_book()` (`.upload-<hex><ext>.part` → `fsync` → `os.link`), `wait_for_library()` |
 | `pi/api/ark_doors.py` | **the one list of every address on the box** (30 doors in five groups) + `STEPS` |
 | `pi/api/ark_storage.py` | the only write path for shared files: display name vs stored name, spool in `drop/tmp`, `os.link` finalise, 2 GiB cap + 512 MiB reserve, orphan-temp reconcile, `present_names()` |
@@ -241,6 +248,7 @@ Because `location /` on `:80` ends in `try_files … /index.html`, an HTTP **200
 | `/srv/ark/arcade/games/` & `arcade/tmp/` | published ROMs (`0644`) and staging uploads/downloads (`rom-*.part`, `upload-<32hex>.<ext>`, `0600`) |
 | `/srv/ark/arcade/saves/<player id>/<game id>/` | named player saves (`0700` dirs, `0600` files, **numbered IDs not names**), bytes in `blobs/<slot-stem>-<sha256>.bin` |
 | `/srv/ark/tmp/` + `/srv/ark/tmp/nginx/` | on-card body/upload staging so a 2 GiB upload never touches the 256 MB `/tmp` tmpfs; never served, never swept |
+| `/srv/ark/media/` (`play/`, `thumbs/`, `subs/`, `tmp/`) | playing copies (`m<id>.mp4`), posters (`m<id>.jpg`), captions (`<id>/<lang>.vtt`), half-written derivatives. The **original** of a film is a carrier row in `drop/files` — never a second copy here |
 | `/srv/ark/romdb.sqlite` | optional offline game catalogue (`0644`, 56,448 records) |
 | `/srv/ark/essentials/ark-essentials.zip` | offline carry-away pack written only by `ark-essentials --build` as `pi` |
 | `/srv/ark/ai/` & `models/*.gguf` & `brief.txt` | helper engine, models (newest `.gguf` wins; `Qwen2.5-1.5B` answers), and counted brief |
@@ -255,7 +263,7 @@ Because `location /` on `:80` ends in `try_files … /index.html`, an HTTP **200
 
 ```bash
 # tests (Mac, throwaway DBs, never the live library)
-.venv/bin/python -m pytest -o addopts='--strict-markers' -q    # prints "691 passed, 2 skipped"
+.venv/bin/python -m pytest -o addopts='--strict-markers' -q    # prints "735 passed, 2 skipped"
 # `pytest.ini` already passes -q, so a second -q without -o addopts hides the summary line
 
 # readiness (never quote /api/health as a verdict)
@@ -271,6 +279,13 @@ sudo ark-mode request-lan --cancel
 printf '%s\n' 'the passphrase' | sudo ark-wifi-add --ssid "Home" [--check]
 sudo ark-net-watch --decide auto 0 0 1 0 0 2 0 0
 sudo ark-net-watch --dry-run
+
+# the film shelf and the storage policy
+/usr/local/sbin/ark-media-worker --status        # queued/running/failed + tools + room
+sudo -u pi /usr/local/sbin/ark-media-worker --once   # do everything waiting, then exit
+/usr/local/sbin/ark-space --status               # free, kept back, promised, usable
+/usr/local/sbin/ark-space --check --need 3221225472 --path /srv/ark
+sudo systemctl status ark-media-worker           # is the worker alive?
 
 # arcade, romdb, essentials, self-heal, AI helper
 /usr/local/sbin/ark-arcade --status | --seed | --discover --auto | --list | --match FILE
@@ -316,6 +331,8 @@ sudo bash /srv/ark/src/install-ark.sh --only 90-verify
 | public `/arcade/add` door: visitor adds but never replaces, typed name decides, switch | `tests/test_arcade_add.py` (10) |
 | ROM header stripping, fingerprinting, offline catalogue matching, filename fallback | `tests/test_romdb.py` (15) |
 | power-cut repair, clock guard, `key=value` counters, WAL drain, `_repair_lock()`, `ark-fsck-once`, fstab/cmdline guards | `tests/test_self_heal.py` (80) |
+| the reserve policy, `f_bavail`, reservations across processes, `hold()` release, reconcile, the `ark-space` shell door | `tests/test_space.py` (13) |
+| probe/plan (direct/remux/convert), a renamed archive refused, public film waits for the owner, 404 for unpublished, 206/416/HEAD ranges, repack keeps the original, conversion to H.264, poster + fallback, SRT→VTT, recover/cancel/delete/adopt, catalogue search/sort/paging | `tests/test_media.py` (24) |
 | `synchronous=FULL` on every connection, content-addressed save blobs, atomic save replacement | `tests/test_durability.py` (15) |
 | Ask the Ark: brief, prompt budget, route hints, lease slot + disconnect cancel, `public_ask` switch | `tests/test_ai.py` (45) |
 | Stage 7 household answers, 8 emergency topics, inline SVG QR cards, essentials pack builder | `tests/test_household.py` (13), `test_household_page.py` (34), `test_qr.py` (11), `test_essentials.py` (24) |
@@ -323,7 +340,7 @@ sudo bash /srv/ark/src/install-ark.sh --only 90-verify
 
 ### 8.6 Deliberate gaps — do not describe any of these as built
 
-Per-person quotas; quarantine/approval queue; trash; pagination on the Community page (it shows `LIMIT 50` and says so; the public board paginates at `BOARD_PAGE = 20`); pause/resume buttons on the owner page; a backup timer or backup button on the owner page; player password recovery, per-player save quota, save trash, or owner reset/delete for a player name; a "Check now" button for games; SNES/Genesis online catalogue entries (hand-carried only). **Never invent a control that does not exist.**
+Per-person quotas (including media); a film trash/undo; embedded bitmap subtitles; hardware-accelerated encoding; server-side watch history (resume is browser-local); films in a backup; quarantine/approval queue; trash; pagination on the Community page (it shows `LIMIT 50` and says so; the public board paginates at `BOARD_PAGE = 20`); pause/resume buttons on the owner page; a backup timer or backup button on the owner page; player password recovery, per-player save quota, save trash, or owner reset/delete for a player name; a "Check now" button for games; SNES/Genesis online catalogue entries (hand-carried only). **Never invent a control that does not exist.**
 
 ### 8.7 Essential gotchas (distilled from §1–§41)
 
@@ -334,6 +351,7 @@ Per-person quotas; quarantine/approval queue; trash; pagination on the Community
 * **Kiwix & Search:** `ark-kiwix-library` must build `library.xml` **inside** `$ZIM_DIR` (`mktemp "$ZIM_DIR/.library-XXXXXX"`) so relative paths are bare filenames. A collection's search handle is its `.zim` filename stem (`…_en_all_2026-10`), never UUID or `name`, and the endpoint is `/kiwix/search`. `_spread()` takes depth 0 across all collections before depth 1 so alphabetical sorting never hides collections (`LIBRARY_HITS >= MAX_COLLECTIONS`).
 * **Arcade:** Never set `EJS_startOnLoaded: true` (causes a silent white WebGL canvas due to browser AudioContext autoplay policy; the user's tap on **START GAME** is the required gesture). Size `#arcade-frame`, not `#arcade-stage` (EmulatorJS overwrites `#arcade-stage`'s inline `style`). All file-serving routes must support both `GET` and `HEAD`. Run `/usr/local/sbin/ark-arcade` as `pi`, never `sudo`.
 * **Power-cut & self-heal:** `phase 15-resilience` re-arms `fsck.mode=force` on `cmdline.txt` (withdrawn after one boot by `ark-fsck-once`); do not re-run the whole phase just to copy `ark_self_heal.py`. `cmdline.txt` must always remain a single line containing `root=`. `net-watch.state` is `key=value`, never JSON. `heal_sqlite()` holds `flock` on `<name>.repair.lock` (beside the DB, never in `-shm`) and drains `-wal` (mandatory) and `-shm` (best effort).
+* **Media & space:** the reserve is `ark_space`'s and nowhere else — never add a second free-space constant. Admission is `free − reserve − (promised − written)`; `f_bavail`, never `f_bfree`. A film's bytes are the carrier row in `drop/files` (`hidden=1`), not a copy under `media/`; publishing is `media.state`, and every public route checks it. Ranges must stay 206/416-correct and the proxy must not buffer `/media/`. `ffmpeg` runs from argument arrays with a deadline; a derivative is written in `media/tmp` and renamed. `PRAGMA journal_mode=WAL` is a **write**: ask (`PRAGMA journal_mode`) before setting it, or a reader opened during a write stalls for the connect timeout.
 * **Verifier counts:** `install-ark.sh --only 90-verify` run on the Pi prints **69** `✓`; run via `scripts/03-provision.sh` it prints **74** `✓` (the wrapper adds 5 of its own). Quote the command that produced the count, and never cite gitignored `logs/*.log` paths in published docs.
 
 ### 8.8 Standing rules for every stage

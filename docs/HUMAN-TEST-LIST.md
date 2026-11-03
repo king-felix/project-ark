@@ -865,6 +865,42 @@ never reads as an answer, and that a reader's eyes are not left in the middle of
 
 ---
 
+## 21. A film, on a phone, in a room (25 minutes, needs a phone and one video file)
+
+The shelf's logic is tested; how a real browser plays a real file is not.
+
+1. **Add a film from the File Box.** Open `http://ark.lan/files` on a phone, choose a
+   video (an MP4 from the phone's own camera roll is ideal), press *Put it in the box*.
+   It should say **"sent for a look"** and open the Films shelf.
+2. **Check it is not public yet.** On another device, open `http://ark.lan/media/`. The
+   film must **not** be there. The File Box listing must not show it either.
+3. **Publish it.** As the owner, open `https://ark.local:8443/admin/media`. The film is
+   under *Everything* as *Waiting for a look* with its real length and picture. Press
+   **Show on the shelf**.
+4. **Watch it.** On the phone, open the Films shelf, tap the card, press play. Check:
+   it starts within a few seconds; **seeking to the middle works** (drag the bar);
+   fullscreen works; rotating the phone keeps the picture the right way up.
+5. **Resume.** Stop the film halfway, close the tab, open the film again. It should
+   offer **Start over (resume at …)** and continue where you stopped. Press **Clear
+   this list** on the shelf; the *Carry on watching* row should disappear.
+6. **A film that needs preparing.** Add an MKV (or an AVI) the same way. The owner's
+   page should say *Needs a quick repack* / *Needs converting*. Press **Make a playing
+   copy** and wait — write down how long a one-minute clip took. Press **Stop
+   preparing** on a second one and check the original is still in the File Box details.
+7. **Captions.** Put a `.srt` beside the film in the owner's upload form (same name),
+   then check the player's caption menu offers *English*.
+8. **Delete one.** Press **Delete for ever** twice — the first press must not delete
+   until *I am sure* is ticked. Check the page says how much was removed.
+9. **A full card.** (Optional, on a test card.) Fill the card until the owner's page
+   says it is inside the reserve. Uploading a film should be refused with a sentence
+   naming the shortfall, and the portal should still answer.
+
+**What to write down:** the phone, the browser, the file's codec (the owner's page
+shows it), whether it played directly or needed preparing, and how long preparation
+took for a known length. That last number is the one nobody can measure on a Mac.
+
+---
+
 ## What is *not* on this list, on purpose
 
 

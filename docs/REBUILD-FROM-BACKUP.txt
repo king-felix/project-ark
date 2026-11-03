@@ -113,6 +113,12 @@ DELIBERATELY NOT IN HERE
 
 ------------------------------------------------------------------------------
 3. FROM THE RUNNING PI → when no backup exists, the box IS the backup
+
+   Note before you start: a backup holds the records, the shared files and the
+   game saves. It does **not** hold the films, the collections or the books —
+   there are tens of gigabytes of them. After a restore the Media page lists the
+   films it no longer has (the records come back; the bytes do not), and the
+   same is true of the offline library and the book shelf.
 ------------------------------------------------------------------------------
   # 3a. code + config (~600 KB; the config holds the Calibre admin password)
   rsync -az --rsync-path='sudo rsync' pi@ark.local:/srv/ark/src/ ./ark-src/

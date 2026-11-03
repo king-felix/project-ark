@@ -434,6 +434,47 @@ Nothing is lost, and everything else on the box keeps working while you wait.
 **If the owner has switched it off**, the page says so in one sentence and everything
 else on the box is untouched.
 
+### 3.11 Films — `http://ark.lan/media/`
+
+**What it is for:** a film the household keeps on the box, watched on whatever phone
+or laptop is in the room — with no account, no streaming service and no internet.
+
+The shelf shows a picture for each film, its length and whether it is ready. Type in
+the search box to find one, tap a chip to show only what is ready (or only what is
+still being prepared), and use **Order** to sort. Everything works on a phone, with
+one thumb, and nothing starts playing on its own.
+
+**Watching:** tap a film, then press play. The player is your browser's own, so
+seeking, volume, fullscreen and captions all behave the way they do everywhere else.
+Two extras are on the page:
+
+- **Speed** — 0.75× to 2×.
+- **Small window** — picture-in-picture, where the browser allows it.
+
+**It remembers where you stopped, on this device.** Close the tab, come back, and
+the film offers *Start over (resume at 12:34)*. That position lives in **this
+browser's** storage — it is not on the box and nobody else sees it. The **Carry on
+watching** row on the shelf is built from the same local list, and **Clear this list**
+under it removes it.
+
+**If a film says *Needs preparing***: the box has the file, but it is in a shape this
+browser cannot play. The owner's page can make a playing copy; a long film takes a
+long time on a small computer, and the original is never touched. **If it says *Could
+not be prepared***, the reason is on the owner's page.
+
+**Captions** appear in the player's caption menu when the owner has added them
+(a `.vtt` or `.srt` file with the film). **Download the original** is on every film's
+page — it is the file exactly as it arrived.
+
+**How to add a film:** put it in the File Box (`http://ark.lan/files`, up to 8 GB).
+It is *not* published straight away: it waits on the owner's Media page until they
+have looked at it, and until then it answers 404 everywhere a reader could guess.
+That is on purpose — a film is the one upload that can fill the card, and the one a
+stranger is most likely to try.
+
+**If the shelf is empty:** nothing has been published yet. The owner adds films from
+`/admin/media`.
+
 ---
 
 ## 4. Getting books onto it
@@ -733,6 +774,11 @@ sudo reboot
   your books on the PC as well. The day the card does not boot, the page to follow is
   `/srv/ark/RECOVERY-SHEET.txt` (print it now: `http://ark.lan/recovery.txt`). There is no
   automatic backup timer, on purpose.
+- **Films are not in a backup.** `sudo ark-backup` copies the notes, the shared files,
+  the accounts and the game saves; the collections, the book shelf, the games and the
+  films are deliberately left out — there are tens of gigabytes of them and a bundle is
+  not a film library. A restore brings the shelf's records back and the box says which
+  films it no longer has. Keep a copy of a film that matters somewhere else.
 - **Not built yet** (candidates, not promises): a planting calendar, an offline map pack, a photo
   archive of the house and its shut-off valves.
 - **The helper answers, it does not search.** Ask the Ark is a small model on the card that writes

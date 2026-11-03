@@ -1471,10 +1471,11 @@ It deliberately does **not** list the internal service ports (`8081`, `8083`, `8
 
 Stated plainly, because a missing control is better than a fake one:
 
-* Uploads: 2 GiB per file, one at a time, anonymous. There is **no per-person
-  quota**, no approval queue and no quarantine — anything uploaded is
-  downloadable at once. Uniqueness and safe naming are done (three files with the
-  same name no longer overwrite each other).
+* Uploads: 2 GiB per file in the File Box (8 GiB for a film, which goes to Media
+  and waits for you), one at a time, anonymous. There is **no per-person quota**,
+  no approval queue and no quarantine — an ordinary shared file is downloadable at
+  once; a film is not public until you show it (§18). Uniqueness and safe naming
+  are done (three files with the same name no longer overwrite each other).
 * Deleting a shared file is for ever; there is no trash and no undo.
 * No download pause/resume buttons in the page (the existing `ark-zim-pause`
   file still pauses the queue), no backup or restore *screens* (both are console
@@ -1536,6 +1537,114 @@ Stated plainly, because a missing control is better than a fake one:
 
 The audit history, the account rules above, the transport boundary, the
 Community controls and the readiness page are complete and tested.
+
+---
+
+## 18. Media — the film shelf
+
+`/admin/media` is the owner's side of `http://ark.lan/media/`. It is the only
+page that adds, publishes, prepares and deletes a film.
+
+### What happens to a film
+
+1. **It is stored once.** A film from this page (or from the File Box) lands in
+   `/srv/ark/drop/files` through the same writer every other upload uses, and the
+   shelf row *refers* to that file. Nothing is copied into a second library.
+2. **It is read, not guessed.** `ffprobe` reports the container, the codecs, the
+   picture size, the rotation and the length. A file whose bytes are not a video
+   is removed again and refused with the reason (`The extension only decides that
+   a file should be looked at`).
+3. **A verdict is recorded**: *plays as it is* (direct), *needs a quick repack*
+   (remux), *needs converting* (re-encode) or *cannot be played*. The page shows
+   it; nothing promises more than the bytes can do.
+4. **A picture is taken** from an interior frame, once, and its timestamp is kept
+   (`poster_at`) so it does not change on every refresh. A failed picture never
+   stops a film from playing.
+5. **A playable copy is made when needed**, in the background, one film at a time.
+
+### Publication
+
+* A film **you** add here is on the shelf at once (the trusted path).
+* A film **a visitor** puts in the File Box is stored once, marked *Waiting for a
+  look*, and answers **404** on every public address — page, stream, poster,
+  captions, download — until you press **Show on the shelf**.
+* **Take off the shelf** hides it again without deleting anything; the file stays
+  on the card.
+* **Put it on the shelf too** (under *Films already in the File Box*) adopts a
+  video that is already shared, without copying a byte and without changing who
+  can download it from the File Box.
+
+### The background worker
+
+`ark-media-worker.service` runs as `pi`, claims **one job at a time** from the
+database, and is a deliberate second-class citizen: `Nice=10`,
+`IOSchedulingClass=idle`, `CPUQuota=150%`, `MemoryMax=1G`, `Restart=always`. It
+starts after the portal and can never hold it back; a box with no FFmpeg is a
+supported state (the worker runs, the page says what is missing, and every film
+that already plays keeps playing).
+
+A job is durable: it says `queued`, `running`, `ready`, `failed` or `cancelled`,
+counts its own attempts, and is reconciled when the box comes back from a cut (a
+`running` job goes back to the queue; after three honest attempts it becomes
+`failed` and waits for you). **Stop preparing** cancels a running conversion by
+killing the tool — the half-written copy is deleted, the original is untouched.
+
+Each conversion:
+
+* writes under `/srv/ark/media/tmp` and is renamed into `media/play` only when
+  complete (a cut leaves the previous good file, or none — never half a film);
+* has a wall-clock ceiling (`CONVERT_FACTOR × length`, capped at 6 hours) and an
+  output-size budget (`-fs`), and **reserves** that budget before it starts;
+* is bounded to H.264/AAC MP4 with `+faststart`, preserving the aspect ratio and
+  capping height at 1080 (720p and below are left alone).
+
+**How slow is it?** On a Pi 4, on-card encoding is the bottleneck: a short clip is
+seconds, a half-hour episode is a long coffee, and a two-hour film can take many
+hours. The page says so rather than implying otherwise. If a film matters to you
+and the box is too slow, convert it on a workstation; the page prints the exact
+command the worker would run, built from the same function
+(`ark_media_jobs.build_command`), and then drop the MP4 in.
+
+### Deleting, and what it frees
+
+Deleting removes the playing copy, the poster, the captions and the shelf row;
+the original file goes too **unless** the File Box or another film still names
+it. The page reports the bytes it actually removed. A film somebody is watching
+right now keeps its bytes until the player closes — an open handle delays
+physical reclamation, and the page does not pretend otherwise. A deletion can be
+repeated safely: a second press removes nothing and says so.
+
+### Space
+
+The Media page shows the card's arithmetic: total, free, kept back, promised to
+running jobs, and what may still be added. That is `ark_space` — **7 % of the
+card's capacity, or 2 GiB**, whichever is larger — and it is the same policy an
+upload, a collection, a model and a backup are measured against. It is the box's
+own limit, **not a quota for one person**, and it cannot stop something outside
+the box from filling the card. Change the percentage with
+`ARK_RESERVE_PERCENT` in `/etc/ark/ark.env` (0–50; a typo falls back to 7).
+
+### Backups
+
+**Films are not in a backup.** A bundle holds the records, the shared files and
+the game saves; it deliberately leaves out the collections, the book shelf, the
+games and the films (`ark_bundle.EXCLUDED`, printed in every manifest). A restore
+therefore brings the shelf's *records* back and the box says which films it no
+longer has — it does not, and cannot, bring the films themselves. If a film
+matters, keep a copy of it somewhere that is not this card.
+
+### First aid
+
+```bash
+sudo systemctl status ark-media-worker          # is the worker alive?
+/usr/local/sbin/ark-media-worker --status       # what is queued, and what is missing
+journalctl -u ark-media-worker -n 50 --no-pager # what it did last
+ffmpeg -version                                 # is the video reader fitted?
+/usr/local/sbin/ark-space --status              # free, kept back, promised, usable
+```
+
+If a film says *Could not be prepared*, the page shows the tool's own last line.
+Fix the cause and press **Prepare again** — nobody has to re-upload anything.
 
 ---
 

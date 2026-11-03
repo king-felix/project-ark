@@ -65,17 +65,17 @@ RESTORE-ME.txt that repeats the steps.
 
 MAKING A NEW BACKUP
 -------------------
-After a busy week on the message board, a pile of new books, or a new
-person added to the household:
+After a busy week, or a new person added to the household:
 
       sudo ark-backup --to /srv/ark/backup
 
 It says how many messages, shared files and game saves it copied, and
-where.  It keeps the newest two and clears older ones away by itself.  To
-prove a backup really is whole, read every byte back:
+where.  It keeps the newest two and clears older ones away by itself.
+It does not hold the films or the encyclopedias: they are too big.
+
+To prove a backup really is whole, read every byte back:
 
       sudo ark-backup --verify /srv/ark/backup/ark-backup-<date>-<time>
-
 
 GOOD HABITS
 -----------

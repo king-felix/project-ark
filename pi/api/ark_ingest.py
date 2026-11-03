@@ -48,6 +48,8 @@ from typing import Iterable, Optional, Set
 
 import ark_arcade
 import ark_arcade_install
+import ark_media
+import ark_space
 import ark_storage
 
 #: A refusal a person can read and act on — the same class the portal's uploader
@@ -56,6 +58,9 @@ Refused = ark_storage.Refused
 
 KIND_BOOK = "book"
 KIND_GAME = "game"
+#: A film is not stored here — it goes to the Media shelf — but this page is the
+#: owner's one door for "several files at once", so it must recognise one.
+KIND_MEDIA = "video"
 
 #: The book kinds ``ark-import-books`` accepts.  This is a copy on purpose (the
 #: page must not import the importer), and ``tests/test_admin_upload.py`` reads
@@ -70,12 +75,20 @@ BOOK_EXT = frozenset({
 #: added there is offered here without anybody editing a second list.
 GAME_EXT = frozenset(ext for info in ark_arcade.SYSTEMS.values() for ext in info["ext"])
 
+#: The video kinds the shelf accepts — taken from the shelf itself.
+MEDIA_EXT = frozenset(ark_media.VIDEO_EXT)
+SUB_EXT = frozenset(ark_media.SUB_EXT)
+
 #: How many files one press may carry, and how large the whole press may be.
+#: Books and games share the batch cap; a film has its own, larger cap and is
+#: bounded by the card's reserve instead of by this number.
 MAX_FILES = 20
 MAX_BOOK = 512 * 1024 * 1024            # a book, not a video
 MAX_GAME = ark_arcade_install.MAX_DOWNLOAD
 MAX_BATCH = 512 * 1024 * 1024
-MIN_FREE_RESERVE = ark_storage.MIN_FREE_RESERVE
+MAX_MEDIA = ark_media.MAX_MEDIA
+#: The reserve is ark_space's, asked at the moment a book is written — there is
+#: no second number here, on purpose (see ark_space).
 CHUNK = 1024 * 1024
 
 #: How long the page waits for the book importer before it says "still working".
@@ -167,6 +180,8 @@ def classify(filename: str) -> str:
     ext = Path(str(filename or "")).suffix.lower()
     if ext in BOOK_EXT:
         return KIND_BOOK
+    if ext in MEDIA_EXT:
+        return KIND_MEDIA
     if ext in GAME_EXT:
         return KIND_GAME
     return ""
@@ -174,12 +189,17 @@ def classify(filename: str) -> str:
 
 def kinds() -> dict:
     """The two lists, in plain words, for the page."""
-    return {KIND_BOOK: sorted(BOOK_EXT), KIND_GAME: sorted(GAME_EXT)}
+    return {KIND_BOOK: sorted(BOOK_EXT), KIND_GAME: sorted(GAME_EXT),
+            KIND_MEDIA: sorted(MEDIA_EXT)}
 
 
 def max_for(kind: str) -> int:
     """The per-file cap for one kind, so the page and the check cannot disagree."""
-    return MAX_BOOK if kind == KIND_BOOK else MAX_GAME
+    if kind == KIND_BOOK:
+        return MAX_BOOK
+    if kind == KIND_MEDIA:
+        return MAX_MEDIA
+    return MAX_GAME
 
 
 def _size_words(n: int) -> str:
@@ -228,7 +248,8 @@ def spool_book(read, filename: str, *, limit: Optional[int] = None) -> Book:
     folder = incoming_dir()
     folder.mkdir(parents=True, exist_ok=True)
     available = ark_storage.free_bytes(folder)
-    if available <= MIN_FREE_RESERVE:
+    room = ark_space.reserve_bytes(folder)
+    if available <= room:
         raise Refused("The card is nearly full — there is no room for another book. "
                       "Make some space, then try again.")
 
@@ -247,7 +268,7 @@ def spool_book(read, filename: str, *, limit: Optional[int] = None) -> Book:
                 if written > limit:
                     raise Refused("That file is larger than this page will take "
                                   f"({_size_words(limit)}).")
-                if available - written <= MIN_FREE_RESERVE:
+                if available - written <= room:
                     raise Refused("The card filled up while that book was arriving.")
                 digest.update(chunk)
                 out.write(chunk)

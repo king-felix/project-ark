@@ -42,6 +42,7 @@ EXCLUDED = [
     "collections (the offline library) — content that is fetched again, not state",
     "the book shelf — content that is rebuilt or imported again",
     "the games themselves — fetched again by the shelf keeper; a named player's saves are included",
+    "the films and their playing copies — a film is tens of gigabytes, and a bundle is not a film library; the shelf's records come back, and a restored box says which films it no longer has",
     "the programming environment — recreated by the installer",
     "Wi-Fi and other secrets in /etc/ark — set up again by the rebuild guide",
 ]

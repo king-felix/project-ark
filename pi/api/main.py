@@ -51,7 +51,10 @@ import ark_db
 import ark_essentials
 import ark_health
 import ark_household
+import ark_media
+import ark_media_web
 import ark_review
+import ark_space
 import ark_storage
 from ark_health import (book_count, guide_pages, human_size, library_books,
                         library_bytes, now_iso)
@@ -117,6 +120,7 @@ def init_db() -> None:
     """
     ark_storage.ensure_dirs()
     ark_arcade.ensure_dirs()
+    ark_media.ensure_dirs()
     ark_db.migrate()
     ark_admin.ensure_initialised()
     with ark_db.tx() as conn:
@@ -126,6 +130,9 @@ def init_db() -> None:
     try:
         ark_storage.reconcile_temp()
         ark_arcade_install.sweep_temp()
+        # A promise of space made by a process that is no longer running must not
+        # hold the card hostage: the worker refreshes its own every few minutes.
+        ark_space.reconcile()
     except OSError:
         pass          # housekeeping must never stop the portal from starting
 
@@ -171,8 +178,8 @@ def esc(value) -> str:
 
 
 NAV = [("/", "Home"), ("/search", "Search"), ("/ask", "Ask"), ("/kiwix/", "Library"),
-       ("/books/", "Books"), ("/vault/", "Manuals"), ("/board", "Messages"),
-       ("/files", "File box"), ("/household", "Household")]
+       ("/books/", "Books"), ("/media/", "Media"), ("/vault/", "Manuals"),
+       ("/board", "Messages"), ("/files", "File box"), ("/household", "Household")]
 
 
 def page(title: str, body: str, here: str = "", tagline: str = "",
@@ -234,6 +241,12 @@ def error_page(message: str, hint: str = "", code: int = 400) -> HTMLResponse:
   {hint_html}
   <div class="nav"><a href="/">Back to the home page</a></div>
 """, status=code)
+
+
+# The Media shelf is public in the same way the Game shelf is: reading needs no
+# account, and only what the owner published is visible.  It is wired here, after
+# ``page()`` exists, so it can wear the portal's own header and navigation.
+app.include_router(ark_media_web.build_router(page))
 
 
 # ---------------------------------------------------------------------------
@@ -323,6 +336,9 @@ def status():
              "stalled", "reported")
         },
         "download_reason": sections["downloads"]["reason"],
+        # The shelf, counted from its own records.  A film whose bytes are gone is
+        # reported as such rather than silently dropped from the count.
+        "media": _media_status(),
         # The helper that answers questions in a person's own words.  Reported so
         # the owner can see it; never a blocker (see ark_health.ask_section).
         "ask": {
@@ -330,6 +346,26 @@ def status():
             "reason": sections["ask"]["reason"],
             "facts": sections["ask"]["facts"],
         },
+    }
+
+
+def _media_status() -> dict:
+    """The shelf as JSON: how many films, and how many may be watched now."""
+    with ark_db.read() as conn:
+        total = ark_media.count(conn, state=ark_media.STATE_PUBLISHED)
+        waiting = ark_media.count(conn, ready="working")
+        rows = conn.execute(
+            "SELECT id, title, duration, plan, play_stored, size FROM media"
+            " WHERE state = ? ORDER BY ts DESC LIMIT 12", (ark_media.STATE_PUBLISHED,)
+        ).fetchall()
+    return {
+        "shelf": True,
+        "published": total,
+        "being_prepared": waiting,
+        "items": [{"id": int(r["id"]), "title": r["title"],
+                   "seconds": r["duration"], "size": r["size"],
+                   "ready": bool(r["plan"] == ark_media.DIRECT or r["play_stored"])}
+                  for r in rows],
     }
 
 
@@ -1097,6 +1133,20 @@ def files_post(file: UploadFile = File(None), note: str = Form("")):
                           "box can still be downloaded. Nothing was stored.", 403)
     if file is None or not file.filename:
         return RedirectResponse("/files?err=No%20file%20was%20chosen", status_code=303)
+
+    # A film is routed to the Media shelf instead of the File Box: it is the same
+    # upload door, the same one writer, and the same refusal sentences — but a
+    # video is *reviewed* before it becomes something a reader can watch, which is
+    # not true of a photo or a recipe.  The bytes still land in one place.
+    if ark_media.is_video_name(file.filename):
+        try:
+            added = ark_media.accept(file.file.read, file.filename, state=ark_media.STATE_PENDING,
+                                     added_by="public", note=(note or "").strip()[:140])
+        except ark_storage.Refused as exc:
+            return RedirectResponse("/files?err=" + urllib.parse.quote(str(exc)), status_code=303)
+        finally:
+            file.file.close()
+        return RedirectResponse("/media/?sent=" + str(int(added["id"])), status_code=303)
 
     # One write path for every upload: a hidden temp file, the cap enforced
     # while it streams, then an atomic move that can never replace another

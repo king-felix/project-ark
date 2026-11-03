@@ -89,6 +89,11 @@ DOORS: Tuple[Dict[str, str], ...] = (
      "who": "anyone",
      "what": "A visitor can put a game of their own on the shelf. A visitor can add "
              "a game and never replace one."},
+    {"group": "Open to anyone on the box's Wi-Fi", "address": "http://{host}/media/",
+     "name": "Media",
+     "who": "anyone",
+     "what": "The film shelf: what the owner has published, with pictures, a player "
+             "and a download. A film somebody shares waits for the owner first."},
     {"group": "Open to anyone on the box's Wi-Fi", "address": "http://{host}/books/",
      "name": "Books",
      "who": "anyone",
@@ -108,6 +113,11 @@ DOORS: Tuple[Dict[str, str], ...] = (
      "who": "the owner",
      "what": "Choose several files at once and press one button: books go into the "
              "Book Library, games go onto the game shelf."},
+    {"group": "Behind the sign-in", "address": "https://{host}:8443/admin/media",
+     "name": "Media",
+     "who": "the owner",
+     "what": "The films on the box: what each file really is, what it needs to play, "
+             "its picture, and how much room is left before the box refuses more."},
     {"group": "Behind the sign-in", "address": "https://{host}:8443/admin/arcade",
      "name": "Games",
      "who": "the owner",

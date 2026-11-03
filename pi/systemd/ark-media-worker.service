@@ -1,0 +1,47 @@
+[Unit]
+Description=Project ARK — prepares films for the Media shelf (one at a time)
+Documentation=http://ark.lan/media/
+# The card first, and never the network: the worker only reads and writes files
+# on this box.  It starts after the backend so the records exist, but it can never
+# hold the backend back — a film that cannot be prepared is not a broken portal.
+After=local-fs.target ark-api.service
+Wants=local-fs.target
+# Deliberately no Wants= on the portal: if the portal is being restarted, the
+# worker waits for its next job rather than being dragged down with it.
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/srv/ark/api
+Environment=ARK_ROOT=/srv/ark
+Environment=ARK_API_DIR=/srv/ark/api
+# A half-written derivative waits on the CARD: /tmp is a 256 MB tmpfs since
+# phase 15-resilience, and a film parked in RAM is a film that fails at 256 MB.
+Environment=TMPDIR=/srv/ark/tmp
+EnvironmentFile=-/etc/ark/ark.env
+ExecStart=/srv/ark/venv/bin/python /srv/ark/bin/ark-media-worker
+Restart=always
+RestartSec=10
+TimeoutStopSec=20
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ark-media
+
+# A good neighbour.  The portal is this box's first duty: encoding runs at idle
+# I/O priority, low CPU priority, a capped share of the CPU and a hard memory
+# ceiling, so a two-hour film cannot make a search feel broken.
+Nice=10
+IOSchedulingClass=idle
+CPUQuota=150%
+MemoryMax=1G
+OOMPolicy=stop
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/srv/ark/media /srv/ark/drop /srv/ark/api/data /srv/ark/tmp
+
+[Install]
+WantedBy=multi-user.target

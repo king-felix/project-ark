@@ -8,7 +8,7 @@
 #
 #  Safety rules baked in:
 #    * never more than one download at a time  (keeps the hotspot responsive)
-#    * stops when the card falls below MIN_FREE_GIB
+#    * stops when the card reaches the space the box keeps back (ark-space)
 #    * /etc/ark/zim-pause  -> pause without stopping the service
 #    * nothing is ever deleted; a re-run just skips what is already there
 # =============================================================================
@@ -23,7 +23,10 @@ PROFILE_FILE="${PROFILE_FILE:-/etc/ark/zim-profile}"
 RESOLVE="${RESOLVE:-/usr/local/bin/ark-zim-resolve}"
 REBUILD="${REBUILD:-/usr/local/bin/ark-kiwix-library}"
 LOG_DIR="${LOG_DIR:-/srv/ark/logs}"
-MIN_FREE_GIB="${MIN_FREE_GIB:-12}"
+# The reserve is not this script's number: /usr/local/sbin/ark-space answers with
+# the card's own arithmetic (7 % of it, or 2 GiB), the same one an upload and a
+# film are measured against.  No second policy lives here.
+SPACE="${SPACE:-/usr/local/sbin/ark-space}"
 # ---- how we fetch -----------------------------------------------------------
 # aria2 was the original fetcher: faster when a mirror is generous, but the KiWix
 # redirector hands out mirrors that collapse under parallel streams. Measured on
@@ -61,7 +64,20 @@ if ! flock -n 9; then
   exit 0
 fi
 
-free_gib() {   # whole gigabytes free on the library filesystem
+room_for() {   # <bytes> — may this much be added without crossing the reserve?
+  local need=${1:-0}
+  if [[ -x "$SPACE" ]]; then
+    "$SPACE" --check --need "$need" --path "$ZIM_DIR"
+  else
+    # A box installed before the policy existed still has the old floor; refusing
+    # to download is safer than downloading into a card with no room at all.
+    local b
+    b="$(df -B1 --output=avail "$ZIM_DIR" 2>/dev/null | tail -1 | tr -dc '0-9')"
+    (( ${b:-0} > 2147483648 ))
+  fi
+}
+
+free_gib() {   # REPORTING ONLY: the policy is room_for(); this is what a page shows
   local b
   b="$(df -B1 --output=avail "$ZIM_DIR" 2>/dev/null | tail -1 | tr -dc '0-9')"
   if [[ -z "$b" ]]; then            # non-GNU df (used by the local test harness)
@@ -212,7 +228,7 @@ fetch_one() {   # <url> <bytes> <filename> <label>
 
 trap 'log "signal received — stopping"; write_status "" 0; exit 0' TERM INT
 
-log "downloader started (queue=$QUEUE, keep >= ${MIN_FREE_GIB} GiB free)"
+log "downloader started (queue=$QUEUE; the space policy is asked before every fetch)"
 refresh_library || true      # build the library from whatever is already on disk
 fails=0
 
@@ -222,8 +238,8 @@ while true; do
     sleep 600
     continue
   fi
-  if (( $(free_gib) < MIN_FREE_GIB )); then
-    log "only $(free_gib) GiB free — waiting before the next download"
+  if ! room_for 0; then
+    log "the card is inside the space the box keeps back — waiting before the next download"
     write_status "waiting for space" 0
     sleep 1800
     continue
@@ -242,6 +258,14 @@ while true; do
   IFS=$'\t' read -r _st url bytes name tier label <<<"$row"
   if have_zim "$name"; then
     mark_have "$name"
+    continue
+  fi
+  # A collection has a known size, so the space is promised before the first byte
+  # instead of discovered at 99 %.
+  if ! room_for "${bytes:-0}"; then
+    log "$name does not fit in the space left — waiting before fetching it"
+    write_status "$label (waiting for space)" 0
+    sleep 1800
     continue
   fi
   if fetch_one "$url" "$bytes" "$name" "$label"; then

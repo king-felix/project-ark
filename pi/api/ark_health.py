@@ -30,6 +30,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import ark_db
+import ark_media
+import ark_space
 import ark_storage
 
 # How long a loopback probe may take, and how long its answer is reused.  Two
@@ -259,6 +261,7 @@ def storage_breakdown() -> list[dict]:
         ("Offline Library", library_bytes()),
         ("Books", tree_bytes(calibre_db().parent)),
         ("Manuals & Guides", tree_bytes(vault_dir())),
+        ("Films", tree_bytes(ark_media.media_root())),
         ("File Box", tree_bytes(ark_storage.drop_dir())),
         ("Settings and records", tree_bytes(data_dir())),
     )
@@ -523,23 +526,38 @@ def files_section() -> dict:
 
 
 def storage_section() -> dict:
-    free = ark_storage.free_bytes(ark_root())
+    """The card's arithmetic, from the one policy every write path asks (ark_space).
+
+    ``reserve`` is not a constant here: it is 7 % of *this* filesystem's capacity
+    (or 2 GiB, whichever is larger), measured at the moment somebody looks — so a
+    bigger card keeps back more, and a smaller one still gets its floor.
+    """
+    free = ark_space.free_bytes(ark_root())
+    room = ark_space.account(ark_root())
     parts = storage_breakdown()
     facts = {
         "free_bytes": free,
-        "reserve_bytes": ark_storage.MIN_FREE_RESERVE,
+        "reserve_bytes": room["reserve_bytes"],
+        "reserve_percent": room["percent"],
+        "committed_bytes": room["committed_bytes"],
+        "usable_bytes": room["usable_bytes"],
         "breakdown": parts,
         "breakdown_bytes": sum(p["bytes"] for p in parts),
         **card_facts(),
     }
-    if free < ark_storage.MIN_FREE_RESERVE:
+    if room["breached"]:
         return _section(
             "storage", "Space on the card", False,
-            f"Only {human_size(free)} is left.  New files are refused until space is free.",
-            "Remove a shared file you no longer need, or delete a collection you never "
-            "read.  The box keeps the last half gigabyte for itself on purpose.", **facts)
+            f"Only {human_size(free)} is left — the box keeps back "
+            f"{human_size(room['reserve_bytes'])}.  New files are refused until space "
+            "is free.",
+            "Remove a film you no longer watch, a shared file you no longer need, or a "
+            "collection you never read.  Watching, deleting and the owner's pages keep "
+            "working; the reserve is what keeps the portal answering.", **facts)
     return _section(
-        "storage", "Space on the card", True, f"{human_size(free)} free.", "", **facts)
+        "storage", "Space on the card", True,
+        f"{human_size(free)} free, of which {human_size(room['reserve_bytes'])} is kept "
+        "back for the box.", "", **facts)
 
 
 # ---------------------------------------------------------------------------

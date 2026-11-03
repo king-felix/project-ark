@@ -33,8 +33,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
 
+import ark_space
+
 MAX_FILE = 2 * 1024 * 1024 * 1024          # 2 GiB per file; nginx allows 16 MiB more
-MIN_FREE_RESERVE = 512 * 1024 * 1024       # never eat the last half gigabyte
 CHUNK = 1024 * 1024
 TEMP_SUFFIX = ".part"
 MAX_DISPLAY = 120
@@ -43,8 +44,11 @@ _ILLEGAL = re.compile(r"[^A-Za-z0-9._ ()\[\]+,-]+")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
 
-class Refused(Exception):
-    """A refusal a person can read and act on. Never a stack trace."""
+#: The reserve is not a number in this module any more.  ``ark_space`` owns the
+#: policy — 7 % of the filesystem that is receiving the bytes, or 2 GiB, whichever
+#: is larger — so an upload and a conversion and a collection being fetched all
+#: argue from the same arithmetic instead of three that disagree.
+Refused = ark_space.Refused
 
 
 @dataclass(frozen=True)
@@ -123,12 +127,13 @@ def guess_type(display: str, fallback: str = "application/octet-stream") -> str:
 #  free space
 # ---------------------------------------------------------------------------
 def free_bytes(path: Path | None = None) -> int:
-    target = path or ark_root()
-    try:
-        stats = os.statvfs(str(target))
-    except OSError:
-        return 0
-    return stats.f_bavail * stats.f_frsize
+    """Space an ordinary account may still write, on the card that holds ``path``."""
+    return ark_space.free_bytes(path or ark_root())
+
+
+def reserve_bytes(path: Path | None = None) -> int:
+    """What the policy keeps back on that filesystem."""
+    return ark_space.reserve_bytes(path or ark_root())
 
 
 # ---------------------------------------------------------------------------
@@ -144,15 +149,15 @@ def spool(read, filename: str, *, limit: int | None = None,
     empty result means the end of the file.
     """
     limit = MAX_FILE if limit is None else limit
-    min_free = MIN_FREE_RESERVE if min_free is None else min_free
     dest = Path(destination) if destination else drop_dir()
+    room = reserve_bytes(dest) if min_free is None else int(min_free)
     tmpdir = Path(temp) if temp else temp_dir()
     dest.mkdir(parents=True, exist_ok=True)
     tmpdir.mkdir(parents=True, exist_ok=True)
 
     display = display_name(filename)
     available = free_bytes(dest)
-    if available <= min_free:
+    if available <= room:
         raise Refused("The box is nearly full — there is no room for new files. "
                       "Ask the owner to make space, then try again.")
 
@@ -170,7 +175,7 @@ def spool(read, filename: str, *, limit: int | None = None,
                     raise Refused(f"That file is too big. Files up to "
                                   f"{limit // (1024 ** 3)} GB are accepted — split it or "
                                   f"use a smaller copy, then try again.")
-                if available - written <= min_free:
+                if available - written <= room:
                     raise Refused("The box filled up while that file was arriving. "
                                   "Ask the owner to make space, then try again.")
                 digest.update(chunk)
@@ -214,6 +219,11 @@ def _publish(tmp: str, dest: Path, display: str) -> str:
         return candidate
     _unlink(tmp)
     raise Refused("The box could not find a free name for that file. Try once more.")
+
+
+def discard(path: str | Path) -> None:
+    """Remove a copy this box wrote.  A file already gone is not an error."""
+    _unlink(path)
 
 
 def _unlink(path: str | Path) -> None:

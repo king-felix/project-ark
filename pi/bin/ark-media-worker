@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""Project ARK — the one worker that prepares films for the shelf.
+
+Started by ``ark-media-worker.service`` at boot.  It claims one job at a time
+from the database, does it, and goes back to sleep; if there is nothing to do it
+costs a sleeping process and one query every few seconds.
+
+Why one process, one job: the box is a Pi 4 whose first duty is to answer the
+portal.  Two films encoding at once would make every page slow and would fill the
+card twice as fast as the reserve can be checked against.
+
+    ark-media-worker              run for ever (that is what systemd starts)
+    ark-media-worker --once       do everything waiting, then exit (tests, deploy)
+    ark-media-worker --status     say what is queued, with no side effects
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import signal
+import sqlite3
+import sys
+import time
+
+sys.path.insert(0, os.environ.get("ARK_API_DIR", os.path.join(os.path.dirname(__file__), "..", "api")))
+
+import ark_db            # noqa: E402
+import ark_media         # noqa: E402
+import ark_media_jobs    # noqa: E402
+import ark_space         # noqa: E402
+
+_STOP = {"asked": False}
+
+
+def _stop(_signum, _frame) -> None:
+    _STOP["asked"] = True
+
+
+def status() -> int:
+    with ark_db.read() as conn:
+        rows = conn.execute(
+            "SELECT state, COUNT(*) FROM media_jobs GROUP BY state ORDER BY state").fetchall()
+        films = conn.execute("SELECT COUNT(*) FROM media").fetchone()[0]
+        room = ark_space.account(ark_media.media_root(), conn=conn)
+    counts = {str(r[0]): int(r[1]) for r in rows}
+    print(f"films on the shelf : {films}")
+    for state in ("queued", "running", "ready", "failed", "cancelled"):
+        print(f"jobs {state:<11}: {counts.get(state, 0)}")
+    print(f"tools              : ffmpeg={ark_media.ffmpeg_bin() or 'missing'} "
+          f"ffprobe={ark_media.ffprobe_bin() or 'missing'}")
+    print(f"room               : {ark_media.human_size(room['usable_bytes'])} usable, "
+          f"{ark_media.human_size(room['reserve_bytes'])} kept back, "
+          f"{ark_media.human_size(room['committed_bytes'])} promised to jobs")
+    return 0
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description="Prepare films for the ARK Media shelf.")
+    parser.add_argument("--once", action="store_true", help="do the waiting work, then exit")
+    parser.add_argument("--status", action="store_true", help="report, change nothing")
+    args = parser.parse_args(argv)
+
+    if args.status:
+        return status()
+
+    # Be a good neighbour: this box is somebody's library first, a video
+    # converter second.
+    try:
+        os.nice(10)
+    except OSError:
+        pass
+    signal.signal(signal.SIGTERM, _stop)
+    signal.signal(signal.SIGINT, _stop)
+
+    try:
+        done = ark_media_jobs.startup()
+    except sqlite3.DatabaseError as exc:
+        print(f"media worker: the records could not be read yet ({exc})", flush=True)
+        return 1
+    print(f"media worker: ready ({done})", flush=True)
+
+    while not _STOP["asked"]:
+        try:
+            worked = ark_media_jobs.work_once(os.getpid())
+        except sqlite3.DatabaseError as exc:
+            print(f"media worker: database busy ({exc}); waiting", flush=True)
+            worked = False
+        except Exception as exc:                 # noqa: BLE001 — the loop must survive
+            print(f"media worker: unexpected {type(exc).__name__}: {exc}", flush=True)
+            worked = False
+        if args.once:
+            if not worked:
+                return 0
+            continue
+        if not worked:
+            time.sleep(ark_media_jobs.idle_seconds())
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

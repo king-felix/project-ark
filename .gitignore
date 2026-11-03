@@ -25,3 +25,4 @@ __pycache__/
 venv/
 staging/*.zip
 .pytest_cache/
+.codewhale/

@@ -24,6 +24,7 @@ import urllib.error
 import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, File, Form, Request, UploadFile
@@ -35,8 +36,12 @@ import ark_essentials
 import ark_health
 import ark_household
 import ark_ingest
+import ark_media
+import ark_media_jobs
+import ark_media_web
 import ark_review
 import ark_security as sec
+import ark_space
 import ark_storage
 import ark_arcade
 import ark_arcade_install
@@ -234,6 +239,7 @@ ADMIN_NAV = (
     ("/admin", "Overview"),
     ("/admin/health", "What is working"),
     ("/admin/upload", "Add files"),
+    ("/admin/media", "Media"),
     ("/admin/network", "Network"),
     ("/admin/household", "Household"),
     ("/admin/arcade", "Games"),
@@ -2470,12 +2476,14 @@ def _upload_body(ctx, rows=None, flash: str = "") -> str:
     kinds = ark_ingest.kinds()
     book_list = " ".join(kinds[ark_ingest.KIND_BOOK])
     game_list = " ".join(kinds[ark_ingest.KIND_GAME])
+    film_list = " ".join(kinds[ark_ingest.KIND_MEDIA])
     return f"""
   {flash}
-  <h2>Books and games, all at once</h2>
+  <h2>Books, games and films, all at once</h2>
   <p class="note">Choose one file or twenty. The box decides what each one is by its
   kind, and puts it where it belongs: <b>a book</b> goes into the Book Library,
-  <b>a game</b> goes onto the games page. Nothing else on the card is touched.</p>
+  <b>a game</b> goes onto the games page, <b>a film</b> goes onto the Media shelf.
+  Nothing else on the card is touched.</p>
   <form method="post" action="/admin/upload" enctype="multipart/form-data">
     {_csrf_field(ctx.csrf)}
     <label for="files">The files</label>
@@ -2495,6 +2503,10 @@ def _upload_body(ctx, rows=None, flash: str = "") -> str:
       <tr><td><b>Games</b><span class="sub">{esc(game_list)}</span></td>
           <td>Checked, then put on the games page. A file that is not a game the box
           can play is refused, and the shelf is left exactly as it was.</td></tr>
+      <tr><td><b>Films</b><span class="sub">{esc(film_list)}</span></td>
+          <td>Read properly by the box's video tools and put on the Media shelf, with a
+          picture. A film that needs a playing copy is prepared in the background; the
+          original is kept. Its own page has captions and a delete button.</td></tr>
     </tbody></table>
   <p class="hint">Anything else is refused by name: this page will not guess at a file.
   A game takes a few seconds to check; a batch of books is handed to the box's own book
@@ -2561,13 +2573,25 @@ def upload_files(request: Request, files: Optional[List[UploadFile]] = File(None
                          "said": "the box does not know what to do with that kind of file"})
             continue
         is_book = kind == ark_ingest.KIND_BOOK
-        kind_word = "book" if is_book else "game"
+        is_media = kind == ark_ingest.KIND_MEDIA
+        kind_word = "book" if is_book else ("film" if is_media else "game")
         room = ark_ingest.MAX_BATCH - total
         if room <= 0:
             rows.append({"name": shown, "kind_word": kind_word, "state": "bad",
                          "said": "this press is already as large as one upload may be"})
             continue
         try:
+            if is_media:
+                # A film does not share the batch ceiling: it has its own, larger
+                # cap and is bounded by the card's reserve instead.  It goes on the
+                # shelf at once because this page is the owner's own door.
+                film = ark_media.accept(item.file.read, shown,
+                                        state=ark_media.STATE_PUBLISHED,
+                                        added_by=str(me["username"]),
+                                        limit=ark_ingest.MAX_MEDIA)
+                rows.append({"name": shown, "kind_word": kind_word, "state": "ok",
+                             "said": "on the Media shelf now"})
+                continue
             if is_book:
                 book = ark_ingest.spool_book(item.file.read, shown,
                                              limit=min(ark_ingest.MAX_BOOK, room))
@@ -2708,3 +2732,663 @@ def doors_page(request: Request):
   once to trust it.</p>"""
     return shell("Addresses", intro + "".join(parts), ctx=ctx,
                  tagline="Every address on this box, who may open it, and what it is for.")
+
+
+# ---------------------------------------------------------------------------
+#  MEDIA — the films on this box
+#
+#  A film is the one thing here that can be huge, slow to prepare and impossible
+#  to play, so this page is built around three honest sentences: what the file
+#  really is, what the box had to do to make it playable, and how much room is
+#  left before the box refuses more.  Nothing on this page silently cleans up:
+#  removing a film is a choice with a name on it in the history.
+# ---------------------------------------------------------------------------
+MEDIA_SORTS = (("recent", "Newest first"), ("title", "Title A–Z"),
+               ("largest", "Largest first"), ("longest", "Longest first"))
+#: The page opens on *everything*: a film waiting for a look is the one the owner
+#: most needs to see, and a filter that hides it by default is how it gets missed.
+MEDIA_STATES = (("", "Everything"), ("published", "On the shelf"),
+                ("pending", "Waiting for a look"), ("hidden", "Hidden"))
+#: How many films one screen shows.  A shelf of a thousand films is paged, not
+#: downloaded: each card is one picture and two lines of text.
+MEDIA_PER_PAGE = 20
+
+
+def _media_plan_words(row) -> str:
+    return ark_media.plan_words(str(row["plan"] or ""))
+
+
+def _media_job_words(row) -> str:
+    keys = row.keys()
+    job = str(row["job_state"] or "") if "job_state" in keys else ""
+    detail = str(row["job_detail"] or "") if "job_detail" in keys else ""
+    if job == "queued":
+        return "Waiting to be prepared."
+    if job == "running":
+        return "Being prepared now."
+    if job == "failed":
+        return "Could not be prepared" + (f": {detail}" if detail else ".")
+    return ""
+
+
+def _media_row(row, csrf: str) -> str:
+    """One film on the owner's page: what it is, and one button per decision."""
+    item_id = int(row["id"])
+    present = ark_media.original_path(row).is_file()
+    status = ark_media.status_of(row, present)
+    title = row["title"] or ark_media.title_from_filename(str(row["filename"] or ""))
+    state = str(row["state"] or "")
+    picture = (f'<img class="thumb" src="/admin/media/{item_id}/poster" alt=""'
+               ' loading="lazy" width="160" height="90">' if present else
+               '<span class="thumb none" aria-hidden="true">no file</span>')
+    facts = [ark_media.human_duration(row["duration"]), ark_media.human_size(row["size"])]
+    if row["play_size"]:
+        facts.append("playing copy " + ark_media.human_size(row["play_size"]))
+    # What the *player* would use, not what the original needed: once a playing
+    # copy exists, "needs a quick repack" beside "ready to play" reads like a
+    # contradiction, and the owner would be right.
+    facts.append("playing copy ready" if row["play_stored"] else _media_plan_words(row))
+    if row["category"]:
+        facts.append(str(row["category"]))
+    words = " · ".join(facts)
+    job_words = _media_job_words(row)
+    buttons = []
+    if state == ark_media.STATE_PUBLISHED:
+        buttons.append(_media_button(item_id, "state", "hidden", csrf, "Take off the shelf"))
+    else:
+        buttons.append(_media_button(item_id, "state", "published", csrf, "Show on the shelf"))
+    if present:
+        needs_copy = (str(row["plan"]) in (ark_media.REMUX, ark_media.CONVERT)
+                      and not str(row["play_stored"] or ""))
+        buttons.append(_media_button(
+            item_id, "prepare", "", csrf,
+            "Make a playing copy" if needs_copy else "Prepare again"))
+        buttons.append(_media_button(item_id, "picture", "", csrf, "New picture"))
+    if str(row["job_state"] or "") in ("queued", "running"):
+        buttons.append(_media_button(item_id, "stop", "", csrf, "Stop preparing"))
+    buttons.append(_media_button(item_id, "delete", "", csrf, "Delete for ever", danger=True))
+    watch = (f'<a class="smallbtn" href="/media/{item_id}">Watch</a>'
+             if state == ark_media.STATE_PUBLISHED and ark_media.playable(row) else "")
+    return f"""
+  <li class="filmrow">
+    <label class="tick" title="Tick to delete several at once">
+      <input type="checkbox" name="ids" value="{item_id}" form="bulk-delete">
+      <span class="sr-only">Choose {esc(title)}</span>
+    </label>
+    <div class="filmrow-main">
+      {picture}
+      <div>
+        <b>{esc(title)}</b>
+        <span class="sub">{esc(words)}</span>
+        <span class="sub">{esc(ark_media.status_words(status))}{(' — ' + esc(job_words)) if job_words else ''}</span>
+        <span class="sub">File: {esc(row['filename'])}</span>
+        <span class="sub">Picture {int(row['width'])}×{int(row['height'])} · {esc(row['vcodec'] or 'unknown')} / {esc(row['acodec'] or 'no sound')}</span>
+      </div>
+    </div>
+    <div class="filmrow-actions">{watch}{''.join(buttons)}</div>
+  </li>"""
+
+
+def _media_button(item_id: int, action: str, value: str, csrf: str, label: str,
+                  danger: bool = False) -> str:
+    return f"""
+      <form method="post" action="/admin/media/{item_id}/{action}">
+        {_csrf_field(csrf)}
+        <input type="hidden" name="value" value="{esc(value)}">
+        <button class="smallbtn{' danger' if danger else ''}" type="submit">{esc(label)}</button>
+      </form>"""
+
+
+def _media_storage_block(room: dict) -> str:
+    """The card's arithmetic, in the owner's words — never a quota for one person."""
+    if room["free_bytes"] is None:
+        return _notice("bad", "<b>Space on the card could not be measured.</b> "
+                              "Nothing can be promised until it can.")
+    rows = [
+        ("The card holds", ark_media.human_size(room["total_bytes"])),
+        ("Free right now", ark_media.human_size(room["free_bytes"])),
+        ("Kept back for the box", ark_media.human_size(room["reserve_bytes"])),
+        ("Promised to jobs running now", ark_media.human_size(room["committed_bytes"])),
+        ("May still be added", ark_media.human_size(room["usable_bytes"])),
+    ]
+    body = "".join(f"<tr><th>{esc(k)}</th><td>{esc(v)}</td></tr>" for k, v in rows)
+    breach = ""
+    if room.get("breached"):
+        breach = _notice("bad", "<b>The card is already inside the space this box keeps "
+                                "back.</b> New films and files are refused until room is "
+                                "made. Watching, deleting and the owner's pages still work.")
+    return f"""{breach}
+  <table class="plain"><tbody>{body}</tbody></table>
+  <p class="note">The box keeps <b>{esc(str(room['percent']))}%</b> of the card, or 2 GB if
+  that is more, so the portal keeps working when the card is nearly full. This is the
+  box's own limit, <b>not a quota for one person</b> — and it cannot stop something
+  outside the box from filling the card.</p>"""
+
+
+def _media_upload_form(ctx, flash: str = "") -> str:
+    return f"""
+  {flash}
+  <h2>Put films on the shelf</h2>
+  <p class="note">Choose films — several at once is fine. Each one is looked at properly
+  before the shelf promises it will play: the box reads the picture and sound inside,
+  not just the name. A film you add here appears straight away; a film somebody shares
+  waits for you to look at it.</p>
+  <form method="post" action="/admin/media/upload" enctype="multipart/form-data">
+    {_csrf_field(ctx.csrf)}
+    <label for="films">The films</label>
+    <input id="films" name="files" type="file" multiple required
+           accept="video/*,.mkv,.avi,.ts,.m2ts,.wmv,.flv,.ogv,.m4v,.3gp">
+    <label for="caption_files">Captions (optional — a .vtt or .srt with the same name)</label>
+    <input id="caption_files" name="captions" type="file" multiple accept=".vtt,.srt">
+    <label for="category">A shelf name (optional)</label>
+    <input id="category" name="category" type="text" maxlength="40" placeholder="Repair films">
+    <button class="go-btn" type="submit">Put these films on the shelf</button>
+  </form>
+  <p class="note">Up to <b>{ark_media.human_size(ark_media.MAX_MEDIA)}</b> per film, and never
+  more than the card can spare. A film that needs converting is queued and done in the
+  background, one at a time, so the box keeps answering.</p>"""
+
+
+def _media_body(ctx, *, result=None, values=None, flash: str = "", room=None,
+                largest=None, uploads=None) -> str:
+    values = values or {"q": "", "state": "", "sort": "recent"}
+    rows = list(result["rows"]) if result else []
+    filters = []
+    for key, label in MEDIA_STATES:
+        href = "/admin/media?" + urllib.parse.urlencode(
+            {k: v for k, v in (("q", values["q"]), ("sort", values["sort"]), ("state", key))
+             if v})
+        on = ' aria-current="page"' if values["state"] == key else ""
+        filters.append(f'<a class="chip" href="{esc(href)}"{on}>{esc(label)}</a>')
+    sorts = "".join(
+        f'<option value="{esc(key)}"' + (" selected" if values["sort"] == key else "")
+        + f'>{esc(label)}</option>' for key, label in MEDIA_SORTS)
+    listing = ""
+    if rows:
+        listing = ('<ul class="clean films-admin">'
+                   + "".join(_media_row(row, ctx.csrf) for row in rows) + "</ul>")
+        listing += f"""
+  <form id="bulk-delete" method="post" action="/admin/media/delete" class="bulk">
+    {_csrf_field(ctx.csrf)}
+    <label class="tick"><input type="checkbox" name="confirm" value="yes" required>
+      I am sure — delete the ticked films for ever</label>
+    <button class="smallbtn danger" type="submit">Delete the ticked films</button>
+    <p class="note">Deleting removes the film's playing copy, its picture and its captions,
+    and the original file as well unless the File Box or another film still uses it.
+    A film somebody is watching right now frees its space when they close it.</p>
+  </form>"""
+    elif result is not None:
+        listing = ('<h2>Nothing here</h2><p class="hint">No film matches that. '
+                   'Try “Everything”, or a shorter word.</p>')
+    pager = ""
+    if result and result["pages"] > 1:
+        bits = []
+        for number in range(1, result["pages"] + 1):
+            if number in (1, result["pages"]) or abs(number - result["page"]) <= 2:
+                href = "/admin/media?" + urllib.parse.urlencode(
+                    {k: v for k, v in (("q", values["q"]), ("sort", values["sort"]),
+                                       ("state", values["state"]), ("page", number)) if v})
+                on = ' aria-current="page"' if number == result["page"] else ""
+                bits.append(f'<a class="chip" href="{esc(href)}"{on}>{number}</a>')
+            elif bits and bits[-1] != "…":
+                bits.append("…")
+        pager = '<nav class="pager" aria-label="Pages">' + "".join(bits) + "</nav>"
+
+    biggest = ""
+    if largest:
+        items = "".join(
+            f'<li>{esc(r["title"])}<span class="sub">'
+            f'{esc(ark_media.human_size(r["size"]))} · {esc(ark_media.human_duration(r["duration"]))}'
+            f' · {esc(str(r["state"]))}</span></li>' for r in largest)
+        biggest = (f'<h2>Largest films</h2><ul class="clean">{items}</ul>'
+                   '<p class="hint">Delete one of these to reclaim the most room in one go.</p>')
+
+    upload_block = uploads or ""
+    body = f"""
+  {upload_block}
+  <h2>The shelf right now</h2>
+  {_media_storage_block(room or ark_space.account(ark_media.media_root()))}
+  <h2>Films</h2>
+  <form class="searchbar" method="get" action="/admin/media">
+    <label for="q">Find a film</label>
+    <input id="q" name="q" type="search" value="{esc(values['q'])}" placeholder="Title or file name">
+    <input type="hidden" name="state" value="{esc(values['state'])}">
+    <label for="sort">Order</label>
+    <select id="sort" name="sort">{sorts}</select>
+    <button class="go-btn" type="submit">Show these</button>
+  </form>
+  <nav class="chips" aria-label="Which films">{''.join(filters)}</nav>
+  <p class="hint">{result['total'] if result else 0} film{'s' if (result or {}).get('total') != 1 else ''} in this view.</p>
+  {listing}
+  {pager}
+  {biggest}
+  <h2>What this box can play</h2>
+  <table class="plain"><thead><tr><th>What the file is</th><th>What happens</th></tr></thead>
+    <tbody>
+      <tr><td><b>Plays as it is</b></td><td>The browser opens the original file. Nothing is copied.</td></tr>
+      <tr><td><b>Needs a quick repack</b></td><td>The same picture and sound are put in a
+        box a phone opens. It costs seconds and no quality.</td></tr>
+      <tr><td><b>Needs converting</b></td><td>The picture has to be rebuilt in a shape a
+        browser can decode. The original is kept, and the copy is made in the background,
+        one film at a time. A long film can take hours on this small computer.</td></tr>
+    </tbody></table>
+  <p class="hint">A film is never published just because it is a film. Films from the
+  File Box wait here until you show them; films you add are on the shelf at once.</p>"""
+    return body
+
+
+def _media_values(request: Request) -> dict:
+    q = (request.query_params.get("q") or "").strip()[:120]
+    state = request.query_params.get("state", "")
+    if state not in dict(MEDIA_STATES):
+        state = ""
+    sort = request.query_params.get("sort", "recent")
+    if sort not in dict(MEDIA_SORTS):
+        sort = "recent"
+    try:
+        page = max(1, int(request.query_params.get("page", "1")))
+    except ValueError:
+        page = 1
+    return {"q": q, "state": state, "sort": sort, "page": page}
+
+
+def _media_flash(request: Request) -> str:
+    if request.query_params.get("ok"):
+        return _notice("good", esc(request.query_params["ok"][:300]))
+    if request.query_params.get("err"):
+        return _notice("bad", esc(request.query_params["err"][:300]))
+    return ""
+
+
+@router.get("/media", response_class=HTMLResponse)
+def media_page(request: Request):
+    """The owner's shelf: what is on it, what it is, and how much room is left."""
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    values = _media_values(request)
+    with ark_db.read() as conn:
+        ctx = _load_ctx(conn, request, ark_db.session_epoch(conn))
+        if (blocked := _need_session(ctx, request)) is not None:
+            return blocked
+        result = ark_media.listing(conn, q=values["q"], state=values["state"],
+                                   sort=values["sort"], page=values["page"],
+                                   per_page=MEDIA_PER_PAGE)
+        room = ark_space.account(ark_media.media_root(), conn=conn)
+        largest = ark_media.largest(conn, 8)
+        shared = _media_shared_files(conn)
+    body = _media_body(ctx, result=result, values=values, flash=_media_flash(request),
+                       room=room, largest=largest, uploads=_media_upload_form(ctx))
+    body += _media_shared_block(ctx, shared)
+    return shell("Media", body, ctx=ctx,
+                 tagline="Films on this box — what they are, and what they need.")
+
+
+def _media_shared_files(conn) -> list:
+    """Videos already in the File Box that are not on the shelf yet.
+
+    Adopting one adds no bytes: the shelf row points at the file the File Box
+    already holds.  It is offered because a person who shared a film before this
+    page existed should not have to upload it twice.
+    """
+    rows = conn.execute(
+        "SELECT * FROM files WHERE hidden = 0 ORDER BY id DESC LIMIT 200").fetchall()
+    known = {str(r[0]) for r in conn.execute(
+        "SELECT DISTINCT stored FROM media").fetchall()}
+    found = []
+    for row in rows:
+        stored = str(row["stored"] or row["name"] or "")
+        if stored in known:
+            continue
+        if ark_media.is_video_name(str(row["display"] or row["name"] or "")):
+            found.append(row)
+    return found
+
+
+def _media_shared_block(ctx, rows) -> str:
+    if not rows:
+        return ""
+    items = "".join(
+        f"""<li>{esc(r['display'] or r['name'])}
+          <span class="sub">{esc(ark_media.human_size(r['size']))} · already in the File Box</span>
+          <form method="post" action="/admin/media/adopt">
+            {_csrf_field(ctx.csrf)}
+            <input type="hidden" name="file_id" value="{int(r['id'])}">
+            <button class="smallbtn" type="submit">Put it on the shelf too</button>
+          </form></li>""" for r in rows[:20])
+    return f"""<h2>Films already in the File Box</h2>
+  <p class="hint">Putting one on the shelf does not copy it and does not change who can
+  download it — it adds the shelf's picture, player and details to the file that is
+  already there.</p>
+  <ul class="clean">{items}</ul>"""
+
+
+def _media_check(ctx, conn, csrf: str, request: Request):
+    return _committed(request, conn, csrf)
+
+
+@router.post("/media/upload", response_class=HTMLResponse)
+def media_upload(request: Request, files: Optional[List[UploadFile]] = File(None),
+                 captions: Optional[List[UploadFile]] = File(None),
+                 category: str = Form(""), csrf: str = Form("")):
+    """Films from the owner: trusted, so they are on the shelf as soon as they pass the probe."""
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.read() as conn:
+        ctx, blocked = _media_check(ctx=None, conn=conn, csrf=csrf, request=request)
+        if blocked is not None:
+            return blocked
+        me = ctx.admin
+    picked = [item for item in (files or []) if item is not None and item.filename]
+    if not picked:
+        return _redirect("/admin/media?err=" + urllib.parse.quote(
+            "No film was chosen, so nothing was added."))
+    added: List[dict] = []
+    refused: List[dict] = []
+    for item in picked:
+        shown = _picked_name(item.filename)
+        if not ark_media.is_video_name(shown):
+            refused.append({"name": shown, "said": "that is not a kind of film this box reads"})
+            continue
+        try:
+            result = ark_media.accept(item.file.read, shown, state=ark_media.STATE_PUBLISHED,
+                                      added_by=str(me["username"]),
+                                      category=(category or "").strip()[:40],
+                                      limit=ark_media.MAX_MEDIA)
+            added.append({"name": shown, "id": int(result["id"]),
+                          "stem": Path(shown).stem.lower()})
+        except ark_storage.Refused as exc:
+            refused.append({"name": shown, "said": str(exc)})
+        except (sqlite3.DatabaseError, OSError) as exc:
+            refused.append({"name": shown, "said": str(exc) or "the box could not add that one"})
+        finally:
+            item.file.close()
+
+    kept = 0
+    for caption in (captions or []):
+        if caption is None or not caption.filename:
+            continue
+        shown = _picked_name(caption.filename)
+        stem = Path(shown).stem.lower()
+        # A caption belongs to a film only when the names match.  Guessing is how
+        # the wrong subtitles end up on the wrong film.
+        match = [one for one in added if one["stem"] == stem]
+        payload = caption.file.read(2 * 1024 * 1024 + 1)
+        caption.file.close()
+        if len(match) != 1:
+            refused.append({"name": shown, "said": "no film in this upload has that name"})
+            continue
+        try:
+            with ark_db.tx() as conn:
+                ark_media.add_captions(conn, match[0]["id"], shown, payload,
+                                       source=str(me["username"]))
+            kept += 1
+        except (ark_storage.Refused, sqlite3.DatabaseError, OSError) as exc:
+            refused.append({"name": shown, "said": str(exc)})
+
+    with ark_db.tx() as conn:
+        for one in added:
+            ark_db.audit(conn, action="media-add", actor_id=me["id"],
+                         actor_name=me["username"], target=one["name"], result="ok",
+                         detail=f"film {one['id']}")
+        for one in refused:
+            ark_db.audit(conn, action="media-add", actor_id=me["id"],
+                         actor_name=me["username"], target=one["name"], result="failed",
+                         detail=one["said"][:200])
+    pieces = []
+    if added:
+        pieces.append(f"{len(added)} film{'' if len(added) == 1 else 's'} on the shelf")
+    if kept:
+        pieces.append(f"{kept} caption file{'' if kept == 1 else 's'} added")
+    if refused:
+        pieces.append("refused: " + "; ".join(f"{one['name']} — {one['said']}"
+                                              for one in refused[:4]))
+    if not pieces:
+        return _redirect("/admin/media?err=" + urllib.parse.quote("Nothing was added."))
+    word = "ok=" if added or kept else "err="
+    return _redirect("/admin/media?" + word + urllib.parse.quote(". ".join(pieces)))
+
+
+@router.post("/media/adopt", response_class=HTMLResponse)
+def media_adopt(request: Request, file_id: int = Form(0), csrf: str = Form("")):
+    """Put a File Box video on the shelf without copying a byte."""
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.tx() as conn:
+        ctx, blocked = _media_check(ctx=None, conn=conn, csrf=csrf, request=request)
+        if blocked is not None:
+            return blocked
+        row = conn.execute("SELECT * FROM files WHERE id = ? AND hidden = 0",
+                           (int(file_id),)).fetchone()
+        if row is None:
+            return _redirect("/admin/media?err=" + urllib.parse.quote(
+                "That file is not in the File Box any more."))
+        try:
+            media_id = ark_media.adopt(conn, row, added_by=str(ctx.admin["username"]))
+        except ark_storage.Refused as exc:
+            return _redirect("/admin/media?err=" + urllib.parse.quote(str(exc)))
+        ark_db.audit(conn, action="media-adopt", actor_id=ctx.admin["id"],
+                     actor_name=ctx.admin["username"], target=str(row["display"]),
+                     result="ok", detail=f"film {media_id}")
+    return _redirect("/admin/media?ok=" + urllib.parse.quote(
+        "Added to the shelf; the file itself was not copied."))
+
+
+@router.post("/media/{item_id}/state", response_class=HTMLResponse)
+def media_state(request: Request, item_id: int, value: str = Form(""),
+                csrf: str = Form("")):
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    want = value if value in (ark_media.STATE_PUBLISHED, ark_media.STATE_HIDDEN) else ""
+    if not want:
+        return _redirect("/admin/media?err=" + urllib.parse.quote("That is not a choice."))
+    with ark_db.tx() as conn:
+        ctx, blocked = _media_check(ctx=None, conn=conn, csrf=csrf, request=request)
+        if blocked is not None:
+            return blocked
+        if ark_media.item(conn, item_id) is None:
+            return _redirect("/admin/media?err=" + urllib.parse.quote("That film is gone."))
+        conn.execute("UPDATE media SET state = ? WHERE id = ?", (want, int(item_id)))
+        ark_db.audit(conn, action="media-show" if want == ark_media.STATE_PUBLISHED
+                     else "media-hide", actor_id=ctx.admin["id"],
+                     actor_name=ctx.admin["username"], target=str(item_id), result="ok")
+    said = ("On the shelf now." if want == ark_media.STATE_PUBLISHED
+            else "Taken off the shelf. The file is still on the card.")
+    return _redirect("/admin/media?ok=" + urllib.parse.quote(said))
+
+
+@router.post("/media/{item_id}/prepare", response_class=HTMLResponse)
+def media_prepare(request: Request, item_id: int, csrf: str = Form("")):
+    """Look at the file again and do whatever it still needs."""
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.tx() as conn:
+        ctx, blocked = _media_check(ctx=None, conn=conn, csrf=csrf, request=request)
+        if blocked is not None:
+            return blocked
+        if ark_media.item(conn, item_id) is None:
+            return _redirect("/admin/media?err=" + urllib.parse.quote("That film is gone."))
+        ark_media.enqueue(conn, item_id, "prepare")
+        ark_db.audit(conn, action="media-prepare", actor_id=ctx.admin["id"],
+                     actor_name=ctx.admin["username"], target=str(item_id), result="ok")
+    return _redirect("/admin/media?ok=" + urllib.parse.quote(
+        "Queued. The box prepares one film at a time."))
+
+
+@router.post("/media/{item_id}/picture", response_class=HTMLResponse)
+def media_picture(request: Request, item_id: int, at: str = Form(""),
+                  csrf: str = Form("")):
+    """Take a new picture — at a time the owner typed, when they typed one."""
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    stamp = str(at or "").strip()
+    if stamp:
+        try:
+            seconds = max(0.0, min(24 * 3600.0, float(stamp)))
+        except ValueError:
+            return _redirect("/admin/media?err=" + urllib.parse.quote(
+                "A time is a number of seconds, like 65 or 12.5."))
+    with ark_db.tx() as conn:
+        ctx, blocked = _media_check(ctx=None, conn=conn, csrf=csrf, request=request)
+        if blocked is not None:
+            return blocked
+        if ark_media.item(conn, item_id) is None:
+            return _redirect("/admin/media?err=" + urllib.parse.quote("That film is gone."))
+        if stamp:
+            job = conn.execute(
+                "INSERT INTO media_jobs (media_id, kind, state, ts, detail)"
+                " VALUES (?, 'thumbnail', 'queued', ?, ?)",
+                (int(item_id), ark_media.now_iso(), f"at={seconds}")).lastrowid
+        else:
+            ark_media.enqueue(conn, item_id, "thumbnail")
+        ark_db.audit(conn, action="media-picture", actor_id=ctx.admin["id"],
+                     actor_name=ctx.admin["username"], target=str(item_id), result="ok",
+                     detail=f"at {seconds}" if stamp else "chosen by the box")
+    return _redirect("/admin/media?ok=" + urllib.parse.quote("A new picture is queued."))
+
+
+@router.post("/media/{item_id}/stop", response_class=HTMLResponse)
+def media_stop(request: Request, item_id: int, csrf: str = Form("")):
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.tx() as conn:
+        ctx, blocked = _media_check(ctx=None, conn=conn, csrf=csrf, request=request)
+        if blocked is not None:
+            return blocked
+        stopped = ark_media.cancel(conn, item_id)
+        ark_db.audit(conn, action="media-stop", actor_id=ctx.admin["id"],
+                     actor_name=ctx.admin["username"], target=str(item_id), result="ok",
+                     detail=f"{stopped} job(s)")
+    return _redirect("/admin/media?ok=" + urllib.parse.quote(
+        "Stopped. The original is untouched; a half-made copy was thrown away."))
+
+
+@router.post("/media/{item_id}/title", response_class=HTMLResponse)
+def media_title(request: Request, item_id: int, title: str = Form(""),
+                csrf: str = Form("")):
+    """A name of the owner's choosing; the original file name is never lost."""
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    clean = " ".join(str(title or "").split())[:160]
+    with ark_db.tx() as conn:
+        ctx, blocked = _media_check(ctx=None, conn=conn, csrf=csrf, request=request)
+        if blocked is not None:
+            return blocked
+        row = ark_media.item(conn, item_id)
+        if row is None:
+            return _redirect("/admin/media?err=" + urllib.parse.quote("That film is gone."))
+        conn.execute("UPDATE media SET title = ? WHERE id = ?",
+                     (clean or ark_media.title_from_filename(str(row["filename"] or "")),
+                      int(item_id)))
+        ark_db.audit(conn, action="media-title", actor_id=ctx.admin["id"],
+                     actor_name=ctx.admin["username"], target=str(item_id), result="ok",
+                     detail=clean[:120])
+    return _redirect("/admin/media?ok=" + urllib.parse.quote("The name is saved."))
+
+
+@router.post("/media/{item_id}/captions", response_class=HTMLResponse)
+def media_captions(request: Request, item_id: int, file: UploadFile = File(None),
+                   csrf: str = Form("")):
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.tx() as conn:
+        ctx, blocked = _media_check(ctx=None, conn=conn, csrf=csrf, request=request)
+        if blocked is not None:
+            return blocked
+        if ark_media.item(conn, item_id) is None:
+            return _redirect("/admin/media?err=" + urllib.parse.quote("That film is gone."))
+        if file is None or not file.filename:
+            return _redirect("/admin/media?err=" + urllib.parse.quote(
+                "No caption file was chosen."))
+        shown = _picked_name(file.filename)
+        payload = file.file.read(2 * 1024 * 1024 + 1)
+        file.file.close()
+        try:
+            ark_media.add_captions(conn, item_id, shown, payload,
+                                   source=str(ctx.admin["username"]))
+        except ark_storage.Refused as exc:
+            return _redirect("/admin/media?err=" + urllib.parse.quote(str(exc)))
+        ark_db.audit(conn, action="media-captions", actor_id=ctx.admin["id"],
+                     actor_name=ctx.admin["username"], target=str(item_id), result="ok",
+                     detail=shown)
+    return _redirect("/admin/media?ok=" + urllib.parse.quote("Captions added."))
+
+
+@router.post("/media/{item_id}/delete", response_class=HTMLResponse)
+def media_delete(request: Request, item_id: int, confirm: str = Form(""),
+                 csrf: str = Form("")):
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    if confirm != "yes":
+        return _redirect("/admin/media?err=" + urllib.parse.quote(
+            "Nothing was deleted — the box was not told it was sure."))
+    with ark_db.tx() as conn:
+        ctx, blocked = _media_check(ctx=None, conn=conn, csrf=csrf, request=request)
+        if blocked is not None:
+            return blocked
+        result = ark_media.delete(conn, item_id)
+        ark_db.audit(conn, action="media-delete", actor_id=ctx.admin["id"],
+                     actor_name=ctx.admin["username"], target=str(item_id), result="ok",
+                     detail=f"freed about {result['freed']} bytes")
+    return _redirect("/admin/media?ok=" + urllib.parse.quote(
+        f"Deleted. About {ark_media.human_size(result['freed'])} was removed from the card."))
+
+
+@router.post("/media/delete", response_class=HTMLResponse)
+def media_delete_many(request: Request, ids: Optional[List[int]] = Form(None),
+                      confirm: str = Form(""), csrf: str = Form("")):
+    """Delete several films at once — only when the box was told it was sure."""
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    if confirm != "yes":
+        return _redirect("/admin/media?err=" + urllib.parse.quote(
+            "Nothing was deleted — the box was not told it was sure."))
+    chosen = [int(one) for one in (ids or [])][:200]
+    if not chosen:
+        return _redirect("/admin/media?err=" + urllib.parse.quote("No film was ticked."))
+    with ark_db.tx() as conn:
+        ctx, blocked = _media_check(ctx=None, conn=conn, csrf=csrf, request=request)
+        if blocked is not None:
+            return blocked
+        result = ark_media.delete_many(conn, chosen)
+        ark_db.audit(conn, action="media-delete", actor_id=ctx.admin["id"],
+                     actor_name=ctx.admin["username"], target=f"{result['removed']} films",
+                     result="ok", detail=f"freed about {result['freed']} bytes")
+    return _redirect("/admin/media?ok=" + urllib.parse.quote(
+        f"{result['removed']} deleted, about {ark_media.human_size(result['freed'])} removed. "
+        "A file somebody is watching right now only becomes free space when they close it."))
+
+
+@router.api_route("/media/{item_id}/poster", methods=["GET", "HEAD"])
+def media_admin_poster(request: Request, item_id: int):
+    """The owner may see a film's picture before it is published."""
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.read() as conn:
+        ctx = _load_ctx(conn, request, ark_db.session_epoch(conn))
+        if (blocked := _need_session(ctx, request)) is not None:
+            return blocked
+        row = ark_media.item(conn, item_id)
+    if row is None:
+        return Response("Not here", status_code=404)
+    path = ark_media.poster_path(row)
+    if path is None:
+        return Response(ark_media_web.fallback_poster(), media_type="image/svg+xml")
+    return ark_media_web.ranged(request, path, "image/jpeg", private=True)
+
+
+@router.api_route("/media/{item_id}/stream", methods=["GET", "HEAD"])
+def media_admin_stream(request: Request, item_id: int):
+    """The owner may watch an unpublished film — the public door stays closed."""
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.read() as conn:
+        ctx = _load_ctx(conn, request, ark_db.session_epoch(conn))
+        if (blocked := _need_session(ctx, request)) is not None:
+            return blocked
+        row = ark_media.item(conn, item_id)
+    if row is None:
+        return Response("Not here", status_code=404)
+    path = ark_media.playable(row)
+    if path is None:
+        return Response("That film is not ready to play yet.", status_code=409)
+    return ark_media_web.ranged(request, path, ark_media_web.play_type(row), private=True)

@@ -30,7 +30,7 @@ ARK_ROOT = Path(os.environ.get("ARK_ROOT", "/srv/ark"))
 DB_PATH = Path(os.environ.get("ARK_DB", str(ARK_ROOT / "api" / "data" / "ark.db")))
 MARKER_PATH = Path(os.environ.get("ARK_MARKER", str(DB_PATH.parent / "ark.installed")))
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # ---------------------------------------------------------------------------
 #  migrations — append, never edit an entry that has already shipped
@@ -362,6 +362,96 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             "ALTER TABLE player_saves ADD COLUMN blob TEXT NOT NULL DEFAULT ''",
         ],
     ),
+    (
+        7,
+        [
+            # -- the media shelf ------------------------------------------------
+            # A video is one row of facts about one stored file.  ``file_id`` and
+            # ``stored`` name the bytes in ``drop/files`` — the shelf never keeps a
+            # second copy of an original — and ``play_stored`` names the one
+            # derivative (a remux or a conversion) the player may actually serve.
+            # ``duration`` is nullable on purpose: a file whose length nobody could
+            # read is *unknown*, never zero (the `None` rule of §8.8).
+            """CREATE TABLE IF NOT EXISTS media (
+                   id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                   ts          TEXT NOT NULL,
+                   file_id     INTEGER NOT NULL DEFAULT 0,
+                   title       TEXT NOT NULL DEFAULT '',
+                   filename    TEXT NOT NULL DEFAULT '',
+                   stored      TEXT NOT NULL DEFAULT '',
+                   size        INTEGER NOT NULL DEFAULT 0,
+                   sha256      TEXT NOT NULL DEFAULT '',
+                   state       TEXT NOT NULL DEFAULT 'pending',
+                   category    TEXT NOT NULL DEFAULT '',
+                   container   TEXT NOT NULL DEFAULT '',
+                   vcodec      TEXT NOT NULL DEFAULT '',
+                   acodec      TEXT NOT NULL DEFAULT '',
+                   width       INTEGER NOT NULL DEFAULT 0,
+                   height      INTEGER NOT NULL DEFAULT 0,
+                   duration    REAL,
+                   rotation    INTEGER NOT NULL DEFAULT 0,
+                   plan        TEXT NOT NULL DEFAULT 'unknown',
+                   play_stored TEXT NOT NULL DEFAULT '',
+                   play_size   INTEGER NOT NULL DEFAULT 0,
+                   poster      TEXT NOT NULL DEFAULT '',
+                   poster_at   REAL,
+                   probe       TEXT NOT NULL DEFAULT '',
+                   added_by    TEXT NOT NULL DEFAULT '',
+                   note        TEXT NOT NULL DEFAULT ''
+               )""",
+            "CREATE INDEX IF NOT EXISTS media_state ON media(state, ts)",
+            "CREATE INDEX IF NOT EXISTS media_file ON media(file_id)",
+            # -- work the box still owes the shelf ----------------------------
+            # A job is durable: it survives a restart, it says how many times it
+            # has honestly tried, and the worker claims one row at a time so two
+            # workers can never process the same film.
+            """CREATE TABLE IF NOT EXISTS media_jobs (
+                   id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                   media_id  INTEGER NOT NULL,
+                   kind      TEXT NOT NULL,
+                   state     TEXT NOT NULL DEFAULT 'queued',
+                   attempts  INTEGER NOT NULL DEFAULT 0,
+                   ts        TEXT NOT NULL,
+                   started   TEXT NOT NULL DEFAULT '',
+                   finished  TEXT NOT NULL DEFAULT '',
+                   heartbeat REAL NOT NULL DEFAULT 0,
+                   pid       INTEGER NOT NULL DEFAULT 0,
+                   detail    TEXT NOT NULL DEFAULT '',
+                   progress  REAL NOT NULL DEFAULT 0
+               )""",
+            "CREATE INDEX IF NOT EXISTS media_jobs_state ON media_jobs(state, id)",
+            "CREATE INDEX IF NOT EXISTS media_jobs_media ON media_jobs(media_id)",
+            # -- captions that travel with a film -----------------------------
+            """CREATE TABLE IF NOT EXISTS media_subs (
+                   id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                   media_id INTEGER NOT NULL,
+                   lang     TEXT NOT NULL DEFAULT 'en',
+                   label    TEXT NOT NULL DEFAULT '',
+                   stored   TEXT NOT NULL DEFAULT '',
+                   size     INTEGER NOT NULL DEFAULT 0,
+                   source   TEXT NOT NULL DEFAULT ''
+               )""",
+            "CREATE INDEX IF NOT EXISTS media_subs_media ON media_subs(media_id)",
+            # -- space promised to a job that has not finished writing yet ----
+            # One row per reservation, shared by every process.  ``written`` is
+            # subtracted from ``bytes`` when admission asks how much is still
+            # owed, so a byte is never counted twice: statvfs already sees the
+            # bytes on the card.
+            """CREATE TABLE IF NOT EXISTS space_reservations (
+                   id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                   ts        REAL NOT NULL,
+                   heartbeat REAL NOT NULL,
+                   owner     TEXT NOT NULL,
+                   device    INTEGER NOT NULL DEFAULT 0,
+                   path      TEXT NOT NULL DEFAULT '',
+                   label     TEXT NOT NULL DEFAULT '',
+                   bytes     INTEGER NOT NULL DEFAULT 0,
+                   written   INTEGER NOT NULL DEFAULT 0
+               )""",
+            "CREATE INDEX IF NOT EXISTS space_reservations_device"
+            " ON space_reservations(device)",
+        ],
+    ),
 ]
 
 
@@ -374,7 +464,14 @@ def connect() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(DB_PATH), timeout=15, isolation_level=None)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
+    # WAL is a property of the *file*, not of this connection, so asking for it
+    # again is a write that must wait for whatever writer is busy — up to the
+    # connect timeout on every fresh connection.  A reader opened while a film is
+    # being published would therefore stall for seconds before it could answer a
+    # question about free space.  Ask first; write only when the file is not in
+    # WAL yet (a brand-new database, or a restore that replaced it).
+    if str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower() != "wal":
+        conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=8000")
     conn.execute("PRAGMA foreign_keys=ON")
     # ``synchronous=FULL`` on **every** connection, not just the one the repair

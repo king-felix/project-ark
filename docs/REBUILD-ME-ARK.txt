@@ -310,6 +310,14 @@ popup resolves to the portal instead of a "no internet" dead end.
                   print — `location /` would answer the front page with a 200
                   for any address the proxy does not name. /essentials.zip is
                   404 (normal: nobody has made a pack) or a real application/zip.
+  62  media       FFmpeg from the distribution (a missing one is a warning, never
+                  a failed build), /srv/ark/media/{play,thumbs,subs,tmp},
+                  /usr/local/sbin/ark-media-worker + ark-media-worker.service
+                  (enabled and started; one job at a time, Nice=10, idle I/O,
+                  CPUQuota=150%, MemoryMax=1G), /usr/local/sbin/ark-space, and
+                  ARK_RESERVE_PERCENT="7" recorded in /etc/ark/ark.env.
+                  Proof: ffprobe answers, the build has libx264, the worker's
+                  --status prints the queue and the room, and /media/ answers 200.
   65  admin       the owner's door: scrypt accounts, forced first password,
                   nginx :8443 management origin (+ :8444 loopback setup while
                   unclaimed) and the :8445 player origin, self-signed certificate,
@@ -986,7 +994,7 @@ any failure. Categories:
     pi/install-ark.sh                       phase runner, lock, summary
     pi/lib/common.sh                        logging, ark_write (compare-first),
                                             apt helpers, http probes, free bytes
-    pi/steps/{10,15,20,30,40,50,58,60,65,70,95,90}-*.sh  the twelve phases (95 before 90,
+    pi/steps/{10,15,20,30,40,50,58,60,62,65,70,95,90}-*.sh  the thirteen phases (95 before 90,
                                             so the gate can see the backup tools;
                                             15 before 20 and 58 before 60 because
                                             each installs what the later one assumes)

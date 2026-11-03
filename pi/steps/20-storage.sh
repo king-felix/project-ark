@@ -76,6 +76,13 @@ else
   ark_info "keeping existing $ARK_ETC/ark.env"
 fi
 
+# ---- the one storage policy a shell script can ask -------------------------
+# Seven percent of the card (or 2 GiB) is kept back for the box itself.  Every
+# Python path asks ark_space directly; the shell paths (a collection, a model, a
+# backup) ask this command, so there is still only one policy on the box.
+ark_copy "$ARK_SRC/bin/ark-space" /usr/local/sbin/ark-space 755 root:root
+ark_ok "storage policy helper installed: /usr/local/sbin/ark-space"
+
 # ---- current network mode --------------------------------------------------
 if [[ ! -f "$ARK_ETC/mode" ]]; then
   printf 'home\n' > "$ARK_ETC/mode"

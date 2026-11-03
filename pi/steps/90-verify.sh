@@ -26,7 +26,7 @@ say_soft() { printf '   \033[1;33m·\033[0m %-40s %s\n' "$1" "$2"; }
 # softly: an empty library is a normal state on a metered connection, not a bug.
 for u in nginx.service ark-api.service ark-zim-downloader.service ark-boot-guard.service \
          ark-net-watch.timer ark-book-import.path ark-arcade-discover.timer \
-         ark-self-heal.timer ssh.service \
+         ark-self-heal.timer ark-media-worker.service ssh.service \
          NetworkManager.service avahi-daemon.service; do
   en="$(systemctl is-enabled "$u" 2>/dev/null || true)"
   ac="$(systemctl is-active  "$u" 2>/dev/null || true)"
@@ -144,6 +144,8 @@ check_page "/board"               "message board"
 check_page "/files"               "file box"
 check_page "/arcade/"             "games shelf"
 check_page "/arcade/add"          "add a game (no sign-in)"
+check_page "/media/"              "films shelf"
+check_says "/media/"              "films shelf words" "Films kept on this box"
 check_page "/arcade/static/ark-arcade.css" "game shelf stylesheet"
 check_page "/arcade/emulator/loader.js"    "game player"
 check_page "/api/status"          "live status"
@@ -178,6 +180,27 @@ case "$ask_code" in
        fi ;;
   *)   say_bad "ask the helper" "HTTP ${ask_code:-none}" ;;
 esac
+
+# ---- the films shelf ---------------------------------------------------------
+#  Two honest states: the tool is there and can make a playable copy, or it is
+#  not and the owner's page says so.  A missing FFmpeg never fails this gate —
+#  every film that already plays keeps playing.
+if command -v ffprobe >/dev/null 2>&1 && command -v ffmpeg >/dev/null 2>&1 \
+   && ffmpeg -hide_banner -encoders 2>/dev/null | grep -q libx264; then
+  say_ok "video reader" "$(ffmpeg -version 2>/dev/null | head -1 | cut -c1-52)"
+else
+  say_soft "video reader" "not fitted — films already play; a new one cannot be prepared"
+fi
+
+space_line="$(runuser -u "$ARK_PI_USER" -- env PYTHONPATH="$ARK_ROOT/api" ARK_ROOT="$ARK_ROOT" \
+  python3 -c 'import ark_media, ark_space; a = ark_space.account(ark_media.media_root()); print(ark_space.describe(ark_media.media_root())); print(a["percent"])' 2>/dev/null || true)"
+if [[ -n "$space_line" ]]; then
+  reserve_words="$(printf '%s\n' "$space_line" | head -1)"
+  reserve_percent_value="$(printf '%s\n' "$space_line" | tail -1)"
+  say_ok "space kept back" "${reserve_words} (${reserve_percent_value}% policy)"
+else
+  say_soft "space kept back" "not measured yet — the shelf's own record could not be read"
+fi
 
 # ---- the pack a household can carry -----------------------------------------
 #  None made yet is normal.  A front page answering 200 in place of a zip is

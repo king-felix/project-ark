@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import ark_arcade as arc
+import ark_space
 import ark_db
 import ark_romdb as romdb
 import ark_rommeta as rommeta
@@ -59,7 +60,9 @@ SOURCE_RAW_BY_SYSTEM = {
     "gba": SOURCE_RAW_GBA, "nes": SOURCE_RAW_NES,
 }
 MAX_DOWNLOAD = 64 * 1024 * 1024       # a homebrew cartridge, not a video
-MIN_FREE_AFTER_INSTALL = 64 * 1024 * 1024   # the card must still have room to live
+#: The reserve a game must leave behind is not this module's number any more:
+#: ``ark_space`` keeps 7 % of the card (or 2 GiB) for the box, and a game is
+#: measured against the same arithmetic as a film, a book and a collection.
 HTTP_TIMEOUT = 20
 PROVIDER_ID = "homebrew-hub"
 CATALOG_QUERIES = ("", "puzzle", "platform", "action", "adventure")
@@ -519,7 +522,10 @@ def _job(conn: sqlite3.Connection, kind: str, detail: str, started: str,
 
 
 def _free_bytes(where: Path) -> int:
-    """Free bytes on the card that holds ``where``; -1 when it cannot be read."""
+    """Free bytes on the card that holds ``where``; -1 when it cannot be read.
+
+    Kept as a thin reader for the owner's page; the *policy* is ark_space's.
+    """
     probe = where
     while not probe.exists() and probe != probe.parent:
         probe = probe.parent
@@ -530,13 +536,16 @@ def _free_bytes(where: Path) -> int:
 
 
 def _ensure_room(needed: int, where: Path) -> None:
-    """Leave the box room to keep working, not just room for this game."""
-    free = _free_bytes(where)
-    if free >= 0 and int(needed) + MIN_FREE_AFTER_INSTALL > free:
-        raise InstallRefused(
-            "There is not enough room on the card to add this game and still leave "
-            "space for the rest of the box."
-        )
+    """Leave the box room to keep working, not just room for this game.
+
+    The answer comes from ``ark_space`` — the reserve every other growth path
+    uses — so a game cannot be admitted into space a film or a collection has
+    already promised.
+    """
+    try:
+        ark_space.require(where, int(needed))
+    except ark_space.Refused as exc:
+        raise InstallRefused(str(exc)) from exc
 
 
 def _download_to_temp(url: str) -> Path:

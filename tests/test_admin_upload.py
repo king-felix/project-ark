@@ -323,7 +323,7 @@ def test_a_press_larger_than_one_upload_may_be_stops_and_leaves_no_partial_file(
 
     cookie = claim_box(client)
     monkeypatch.setattr(ark_ingest, "MAX_BATCH", 64)
-    monkeypatch.setattr(ark_ingest, "MIN_FREE_RESERVE", 0)
+    monkeypatch.setattr(ark_ingest.ark_space, "reserve_bytes", lambda path=None: 0)
     sent = _send(client, cookie, _token(client, cookie),
                  [("Big.epub", b"x" * 200)])
     assert sent.status_code == 400, sent.text
@@ -421,7 +421,8 @@ def test_the_caps_are_the_ones_the_rest_of_the_box_already_uses():
     import ark_storage
 
     assert ark_ingest.MAX_GAME == ark_arcade_install.MAX_DOWNLOAD
-    assert ark_ingest.MIN_FREE_RESERVE == ark_storage.MIN_FREE_RESERVE
+    # One storage policy, not three: every growth path asks ark_space.
+    assert ark_ingest.ark_space is ark_storage.ark_space
     assert ark_ingest.MAX_BATCH <= ark_storage.MAX_FILE
 
 
@@ -484,21 +485,24 @@ def test_the_address_list_really_describes_every_door():
 #  the proxy allows exactly what the application accepts
 # ---------------------------------------------------------------------------
 def test_the_batch_door_allows_the_batch_the_page_accepts_and_no_more():
-    """One exact path takes a 512 MiB body; the rest of /admin stays tiny.
+    """One exact path takes the biggest body the page accepts; the rest stays tiny.
 
-    520m is ``ark_ingest.MAX_BATCH`` (512 MiB) plus multipart framing, so the proxy
-    never refuses a batch the page would take — and never lets a body through that
-    the application has no use for.  The body is streamed and, like every other
-    listener on this box, parks on the card rather than in the tmpfs /tmp became.
+    8208m is ``ark_media.MAX_MEDIA`` (8 GiB) plus multipart framing: a film may
+    travel in the same press as books and games, so the proxy must allow the
+    larger of the two caps and let the application refuse anything over its own.
+    The body is streamed and, like every other listener on this box, parks on the
+    card rather than in the tmpfs /tmp became.
     """
     import ark_ingest
+    import ark_media
 
     assert ark_ingest.MAX_BATCH == 512 * 1024 * 1024
     text = (REPO / "pi" / "nginx" / "ark-admin.conf").read_text(encoding="utf-8")
     door = re.search(r"location\s*=\s*/admin/upload\s*\{(.*?)\n\s*\}", text, re.S)
     assert door, "ark-admin.conf has no exact-match door for /admin/upload"
     body = door.group(1)
-    assert "client_max_body_size 520m;" in body, body
+    biggest_mb = max(ark_ingest.MAX_BATCH, ark_media.MAX_MEDIA) // (1024 ** 2) + 16
+    assert f"client_max_body_size {biggest_mb}m;" in body, body
     assert "proxy_request_buffering off;" in body, body
     assert "proxy_read_timeout 300s;" in body, body
 

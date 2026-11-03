@@ -368,8 +368,8 @@ def test_multilingual_english_survives_the_trip_through_a_catalogue_entry():
 def test_a_full_card_is_refused_before_a_game_is_fetched(ark, tmp_path, monkeypatch):
     import ark_arcade_install as install
     source = _owner_source(tmp_path)
-    monkeypatch.setattr(install, "_free_bytes",
-                        lambda where: install.MIN_FREE_AFTER_INSTALL - 1)
+    import ark_space
+    monkeypatch.setattr(ark_space, "slack", lambda path=None: 0)
     with ark.db.tx() as conn:
         with pytest.raises(install.InstallRefused) as refused:
             install.import_owner_file(conn, source, **_owner_facts(source))
@@ -384,7 +384,8 @@ def test_a_card_that_fills_while_copying_leaves_nothing_behind(ark, tmp_path, mo
     import errno
     import ark_arcade_install as install
     source = _owner_source(tmp_path)
-    monkeypatch.setattr(install, "_free_bytes", lambda where: 10 ** 12)
+    import ark_space
+    monkeypatch.setattr(ark_space, "slack", lambda path=None: 10 ** 12)
 
     def full(*args, **kwargs):
         raise OSError(errno.ENOSPC, "No space left on device")

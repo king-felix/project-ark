@@ -166,6 +166,19 @@ name="${name:-$(basename "${url%%\?*}")}"
 part="$MODELS/.$name.part"
 say "Fetching $url"
 say "(a few hundred megabytes; it can be stopped with Ctrl-C and started again)"
+# The words are the largest single download on a metered link, so the box is
+# asked before the first byte: ark-space keeps 7 % of the card (or 2 GiB) for the
+# portal, and the helper is a want, not a need.
+SPACE="${SPACE:-/usr/local/sbin/ark-space}"
+if [[ -x "$SPACE" ]]; then
+  need_bytes="$(curl -sIL --max-time 20 "$url" 2>/dev/null \
+    | tr -d '\r' | awk 'tolower($1)=="content-length:"{n=$2} END{print n+0}')"
+  if ! "$SPACE" --check --need "${need_bytes:-0}" --path "$MODELS"; then
+    say "! not enough room on the card for that model — nothing was downloaded"
+    exit 3
+  fi
+fi
+
 if ! curl -fL --retry 3 --retry-delay 2 -C - -o "$part" "$url"; then
   say "! the download did not finish — the part file is kept, so running this again continues it"
   exit 1

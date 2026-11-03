@@ -31,6 +31,8 @@ and what the next executable step is.
 | 11 | Backup / offline recovery kit | **stage 6 done** — `ark-backup` writes one dated, verified bundle (records, shared files, import list, a manifest with a sha256 per file) built as `.partial` and published by rename; `ark-restore` proves a bundle before touching anything, refuses an occupied box without `--force`, and never replaces a shared file; the printed recovery sheet needs only a phone, a card reader and a working card (§11) |
 | 12 | Emergency content review | **stage 7 done (code + test)** — `ark_review` holds the eight topics, each naming the pages that carry it; a page the card does not have is *named as missing*, never assumed; the owner records "I have read this today" and a topic older than a year is shown as **due**. Nothing judges a page and nothing refuses to serve one (§23) |
 | 13 | Essentials pack, QR, accessibility, household page | **stage 7 done (code + test)** — `/household` (nine answers the household typed + when each emergency page was last read), `/cards` (three wall cards, inline SVG, no image/font/script/network), `/essentials.zip` (one file: our manuals and guides rewritten for a folder, the quick card, the recovery sheet, `START-HERE` and a sha256 manifest — **not** the three wall cards, which print from `/cards`), the owner's **Household** page, and an accessibility pass (skip link, visible focus ring, ≥16 px body, 44 px targets, print rules) (§23) |
+| — | Media — films on the box | **delivered and tested (Mac)** — a film is probed rather than trusted (`direct`/`remux`/`convert`/`unsupported`), stored once, published only by the owner, served in ranges (206/416/HEAD), pictured once, converted in the background one at a time, and deletable without losing a shared payload. A visitor's film waits for the owner; the shelf, the player, resume (browser-local) and captions are public and free. **No phone has played one yet** (log §43, human list §21) |
+| — | One storage policy | **delivered and tested** — `ark_space` keeps `max(7 % of the filesystem, 2 GiB)` under every growth path (uploads, books, games, films, collections, models, backups), with cross-process reservations; it replaced three separate numbers. Measured on the box: 16.0 GiB of a 229 GiB card (log §43) |
 | — | ARK Arcade | **delivered and tested** — public shelf, guest play, optional named-player saves on the TLS `:8445` origin, owner **Games** page, licence/allowlist/hash gate, weekly discovery, and saves carried by a backup (§12); since 25 Oct a game can also be named from the file itself against an offline catalogue, and added from the owner's page (§19) |
 | — | Ask the Ark — a helper on the card | **delivered and tested** — `http://ark.lan/ask` answers from a model file on the card, the engine listens on `127.0.0.1:8089`, the page of facts is built from what is really here, one answer at a time, and **a box with no model is a supported state** that says so in one sentence (§25). No model has ever been on the box |
 | — | A power cut | **delivered and tested** — phase `15-resilience`: `ark-self-heal` runs before the portal and once a day, fixing a clock in the past, a half-written small file, a database SQLite cannot open and the temp files a cut leaves behind; plus `fake-hwclock`, tmpfs `/tmp`, a 15 s write-behind, a forced filesystem check, a volatile journal, a 15 s hardware watchdog and `Restart=always` on every long-running unit (§26). **It has never met a real power cut** |
@@ -4692,3 +4694,104 @@ script, unit, phase or page reads the rules file and nothing at runtime changed.
 it does not need to be. Nothing in `pi/`, `staging/` or `scripts/` installs the rules file, so this
 checkpoint asks the card for nothing — the next deploy is unchanged by it.
 
+
+---
+
+## 43. A film shelf that tells the truth, and one storage policy — 2 Nov 2026
+
+**What was asked.** Add an offline video library and player to the box: route
+recognised video uploads into a media workflow, probe the bytes rather than trust
+the extension, separate *accepted* from *playable*, generate thumbnails, serve
+ranges so seeking works, keep a resume position, make an owner's page that can
+publish/prepare/delete, and put **one** storage reserve — 7 % of the card, or
+2 GiB — under every path that makes the card grow.
+
+### 43.1 What is new
+
+| File | What it owns |
+|---|---|
+| `pi/api/ark_space.py` | **the only storage policy**: `reserve_for()`, `facts()` (statvfs, `f_bavail`), `reserve()`/`touch()`/`release()`/`reconcile()` over a `space_reservations` table, `hold()` context, `account()` for the pages. `Refused` lives here now; `ark_storage.Refused` is an alias, so every existing `except` still catches it |
+| `pi/api/ark_media.py` | the shelf's model: `probe()` (ffprobe JSON), `plan_for()` (direct/remux/convert/unsupported), `mp4_faststart()` (atom scan, no payload read), `accept()`/`adopt()`, `add_captions()` + `srt_to_vtt()`, the job queue (`enqueue`/`claim`/`finish`/`cancel`/`recover`), the catalogue (`listing`/`count`, escaped LIKE), `delete()`/`delete_many()`, `playable()`/`poster_path()` |
+| `pi/api/ark_media_jobs.py` | the work: bounded `ffmpeg`/`ffprobe` calls (argument arrays, deadline, temp-file stderr), thumbnail candidate scoring (pure-Python stddev, no image library), `build_command()` (copy where possible, x264 where not), `output_budget()` + `-fs`, the `prepare`/`thumbnail` job bodies, `startup()` reconciliation |
+| `pi/api/ark_media_web.py` | the public shelf: `build_router(page)`, `ranged()` (206/416/HEAD/`Accept-Ranges`/`If-Range`), library page, player page (resume + speed + PiP + captions), poster fallback SVG |
+| `pi/bin/ark-media-worker` | the one background process: `--once`, `--status`, `nice 10`, claim one job at a time |
+| `pi/bin/ark-space` | the shell door to the same policy: `--status [--json]`, `--check --need N` (exit 3 with a sentence) |
+| `pi/systemd/ark-media-worker.service` | `Nice=10`, idle I/O, `CPUQuota=150%`, `MemoryMax=1G`, `Restart=always`, no `Wants=` on the portal |
+| `pi/steps/62-media.sh` | installs FFmpeg from the distribution (a missing one is a warning), creates `/srv/ark/media`, records `ARK_RESERVE_PERCENT`, starts the worker |
+| `tests/test_media.py` (24), `tests/test_space.py` (13) | the shelf and the policy, with films generated by FFmpeg on the spot |
+
+Modified: `ark_db.py` (migration **7**: `media`, `media_jobs`, `media_subs`,
+`space_reservations`; `connect()` no longer re-issues `PRAGMA journal_mode=WAL` on
+every connection — see §43.4), `ark_storage.py`/`ark_ingest.py`/
+`ark_arcade_install.py` (reserve now asked, not repeated), `ark_admin.py` (12th
+nav page, `/admin/media` + 11 routes), `main.py` (nav, router, `/files` routing,
+`/api/status.media`), `ark_health.py` (reserve facts + Films in the breakdown),
+`ark_doors.py` (two doors), `ark_bundle.py` (`EXCLUDED` names films),
+`nginx/ark.conf` (`= /files` 8208m, `^~ /media/` with Range passthrough),
+`nginx/ark-admin.conf` (`= /admin/media/upload` 8208m, `/admin/upload` raised,
+admin read timeout 600s), `ark-api.service` (`/srv/ark/media` writable),
+`install-ark.sh` (`62-media`), `60-portal.sh`/`20-storage.sh` (new modules and
+`ark-space`), `90-verify.sh` (worker in the service list, `/media/` page, video
+tool, reserve line), portal pages, README, ADMIN, USING-THE-ARK, matrix R8/R13.
+
+### 43.2 The decisions that matter
+
+* **A film is stored once.** The bytes stay in `drop/files` under a carrier row
+  (`hidden=1`); `media` refers to it by `file_id` **and** `stored`. Nothing is
+  copied into a second library. Deleting the film removes the carrier row and the
+  bytes only when no other row or film names them.
+* **A visitor's film is not public.** The File Box routes it to the shelf as
+  `pending`; every public address answers 404 until the owner publishes. The
+  File Box listing does not show it either. The owner's own uploads are
+  `published` at once (the trusted path).
+* **Extensions route; bytes decide.** `probe()` runs before any row is written; a
+  file that is not a video is deleted and refused with ffprobe's own last line.
+* **Four verdicts, never one.** `direct` / `remux` / `convert` / `unsupported`,
+  with `plan_words()` as the only phrasing a page may use. A `.mov` is repacked
+  even though it is the same container family, because a browser is not obliged
+  to open that spelling.
+* **Cheap before expensive.** H.264+AAC in the wrong box is a stream copy
+  (`-c:v copy`, `+faststart`); only a codec a browser cannot decode gets x264.
+  Audio is copied when it is AAC/MP3.
+* **Every derivative is atomic.** Written in `media/tmp`, `fsync`ed by the tool,
+  renamed into `media/play`. A cut leaves the previous good file or nothing.
+* **One job at a time, and it can be stopped.** The DB row is the queue; the
+  worker checks `job_state()` on every progress line and kills the tool on
+  `cancelled`; the reservation is released in a `finally`.
+* **Space is promised, not hoped.** A conversion reserves its **output budget**
+  (`max(1 MiB × seconds, 64 MiB)`, capped at 8 GiB) before starting; the upload
+  paths check `free − reserve − promised` on every MiB.
+* **Backups say what they leave out.** `EXCLUDED` now names films and their
+  playing copies, and every manifest carries that sentence.
+
+### 43.3 What was measured
+
+* Mac (ffmpeg 9.0.2, libx264): a 4 s H.264 MP4 with `+faststart` plans `direct`;
+  the same file without faststart and an MKV plan `remux`; a `mpeg4`/`mp3` AVI
+  plans `convert` and comes back H.264/AAC. Thumbnails are chosen at 12–82 % of
+  the film and written at 360 px height.
+* The suite: **735 passed, 2 skipped** (the two QR cross-checks that need optional
+  packages). Before this change it was 691 + 2. New: 25 media, 13 space, 6 config.
+* The Pi: `df -h /srv/ark` reports 229 GiB total, 117 GiB free → the reserve is
+  **16.0 GiB** (7 %), leaving about 101 GiB of admissible growth at the time of
+  measurement. `/etc/ark/ark.env` now records the percentage.
+* **Not measured:** how fast a Pi 4 encodes. The worker's ceiling
+  (`CONVERT_FACTOR = 3×`, capped at 6 h) is a *bound*, not a benchmark, and the
+  page says a feature film can take hours. This is the honest gap in the feature.
+
+### 43.4 A defect found on the way (and fixed)
+
+`ark_db.connect()` issued `PRAGMA journal_mode=WAL` on **every** connection. WAL is
+a property of the file, so that statement is a write that must wait for whatever
+writer is busy — and `ark_space.slack()` opens a reader while a game install holds
+the write lock. The suite went from 2 minutes to tens of minutes, one 15-second
+connect timeout at a time. The fix is to *ask* first (`PRAGMA journal_mode` returns
+the current mode) and write only when it is not WAL. This was latent in every
+reader the box opens while a writer is busy; the reserve made it visible.
+
+### 43.5 What is deliberately not built
+
+Per-person media quotas; a trash/undo for films; embedded (bitmap) subtitle
+extraction; hardware-accelerated encoding (the Pi's `h264_v4l2m2m` is not
+assumed — the box uses x264 and says it is slow); multi-user watch history
+(resume is browser-local by design); a backup that carries films.

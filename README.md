@@ -24,9 +24,10 @@ down, and the portal address does not serve it at all.
 | `/search?q=…` | one search that covers the encyclopedias, the manuals and the books |
 | `/kiwix/` | the offline library (encyclopedias, medical, repair, food, water) |
 | `/books/` | the book shelf (EPUB/PDF, read in the browser or download) |
+| `/media/` | the film shelf: pictures, a player with captions and resume, a download — only what the owner published |
 | `/vault/` | survival manuals + repair guides, each with a printable PDF |
 | `/board` | a message board anyone can post to (the owner can pin, sort out, hide) |
-| `/files` | a file box anyone can drop things into (2 GB per file, links never overwrite) |
+| `/files` | a file box anyone can drop things into (2 GB per file, 8 GB for a film — a film goes to the owner for a look first) |
 | `/household` | what this household wrote down, and when a person last read each emergency page |
 | `/cards` | three cards for the wall, printed from the browser — no internet needed |
 | `/ask` | type a question in your own words and get an answer made on this box, with no internet |
@@ -82,8 +83,11 @@ ssh pi@ark.local 'sudo bash /srv/ark/src/install-ark.sh --only 60-portal'
 bash scripts/03-provision.sh --only 60-portal
 ```
 
-Phases: `10-base` `20-storage` `30-calibre` `40-vault` `50-kiwix` `60-portal`
-`65-admin` `70-network` `95-backup` `90-verify`.
+Phases: `10-base` `15-resilience` `20-storage` `30-calibre` `40-vault` `50-kiwix`
+`58-ai` `60-portal` `62-media` `65-admin` `70-network` `95-backup` `90-verify`.
+`62-media` installs FFmpeg from the distribution, creates `/srv/ark/media`, and
+starts the one background worker that prepares films; a box without FFmpeg is a
+supported state (everything that already plays keeps playing).
 
 ---
 
@@ -313,6 +317,79 @@ game, export all of them as one zip, and put them back on another ARK. The save
 API is reachable only through the TLS player origin, never the public portal or
 the administrator origin. The games themselves are content and are not in a
 backup bundle; a named player's saves are.
+
+---
+
+## Films — a shelf that tells the truth about what will play
+
+`http://ark.lan/media/` is a Netflix-like shelf built out of the box's own
+files: thumbnail cards, search, sort (newest, title, longest, largest) and
+filters for *ready to play* / *getting ready* / *needs preparing*. Nothing is
+fetched from the internet — no posters, no metadata service, no fonts.
+
+**The extension only decides that a file should be looked at.** Every film is
+read with `ffprobe` before the shelf says anything about it, and the shelf keeps
+three different facts apart:
+
+| Plan | What it means | What the box does |
+|---|---|---|
+| **Plays as it is** | H.264/AAC in an MP4 whose index is at the front (or VP8/VP9/AV1 in WebM) | serves the original, untouched |
+| **Needs a quick repack** | browser-safe streams in the wrong box (MKV, MOV, TS, a non-faststart MP4) | copies the streams into MP4 — seconds, no quality loss |
+| **Needs converting** | a codec browsers cannot decode (HEVC, MPEG-4 Part 2, MPEG-2, WMV…) | queues a background conversion to H.264/AAC MP4, one film at a time |
+
+A conversion is a **background job** with a wall-clock ceiling, an output-size
+budget, a space reservation and a cancel button. On a Pi 4 it is slow — a
+feature film can take hours — so the box never transcodes while somebody is
+watching, never runs two at once, and always keeps the original. The owner's
+**Media** page states the cost, shows the queue, and offers *Stop*; a film that
+was not converted still has its file and can be played on a workstation (the
+recipe is printed on the page).
+
+**What a reader gets:** a `<video>` player with the browser's own controls
+(seek, volume, fullscreen, captions), plus a speed control, picture-in-picture
+where the browser supports it, and a resume position kept in **that browser's
+local storage** — never on the box, never shared. The shelf's *Carry on
+watching* row is built from the same local storage and has a *Clear this list*
+button. Seeking works because the bytes are served in ranges (206,
+`Content-Range`, `Accept-Ranges`, `HEAD`, 416 for a range that does not exist).
+
+**What is public:** only what the owner published. A film somebody drops in the
+File Box is stored once, waits in the owner's Media page, and answers 404 on
+every public address until it is shown. Captions travel as WebVTT (an uploaded
+`.srt` is converted on the box) and are listed on the film's page.
+
+### How full the card may get
+
+One policy decides, for everything that makes the card grow: an upload, a book,
+a game, a film, a collection, a model, a backup.
+
+> **reserve = max(7 % of the filesystem's capacity, 2 GiB)**
+
+The capacity is the filesystem **actually receiving the bytes** (asked with
+`statvfs` at the moment of use, never a nominal card size) and the free figure is
+`f_bavail` — the blocks an ordinary account may write, so the slice ext4 keeps
+for root is not counted as room the box can use. On the 256 GB card in this
+build that is about 16 GiB kept back.
+
+The policy is centralised in `pi/api/ark_space.py`; the shell scripts ask the
+same module through `/usr/local/sbin/ark-space --check --need N`, so there is no
+second number anywhere. An operation whose size is known before it starts
+(a conversion, a collection, a model, a backup) takes a **reservation** in the
+database first, shared by every process: admission is
+`free − reserve − (promised but not yet written) ≥ need`, and bytes that have
+reached the disk are subtracted from the promise so nothing is counted twice.
+
+This is an **application admission policy**, not a partition and not a quota for
+one person. Something outside the box can still fill the card; the reserve
+cannot stop that. What it does is refuse to be the thing that crosses the line,
+in a sentence that names the shortfall — and it never deletes a person's original
+to make room. Watching, deleting and the owner's pages keep working when the
+reserve is breached, so the owner can always free space.
+
+`ARK_RESERVE_PERCENT` in `/etc/ark/ark.env` changes the percentage (0–50; a
+value outside that range falls back to 7). The owner's Overview and Media pages
+show total, free, kept back, promised to running jobs, and what may still be
+added.
 
 ---
 

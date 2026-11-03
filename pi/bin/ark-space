@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+"""Project ARK — ask the box how much room there is, from a shell script.
+
+Every part of the box that grows the card asks the same policy (``ark_space``):
+7 % of the filesystem that is actually receiving the bytes, or 2 GiB, whichever
+is larger.  A shell script cannot import a Python module, so this is the one
+command they share:
+
+    ark-space --status                     # free, kept back, promised, usable
+    ark-space --status --json              # the same numbers for a program
+    ark-space --check --need 3221225472    # exit 0 when it fits, 3 with a sentence
+    ark-space --check --need 0 --path /srv/ark/kiwix
+
+``--check`` prints nothing when the answer is yes — a script that only cares
+whether it may proceed should not have to parse prose.  When the answer is no it
+prints the same sentence an owner would read on a page, and exits **3**, so a
+caller can tell "no room" from "the command was wrong".
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+
+sys.path.insert(0, os.environ.get("ARK_API_DIR", "/srv/ark/api"))
+
+import ark_space  # noqa: E402
+
+
+def _size(n) -> str:
+    if n is None:
+        return "not measured yet"
+    step = float(n)
+    for unit in ("B", "kB", "MB", "GB", "TB"):
+        if step < 1000 or unit == "TB":
+            return f"{int(step)} {unit}" if unit == "B" else f"{step:.1f} {unit}"
+        step /= 1000
+    return f"{step:.1f} TB"
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description="How much room the box has left.")
+    parser.add_argument("--path", default=None, help="the folder that will receive the bytes")
+    parser.add_argument("--need", type=int, default=None,
+                        help="how many bytes the operation will add")
+    parser.add_argument("--check", action="store_true", help="exit 0 if it fits, 3 if not")
+    parser.add_argument("--status", action="store_true", help="report the numbers (default)")
+    parser.add_argument("--json", action="store_true", help="report as JSON")
+    args = parser.parse_args(argv)
+
+    if args.check:
+        need = max(0, int(args.need or 0))
+        try:
+            ark_space.require(args.path, need)
+        except ark_space.Refused as exc:
+            print(str(exc), file=sys.stderr)
+            return 3
+        return 0
+
+    room = ark_space.account(args.path)
+    if args.json:
+        print(json.dumps(room, indent=2, sort_keys=True))
+        return 0
+    pct = room["percent"]
+    print(f"card            : {room['path']}")
+    print(f"holds           : {_size(room['total_bytes'])}")
+    print(f"free right now  : {_size(room['free_bytes'])}")
+    print(f"kept back ({pct:g}%) : {_size(room['reserve_bytes'])}")
+    print(f"promised to jobs: {_size(room['committed_bytes'])}")
+    print(f"may be added    : {_size(room['usable_bytes'])}")
+    if room.get("breached"):
+        print("state           : inside the reserve — new files and films are refused")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

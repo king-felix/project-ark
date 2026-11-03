@@ -656,3 +656,80 @@ def test_the_app_spills_an_upload_onto_the_card_too():
         text = (REPO / "pi" / "steps" / phase).read_text(encoding="utf-8")
         assert "ARK_ROOT/tmp" in text, "%s never makes the folder nginx needs" % phase
 
+
+
+# ---------------------------------------------------------------------------
+#  The film shelf: the proxy must not break seeking, and the worker must stay a
+#  background neighbour
+# ---------------------------------------------------------------------------
+def test_the_film_door_passes_ranges_through_and_never_buffers_a_player():
+    """A 206 answer is what makes seeking work; a buffering proxy turns it into a wait."""
+    match = re.search(r"location \^~ /media/ \{(.*?)\n    \}", NGINX, re.S)
+    assert match, "ark.conf has no /media/ door"
+    body = match.group(1)
+    assert "proxy_pass http://ark_api;" in body
+    assert "proxy_buffering off;" in body
+    assert "proxy_set_header Range             $http_range;" in body
+    assert "proxy_set_header If-Range          $http_if_range;" in body
+    # It is a proxy, never an alias: an alias cannot ask the database whether a
+    # film is published, and a guessable file would stay downloadable.
+    assert "alias" not in body
+
+
+def test_the_file_box_door_allows_a_film_and_the_server_keeps_the_smaller_cap():
+    import ark_media
+    match = re.search(r"location = /files \{(.*?)\n    \}", NGINX, re.S)
+    assert match, "ark.conf has no exact /files door"
+    body = match.group(1)
+    wanted = ark_media.MAX_MEDIA // (1024 ** 2) + 16
+    assert f"client_max_body_size {wanted}m;" in body
+    assert "proxy_request_buffering off;" in body
+    # Everything else on :80 keeps the shared-file cap.
+    server = re.search(r"server \{(.*?)\n    location", NGINX, re.S)
+    assert server and "client_max_body_size 2064m;" in server.group(1)
+
+
+MEDIA_UNIT = (REPO / "pi" / "systemd" / "ark-media-worker.service").read_text(encoding="utf-8")
+MEDIA_PHASE = (REPO / "pi" / "steps" / "62-media.sh").read_text(encoding="utf-8")
+INSTALLER = (REPO / "pi" / "install-ark.sh").read_text(encoding="utf-8")
+
+
+def test_the_media_worker_is_a_background_neighbour_not_a_second_portal():
+    assert "Restart=always" in MEDIA_UNIT
+    assert "Nice=10" in MEDIA_UNIT
+    assert "IOSchedulingClass=idle" in MEDIA_UNIT
+    assert "CPUQuota=150%" in MEDIA_UNIT
+    assert "MemoryMax=1G" in MEDIA_UNIT
+    # It must be able to write the shelf and the card's temp space, and nothing else.
+    assert "/srv/ark/media" in MEDIA_UNIT
+    assert "ReadWritePaths=/srv/ark/media /srv/ark/drop /srv/ark/api/data /srv/ark/tmp" \
+        in MEDIA_UNIT
+    # A film that cannot be prepared must never hold the portal back.
+    assert "After=local-fs.target ark-api.service" in MEDIA_UNIT
+    assert "Wants=ark-api.service" not in MEDIA_UNIT
+
+
+def test_the_media_phase_is_installed_and_enabled_in_order():
+    assert "62-media" in INSTALLER
+    assert "ark_media" in PORTAL_PHASE
+    assert "apt-get install -y --no-install-recommends ffmpeg" in MEDIA_PHASE
+    assert "ark-service" not in MEDIA_PHASE          # the helper is `ark_service_up`
+    assert "ark_service_up ark-media-worker.service" in MEDIA_PHASE
+    # A missing FFmpeg is a warning, never a failed install.
+    assert "ark_warn" in MEDIA_PHASE
+
+
+def test_the_api_unit_may_write_the_shelf_it_serves():
+    api_unit = (REPO / "pi" / "systemd" / "ark-api.service").read_text(encoding="utf-8")
+    assert "/srv/ark/media" in api_unit
+
+
+def test_the_reserve_is_asked_not_repeated():
+    """One policy, asked by every Python growth path — never a second constant."""
+    storage = (REPO / "pi" / "api" / "ark_storage.py").read_text(encoding="utf-8")
+    ingest = (REPO / "pi" / "api" / "ark_ingest.py").read_text(encoding="utf-8")
+    arcade = (REPO / "pi" / "api" / "ark_arcade_install.py").read_text(encoding="utf-8")
+    assert "MIN_FREE_RESERVE" not in storage
+    assert "ark_space.reserve_bytes" in storage
+    assert "ark_space.reserve_bytes(folder)" in ingest
+    assert "ark_space.require(where" in arcade
