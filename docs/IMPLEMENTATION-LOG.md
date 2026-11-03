@@ -5305,25 +5305,30 @@ this change had just proved false — it now says hours, with the number.
   track is the source's two Matroska chapters, not a subtitle. Nothing was published:
   the file was written under `/srv/ark/tmp` and deleted afterwards.
 
-### 46.6 What this does not fix
+### 46.6 What this did not fix *(status as of §46; both open items were decided and
+built in §47)*
 
 * **A 1080p 10-bit HEVC film is expensive on a Pi 4**, and now it is honest about it:
   ~37 minutes for 7 minutes of cartoon, ~10.6 hours for a two-hour film. Dropping the
   encode cap from 1080 to 720 would cut that by about 25 % (95 s vs 127 s per 24 s) and
-  shrink the files, but it changes what every viewer gets, so it waits for the owner.
+  shrink the files, but it changes what every viewer gets, so it waits for the owner —
+  **the owner said yes; §47 does it.**
 * **Hardware decoding works on this box and is nearly free**: `-hwaccel drm` decoded
   12 s of this file in 2 s, against 18 s in software for the same span. It is not used
   yet — it needs `/dev/dri` access for the service user and a tested fallback.
+  **`pi` already had the access; §47 adds the decoder and the fallback.**
 * **A film longer than about two hours** (from a 1080p 10-bit HEVC source) still
   exceeds the 12-hour ceiling and will fail after the full twelve hours rather than
   giving up early. A pace check — compare `out_time_us` against the time left and stop
-  when it cannot finish — is the obvious next step and is not built.
+  when it cannot finish — is the obvious next step and is not built. *(After §47 the
+  same source runs at 1.85× instead of 5.3×, so the ceiling now covers about six
+  hours of film; the pace check is still not built.)*
 * **A long job is retried from the beginning after a cut.** `ark_media.recover()` puts
   an interrupted `running` job back in the queue, up to three attempts, so a film near
   the ceiling that is interrupted twice could occupy the card for three times its
   length. The three-strike rule is the project's own; the interaction with a 12-hour
   ceiling is new and has not been decided on.
-* Nothing here has been deployed yet.
+* ~~Nothing here has been deployed yet.~~ **Deployed 3 Nov 2026 — §47.6.**
 
 ---
 
@@ -5391,4 +5396,42 @@ And every playing copy is at most 720p: the 7-minute film's copy is 986×720 and
 
 ### 47.6 Deployed and proved on the live box
 
-*(filled in below once the deploy and the film have both finished)*
+**Deploy (3 Nov 2026, 18:03–18:04 UTC).** Rollback points first:
+`/root/ark-db-before-720p.db` (SQLite `.backup`, WAL-safe) and
+`/root/ark-src-before-720p.tgz`. Then `pi/` → `/srv/ark/src` by the same rsync
+`03-provision.sh` uses, and `install-ark.sh --only 60-portal,62-media`: every phase
+succeeded, `ark-api`, `ark-media-worker` and `nginx` active, `/api/ready` 200.
+The film's own page immediately stopped lying — it read *This film could not be
+prepared. The original file is kept. Ask the owner to try again — the reason is on
+their page.*
+
+**A defect found by the first live run, and fixed (commit `1797d5e`).** Job 5
+started at 18:04:47 and died at 18:11:00 with `OperationalError: attempt to write a
+readonly database`, six minutes in. The filesystem was `rw`, the card had 105 GB
+free, `dmesg` held no I/O error, and the database was writable again immediately
+afterwards. The cause was a **reader**: a `sqlite3` status query issued at 18:11:00
+opened the live WAL database and checkpointed it on close, out from under the
+worker. That is not an exotic accident — `ark-self-heal` runs every day at 04:17,
+and an owner's console can do the same thing — so the worker was made to survive
+it: the per-tick writes (space ledger, heartbeat) are telemetry and are now logged
+once and skipped, while the write that *publishes* the film stays strict. A job
+that dies for any other reason removes its own half-written copy by name, and
+recording a failure can no longer take the worker down with it.
+
+**The successful run.** Job 6: started 18:25:35, finished 18:41:51 — **976 s
+(16.3 minutes)** for a 416.5-second film, with `-hwaccel drm` in the command line
+and no fallback logged. Published `m4.mp4`, **75,389,766 bytes**, H.264 High
+**986×720** `yuv420p` + AAC-LC, `duration = 416.541125` (the source is 416.541),
+poster `m4.jpg` from the first attempt, job detail *Converted for this box.*
+
+| | Before | After |
+|---|---|---|
+| Same film, same box | 34.7 min at 1080p, software decode, **failed** | **16.3 min at 720p, hardware decode, published** |
+| Copy size | 190 MB (1080p) | **72 MB (720p)** |
+
+**Proved in a browser, over the network.** Chromium loaded
+`http://ark.local/media/4` from the Mac, played the film (6 s in: `currentTime`
+5.88 s, `readyState` 4, 20 s buffered, not paused), and sought to 200 s, landing at
+202.9 s with `readyState` 4. No console errors. `GET /media/4/stream` answers
+`206 Partial Content`, `video/mp4`. The shelf now reads **Ready to play**; nothing
+on it says *Getting ready* except the filter that means exactly that.

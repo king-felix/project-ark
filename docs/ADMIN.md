@@ -1640,8 +1640,9 @@ so. A box with no decoder converts films exactly as it did before.
 if a driver misbehaves); `=1` claims it without looking for the device, which is
 only useful to a test.
 
-If a film matters and the wait matters more, convert it on a workstation; the page prints the exact command the
-worker would run, built from the same function (`ark_media_jobs.build_command`),
+If a film matters and the wait matters more, convert it on a workstation; the
+page prints the exact command the worker would run, built from the same function
+(`ark_media_jobs.build_command`),
 and then drop the MP4 in.
 
 ### Deleting, and what it frees
