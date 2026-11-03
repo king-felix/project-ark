@@ -180,7 +180,7 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 | Released tag | `v1.0.5` = `dd3336c` (never move a tag, never force-push) |
 | Active branch | `feature/admin-hardening` (fast-forwarded to `main` at `acf5d29`) |
 | Schema version | `SCHEMA_VERSION = 7` (`pi/api/ark_db.py`) — migration 7 adds the film shelf and the space ledger |
-| Test suite | `796 passed, 2 skipped` across 33 files (`tests/`) |
+| Test suite | `793 passed, 2 skipped` across 33 files (`tests/`) |
 | Live Pi state | Deployed through log §44 at `19864d1`; `ready.ok: true`, `blocking: []`, `mode: home`; 20 collections (86.5 GiB), 1291 books, 67 games, 11 guides, AI active, FFmpeg fitted; 1 map pack (Liechtenstein 15.5 MB, published); reserve 17.2 GB |
 | Owner decisions pending | History rewrite + force-push for pre-`a926296` commits (log §37.6, §38.7) and for the home-LAN address in `1a3f41f` (log §44); rotate GitHub & Pi passwords; licence choice |
 
@@ -195,7 +195,7 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 | `pi/bin/ark-media-worker` | the one background process (`--once`, `--status`): claims one job, does it, sleeps |
 | `pi/bin/ark-space` | the shell door to the policy: `--status [--json]`, `--check --need N` (exit 3 with a sentence) |
 | `pi/api/main.py` | public FastAPI app: status/ready/health, search, board, files, ask; mounts the admin and arcade routers; bumps `session_epoch`. Search keeps five report states (`found`/`empty`/`partial`/`silent`/`no-books` — only `empty` may say "nothing matched") and `_spread()` across every collection |
-| `pi/api/ark_library.py` | the shelf page's model: `TOPICS` (9 plain-English shelves), the catalogue's `topic` column, `name_of()`/`shelves()`; groups the card, never invents a book |
+| `pi/api/ark_library.py` | the shelf page's model: `TOPICS` (10 plain-English shelves, one of them films), the catalogue's `topic` column, `name_of()`/`shelves()`; groups the card, never invents a book |
 | `pi/bin/ark-zim-checksum` | the published digest for one bundle (`--url`, `--file`): 0 match, 1 different bytes, 2 unreadable, 3 nothing published |
 | `pi/api/ark_health.py` | **the only readiness author**: nine sections with `ready`/`reason`/`action`/`content` (**six** blocking — `ask`, `downloads`, `backup` never block), measured progress, storage/card facts, backup copies, `report()` |
 | `pi/bin/ark-net-watch` | **the only network decision after boot**: pure `decide()`, `--dry-run`, `key=value` counters, decisions logged, acts only via `ark-mode` |
@@ -343,7 +343,7 @@ sudo bash /srv/ark/src/install-ark.sh --only 90-verify
 | Ask the Ark: brief, prompt budget, route hints, lease slot + disconnect cancel, `public_ask` switch | `tests/test_ai.py` (45) |
 | Map pack format v2 (modes, one-way, turn restrictions, buildings), safe zip import, immutable versions, publish/hide/delete, catalogue, 206/416/HEAD ranges, admin gate, app assets | `tests/test_maps.py` (16) |
 | **Defining offline journey** in real Chromium: download, disconnect, reload, pan, new search, NEW route, directions, route sheet, GPX, no network; pause/resume/cancel | `tests/test_maps_browser.py` (2) |
-| Library shelves from the catalogue's topic column; every book on one shelf; a film shelf never asked and said out loud; `/library` named by the proxy; every imported module copied; published sha-256 checked before publish | `tests/test_library.py` (23) |
+| Library shelves from the catalogue's topic column; every book on one shelf; a film shelf says it is films, not that it is unsearchable; `/library` named by the proxy; every imported module copied; published sha-256 checked before publish | `tests/test_library.py` (26) |
 | Stage 7 household answers, 8 emergency topics, inline SVG QR cards, essentials pack builder | `tests/test_household.py` (13), `test_household_page.py` (34), `test_qr.py` (11), `test_essentials.py` (24) |
 | claim door, forced password change, throttling, sessions, TLS probe verdicts, secrets guard | `tests/test_auth.py` (19), `test_accounts.py` (14), `test_tls_probe.py` (16), `test_secrets.py` (12), `test_public.py` |
 
@@ -389,4 +389,4 @@ Maps: street-address search (no address index), turn restrictions whose `via` is
 21. **The offline promise is verified, not asserted:** `Ready offline` requires the pack verified *and* the page controlled by the worker; the defining browser test disconnects both Ark and internet and calculates a **new** route. A real phone remains a human test (`docs/HUMAN-TEST-LIST.md` §22).
 22. **Keep admin out of the maps origin and cache:** `:8446` serves `/maps/` only, the worker skips `/maps/api/`, and no admin page, session or credential may enter a public cache.
 23. **Keep `AGENTS.md` and `.clinerules` lean (<45 KiB):** record historical narratives and deploy logs in `docs/IMPLEMENTATION-LOG.md`, never by pasting multi-page essays into the standing rules file.
-24. **The catalogue files the library, and a digest gates a download:** `topic` (col 7) is the only filing; `_ftindex:no` is never asked by search (said aloud instead); `ark-zim-checksum` must agree before a `.part` is named.
+24. **The catalogue files the library, and a digest gates a download:** `topic` (col 7) is the only filing; `_ftindex:no` says nothing about search (iFixit is `no` and answers 22,722 hits — measured 3 Nov 2026), so every collection is still asked; `ark-zim-checksum` must agree before a `.part` is named.

@@ -456,12 +456,11 @@ def _media_status() -> dict:
 # ---------------------------------------------------------------------------
 #  the library door — the card's collections, filed by what they are for
 # ---------------------------------------------------------------------------
-#: What a card says about a collection the search box cannot look inside.
-#: Two different things share ``_ftindex:no``: a film shelf, and a picture guide
-#: like iFixit.  The catalogue's shelf says which one it is; the file itself only
-#: says "no word index", so the file is never asked to answer that question.
-FILM_SHELF_NOTE = "Films. The search box cannot look inside these — open the shelf and pick one."
-NO_INDEX_NOTE = "Pictures and pages with no word search — open it and browse."
+#: What a card says when the collection is a film shelf.  The shelf decides it,
+#: not the file: ``_ftindex:no`` is carried by iFixit too, and iFixit *is* word-
+#: searchable on this box (22,722 hits for "screen" in 0.2 s, measured 3 Nov
+#: 2026), so the file's own flags say nothing a reader should be told.
+FILM_SHELF_NOTE = "Films. Open the shelf and pick one — they play in your browser."
 
 
 @app.get("/library", response_class=HTMLResponse)
@@ -499,8 +498,6 @@ def library():
             stem = book.get("stem") or book["id"]
             if films:
                 note, verb = FILM_SHELF_NOTE, "Tap to watch"
-            elif book.get("searchable") is False:
-                note, verb = NO_INDEX_NOTE, "Tap to browse"
             else:
                 note, verb = "Tap to open it in your browser.", "Read in browser"
             cards.append(f'''<a class="card" href="/kiwix/content/{esc(stem)}/">
@@ -764,12 +761,6 @@ def _search_report(pattern: str) -> dict:
     * ``available`` — how many collections the box holds, so that a search which could
                     only ask *some* of them says so instead of quietly counting its own
                     cap as the whole library (the fault that started all of this).
-    * ``unsearchable`` — how many of the box's collections have no word index at all
-                    (a film shelf, ``_ftindex:no``).  They are **not asked**: asking
-                    them answers nothing whatever they contain, which would be
-                    indistinguishable from *"searched, nothing there"*.  They are
-                    counted here so the page can say so once, in plain words, instead
-                    of letting a reader believe a word search reached the films.
 
     Anything un-asked or un-answered is a gap in the search, not a gap in the books,
     and ``library_state()`` turns that into one of five words the page can word
@@ -780,12 +771,10 @@ def _search_report(pattern: str) -> dict:
     block itself is chosen by ``_spread()``, because *which* of the arrived answers
     reach the page is a second way to answer from half a library.
     """
-    shelf = library_books()
-    books_on_card = [b for b in shelf if b.get("searchable", True)]
+    books_on_card = library_books()
     books = books_on_card[:MAX_COLLECTIONS]
     report = {"hits": [], "asked": len(books), "available": len(books_on_card),
-              "answered": 0, "failed": 0, "late": 0,
-              "unsearchable": len(shelf) - len(books_on_card)}
+              "answered": 0, "failed": 0, "late": 0}
     if not books:
         return report
     by_id: dict[str, dict] = {}
@@ -971,9 +960,6 @@ def search(q: str = ""):
     total = len(library) + len(guides) + len(books)
     asked, answered = report["asked"], report["answered"]
     available = report.get("available", asked)
-    #: Collections with no word index (film shelves).  Counted by the report, never
-    #: asked, so a search can say so once instead of pretending it reached them.
-    no_search = report.get("unsearchable", 0)
     again = f"/search?q={urllib.parse.quote_plus(pattern)}"
 
     def shortfall() -> str:
@@ -1018,15 +1004,9 @@ def search(q: str = ""):
                          f'the manuals and the bookshelf. <a href="{esc(again)}">Try again</a> in '
                          f'a moment.</p>')
         elif state == "no-books":
-            if no_search:
-                parts.append('<p class="note">This box’s library holds only picture guides and '
-                             'films just now, and neither can be searched by word, so everything '
-                             'above comes from the manuals and the bookshelf. '
-                             '<a href="/library">Open the library</a> to browse them.</p>')
-            else:
-                parts.append('<p class="note">There are no collections on this box yet, so everything '
-                             'above comes from the manuals and the bookshelf. The Offline Library '
-                             'fills up as the box has time.</p>')
+            parts.append('<p class="note">There are no collections on this box yet, so everything '
+                         'above comes from the manuals and the bookshelf. The Offline Library '
+                         'fills up as the box has time.</p>')
     elif state == "empty":
         parts.append(f"""<p class="status"><span class="dot" aria-hidden="true"></span>
       <span>Nothing matched <b>“{esc(pattern)}”</b> yet.</span></p>
@@ -1051,17 +1031,6 @@ def search(q: str = ""):
      answered at all. The manuals and the bookshelf were searched and are below if they
      have anything. <a href="{esc(again)}">Try again</a> in a moment.</p>
   <div class="nav"><a href="/library">Open the Offline Library</a><a href="/vault/">Open the manuals</a></div>""")
-    elif no_search:
-        # Nothing to ask because nothing on the card has a word index.  Saying
-        # "there are no collections" here would be false about a box holding 4 GiB
-        # of them, and sending a reader to look for something that is not missing.
-        parts.append(f"""<p class="status"><span class="dot wait" aria-hidden="true"></span>
-      <span>Nothing on this box can be searched by word just now.</span></p>
-  <p class="note">This box’s library holds only picture guides and films, none of which
-     has a word search, so nothing was read page by page. The manuals and the bookshelf
-     were still searched and are below if they have anything.
-     <a href="/library">Open the library</a> to browse what is there.</p>
-  <div class="nav"><a href="/library">Open the Offline Library</a><a href="/vault/">Open the manuals</a></div>""")
     else:
         parts.append(f"""<p class="status"><span class="dot wait" aria-hidden="true"></span>
       <span>The Offline Library has no list of its books yet, so the big look-up had
@@ -1069,15 +1038,6 @@ def search(q: str = ""):
   <p class="note">The manuals and the bookshelf were still searched. The Offline Library
      fills up as the box has time.</p>
   <div class="nav"><a href="/library">Open the Offline Library</a><a href="/vault/">Open the manuals</a></div>""")
-    if no_search and asked:
-        if no_search == 1:
-            said = ("1 of the box’s collections has no word search — a picture guide or "
-                    "a film shelf")
-        else:
-            said = (f"{no_search} of the box’s collections have no word search — the "
-                    "picture guides and the films")
-        parts.append(f'<p class="note">{said} — <a href="/library">open the library</a> '
-                     f'to browse them.</p>')
     parts.append(block("From the library", library))
     parts.append(block("From the manuals", guides))
     parts.append(block("From the bookshelf", books))

@@ -128,17 +128,7 @@ def _book_stem(book) -> str:
 
 
 def library_books() -> list[dict]:
-    """Books listed in the library index (id, stem, title, size, searchable).
-
-    ``searchable`` is the one thing the index knows that the shelf page needs:
-    a bundle built with ``_ftindex:no`` has no word index, so asking it for a
-    pattern answers nothing whatever the books contain.  A film shelf is the
-    normal case.  Treating that silence as *"the whole library was searched"*
-    would turn a search that cannot reach 4 GiB of films into a confident
-    "nothing matched", which is the fault this project already paid for once.
-    An index with no ``tags`` at all keeps the old behaviour (searchable), so a
-    card written by an older installer is unaffected.
-    """
+    """Books listed in the library index (id, stem, title, size)."""
     index = library_xml()
     if not index.is_file():
         return []
@@ -167,9 +157,8 @@ def library_books() -> list[dict]:
             size = int(size) * scale
         except (TypeError, ValueError):
             size = 0
-        tags = (book.get("tags") or "").lower()
         out.append({"id": ident, "stem": _book_stem(book), "title": title,
-                    "size": size, "searchable": "_ftindex:no" not in tags})
+                    "size": size})
     out.sort(key=lambda b: b["title"].lower())
     return out
 

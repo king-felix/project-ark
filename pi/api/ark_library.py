@@ -44,8 +44,8 @@ TOPICS = (
     ("prep", "Prepared and planning",
      "Longer reads about getting ready on purpose."),
     ("watch", "Watch and learn",
-     "Films that play from the box — no internet, no account. The search box "
-     "cannot look inside them, so pick one from the list."),
+     "Films that play from the box — no internet, no account. Pick one from the "
+     "list and tap it."),
     ("outdoors", "Outdoors and getting about",
      "Bicycles, camping, walking, and travelling without a signal."),
     ("radio", "Keep in touch",
@@ -55,9 +55,10 @@ TOPICS = (
 )
 
 #: The shelf whose collections are films.  A shelf, not a guess about the file:
-#: iFixit also has ``_ftindex:no`` (it is pictures and pages, and the search box
-#: cannot look inside it either), so "has no word index" must never be read as
-#: "is a film".  The catalogue says which is which, once, per collection.
+#: iFixit also carries ``_ftindex:no`` and *is* searchable (22,722 hits for
+#: "screen" in 0.22 s on the live box, 3 Nov 2026), so no tag in the bundle can
+#: answer "is this a film".  The catalogue says which is which, once, per
+#: collection.
 FILM_TOPIC = "watch"
 
 #: Where a collection with no catalogue row goes.  Never dropped.

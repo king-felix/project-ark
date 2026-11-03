@@ -967,8 +967,8 @@ home-improvement Q&A, and Low-tech Magazine), and a phone with sound.
 1. Open `http://ark.lan/library`. Count the shelves. Do the names tell you where you
    would look for: *a leaking tap*, *a car that will not start*, *keeping food for a
    year*, *what to do about a cut*, *a radio that will not receive*?
-2. Tap **Prepared and planning**, then the **Urban Prepper** card. It must say on the
-   card that the search box cannot look inside it. Open it.
+2. Tap **Watch and learn**, then the **Urban Prepper** card. It must say on the
+   card that these are films and that they play in the browser. Open it.
 3. Pick any film. Note its title and length. Tap it.
    - Does the picture appear within a few seconds?
    - Does the sound play, and can you turn it up?
@@ -980,17 +980,17 @@ home-improvement Q&A, and Low-tech Magazine), and a phone with sound.
 4. Go back and open **Fix it** → **Home improvement Q&A**. Type `leaking tap` into the
    collection's own search box. Do the answers look like answers to the question?
 5. Go back to the portal's top search box and search `leaking tap`. The results must
-   include the home-improvement collection, and the page must say once that the film
-   shelves cannot be looked inside — it must not say *nothing matched* while the films
-   sit unsearched.
+   include the home-improvement collection. Then search `winter` — the film shelves
+   are asked like every other collection, so a video page may appear; open one and
+   check that it is a film you can play.
 6. Open **Water, power and shelter** → **Low-tech living**. Read one article. Is it the
    magazine, with its pictures and its own dates on the page?
 7. Record: phone model, browser, which shelf names landed and which did not, which film,
    time to first picture, whether seeking and full screen worked, whether sound was in
    sync, and any film that failed to play at all (title + what the screen said).
 
-**Pass:** every collection on the page opens, one film plays with sound and seeks, the
-search finds the Q&A archive, and the page never claims a film shelf was searched.
+**Pass:** every collection on the page opens, one film plays with sound and seeks, and
+the search finds the Q&A archive.
 
 **If it fails:** note whether it is the page (a shelf missing), the collection (a card
 that will not open), the film (a spinner, a black screen, or “cannot play this file”),

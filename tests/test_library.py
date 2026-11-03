@@ -132,13 +132,13 @@ def test_every_book_lands_on_exactly_one_shelf(ark, monkeypatch):
     monkeypatch.setenv("ARK_CATALOG", str(CATALOG))
     books = [
         {"id": "a", "stem": "diy.stackexchange.com_en_all_2026-10", "title": "Home Improvement",
-         "size": 1, "searchable": True},
+         "size": 1},
         {"id": "b", "stem": "urban-prepper_en_all_2026-08", "title": "Urban Prepper",
-         "size": 1, "searchable": False},
+         "size": 1},
         {"id": "c", "stem": "something-copied-by-hand_2026-01", "title": "By hand",
-         "size": 1, "searchable": True},
+         "size": 1},
         {"id": "d", "stem": "mechanics.stackexchange.com_en_all_2026-10", "title": "Mechanics",
-         "size": 1, "searchable": True},
+         "size": 1},
     ]
     groups = ark_library.shelves(books)
     placed = [b["id"] for g in groups for b in g["books"]]
@@ -188,8 +188,7 @@ def test_the_shelf_page_shows_every_collection_and_links_to_it(public, ark, monk
     assert 'href="/kiwix/content/diy.stackexchange.com_en_all_2026-10/"' in body
     assert 'href="/kiwix/content/urban-prepper_en_all_2026-08/"' in body
     assert body.count("Urban Prepper") >= 1
-    # The film shelf says the search box cannot look inside it, and offers a watch.
-    assert "cannot look inside these" in body
+    assert "Films. Open the shelf and pick one" in body
     assert "Tap to watch" in body
     assert "Read in browser" in body
     # 2037134 + 2192613 KiB is 4.0 GiB — the page must say GB, not MB.
@@ -213,12 +212,13 @@ def test_the_index_says_kilobytes_and_the_shelf_page_says_gigabytes(ark, monkeyp
     assert book["size"] == 2192613 * 1024, "the index's kilobytes must become bytes"
 
 
-def test_a_picture_guide_with_no_word_index_is_not_called_a_film(public, ark, monkeypatch):
-    """iFixit carries ``_ftindex:no`` too — it is photographs and pages, not films.
+def test_a_picture_guide_is_not_sold_as_a_film_shelf(public, ark, monkeypatch):
+    """iFixit carries ``_ftindex:no`` too — and it *is* searchable on this box.
 
-    The index knows one thing ("no word search"); it does not know what the
-    pictures are.  The shelf in the catalogue is what tells the two apart, so a
-    card can only say *films* when the catalogue filed it under ``watch``.
+    Measured 3 Nov 2026: 22,722 hits for "screen" in 0.2 s against the installed
+    iFixit bundle, so ``_ftindex:no`` says nothing about whether a collection can
+    be searched and nothing a reader should be told.  Only the catalogue's shelf
+    decides what a card calls itself.
     """
     monkeypatch.setenv("ARK_CATALOG", str(CATALOG))
     _library_xml(ark, [
@@ -226,8 +226,7 @@ def test_a_picture_guide_with_no_word_index_is_not_called_a_film(public, ark, mo
          "_category:iFixit;_pictures:yes;_videos:yes;_ftindex:no"),
     ])
     body = public.client.get("/library", headers={"x-real-ip": "192.0.2.50"}).text
-    assert "no word search" in body
-    assert "Tap to browse" in body
+    assert "Read in browser" in body
     assert "Films." not in body, "a picture guide must not be sold as a film shelf"
     assert "Tap to watch" not in body
 
@@ -264,50 +263,6 @@ def test_an_empty_library_is_a_friendly_page_not_an_error(public, ark, monkeypat
 # ---------------------------------------------------------------------------
 #  search must not pretend it looked at the films
 # ---------------------------------------------------------------------------
-def test_a_film_shelf_is_deliberately_not_asked(public, monkeypatch):
-    main = public.app
-    monkeypatch.setattr(main, "library_books", lambda: [
-        {"id": "text", "stem": "diy.stackexchange.com_en_all_2026-10",
-         "title": "Home Improvement", "size": 1, "searchable": True},
-        {"id": "film", "stem": "urban-prepper_en_all_2026-08",
-         "title": "Urban Prepper", "size": 1, "searchable": False},
-    ])
-    asked: list[str] = []
-    monkeypatch.setattr(main, "_kiwix_one", lambda book_id, pattern: asked.append(book_id) or [])
-
-    report = main._search_report("water")
-    assert asked == ["diy.stackexchange.com_en_all_2026-10"], \
-        "a collection with no word index must not be asked"
-    assert report["asked"] == 1
-    assert report["available"] == 1
-    assert report["unsearchable"] == 1
-
-
-def test_the_search_page_says_the_films_are_not_word_searchable(public, monkeypatch):
-    main = public.app
-    monkeypatch.setattr(main, "library_books", lambda: [
-        {"id": "text", "stem": "diy.stackexchange.com_en_all_2026-10",
-         "title": "Home Improvement", "size": 1, "searchable": True},
-        {"id": "film", "stem": "urban-prepper_en_all_2026-08",
-         "title": "Urban Prepper", "size": 1, "searchable": False},
-    ])
-    monkeypatch.setattr(main, "_kiwix_one", lambda book_id, pattern: [])
-    body = public.client.get("/search?q=water", headers={"x-real-ip": "192.0.2.50"}).text
-    assert "no word search" in body
-    assert "open the library" in body.lower()
-
-
-def test_a_box_of_only_films_does_not_say_it_has_no_collections(public, monkeypatch):
-    main = public.app
-    monkeypatch.setattr(main, "library_books", lambda: [
-        {"id": "film", "stem": "urban-prepper_en_all_2026-08",
-         "title": "Urban Prepper", "size": 1, "searchable": False},
-    ])
-    body = public.client.get("/search?q=water", headers={"x-real-ip": "192.0.2.50"}).text
-    assert "holds only picture guides and films" in body
-    assert "There are no collections on this box yet" not in body
-
-
 # ---------------------------------------------------------------------------
 #  the proxy must really carry the page
 # ---------------------------------------------------------------------------

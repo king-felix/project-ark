@@ -195,10 +195,10 @@ it — every cover, every collection, an alphabetical list and a language filter
 * **Learn and look things up** — Wikipedia, Wiktionary, Wikibooks, Wikiversity, Wikiquote,
 Gutenberg.
 
-**The film shelves** are *video*, not pages. The search box at the top of the portal cannot look
-inside them — nothing in a film has been turned into searchable words — so the page says so on
-the card, and you open the shelf and pick a film from its own list. Tap a film to watch it in
-the browser; it plays from the box, with no internet and no app.
+**The film shelves** are *video*, not pages: a search finds the films' own pages by their titles
+and descriptions, but not what is said on screen, because nothing has turned the speech into
+words. Open the shelf and pick a film from its list. Tap a film to watch it in the browser; it
+plays from the box, with no internet and no app.
 
 **How to use it:** open a shelf → open a collection → type in its own search box → read (or tap
 a film to watch). The arrow at the top returns you to the shelf of collections.

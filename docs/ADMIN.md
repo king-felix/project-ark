@@ -1813,16 +1813,24 @@ one shelf, an empty shelf is not drawn, and a bundle copied onto the card by han
 A shelf with a wrong topic key in the catalogue would silently fall to *Everything
 else*, which is why the catalogue's shape is a test and not a convention.
 
-### Film shelves are not word-searchable
+### The `_ftindex` flag is not a promise about search
 
-A video bundle is built with `_ftindex:no`: there is no word index, so asking it
-for a pattern answers nothing **whatever the films contain**.  iFixit carries the
-same flag — it is photographs and pages — which is why the *shelf* (`watch`) and
-not the flag decides what a card calls itself. The search fan-out
-therefore leaves those collections out of `asked` and `available`, counts them in
-`unsearchable`, and the page says once, in plain words, that the film shelves
-cannot be looked inside. Without that, adding 7 GiB of films would have quietly
-turned every narrow search into a confident *“nothing matched”*.
+A bundle's tags carry `_ftindex:yes|no`, and it is tempting to read `no` as *"this
+collection cannot be searched"*.  Measured on the live box on 3 November 2026, it is
+not: `ifixit_en_all_2025-12` carries `_ftindex:no` and answered **22,722 results for
+"screen" in 0.22 s** through `kiwix-serve` 3.8.2.  iFixit is a picture guide; the
+film bundles carry the same tag.
+
+So the flag is recorded in the index and otherwise ignored.  Every collection on the
+card is asked by the search fan-out exactly as before, and no page tells a reader that
+a shelf cannot be searched.  What a card calls itself comes from the catalogue's
+`topic` alone — the `watch` shelf is films because a person filed it there, not
+because of a byte in the file.
+
+The first draft of this change did exclude `_ftindex:no` collections and describe
+them as unsearchable.  That would have quietly dropped the whole repair archive out
+of every search — the same class of fault as §40's "twelve of twenty" — and the live
+measurement is why it was reverted before it reached the card.
 
 ### The digest
 

@@ -114,6 +114,11 @@ DOORS: Tuple[Dict[str, str], ...] = (
      "who": "anyone",
      "what": "The public half of the Ark's certificate. A phone or laptop installs "
              "it once so it can trust the secure address and keep Maps offline."},
+    {"group": "Open to anyone on the box's Wi-Fi", "address": "http://{host}/library",
+     "name": "Library shelves",
+     "who": "anyone",
+     "what": "Every collection on the box, filed by what it is for. A person "
+             "starts here; each shelf opens the collections on it."},
     {"group": "Open to anyone on the box's Wi-Fi", "address": "http://{host}/kiwix/",
      "name": "Offline Library",
      "who": "anyone",
