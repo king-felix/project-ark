@@ -180,8 +180,8 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 | Released tag | `v1.0.5` = `dd3336c` (never move a tag, never force-push) |
 | Active branch | `feature/admin-hardening` (fast-forwarded to `main` at `acf5d29`) |
 | Schema version | `SCHEMA_VERSION = 7` (`pi/api/ark_db.py`) — migration 7 adds the film shelf and the space ledger |
-| Test suite | `807 passed, 2 skipped` across 33 files (`tests/`) |
-| Live Pi state | Deployed through log §47; `ready.ok: true`, `blocking: []`, `mode: home`; 27 collections (97.6 GiB, 10 shelves), 1291 books, 67 games, 11 guides, AI active, FFmpeg fitted, 1 film on the shelf (986×720, made on the box); 1 map pack (Liechtenstein 15.5 MB, published); reserve 17.2 GB |
+| Test suite | `813 passed, 2 skipped` across 33 files (`tests/`) |
+| Live Pi state | Deployed through log §48; `ready.ok: true`, `blocking: []`, `mode: home`; 27 collections (97.6 GiB, 10 shelves), 1291 books, 67 games, 11 guides, AI active, FFmpeg fitted, 1 film on the shelf (986×720, upload released); 1 map pack (Liechtenstein 15.5 MB, published); reserve 17.2 GB |
 | Owner decisions pending | History rewrite + force-push for pre-`a926296` commits (log §37.6, §38.7) and for the home-LAN address in `1a3f41f` (log §44); rotate GitHub & Pi passwords; licence choice |
 
 ### 8.1 What exists, and what each piece owns
@@ -338,7 +338,7 @@ sudo bash /srv/ark/src/install-ark.sh --only 90-verify
 | ROM header stripping, fingerprinting, offline catalogue matching, filename fallback | `tests/test_romdb.py` (15) |
 | power-cut repair, clock guard, `key=value` counters, WAL drain, `_repair_lock()`, `ark-fsck-once`, fstab/cmdline guards | `tests/test_self_heal.py` (80) |
 | the reserve policy, `f_bavail`, reservations across processes, `hold()` release, reconcile, the `ark-space` shell door | `tests/test_space.py` (13) |
-| probe/plan (direct/remux/convert), a renamed archive refused, public film waits for the owner, 404 for unpublished, 206/416/HEAD ranges, repack keeps the original, conversion to H.264, poster + fallback, SRT→VTT, recover/cancel/delete/adopt, rename, picture-at, catalogue search/sort/paging | `tests/test_media.py` (38) |
+| probe/plan (direct/remux/convert), a renamed archive refused, public film waits for the owner, 404 for unpublished, 206/416/HEAD ranges, repack releases the upload, conversion to H.264, poster + fallback, SRT→VTT, recover/cancel/delete/adopt, rename, picture-at, catalogue search/sort/paging | `tests/test_media.py` (55) |
 | `synchronous=FULL` on every connection, content-addressed save blobs, atomic save replacement | `tests/test_durability.py` (15) |
 | Ask the Ark: brief, prompt budget, route hints, lease slot + disconnect cancel, `public_ask` switch | `tests/test_ai.py` (45) |
 | Map pack format v2 (modes, one-way, turn restrictions, buildings), safe zip import, immutable versions, publish/hide/delete, catalogue, 206/416/HEAD ranges, admin gate, app assets | `tests/test_maps.py` (16) |

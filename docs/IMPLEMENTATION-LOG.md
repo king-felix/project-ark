@@ -5435,3 +5435,105 @@ poster `m4.jpg` from the first attempt, job detail *Converted for this box.*
 202.9 s with `readyState` 4. No console errors. `GET /media/4/stream` answers
 `206 Partial Content`, `video/mp4`. The shelf now reads **Ready to play**; nothing
 on it says *Getting ready* except the filter that means exactly that.
+
+---
+
+## 48. The upload leaves once the film can play — 3 Nov 2026
+
+### 48.1 The question, and what was true before
+
+Right after §47 the owner asked whether the box deletes a film's original
+upload after conversion, "to preserve storage space". It did not. The 720p cap
+made the copy the film, but `drop/files` kept the source for ever: film 4 held
+**141,964,578 bytes** of upload beside its **75,389,766-byte** playing copy —
+217 MB for a seven-minute film. The only code that removed an original was
+`ark_media.delete()`, i.e. deleting the whole film.
+
+### 48.2 What changed
+
+* `ark_media.release_original(conn, media_id)` removes the upload and its hidden
+  File Box row once a **published, verified** playing copy exists. It refuses —
+  deliberately — for: a **direct** film (its original *is* what the player
+  serves), a film with **no copy**, a film **adopted from the File Box**
+  (`files.hidden = 0`: those bytes are somebody's download, not a spare), and a
+  stored file **another film still names**. Bytes go before rows, so an
+  interrupted release leaves a missing original the next attempt can finish,
+  never bytes no record names.
+* `ark_media.release_ready_originals(conn)` is the sweep; it runs after every
+  publish (`make_derivative`) and **once at worker startup**, so a cut between
+  "copy published" and "upload released" cannot leave the larger file behind.
+  `ark-media-worker --trim` runs it by hand. A release that fails is logged and
+  never turns a ready film into a failed job.
+* `playable()` now serves a recorded copy on its own; `has_bytes()` answers
+  "are the bytes a viewer needs here?" and `original_present()` stays the
+  question "is the upload still on the card?". `footprint()` is what the card
+  and the film page report: copy plus any kept upload.
+* Pages tell the truth: the shelf card shows the bytes on the card, the film
+  page says the original was removed and no longer offers **Download the
+  original**, and the owner's page shows *original removed* and stops offering
+  **Prepare again** / **New picture** (both need the source; the routes refuse
+  with a sentence instead of queuing a job that must fail). The in-player
+  fallback link now points at the copy, not at the gone original.
+
+### 48.3 A defect the change exposed
+
+`playable()` used to require the original file before it would serve a playing
+copy, and three pages computed `present = original_path(row).is_file()` for
+`status_of()`. Released as designed, every converted film would have read *The
+file is not here* while its copy sat on the card. The new `has_bytes()` is now
+the single answer used by the shelf, the film page and the owner's page.
+
+### 48.4 Evidence
+
+* `tests/test_media.py` — **55 passed** (49 before). New:
+  `test_a_film_that_plays_as_it_is_keeps_its_only_copy`,
+  `test_the_file_box_share_keeps_its_original`,
+  `test_an_original_is_not_released_before_a_playing_copy_exists`,
+  `test_the_sweep_releases_only_films_that_already_have_their_copy`,
+  `test_preparing_again_a_film_whose_upload_was_released_says_it_is_ready`,
+  `test_the_owner_page_says_when_the_original_was_removed`; the repack and
+  delete tests were rewritten for the new truth.
+* Full suite: **813 passed, 2 skipped**. `scripts/ark-secrets-check.sh`: clean.
+* Commit `60a8803`, pushed to `origin/feature/admin-hardening`.
+
+### 48.5 Deployed and proved on the live box
+
+**Before deploying:** film 4's copy was measured
+(`md5 493915199a7be3c8198531b8f1325d08`, 75,389,766 bytes, 986×720, duration
+416.541125) and `/media/4/stream` answered 206. The worker was stopped (queue
+empty), `/root/ark-db-before-trim.db` was written with a **read-only**
+connection's `.backup()` (a read-only connection cannot checkpoint the WAL that
+killed job 5 — §47.6), and `install-ark.sh --only 60-portal,62-media` finished
+with every phase ok.
+
+**The restart did it.** The worker's startup sweep ran at 20:57:46 UTC:
+
+```
+startup: released 1 original(s), 141964578 bytes
+media worker: ready ({'requeued': 0, 'temp_removed': 0, 'reservations_released': 0,
+                     'originals_released': 1, 'bytes_released': 141964578})
+```
+
+* The upload is gone from `/srv/ark/drop/files` (the folder is now empty) and
+  its `files` row is gone; `media.stored = ''`, `play_stored = 'm4.mp4'`,
+  `play_size = 75389766`, `state = published`.
+* The copy is byte-identical (same md5) and untouched.
+* Free space rose from **112,667,951,104** to **112,809,529,344** bytes across
+  the deploy window (+141,578,240; the release itself reported the file's
+  141,964,578 bytes and other writes used the difference).
+* `GET /media/4` → 200, `/media/4/stream` → 206, `/media/4/download` → **404**
+  (there is no original to send), `/api/ready` → 200.
+* The film page says *"…removed the original upload to save room. What you are
+  watching is that copy."*, reports **Size on this box 71.9 MB**, and has **no**
+  download link. The shelf card reads **6:57 · 71.9 MB · Ready to play**.
+* Chromium over `http://ark.local/media/4`: played (`currentTime` 5.89 s,
+  `readyState` 4, 987×720, 20.6 s buffered), sought to 200 s and landed at
+  202.87 s, **no console errors**.
+
+### 48.6 What it costs, and what it does not do
+
+The full-quality source is gone after release; a film wanted at full resolution
+has to be kept off the box. A film adopted from the File Box keeps its original
+because the File Box still offers it as a download — the shelf adds the copy and
+changes nobody's link. Rollback is `/root/ark-db-before-trim.db` plus the tree
+at commit `f632714`; neither the film nor its copy was touched.
