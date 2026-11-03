@@ -4990,7 +4990,7 @@ certificate fix). The demonstration region was imported with
 **124.6 GB free, 17.2 GB kept back, 1 pack, 15.5 MB**.
 
 The live acceptance run used `https://ark.lan:8446/maps/` resolved to the
-box's home-LAN address (`192.168.1.26`, the Wi-Fi radio), with the real box
+box's home-LAN address (`<HOME-IP>`, the Wi-Fi radio), with the real box
 certificate pinned by SPKI:
 
 * download + first map in **2.5 s** for **15.5 MB**; badge **Ready offline**;
