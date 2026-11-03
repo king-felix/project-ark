@@ -33,10 +33,10 @@ wikipedia_en_medicine	maxi	1.736	essential	Medical encyclopedia (WikiMed)	medica
 gutenberg_en_lcc-r	-	1.881	core	Gutenberg: medicine	medicine	health
 ready.gov_en_all	-	1.922	essential	Emergency preparedness (Ready.gov)	disaster	home
 diy.stackexchange.com_en_all	-	1.943	core	Home improvement Q&A	diy	repair
-canadian-prepper_en_preppingfood	-	2.044	core	Storing food (videos)	prepper	prep
-urban-prepper_en_all	-	2.091	core	Urban Prepper (videos)	prepper	prep
+canadian-prepper_en_preppingfood	-	2.044	core	Storing food (videos)	prepper	watch
+urban-prepper_en_all	-	2.091	core	Urban Prepper (videos)	prepper	watch
 wikiversity_en_all	maxi	2.290	core	Courses and lessons	wikiversity	learn
-canadian-prepper_en_bugoutconcepts	-	2.688	core	Bug-out planning (videos)	prepper	prep
+canadian-prepper_en_bugoutconcepts	-	2.688	core	Bug-out planning (videos)	prepper	watch
 ifixit_en_all	-	3.325	essential	Repair guides (iFixit)	ifixit	repair
 lrnselfreliance_en_all	-	3.701	core	Self-reliance library	survival	home
 gutenberg_en_lcc-s	-	4.221	core	Gutenberg: farming	agriculture	food

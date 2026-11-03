@@ -1805,7 +1805,7 @@ there is no "delete" button and nothing is ever deleted on its own.
 behind it. `pi/api/ark_library.py` groups what `ark_health.library_books()` found
 onto the shelves named in the `topic` column, in a fixed order:
 
-`repair` · `vehicles` · `food` · `health` · `home` · `prep` · `outdoors` · `radio` · `learn`
+`repair` · `vehicles` · `food` · `health` · `home` · `prep` · `watch` · `outdoors` · `radio` · `learn`
 
 Three properties are tested (`tests/test_library.py`): every book lands on exactly
 one shelf, an empty shelf is not drawn, and a bundle copied onto the card by hand
@@ -1816,7 +1816,9 @@ else*, which is why the catalogue's shape is a test and not a convention.
 ### Film shelves are not word-searchable
 
 A video bundle is built with `_ftindex:no`: there is no word index, so asking it
-for a pattern answers nothing **whatever the films contain**. The search fan-out
+for a pattern answers nothing **whatever the films contain**.  iFixit carries the
+same flag — it is photographs and pages — which is why the *shelf* (`watch`) and
+not the flag decides what a card calls itself. The search fan-out
 therefore leaves those collections out of `asked` and `available`, counts them in
 `unsearchable`, and the page says once, in plain words, that the film shelves
 cannot be looked inside. Without that, adding 7 GiB of films would have quietly

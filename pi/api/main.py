@@ -456,11 +456,12 @@ def _media_status() -> dict:
 # ---------------------------------------------------------------------------
 #  the library door — the card's collections, filed by what they are for
 # ---------------------------------------------------------------------------
-#: The one line each shelf's card carries when the collection is a film shelf.
-#: A video bundle has no word index (``_ftindex:no``), so the search box cannot
-#: look inside it — saying that on the card is cheaper than a person typing a
-#: word, getting nothing, and concluding the box has no films.
-FILM_SHELF_NOTE = "Films and videos. The search box cannot look inside this one — open it and browse."
+#: What a card says about a collection the search box cannot look inside.
+#: Two different things share ``_ftindex:no``: a film shelf, and a picture guide
+#: like iFixit.  The catalogue's shelf says which one it is; the file itself only
+#: says "no word index", so the file is never asked to answer that question.
+FILM_SHELF_NOTE = "Films. The search box cannot look inside these — open the shelf and pick one."
+NO_INDEX_NOTE = "Pictures and pages with no word search — open it and browse."
 
 
 @app.get("/library", response_class=HTMLResponse)
@@ -493,11 +494,15 @@ def library():
     sections = []
     for group in groups:
         cards = []
+        films = group["key"] == ark_library.FILM_TOPIC
         for book in group["books"]:
             stem = book.get("stem") or book["id"]
-            note = FILM_SHELF_NOTE if book.get("searchable") is False else \
-                "Tap to open it in your browser."
-            verb = "Tap to watch" if book.get("searchable") is False else "Read in browser"
+            if films:
+                note, verb = FILM_SHELF_NOTE, "Tap to watch"
+            elif book.get("searchable") is False:
+                note, verb = NO_INDEX_NOTE, "Tap to browse"
+            else:
+                note, verb = "Tap to open it in your browser.", "Read in browser"
             cards.append(f'''<a class="card" href="/kiwix/content/{esc(stem)}/">
   <span class="t">{esc(book["title"])}</span>
   <span class="d">{esc(note)}</span>
@@ -1014,10 +1019,10 @@ def search(q: str = ""):
                          f'a moment.</p>')
         elif state == "no-books":
             if no_search:
-                parts.append(f'<p class="note">This box’s library holds only films and videos '
-                             f'just now, and those cannot be word-searched, so everything above '
-                             f'comes from the manuals and the bookshelf. '
-                             f'<a href="/library">Open the library</a> to browse them.</p>')
+                parts.append('<p class="note">This box’s library holds only picture guides and '
+                             'films just now, and neither can be searched by word, so everything '
+                             'above comes from the manuals and the bookshelf. '
+                             '<a href="/library">Open the library</a> to browse them.</p>')
             else:
                 parts.append('<p class="note">There are no collections on this box yet, so everything '
                              'above comes from the manuals and the bookshelf. The Offline Library '
@@ -1047,15 +1052,15 @@ def search(q: str = ""):
      have anything. <a href="{esc(again)}">Try again</a> in a moment.</p>
   <div class="nav"><a href="/library">Open the Offline Library</a><a href="/vault/">Open the manuals</a></div>""")
     elif no_search:
-        # Nothing to ask because everything on the card is a film shelf.  Saying
+        # Nothing to ask because nothing on the card has a word index.  Saying
         # "there are no collections" here would be false about a box holding 4 GiB
         # of them, and sending a reader to look for something that is not missing.
         parts.append(f"""<p class="status"><span class="dot wait" aria-hidden="true"></span>
-      <span>The films and videos on this box cannot be word-searched.</span></p>
-  <p class="note">This box’s library holds only films and videos just now, so nothing
-     was read page by page. The manuals and the bookshelf were still searched and are
-     below if they have anything. <a href="/library">Open the library</a> to browse
-     what is there.</p>
+      <span>Nothing on this box can be searched by word just now.</span></p>
+  <p class="note">This box’s library holds only picture guides and films, none of which
+     has a word search, so nothing was read page by page. The manuals and the bookshelf
+     were still searched and are below if they have anything.
+     <a href="/library">Open the library</a> to browse what is there.</p>
   <div class="nav"><a href="/library">Open the Offline Library</a><a href="/vault/">Open the manuals</a></div>""")
     else:
         parts.append(f"""<p class="status"><span class="dot wait" aria-hidden="true"></span>
@@ -1066,11 +1071,11 @@ def search(q: str = ""):
   <div class="nav"><a href="/library">Open the Offline Library</a><a href="/vault/">Open the manuals</a></div>""")
     if no_search and asked:
         if no_search == 1:
-            said = ("1 of the box’s collections is a film shelf, which the search box "
-                    "cannot look inside")
+            said = ("1 of the box’s collections has no word search — a picture guide or "
+                    "a film shelf")
         else:
-            said = (f"{no_search} of the box’s collections are film shelves, which the "
-                    "search box cannot look inside")
+            said = (f"{no_search} of the box’s collections have no word search — the "
+                    "picture guides and the films")
         parts.append(f'<p class="note">{said} — <a href="/library">open the library</a> '
                      f'to browse them.</p>')
     parts.append(block("From the library", library))

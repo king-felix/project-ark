@@ -42,7 +42,10 @@ TOPICS = (
     ("home", "Water, power and shelter",
      "Keeping the house livable when the services stop."),
     ("prep", "Prepared and planning",
-     "Longer reads and films about getting ready on purpose."),
+     "Longer reads about getting ready on purpose."),
+    ("watch", "Watch and learn",
+     "Films that play from the box — no internet, no account. The search box "
+     "cannot look inside them, so pick one from the list."),
     ("outdoors", "Outdoors and getting about",
      "Bicycles, camping, walking, and travelling without a signal."),
     ("radio", "Keep in touch",
@@ -50,6 +53,12 @@ TOPICS = (
     ("learn", "Learn and look things up",
      "The encyclopedias, the dictionary, the textbooks and the classics."),
 )
+
+#: The shelf whose collections are films.  A shelf, not a guess about the file:
+#: iFixit also has ``_ftindex:no`` (it is pictures and pages, and the search box
+#: cannot look inside it either), so "has no word index" must never be read as
+#: "is a film".  The catalogue says which is which, once, per collection.
+FILM_TOPIC = "watch"
 
 #: Where a collection with no catalogue row goes.  Never dropped.
 OTHER = ("more", "Everything else",

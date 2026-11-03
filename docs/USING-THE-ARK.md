@@ -188,8 +188,8 @@ it — every cover, every collection, an alphabetical list and a language filter
 * **Food and garden** — cooking Q&A, gardening Q&A, Gutenberg's farming shelf.
 * **Health and first aid** — WikiMed, WikEM, medical-sciences Q&A, Gutenberg's medicine shelf.
 * **Water, power and shelter** — Ready.gov, the self-reliance library, Low-tech Magazine.
-* **Prepared and planning** — Urban Prepper and Canadian Prepper film shelves, TruePrepper's
-guides.
+* **Prepared and planning** — TruePrepper's written guides.
+* **Watch and learn** — the Urban Prepper and Canadian Prepper film collections.
 * **Outdoors and getting about** — outdoors and camping Q&A, bicycle repair Q&A, Wikivoyage.
 * **Keep in touch** — amateur-radio Q&A.
 * **Learn and look things up** — Wikipedia, Wiktionary, Wikibooks, Wikiversity, Wikiquote,

@@ -474,7 +474,7 @@ interruption. Profiles: `mini` (the essentials, ~9 GiB), `core` (~98 GiB) and
 `ark-zim-resolve` prints the real total for the profile you choose.
 
 Every row also names a **shelf** (`repair`, `vehicles`, `food`, `health`, `home`,
-`prep`, `outdoors`, `radio`, `learn`), and `http://ark.lan/library` is the page
+`prep`, `watch`, `outdoors`, `radio`, `learn`), and `http://ark.lan/library` is the page
 that draws them: each collection is filed by what it is *for*, with a one-line
 plain-English note, and a film shelf says so on its card. `http://ark.lan/kiwix/`
 remains the full A–Z browser with every cover.

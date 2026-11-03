@@ -87,12 +87,12 @@ def test_the_requested_collections_are_in_the_catalogue_on_the_right_shelves():
     """
     rows = {parts[0]: parts for parts in _catalogue_rows()}
     expected = {
-        "urban-prepper_en_all": "prep",
+        "urban-prepper_en_all": "watch",
         "diy.stackexchange.com_en_all": "repair",
         "mechanics.stackexchange.com_en_all": "vehicles",
         "solar.lowtechmagazine.com_mul_all": "home",
-        "canadian-prepper_en_preppingfood": "prep",
-        "canadian-prepper_en_bugoutconcepts": "prep",
+        "canadian-prepper_en_preppingfood": "watch",
+        "canadian-prepper_en_bugoutconcepts": "watch",
         "trueprepper.com_en_all": "prep",
     }
     for name, topic in expected.items():
@@ -143,7 +143,7 @@ def test_every_book_lands_on_exactly_one_shelf(ark, monkeypatch):
     groups = ark_library.shelves(books)
     placed = [b["id"] for g in groups for b in g["books"]]
     assert sorted(placed) == ["a", "b", "c", "d"], "a book was lost or shown twice"
-    assert [g["key"] for g in groups] == ["repair", "vehicles", "prep", "more"], \
+    assert [g["key"] for g in groups] == ["repair", "vehicles", "watch", "more"], \
         "shelves must keep the order a reader meets them in"
     assert [b["id"] for g in groups if g["key"] == "more" for b in g["books"]] == ["c"]
 
@@ -189,7 +189,7 @@ def test_the_shelf_page_shows_every_collection_and_links_to_it(public, ark, monk
     assert 'href="/kiwix/content/urban-prepper_en_all_2026-08/"' in body
     assert body.count("Urban Prepper") >= 1
     # The film shelf says the search box cannot look inside it, and offers a watch.
-    assert "cannot look inside this one" in body
+    assert "cannot look inside these" in body
     assert "Tap to watch" in body
     assert "Read in browser" in body
     # 2037134 + 2192613 KiB is 4.0 GiB — the page must say GB, not MB.
@@ -213,10 +213,29 @@ def test_the_index_says_kilobytes_and_the_shelf_page_says_gigabytes(ark, monkeyp
     assert book["size"] == 2192613 * 1024, "the index's kilobytes must become bytes"
 
 
+def test_a_picture_guide_with_no_word_index_is_not_called_a_film(public, ark, monkeypatch):
+    """iFixit carries ``_ftindex:no`` too — it is photographs and pages, not films.
+
+    The index knows one thing ("no word search"); it does not know what the
+    pictures are.  The shelf in the catalogue is what tells the two apart, so a
+    card can only say *films* when the catalogue filed it under ``watch``.
+    """
+    monkeypatch.setenv("ARK_CATALOG", str(CATALOG))
+    _library_xml(ark, [
+        ("ifixit_en_all_2025-12", "iFixit in English", 3487007,
+         "_category:iFixit;_pictures:yes;_videos:yes;_ftindex:no"),
+    ])
+    body = public.client.get("/library", headers={"x-real-ip": "192.0.2.50"}).text
+    assert "no word search" in body
+    assert "Tap to browse" in body
+    assert "Films." not in body, "a picture guide must not be sold as a film shelf"
+    assert "Tap to watch" not in body
+
+
 def test_the_shelf_page_says_what_each_shelf_is_for(public, ark, monkeypatch):
     _two_shelves(ark, monkeypatch)
     body = public.client.get("/library", headers={"x-real-ip": "192.0.2.50"}).text
-    assert ">Fix it<" in body and ">Prepared and planning<" in body
+    assert ">Fix it<" in body and ">Watch and learn<" in body
     assert 'id="repair"' in body and 'href="#repair"' in body
     assert "Browse every collection" in body
 
@@ -274,7 +293,7 @@ def test_the_search_page_says_the_films_are_not_word_searchable(public, monkeypa
     ])
     monkeypatch.setattr(main, "_kiwix_one", lambda book_id, pattern: [])
     body = public.client.get("/search?q=water", headers={"x-real-ip": "192.0.2.50"}).text
-    assert "film shelf" in body
+    assert "no word search" in body
     assert "open the library" in body.lower()
 
 
@@ -285,7 +304,7 @@ def test_a_box_of_only_films_does_not_say_it_has_no_collections(public, monkeypa
          "title": "Urban Prepper", "size": 1, "searchable": False},
     ])
     body = public.client.get("/search?q=water", headers={"x-real-ip": "192.0.2.50"}).text
-    assert "holds only films and videos" in body
+    assert "holds only picture guides and films" in body
     assert "There are no collections on this box yet" not in body
 
 
