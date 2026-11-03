@@ -4770,8 +4770,8 @@ tool, reserve line), portal pages, README, ADMIN, USING-THE-ARK, matrix R8/R13.
   the same file without faststart and an MKV plan `remux`; a `mpeg4`/`mp3` AVI
   plans `convert` and comes back H.264/AAC. Thumbnails are chosen at 12–82 % of
   the film and written at 360 px height.
-* The suite: **737 passed, 2 skipped** (the two QR cross-checks that need optional
-  packages). Before this change it was 691 + 2. New: 27 media, 13 space, 6 config.
+* The suite: **738 passed, 2 skipped** (the two QR cross-checks that need optional
+  packages). Before this change it was 691 + 2. New: 28 media, 13 space, 6 config.
 * The Pi: `df -h /srv/ark` reports 229 GiB total, 117 GiB free → the reserve is
   **16.0 GiB** (7 %), leaving about 101 GiB of admissible growth at the time of
   measurement. `/etc/ark/ark.env` now records the percentage.

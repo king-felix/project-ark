@@ -185,7 +185,7 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 | Released tag | `v1.0.5` = `dd3336c` (never move a tag, never force-push) |
 | Active branch | `feature/admin-hardening` (fast-forwarded to `main` at `acf5d29`) |
 | Schema version | `SCHEMA_VERSION = 7` (`pi/api/ark_db.py`) — migration 7 adds the film shelf and the space ledger |
-| Test suite | `737 passed, 2 skipped` across 30 files (`tests/`) |
+| Test suite | `738 passed, 2 skipped` across 30 files (`tests/`) |
 | Live Pi state | Deployed through log §43; `ready.ok: true`, `blocking: []`, `mode: home` (`BOOT_MODE="auto"`), `card_check: withdrawn`, 20 collections (86.5 GiB), 1291 books, 67 games, 11 guides, 1.5B AI helper active, FFmpeg + media worker fitted; reserve 7 % (16.0 GiB of the 229 GiB card) |
 | Owner decisions pending | History rewrite + force-push for pre-`a926296` commits (log §37.6, §38.7); rotate GitHub & Pi passwords; licence choice |
 
@@ -263,7 +263,7 @@ Because `location /` on `:80` ends in `try_files … /index.html`, an HTTP **200
 
 ```bash
 # tests (Mac, throwaway DBs, never the live library)
-.venv/bin/python -m pytest -o addopts='--strict-markers' -q    # prints "737 passed, 2 skipped"
+.venv/bin/python -m pytest -o addopts='--strict-markers' -q    # prints "738 passed, 2 skipped"
 # `pytest.ini` already passes -q, so a second -q without -o addopts hides the summary line
 
 # readiness (never quote /api/health as a verdict)
@@ -332,7 +332,7 @@ sudo bash /srv/ark/src/install-ark.sh --only 90-verify
 | ROM header stripping, fingerprinting, offline catalogue matching, filename fallback | `tests/test_romdb.py` (15) |
 | power-cut repair, clock guard, `key=value` counters, WAL drain, `_repair_lock()`, `ark-fsck-once`, fstab/cmdline guards | `tests/test_self_heal.py` (80) |
 | the reserve policy, `f_bavail`, reservations across processes, `hold()` release, reconcile, the `ark-space` shell door | `tests/test_space.py` (13) |
-| probe/plan (direct/remux/convert), a renamed archive refused, public film waits for the owner, 404 for unpublished, 206/416/HEAD ranges, repack keeps the original, conversion to H.264, poster + fallback, SRT→VTT, recover/cancel/delete/adopt, rename, picture-at, catalogue search/sort/paging | `tests/test_media.py` (27) |
+| probe/plan (direct/remux/convert), a renamed archive refused, public film waits for the owner, 404 for unpublished, 206/416/HEAD ranges, repack keeps the original, conversion to H.264, poster + fallback, SRT→VTT, recover/cancel/delete/adopt, rename, picture-at, catalogue search/sort/paging | `tests/test_media.py` (28) |
 | `synchronous=FULL` on every connection, content-addressed save blobs, atomic save replacement | `tests/test_durability.py` (15) |
 | Ask the Ark: brief, prompt budget, route hints, lease slot + disconnect cancel, `public_ask` switch | `tests/test_ai.py` (45) |
 | Stage 7 household answers, 8 emergency topics, inline SVG QR cards, essentials pack builder | `tests/test_household.py` (13), `test_household_page.py` (34), `test_qr.py` (11), `test_essentials.py` (24) |
