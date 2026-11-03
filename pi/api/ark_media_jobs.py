@@ -401,19 +401,46 @@ def make_derivative(row, *, job_id: int, plan: str | None = None) -> dict:
     deadline = _deadline(facts, REMUX_FACTOR if plan == ark_media.REMUX else CONVERT_FACTOR)
     owner = f"media:{int(row['id'])}:{int(job_id)}"
     wrote = {"size": 0}
+    trouble = {"said": False}
+
+    def note(write, what: str) -> None:
+        """Progress and the space ledger are telemetry; a film is not.
+
+        A transient ``database is locked`` / ``readonly database`` — the daily
+        self-heal, an owner's console, a `sqlite3` window that checkpoints the
+        WAL on close — must not throw away a sixteen-minute encode. On the live
+        box it did exactly that at 18:11 on 3 Nov 2026 (log §47.6). The final
+        write that publishes the film is still strict: if *that* fails the job
+        fails, because a copy nothing records is a copy nobody can watch.
+        """
+        try:
+            write()
+        except Exception as exc:                       # noqa: BLE001
+            if not trouble["said"]:
+                trouble["said"] = True
+                log(f"media {int(row['id'])}: could not record {what} ({exc});"
+                    " carrying on with the film")
 
     def on_line(line: str) -> None:
         value = _progress_value(line, "total_size")
         if value is not None:
             wrote["size"] = value
-            with ark_db.tx() as tick:
-                ark_space.touch(tick, receipt.id, value)
+
+            def keep(value=value):
+                with ark_db.tx() as tick:
+                    ark_space.touch(tick, receipt.id, value)
+
+            note(keep, "how much has been written")
         total = _progress_value(line, "out_time_us") or _progress_value(line, "out_time_ms")
         duration = float(facts.get("duration") or 0)
         if total is not None and duration > 0:
             percent = min(99.0, (total / 1_000_000.0) / duration * 100.0)
-            with ark_db.tx() as tick:
-                ark_media.heartbeat(tick, job_id, percent)
+
+            def beat(percent=percent):
+                with ark_db.tx() as tick:
+                    ark_media.heartbeat(tick, job_id, percent)
+
+            note(beat, "how far along it is")
 
     with ark_space.hold(ark_media.media_root(), budget, owner=owner,
                         label=f"media {int(row['id'])} {plan}") as receipt:
@@ -488,9 +515,19 @@ def run_job(job) -> dict:
             ark_media.finish(conn, job_id, "cancelled", "Stopped by the owner.")
         return {"ok": False, "cancelled": True}
     except Exception as exc:                       # noqa: BLE001 — a job never kills the worker
-        with ark_db.tx() as conn:
-            ark_media.finish(conn, job_id, "failed", f"{type(exc).__name__}: {exc}"[:300])
-        log(f"job {job_id} failed: {type(exc).__name__}: {exc}")
+        # Whatever went wrong, its half-written copy is not a film anybody can
+        # watch, and it is this film's own file — safe to remove by name.
+        _unlink(ark_media.temp_dir() / f"m{media_id}.mp4.part")
+        detail = f"{type(exc).__name__}: {exc}"[:300]
+        try:
+            with ark_db.tx() as conn:
+                ark_media.finish(conn, job_id, "failed", detail)
+        except Exception as recording:              # noqa: BLE001
+            # A database that is momentarily unwritable must not take the
+            # worker with it. The row stays 'running'; `recover()` puts it back
+            # in the queue the next time the box starts.
+            log(f"job {job_id}: could not record the failure ({recording})")
+        log(f"job {job_id} failed: {detail}")
         return {"ok": False, "error": str(exc)}
 
 

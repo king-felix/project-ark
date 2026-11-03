@@ -1037,3 +1037,40 @@ def test_a_conversion_that_failed_halfway_is_not_started_over(ark, monkeypatch):
     assert made.get("ok") is False
     assert "died" in made.get("error", "")
     assert len(seen) == 1, "a failure halfway through is not a hardware problem"
+
+
+@needs_ffmpeg
+def test_a_transient_database_error_does_not_throw_the_encode_away(ark, monkeypatch):
+    """The daily self-heal or an owner's console must not kill a 16-minute encode.
+
+    On the live box a reader that checkpointed the WAL at 18:11 killed job 5 with
+    ``attempt to write a readonly database`` — after the film had been encoding
+    for six minutes. Progress is telemetry; the film is not.
+    """
+    import sqlite3
+
+    import ark_media
+    import ark_media_jobs
+
+    media_id = _shelf_row(ark, plan="convert")
+    with ark.db.read() as conn:
+        row = ark_media.item(conn, media_id)
+
+    def fake_run(cmd, *, job_id=0, deadline=0.0, on_line=None):
+        on_line("total_size=1048576")
+        on_line("out_time_us=1000000")
+        with open(cmd[-1], "wb") as handle:
+            handle.write(b"x" * 2048)
+
+    def broken(*args, **kwargs):
+        raise sqlite3.OperationalError("attempt to write a readonly database")
+
+    monkeypatch.setattr(ark_media_jobs, "hwaccel_args", lambda tool=None: [])
+    monkeypatch.setattr(ark_media_jobs, "_run", fake_run)
+    monkeypatch.setattr(ark_media_jobs, "_short_output", lambda path, facts: "")
+    monkeypatch.setattr(ark_media, "heartbeat", broken)
+
+    made = ark_media_jobs.make_derivative(row, job_id=0, plan="convert")
+    assert made.get("ok") is True, made
+    with ark.db.read() as conn:
+        assert ark_media.item(conn, media_id)["play_stored"] == f"m{media_id}.mp4"
