@@ -5886,8 +5886,15 @@ sudo systemctl restart ark-media-worker.service ark-ai.service
 |---|---|
 | `/srv/ark/api/ark_maintenance.py` | `d8b2575d35803dc2` |
 | `/srv/ark/api/ark_db.py` | `d82a5e433e9f3af1` |
-| `/usr/local/sbin/ark-restore` | `f624a793514c3e4d` |
+| `/usr/local/sbin/ark-restore` | `73a7210862421a7d` |
 | `/usr/local/sbin/ark_bundle.py` | `6bedeca2c30008fe` |
+
+A small wording defect the live dry run exposed — *"This box this box is already
+set up"* — was fixed in `31c22fd` and redeployed with `--only 95-backup` at 23:56.
+`/usr/local/sbin/ark-restore` then hashed `73a7210862421a7d`, and the live dry run
+reads **"This box is already set up; replacing it because you said --force."**
+No other deployed file changed. The deployed revision is therefore **`31c22fd`**
+(the wording fix on top of `2e01223`; the second commit changed no code).
 
 **Readiness:** `http://ark.local/api/ready` → **HTTP 200**, `ok: true`, `ready: 9/9`,
 `blocking: []`. The self-heal receipt (`/srv/ark/logs/self-heal.json`) is
