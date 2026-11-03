@@ -2765,7 +2765,12 @@ def _media_job_words(row) -> str:
     if job == "queued":
         return "Waiting to be prepared."
     if job == "running":
-        return "Being prepared now."
+        try:
+            percent = int(float(row["job_progress"] or 0))
+        except (TypeError, ValueError, KeyError):
+            percent = 0
+        return (f"Being prepared now — about {percent}% done." if percent > 0
+                else "Being prepared now.")
     if job == "failed":
         return "Could not be prepared" + (f": {detail}" if detail else ".")
     return ""

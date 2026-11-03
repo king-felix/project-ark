@@ -189,8 +189,11 @@ def probe(path: Path | str, timeout: float | None = None) -> dict:
     # The whole stream description is asked for on purpose: side data carries the
     # rotation a phone recorded, and stripping the JSON to a few fields is how that
     # fact gets lost and a portrait film is thumbnailed sideways.
-    cmd = [tool, "-v", "error", "-print_format", "json", "-show_format",
-           "-show_streams", str(target)]
+    # `-protocol_whitelist file` is not decoration: a file whose bytes are an
+    # HLS or DASH playlist would otherwise make ffprobe fetch remote segments.
+    # The shelf reads local bytes and nothing else, ever.
+    cmd = [tool, "-v", "error", "-protocol_whitelist", "file", "-print_format", "json",
+           "-show_format", "-show_streams", str(target)]
     try:
         done = subprocess.run(cmd, capture_output=True, timeout=timeout or PROBE_TIMEOUT,
                               check=False)
@@ -331,6 +334,10 @@ def mp4_faststart(path: Path | str) -> bool:
 # ---------------------------------------------------------------------------
 #  what a browser may be promised
 # ---------------------------------------------------------------------------
+#: Format families that are instructions to fetch other things, not films.
+_NETWORK_FORMATS = ("hls", "dash", "applehttp", "rtmp", "rtsp", "sdp", "webm_dash_manifest")
+
+
 def plan_for(facts: dict, path: Path | str | None = None) -> str:
     """``direct`` / ``remux`` / ``convert`` / ``unsupported`` — the only verdict.
 
@@ -341,6 +348,8 @@ def plan_for(facts: dict, path: Path | str | None = None) -> str:
     if not facts.get("ok"):
         return UNSUPPORTED
     if not facts.get("has_video"):
+        return UNSUPPORTED
+    if any(name in str(facts.get("format_name") or "").lower() for name in _NETWORK_FORMATS):
         return UNSUPPORTED
     vcodec = str(facts.get("vcodec") or "").lower()
     acodec = str(facts.get("acodec") or "").lower()
@@ -772,7 +781,9 @@ def listing(conn: sqlite3.Connection, q: str = "", state: str = STATE_PUBLISHED,
         "SELECT m.*, (SELECT j.state FROM media_jobs j WHERE j.media_id = m.id"
         " ORDER BY j.id DESC LIMIT 1) AS job_state,"
         " (SELECT j.detail FROM media_jobs j WHERE j.media_id = m.id"
-        " ORDER BY j.id DESC LIMIT 1) AS job_detail"
+        " ORDER BY j.id DESC LIMIT 1) AS job_detail,"
+        " (SELECT j.progress FROM media_jobs j WHERE j.media_id = m.id"
+        " ORDER BY j.id DESC LIMIT 1) AS job_progress"
         " FROM media m" + where + " ORDER BY " + order + " LIMIT ? OFFSET ?",
         [*args, int(per_page), (page - 1) * int(per_page)]).fetchall()
     total = count(conn, q, state, ready, category)

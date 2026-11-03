@@ -622,3 +622,21 @@ def test_a_picture_can_be_asked_for_at_a_time_the_owner_chooses(client, ark, fil
             break
     row = _media_rows(ark)[0]
     assert row["poster_at"] == pytest.approx(2.5, abs=0.05)
+
+
+def test_a_playlist_cannot_make_the_box_fetch_the_internet(ark, tmp_path):
+    """A file whose bytes are a list of URLs is not a film, and is not fetched."""
+    import ark_media
+    playlist = tmp_path / "looks-like-a-film.mp4"
+    playlist.write_text("#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:10,\n"
+                        "http://192.0.2.1/secret.ts\n", encoding="utf-8")
+    facts = ark_media.probe(playlist)
+    assert facts["ok"] is False or ark_media.plan_for(facts) == ark_media.UNSUPPORTED
+    assert "hls" not in str(facts.get("container")).lower()
+    # And the tools themselves are only allowed to open local files.
+    import ark_media_jobs
+    cmd = ark_media_jobs.build_command("ffmpeg", playlist, tmp_path / "out.mp4",
+                                       {"vcodec": "h264", "acodec": "aac",
+                                        "has_audio": True}, ark_media.CONVERT,
+                                       1024 * 1024)
+    assert cmd[cmd.index("-protocol_whitelist") + 1] == "file"

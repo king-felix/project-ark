@@ -208,7 +208,8 @@ def _score_frame(payload: bytes) -> float:
 
 def _grab_frame(tool: str, source: Path, at: float, width: int = 96,
                 timeout: float = THUMB_TIMEOUT) -> bytes:
-    cmd = [tool, "-nostdin", "-v", "error", "-ss", f"{max(0.0, at):.3f}", "-i", str(source),
+    cmd = [tool, "-nostdin", "-v", "error", "-protocol_whitelist", "file",
+           "-ss", f"{max(0.0, at):.3f}", "-i", str(source),
            "-frames:v", "1", "-vf", f"scale={width}:-2", "-pix_fmt", "gray",
            "-f", "rawvideo", "-"]
     try:
@@ -246,9 +247,9 @@ def make_thumbnail(conn, row, *, at: float | None = None, tool: str | None = Non
     target = ark_media.thumbs_dir() / name
     partial = ark_media.temp_dir() / (name + ".part")
     ark_media.temp_dir().mkdir(parents=True, exist_ok=True)
-    cmd = [tool, "-nostdin", "-v", "error", "-y", "-ss", f"{max(0.0, chosen):.3f}",
-           "-i", str(source), "-frames:v", "1", "-vf", "scale=-2:360", "-q:v", "4",
-           "-f", "mjpeg", str(partial)]
+    cmd = [tool, "-nostdin", "-v", "error", "-y", "-protocol_whitelist", "file",
+           "-ss", f"{max(0.0, chosen):.3f}", "-i", str(source), "-frames:v", "1",
+           "-vf", "scale=-2:360", "-q:v", "4", "-f", "mjpeg", str(partial)]
     try:
         done = subprocess.run(cmd, capture_output=True, timeout=THUMB_TIMEOUT, check=False,
                               stdin=subprocess.DEVNULL)
@@ -307,8 +308,9 @@ def build_command(tool: str, source: Path, output: Path, facts: dict, plan: str,
     electricity — and so the workstation recipe printed to the owner is built
     from the same function the box uses.
     """
-    cmd = [tool, "-nostdin", "-v", "error", "-y", "-i", str(source),
-           "-map", "0:v:0", "-map", "0:a:0?", "-max_muxing_queue_size", "1024"]
+    cmd = [tool, "-nostdin", "-v", "error", "-y", "-protocol_whitelist", "file",
+           "-i", str(source), "-map", "0:v:0", "-map", "0:a:0?",
+           "-max_muxing_queue_size", "1024"]
     if plan == ark_media.REMUX or not _needs_encode(facts):
         cmd += ["-c:v", "copy"]
     else:
