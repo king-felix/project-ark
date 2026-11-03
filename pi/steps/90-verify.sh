@@ -157,6 +157,10 @@ check_says "/cards"               "cards for the wall" "Three addresses, three s
 check_page "/vault/quick-card.html" "printable cards"
 check_page "/generate_204"        "captive-portal trigger"
 check_page "/kiwix/"              "offline library" "200 302 503"
+# The shelves page is built by the backend, so it must be *named* in the proxy or
+# `location /` answers the front page with a 200 and every check above passes.
+# Ask for a sentence only this page has, on a card holding books or none.
+check_says "/library"             "library shelves" "filed by what it is for"
 check_page "/books/"              "book shelf"      "200 302"
 
 # ---- the helper that answers questions ---------------------------------------
