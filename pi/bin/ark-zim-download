@@ -64,10 +64,16 @@ if ! flock -n 9; then
   exit 0
 fi
 
-room_for() {   # <bytes> — may this much be added without crossing the reserve?
-  local need=${1:-0}
+room_for() {   # [bytes] — may this much be added without crossing the reserve?
+  # No number asks "may anything be added at all?" — the question before another
+  # fetch starts.  `--need 0` cannot answer it: nothing is bigger than what is
+  # left, so it always says yes.
   if [[ -x "$SPACE" ]]; then
-    "$SPACE" --check --need "$need" --path "$ZIM_DIR"
+    if [[ $# -eq 0 ]]; then
+      "$SPACE" --check --path "$ZIM_DIR"
+    else
+      "$SPACE" --check --need "$1" --path "$ZIM_DIR"
+    fi
   else
     # A box installed before the policy existed still has the old floor; refusing
     # to download is safer than downloading into a card with no room at all.
@@ -238,7 +244,7 @@ while true; do
     sleep 600
     continue
   fi
-  if ! room_for 0; then
+  if ! room_for; then
     log "the card is inside the space the box keeps back — waiting before the next download"
     write_status "waiting for space" 0
     sleep 1800
@@ -261,8 +267,13 @@ while true; do
     continue
   fi
   # A collection has a known size, so the space is promised before the first byte
-  # instead of discovered at 99 %.
-  if ! room_for "${bytes:-0}"; then
+  # instead of discovered at 99 %.  A download that already has a `.part` only
+  # needs the rest: asking for the whole size again would make a resumed 90 GB
+  # fetch impossible on a card that has 40 GB free and 45 GB already written.
+  have_b="$(stat -c %s "$ZIM_DIR/$name.part" 2>/dev/null || stat -f %z "$ZIM_DIR/$name.part" 2>/dev/null || echo 0)"
+  need_b=$(( ${bytes:-0} - ${have_b:-0} ))
+  (( need_b < 0 )) && need_b=0
+  if ! room_for "$need_b"; then
     log "$name does not fit in the space left — waiting before fetching it"
     write_status "$label (waiting for space)" 0
     sleep 1800

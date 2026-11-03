@@ -65,9 +65,16 @@ class Stopped(Exception):
 
 
 def _cancelled(job_id: int) -> bool:
+    """Stop if the owner pressed Stop — or if the job/film row is gone.
+
+    Deleting a film removes its job rows; a worker that carried on encoding would
+    write a derivative nothing names.  A missing row is therefore a stop, not an
+    error.
+    """
     try:
         with ark_db.read() as conn:
-            return ark_media.job_state(conn, job_id) == "cancelled"
+            state = ark_media.job_state(conn, job_id)
+        return state in ("cancelled", "")
     except Exception:
         return False
 
@@ -222,7 +229,7 @@ def _grab_frame(tool: str, source: Path, at: float, width: int = 96,
     return done.stdout or b""
 
 
-def make_thumbnail(conn, row, *, at: float | None = None, tool: str | None = None) -> dict:
+def make_thumbnail(row, *, at: float | None = None, tool: str | None = None) -> dict:
     """Pick and write one poster.  Returns what was chosen; never raises to fail the film."""
     tool = tool or ark_media.ffmpeg_bin()
     if not tool:
@@ -261,13 +268,8 @@ def make_thumbnail(conn, row, *, at: float | None = None, tool: str | None = Non
         return {"ok": False, "error": _tail((done.stderr or b"").decode("utf-8", "replace"))}
     os.chmod(partial, 0o644)
     os.replace(partial, target)
-    changed = conn.execute("UPDATE media SET poster = ?, poster_at = ? WHERE id = ?",
-                           (name, float(chosen), int(row["id"]))).rowcount
-    if not changed:
-        # The film was deleted while the picture was being taken.  A file under
-        # media/thumbs that no row names is bytes nobody can ever reclaim.
-        _unlink(target)
-        return {"ok": False, "error": "That film is no longer on the shelf."}
+    # The row is written by the caller, after the tool has finished: a subprocess
+    # must never run while a write transaction is open on the box's one database.
     return {"ok": True, "at": chosen, "file": name, "bytes": target.stat().st_size}
 
 
@@ -308,7 +310,12 @@ def build_command(tool: str, source: Path, output: Path, facts: dict, plan: str,
     electricity — and so the workstation recipe printed to the owner is built
     from the same function the box uses.
     """
-    cmd = [tool, "-nostdin", "-v", "error", "-y", "-protocol_whitelist", "file",
+    # `-progress pipe:1` is what makes the rest of this module work: without it
+    # ffmpeg writes nothing to stdout, `_run` blocks until the process exits, and
+    # cancellation, the deadline, the heartbeat and the reservation's `written`
+    # count are all dead code.  This line is not decoration.
+    cmd = [tool, "-nostdin", "-v", "error", "-nostats", "-progress", "pipe:1",
+           "-y", "-protocol_whitelist", "file",
            "-i", str(source), "-map", "0:v:0", "-map", "0:a:0?",
            "-max_muxing_queue_size", "1024"]
     if plan == ark_media.REMUX or not _needs_encode(facts):
@@ -374,6 +381,10 @@ def make_derivative(row, *, job_id: int, plan: str | None = None) -> dict:
         if not partial.is_file() or partial.stat().st_size == 0:
             _unlink(partial)
             return {"ok": False, "error": "The video tool wrote nothing."}
+        short = _short_output(partial, facts)
+        if short:
+            _unlink(partial)
+            return {"ok": False, "error": short}
         os.chmod(partial, 0o644)
         os.replace(partial, target)
         written = target.stat().st_size
@@ -431,10 +442,18 @@ def _job_thumbnail(job, media_id: int) -> dict:
         at = float(match.group(1))
     with ark_db.tx() as conn:
         ark_media.heartbeat(conn, job_id, 5)
-    with ark_db.tx() as conn:
-        result = make_thumbnail(conn, row, at=at)
+    result = make_thumbnail(row, at=at)
     with ark_db.tx() as conn:
         if result.get("ok"):
+            changed = conn.execute(
+                "UPDATE media SET poster = ?, poster_at = ? WHERE id = ?",
+                (result["file"], float(result["at"]), media_id)).rowcount
+            if not changed:
+                # The film was deleted while the picture was being taken.
+                _unlink(ark_media.thumbs_dir() / result["file"])
+                ark_media.finish(conn, job_id, "cancelled",
+                                 "The film was removed while its picture was being taken.")
+                return {"ok": False, "error": "gone"}
             ark_media.finish(conn, job_id, "ready", "Picture taken.", 100)
         else:
             ark_media.finish(conn, job_id, "failed", str(result.get("error") or "")[:300])
@@ -471,9 +490,12 @@ def _job_prepare(job_id: int, media_id: int, row) -> dict:
 
     thumb = {"ok": False, "error": "not tried"}
     if not row["poster"]:
-        with ark_db.tx() as conn:
-            thumb = make_thumbnail(conn, row)
-        if not thumb.get("ok"):
+        thumb = make_thumbnail(row)
+        if thumb.get("ok"):
+            with ark_db.tx() as conn:
+                conn.execute("UPDATE media SET poster = ?, poster_at = ? WHERE id = ?",
+                             (thumb["file"], float(thumb["at"]), media_id))
+        else:
             log(f"media {media_id}: no picture ({thumb.get('error')})")
 
     if plan in (ark_media.REMUX, ark_media.CONVERT):
@@ -489,6 +511,8 @@ def _job_prepare(job_id: int, media_id: int, row) -> dict:
                 ark_media.finish(conn, job_id, "failed", detail[:300])
             return made
         with ark_db.tx() as conn:
+            if ark_media.job_state(conn, job_id) == "cancelled":
+                return {"ok": False, "cancelled": True, "error": "Stopped."}
             ark_media.finish(conn, job_id, "ready",
                              "Ready to play." if plan == ark_media.REMUX
                              else "Converted for this box.", 100)
@@ -497,6 +521,29 @@ def _job_prepare(job_id: int, media_id: int, row) -> dict:
     with ark_db.tx() as conn:
         ark_media.finish(conn, job_id, "ready", "Ready to play.", 100)
     return {"ok": True, "plan": plan, "thumbnail": thumb}
+
+
+def _short_output(path: Path, facts: dict) -> str:
+    """A playing copy that stopped early is not a playing copy.
+
+    ``-fs`` is a size ceiling, and a ceiling reached is a film that ends in the
+    middle; ffmpeg can report success after it.  The output is measured against
+    the source it came from before anything is published, so a truncated file can
+    never be recorded as *ready*.
+    """
+    source_duration = float(facts.get("duration") or 0)
+    if source_duration <= 0:
+        return ""
+    made = ark_media.probe(path)
+    if not made.get("ok"):
+        return "The playing copy could not be read back."
+    made_duration = float(made.get("duration") or 0)
+    if made_duration <= 0:
+        return "The playing copy has no length, so it is not whole."
+    if made_duration < source_duration * 0.97:
+        return (f"The playing copy came out short ({made_duration:.0f}s of "
+                f"{source_duration:.0f}s) — it was not kept.")
+    return ""
 
 
 def _storable(facts: dict) -> dict:

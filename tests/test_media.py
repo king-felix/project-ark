@@ -8,6 +8,7 @@ it are skipped with a reason, and everything that is pure logic still runs.
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import urllib.parse
@@ -640,3 +641,181 @@ def test_a_playlist_cannot_make_the_box_fetch_the_internet(ark, tmp_path):
                                         "has_audio": True}, ark_media.CONVERT,
                                        1024 * 1024)
     assert cmd[cmd.index("-protocol_whitelist") + 1] == "file"
+
+
+def test_the_conversion_tool_is_asked_to_report_its_progress():
+    """Without this flag ffmpeg writes nothing to stdout, and Stop/timeout die."""
+    import ark_media
+    import ark_media_jobs
+    cmd = ark_media_jobs.build_command(
+        "ffmpeg", __file__, "/tmp/out.mp4",
+        {"vcodec": "mpeg4", "acodec": "mp3", "has_audio": True},
+        ark_media.CONVERT, 1024 * 1024)
+    assert "-progress" in cmd and cmd[cmd.index("-progress") + 1] == "pipe:1"
+    assert "-nostats" in cmd
+
+
+@needs_ffmpeg
+def test_stopping_a_running_conversion_really_stops_it(ark, tmp_path):
+    """The button must stop the tool, not just write a row."""
+    import threading
+    import time as clock
+
+    import ark_media
+    import ark_media_jobs
+
+    long_film = tmp_path / "long.avi"          # MPEG-4 Part 2: a real re-encode
+    if not FFMPEG:
+        pytest.skip("ffmpeg is not installed on this machine")
+    _run(["-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=25:duration=60",
+          "-f", "lavfi", "-i", "sine=frequency=440:duration=60",
+          "-c:v", "mpeg4", "-q:v", "3", "-c:a", "mp3", "-shortest", str(long_film)])
+    with open(long_film, "rb") as handle:
+        accepted = ark_media.accept(handle.read, "long.avi", state=ark_media.STATE_PENDING)
+    media_id = accepted["id"]
+    with ark.db.read() as conn:
+        assert ark_media.plan_for(json.loads(_media_rows(ark)[0]["probe"])) == ark_media.CONVERT
+        job_id = conn.execute("SELECT id FROM media_jobs WHERE media_id = ?",
+                              (media_id,)).fetchone()["id"]
+
+    done = {}
+
+    def runner():
+        done["result"] = ark_media_jobs.work_once(1)
+
+    thread = threading.Thread(target=runner)
+    thread.start()
+    deadline = clock.monotonic() + 15
+    while clock.monotonic() < deadline:
+        with ark.db.read() as conn:
+            job = conn.execute("SELECT state FROM media_jobs WHERE id = ?",
+                               (job_id,)).fetchone()
+        if job and job["state"] == "running":
+            break
+        clock.sleep(0.05)
+    clock.sleep(0.4)
+    with ark.db.tx() as conn:
+        ark_media.cancel(conn, media_id)
+    thread.join(timeout=30)
+    assert not thread.is_alive(), "the worker did not stop"
+    with ark.db.read() as conn:
+        job = conn.execute("SELECT state FROM media_jobs WHERE id = ?",
+                           (job_id,)).fetchone()
+    assert job["state"] == "cancelled"
+    row = _media_rows(ark)[0]
+    assert row["play_stored"] == "", "a stopped conversion must not publish a copy"
+    assert list((ark.root / "media" / "play").iterdir()) == []
+
+
+# ---------------------------------------------------------------------------
+#  what the reviewer found: promises that were not kept
+# ---------------------------------------------------------------------------
+def test_a_ten_bit_film_is_converted_not_repacked():
+    """A Hi10P MKV repacked byte-for-byte is a film no browser can decode."""
+    import ark_media
+    facts = {"ok": True, "has_video": True, "container": "mkv", "vcodec": "h264",
+             "acodec": "aac", "pix_fmt": "yuv420p10le", "has_audio": True,
+             "faststart": False}
+    assert ark_media.plan_for(facts, "anime.mkv") == ark_media.CONVERT
+    eight_bit = dict(facts, pix_fmt="yuv420p")
+    assert ark_media.plan_for(eight_bit, "anime.mkv") == ark_media.REMUX
+
+
+def test_a_webm_a_browser_can_play_is_not_converted():
+    """ffprobe calls a .webm "matroska,webm"; the suffix says which box it is."""
+    import ark_media
+    facts = {"ok": True, "has_video": True, "container": "mkv", "vcodec": "vp9",
+             "acodec": "opus", "pix_fmt": "yuv420p", "has_audio": True,
+             "faststart": False}
+    assert ark_media.plan_for(facts, "clip.webm") == ark_media.DIRECT
+    # The same streams in an .mkv are not promised to a browser.
+    assert ark_media.plan_for(facts, "clip.mkv") == ark_media.REMUX or \
+        ark_media.plan_for(facts, "clip.mkv") == ark_media.CONVERT
+    import ark_media_web
+    assert ark_media_web.play_type({"play_stored": "", "filename": "clip.webm"}) == "video/webm"
+
+
+def test_the_audio_verdict_describes_the_track_that_is_actually_copied():
+    """Judged on the default track, encoded from the first — that is how a
+    commentary ends up as a film's sound."""
+    import ark_media
+    probed = {"streams": [
+        {"codec_type": "video", "codec_name": "h264", "pix_fmt": "yuv420p",
+         "width": 320, "height": 240, "disposition": {"default": 1}},
+        {"codec_type": "audio", "codec_name": "ac3", "disposition": {"default": 0}},
+        {"codec_type": "audio", "codec_name": "aac", "disposition": {"default": 1}},
+    ]}
+    assert ark_media._stream(probed, "audio")["codec_name"] == "ac3"
+    facts = {"ok": True, "has_video": True, "container": "mkv", "vcodec": "h264",
+             "acodec": "ac3", "pix_fmt": "yuv420p", "has_audio": True}
+    assert ark_media.plan_for(facts, "film.mkv") == ark_media.CONVERT
+
+
+def test_two_captions_in_one_language_do_not_overwrite_each_other(ark):
+    import ark_media
+    with ark.db.tx() as conn:
+        for name, text in (("talk.en.srt", b"1\n00:00:01,000 --> 00:00:02,000\nOne.\n"),
+                           ("talk.en.vtt", b"WEBVTT\n\n00:00:03.000 --> 00:00:04.000\nTwo.\n")):
+            ark_media.add_captions(conn, 7, name, text)
+    folder = ark.root / "media" / "subs" / "7"
+    files = sorted(p.name for p in folder.iterdir())
+    assert files == ["en-2.vtt", "en.vtt"]
+    with ark.db.read() as conn:
+        rows = [dict(r) for r in ark_media.captions(conn, 7)]
+    assert {r["stored"] for r in rows} == {"7/en.vtt", "7/en-2.vtt"}
+    assert all(r["lang"] == "en" for r in rows)
+
+
+def test_a_language_is_a_code_not_a_word_from_the_title():
+    import ark_media
+    assert ark_media.subtitle_language("The.Matrix.720p.srt") == "en"
+    assert ark_media.subtitle_language("Movie.Spanish.srt") == "en"
+    assert ark_media.subtitle_language("Film.fr.srt") == "fr"
+    assert ark_media.subtitle_language("film.pt-BR.srt") == "pt"
+
+
+def test_a_category_appears_only_when_a_readable_film_uses_it(ark):
+    import ark_media
+    facts = {"ok": True, "has_video": True, "container": "mp4", "vcodec": "h264",
+             "pix_fmt": "yuv420p", "faststart": True}
+    with ark.db.tx() as conn:
+        ark_media.add_row(conn, file_id=0, stored="a", filename="a.mp4", size=1,
+                          sha256="", facts=facts, state=ark_media.STATE_PENDING,
+                          category="Rehearsal")
+        assert ark_media.categories(conn) == []
+        ark_media.add_row(conn, file_id=0, stored="b", filename="b.mp4", size=1,
+                          sha256="", facts=facts, state=ark_media.STATE_PUBLISHED,
+                          category="Repairs")
+        assert ark_media.categories(conn) == ["Repairs"]
+
+
+@needs_ffmpeg
+def test_a_declared_upload_that_cannot_fit_is_refused_before_it_is_written(public, ark,
+                                                                         monkeypatch):
+    import ark_space
+    import main
+    monkeypatch.setattr(main, "FRAMING_MARGIN", 0)
+    monkeypatch.setattr(ark_space, "slack", lambda path=None: 10)
+    answer = public.client.post("/files", files={"file": ("x.txt", b"x" * 100, "text/plain")},
+                                follow_redirects=False)
+    assert answer.status_code == 413
+    assert "bigger than the room" in answer.text
+    assert list((ark.root / "drop" / "files").iterdir()) == []
+
+
+@needs_ffmpeg
+def test_the_file_box_cannot_delete_a_film_s_original(client, ark, films):
+    cookie = claim_box(client)
+    _send_video_row(ark, films["fast"], "Keeper.mp4")
+    with ark.db.read() as conn:
+        carrier = conn.execute("SELECT * FROM files").fetchone()
+    page = get(client, "/admin/community", cookie=f"ark_admin={cookie}")
+    from helpers import BIG_PASSWORD
+    token = csrf_of(page.text)
+    answer = post(client, f"/admin/files/{carrier['id']}/delete",
+                  {"current_password": BIG_PASSWORD, "csrf": token},
+                  cookie=f"ark_admin={cookie}")
+    assert answer.status_code == 303
+    assert "Media page" in urllib.parse.unquote(answer.headers["location"])
+    assert (ark.root / "drop" / "files" / carrier["stored"]).is_file()
+    assert _media_rows(ark), "the film is still on the shelf"

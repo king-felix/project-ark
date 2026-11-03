@@ -1516,6 +1516,15 @@ def file_delete(request: Request, file_id: int, current_password: str = Form("")
             return shell("Community", _notice(
                 "bad", "<b>Nothing was deleted.</b> That file is no longer listed."),
                 ctx=ctx, status=404)
+        # The bytes may be a film's only copy: the Media shelf keeps its original
+        # in the File Box, so deleting the row here would leave a film that can
+        # neither play nor be played from its derivative.
+        kept = conn.execute("SELECT COUNT(*) FROM media WHERE stored = ?",
+                            (str(row["stored"] or row["name"]),)).fetchone()[0]
+        if kept:
+            return _redirect("/admin/community?err=" + urllib.parse.quote(
+                "That file is a film on the Media shelf. Delete it from the Media page, "
+                "so its picture and playing copy go with it. Nothing was deleted."))
         removed = _remove_from_card(row["stored"] or row["name"])
         conn.execute("DELETE FROM files WHERE id = ?", (file_id,))
         ark_db.audit(conn, action="file-delete", actor_id=me["id"], actor_name=me["username"],
@@ -2576,7 +2585,7 @@ def upload_files(request: Request, files: Optional[List[UploadFile]] = File(None
         is_media = kind == ark_ingest.KIND_MEDIA
         kind_word = "book" if is_book else ("film" if is_media else "game")
         room = ark_ingest.MAX_BATCH - total
-        if room <= 0:
+        if not is_media and room <= 0:
             rows.append({"name": shown, "kind_word": kind_word, "state": "bad",
                          "said": "this press is already as large as one upload may be"})
             continue
@@ -2811,7 +2820,7 @@ def _media_row(row, csrf: str) -> str:
         buttons.append(_media_button(item_id, "picture", "", csrf, "New picture"))
     if str(row["job_state"] or "") in ("queued", "running"):
         buttons.append(_media_button(item_id, "stop", "", csrf, "Stop preparing"))
-    buttons.append(_media_button(item_id, "delete", "", csrf, "Delete for ever", danger=True))
+    buttons.append(_media_delete_form(item_id, csrf, title))
     watch = (f'<a class="smallbtn" href="/media/{item_id}">Watch</a>'
              if state == ark_media.STATE_PUBLISHED and ark_media.playable(row) else "")
     more = f"""
@@ -2856,6 +2865,25 @@ def _media_row(row, csrf: str) -> str:
     <div class="filmrow-actions">{watch}{''.join(buttons)}</div>
     <div class="filmrow-more">{more}</div>
   </li>"""
+
+
+def _media_delete_form(item_id: int, csrf: str, title: str) -> str:
+    """Deleting one film asks for the same certainty the bulk form does.
+
+    The button used to POST without `confirm=yes`, so the route refused every
+    time and the only working delete was the bulk one — a control that can never
+    succeed is worse than no control.
+    """
+    return f"""
+      <details class="danger-zone">
+        <summary>Delete…</summary>
+        <form method="post" action="/admin/media/{item_id}/delete">
+          {_csrf_field(csrf)}
+          <label class="tick"><input type="checkbox" name="confirm" value="yes" required>
+            I am sure — delete “{esc(title)}” for ever</label>
+          <button class="smallbtn danger" type="submit">Delete for ever</button>
+        </form>
+      </details>"""
 
 
 def _media_button(item_id: int, action: str, value: str, csrf: str, label: str,
@@ -3182,17 +3210,25 @@ def media_adopt(request: Request, file_id: int = Form(0), csrf: str = Form("")):
     """Put a File Box video on the shelf without copying a byte."""
     if (blocked := _gate_tls(request)) is not None:
         return blocked
-    with ark_db.tx() as conn:
+    with ark_db.read() as conn:
         ctx, blocked = _media_check(ctx=None, conn=conn, csrf=csrf, request=request)
         if blocked is not None:
             return blocked
         row = conn.execute("SELECT * FROM files WHERE id = ? AND hidden = 0",
                            (int(file_id),)).fetchone()
-        if row is None:
-            return _redirect("/admin/media?err=" + urllib.parse.quote(
-                "That file is not in the File Box any more."))
+    if row is None:
+        return _redirect("/admin/media?err=" + urllib.parse.quote(
+            "That file is not in the File Box any more."))
+    # ffprobe is a subprocess: it must never run while the database's one write
+    # lock is held, or every other writer on the box waits for it.
+    facts = ark_media.probe(ark_storage.drop_dir() / str(row["stored"] or row["name"]))
+    with ark_db.tx() as conn:
+        ctx, blocked = _media_check(ctx=None, conn=conn, csrf=csrf, request=request)
+        if blocked is not None:
+            return blocked
         try:
-            media_id = ark_media.adopt(conn, row, added_by=str(ctx.admin["username"]))
+            media_id = ark_media.adopt(conn, row, added_by=str(ctx.admin["username"]),
+                                       facts=facts)
         except ark_storage.Refused as exc:
             return _redirect("/admin/media?err=" + urllib.parse.quote(str(exc)))
         ark_db.audit(conn, action="media-adopt", actor_id=ctx.admin["id"],

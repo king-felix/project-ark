@@ -154,12 +154,20 @@ def _int(value, default=0):
 
 
 def _stream(json_facts: dict, kind: str) -> dict:
-    """The stream a person means: the default one, else the first of its kind."""
+    """The stream this box will actually use, and whose codec is judged.
+
+    For **video** that is the default stream, because that is the one a person
+    means.  For **audio** it is the *first* stream, because ``build_command``
+    maps ``0:a:0`` — judging the default track while copying the first one is how
+    a commentary track ends up in the playing copy, or the muxer refuses a DTS
+    track the probe never mentioned.
+    """
     streams = [s for s in (json_facts.get("streams") or [])
                if isinstance(s, dict) and s.get("codec_type") == kind]
-    for stream in streams:
-        if (stream.get("disposition") or {}).get("default"):
-            return stream
+    if kind != "audio":
+        for stream in streams:
+            if (stream.get("disposition") or {}).get("default"):
+                return stream
     return streams[0] if streams else {}
 
 
@@ -264,14 +272,17 @@ def _plain_probe_error(line: str) -> str:
 
 def _container(fmt: dict) -> str:
     names = str(fmt.get("format_name") or "").lower()
-    for candidate in names.replace(",", " ").split():
+    tokens = names.replace(",", " ").split()
+    for candidate in tokens:
         # ``mov,mp4,m4a,3gp,3g2,mj2`` is one container family to ffprobe.  The
         # spelling a browser cares about comes from the file's own suffix, in
         # ``plan_for`` — here the family is simply "mp4".
         if candidate in ("mp4", "mov", "m4a", "3gp", "3g2", "mj2"):
             return "mp4"
         if candidate in ("matroska", "webm"):
-            return "webm" if candidate == "webm" else "mkv"
+            # ffprobe calls both spellings "matroska,webm"; the file's own suffix
+            # is what tells them apart, and `plan_for` reads it.
+            return "mkv"
         if candidate in ("mpegts", "mpeg", "avi", "flv", "asf", "ogg", "wav"):
             return {"mpegts": "ts", "mpeg": "mpg", "asf": "wmv", "ogg": "ogv"}.get(
                 candidate, candidate)
@@ -363,12 +374,21 @@ def plan_for(facts: dict, path: Path | str | None = None) -> str:
     # not obliged to open the .mov spelling; repacking costs seconds and removes
     # the doubt.  The suffix is used only for this, never for the codec verdict.
     suffix = Path(str(path)).suffix.lower() if path else ""
+    # ...and a .webm is the same *demuxer* as an .mkv, so the suffix is also the
+    # only thing that says "this is the box a browser opens".  Judged by suffix
+    # AND codec: a .webm holding H.264 is not a WebM any browser will play.
+    if suffix == ".webm" and video_ok and acodec in ("opus", "vorbis", "aac", ""):
+        return DIRECT
     if container in DIRECT_CONTAINERS and video_ok and audio_ok:
         if container in ("mp4", "m4v") and (not facts.get("faststart") or suffix == ".mov"):
             return REMUX
         return DIRECT
     # The streams may already be browser-safe and simply sit in the wrong box.
-    if vcodec == "h264" and audio_ok and container in ("mov", "mkv", "ts", "m2ts", "mts", "3gp"):
+    # `video_ok` (H.264 **8-bit** 4:2:0) is required, not just `vcodec == h264`:
+    # a Hi10P film repacked byte-for-byte is still a film no browser can decode,
+    # and calling it ready is a broken promise.  A 10-bit source is converted.
+    if vcodec == "h264" and video_ok and audio_ok and container in (
+            "mov", "mkv", "ts", "m2ts", "mts", "3gp"):
         return REMUX
     return CONVERT
 
@@ -506,7 +526,7 @@ def accept(read, filename: str, *, state: str, added_by: str = "", note: str = "
 
 
 def adopt(conn: sqlite3.Connection, file_row, *, state: str = STATE_PUBLISHED,
-          added_by: str = "", title: str = "") -> int:
+          added_by: str = "", title: str = "", facts: dict | None = None) -> int:
     """Put a file that is already in the File Box on the shelf, without copying it.
 
     The File Box row keeps its visibility: adopting a shared file changes the
@@ -514,7 +534,7 @@ def adopt(conn: sqlite3.Connection, file_row, *, state: str = STATE_PUBLISHED,
     the stored name are read from the row rather than invented.
     """
     path = ark_storage.drop_dir() / str(file_row["stored"] or file_row["name"])
-    facts = probe(path)
+    facts = facts if facts is not None else probe(path)
     if not facts.get("ok"):
         raise Refused(facts.get("error") or "That file could not be read as a video.")
     media_id = add_row(
@@ -551,7 +571,16 @@ def add_captions(conn: sqlite3.Connection, media_id: int, name: str, payload: by
     lang = subtitle_language(name)
     folder = subs_dir() / str(int(media_id))
     folder.mkdir(parents=True, exist_ok=True)
-    target = folder / f"{lang}.vtt"
+    # A second English track is a second track, not a replacement: the name on
+    # disk is made unique so one upload can never silently eat another.
+    taken = {str(row["stored"]) for row in conn.execute(
+        "SELECT stored FROM media_subs WHERE media_id = ?", (int(media_id),)).fetchall()}
+    stem = lang
+    bump = 2
+    while f"{int(media_id)}/{stem}.vtt" in taken:
+        stem = f"{lang}-{bump}"
+        bump += 1
+    target = folder / f"{stem}.vtt"
     plot = target.with_suffix(".vtt.part")
     plot.write_text(text, encoding="utf-8")
     os.chmod(plot, 0o644)
@@ -561,7 +590,7 @@ def add_captions(conn: sqlite3.Connection, media_id: int, name: str, payload: by
     cur = conn.execute(
         "INSERT INTO media_subs (media_id, lang, label, stored, size, source)"
         " VALUES (?,?,?,?,?,?)",
-        (int(media_id), lang, language_label(lang), f"{int(media_id)}/{lang}.vtt",
+        (int(media_id), lang, language_label(lang), f"{int(media_id)}/{stem}.vtt",
          len(text.encode("utf-8")), source or str(name)))
     return int(cur.lastrowid)
 
@@ -593,14 +622,24 @@ def vtt_clean(text: str) -> str:
     return body.rstrip() + "\n"
 
 
+#: Language codes this box will name.  A file called ``The.Matrix.720p.srt`` must
+#: not become the language "the".
+LANGUAGES = frozenset({
+    "en", "es", "fr", "de", "it", "pt", "nl", "pl", "ru", "ar", "hi", "ja", "ko",
+    "zh", "sv", "tr", "da", "fi", "no", "cs", "el", "he", "uk", "vi", "th", "id",
+    "ro", "hu", "bg", "sr", "hr", "sk", "fa", "ms", "tl", "ca", "eu", "gl", "is",
+})
+
+
 def subtitle_language(name: str) -> str:
-    """``film.en.srt`` → ``en``; anything unrecognised is ``en``, never a guess."""
+    """``film.en.srt`` → ``en``; anything that is not a known code is ``en``."""
     stem = Path(str(name or "")).stem
-    parts = re.split(r"[._\- ]+", stem)
-    for part in reversed(parts):
+    for part in reversed(re.split(r"[._\- ]+", stem)):
         tag = part.lower()
-        if 2 <= len(tag) <= 5 and tag.isalpha():
-            return tag if tag not in ("srt", "vtt", "sub", "subs") else "en"
+        if tag in LANGUAGES:
+            return tag
+        if len(tag) == 3 and tag in LANGUAGES:
+            return tag
     return "en"
 
 
@@ -792,9 +831,13 @@ def listing(conn: sqlite3.Connection, q: str = "", state: str = STATE_PUBLISHED,
             "per_page": per_page, "has_next": page < pages, "has_prev": page > 1}
 
 
-def categories(conn: sqlite3.Connection) -> list[str]:
+def categories(conn: sqlite3.Connection, states: Iterable[str] | None = None) -> list[str]:
+    """Shelf names in use — by default only those a reader could actually see."""
+    wanted = [str(s) for s in (states or (STATE_PUBLISHED,))]
+    marks = ",".join("?" for _ in wanted)
     return [str(r[0]) for r in conn.execute(
-        "SELECT DISTINCT category FROM media WHERE category <> '' ORDER BY category").fetchall()]
+        "SELECT DISTINCT category FROM media WHERE category <> '' AND state IN ("
+        + marks + ") ORDER BY category", wanted).fetchall()]
 
 
 def status_of(row, present: bool | None = None) -> str:

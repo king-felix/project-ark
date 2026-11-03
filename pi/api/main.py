@@ -133,8 +133,10 @@ def init_db() -> None:
         # A promise of space made by a process that is no longer running must not
         # hold the card hostage: the worker refreshes its own every few minutes.
         ark_space.reconcile()
-    except OSError:
-        pass          # housekeeping must never stop the portal from starting
+    except Exception:          # noqa: BLE001 — housekeeping must never stop the portal
+        # A busy database is not a reason to refuse to start: the reconcile is a
+        # tidy-up, and the next start (or the worker) does it again.
+        pass
 
 
 init_db()
@@ -250,6 +252,43 @@ app.include_router(ark_media_web.build_router(page))
 
 
 # ---------------------------------------------------------------------------
+#  a body the card cannot hold is refused before it is written
+# ---------------------------------------------------------------------------
+BODY_DOORS = ("/files", "/admin/media/upload", "/admin/upload")
+FRAMING_MARGIN = 1024 * 1024          # multipart boundaries and headers
+
+
+@app.middleware("http")
+async def _refuse_a_body_that_cannot_fit(request: Request, call_next):
+    """Answer a declared 8 GiB upload with 413 instead of filling the card first.
+
+    The framework spools a request body to disk before a route ever sees it, so
+    the application's own check comes too late to stop the bytes arriving.  A
+    client that *declares* more than the card can spare is refused at the door;
+    a client that lies about its length is still bounded by the per-file cap and
+    by the check in ``ark_storage.spool`` while the bytes stream.
+    """
+    declared = _declared_length(request)
+    if declared is not None and declared > ark_space.slack(ark_storage.drop_dir()) + FRAMING_MARGIN:
+        return error_page(
+            "That upload is bigger than the room left on the card.",
+            "Nothing was stored. Ask the owner to make space, then try again.", 413)
+    return await call_next(request)
+
+
+def _declared_length(request: Request):
+    if request.method != "POST" or request.url.path not in BODY_DOORS:
+        return None
+    raw = request.headers.get("content-length")
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+# ---------------------------------------------------------------------------
 #  what is on the box
 # ---------------------------------------------------------------------------
 #  Reading the index, counting books and pages, and measuring the download queue
@@ -353,7 +392,9 @@ def _media_status() -> dict:
     """The shelf as JSON: how many films, and how many may be watched now."""
     with ark_db.read() as conn:
         total = ark_media.count(conn, state=ark_media.STATE_PUBLISHED)
-        waiting = ark_media.count(conn, ready="working")
+        # Only films a reader can see: a visitor's film waiting for review is not
+        # "being prepared" as far as the public picture is concerned.
+        waiting = ark_media.count(conn, state=ark_media.STATE_PUBLISHED, ready="working")
         rows = conn.execute(
             "SELECT id, title, duration, plan, play_stored, size FROM media"
             " WHERE state = ? ORDER BY ts DESC LIMIT 12", (ark_media.STATE_PUBLISHED,)

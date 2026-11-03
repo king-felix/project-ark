@@ -263,6 +263,18 @@ def committed(conn, device: int) -> int:
     return int(row[0] or 0)
 
 
+def committed_for(path: Path | str | None = None, conn=None) -> int:
+    """Bytes promised on this filesystem, readable from anywhere — 0 if unknown."""
+    device = device_key(path)
+    try:
+        if conn is not None:
+            return committed(conn, device)
+        with ark_db.read() as own:
+            return committed(own, device)
+    except Exception:
+        return 0
+
+
 def account(path: Path | str | None = None, conn=None) -> dict:
     """Everything an owner needs to see: total, free, reserve, promised, usable."""
     base = facts(path)
@@ -330,10 +342,18 @@ def _reserve(conn, path, device: int, need: int, owner: str, label: str) -> int:
     if need > usable:
         raise _refusal(need, usable, path)
     now = time.time()
-    cur = conn.execute(
-        "INSERT INTO space_reservations (ts, heartbeat, owner, device, path, label,"
-        " bytes, written) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
-        (now, now, str(owner), device, str(path), str(label)[:200], need))
+    try:
+        cur = conn.execute(
+            "INSERT INTO space_reservations (ts, heartbeat, owner, device, path, label,"
+            " bytes, written) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
+            (now, now, str(owner), device, str(path), str(label)[:200], need))
+    except Exception:
+        # A refusal rolls the whole transaction back — including the CREATE that
+        # `_ensure` may just have run.  Forget that it was done, so the next call
+        # checks again instead of trusting a table that no longer exists.
+        global _TABLE_READY
+        _TABLE_READY = False
+        raise
     return int(cur.lastrowid)
 
 

@@ -51,7 +51,15 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     if args.check:
-        need = max(0, int(args.need or 0))
+        if args.need is None:
+            # "May anything be added at all?" — the question a downloader asks
+            # before it starts another fetch.  `require(0)` can never fail, so
+            # this asks the reserve directly.
+            if ark_space.slack(args.path) <= 0:
+                print(ark_space.describe(args.path), file=sys.stderr)
+                return 3
+            return 0
+        need = max(0, int(args.need))
         try:
             ark_space.require(args.path, need)
         except ark_space.Refused as exc:

@@ -88,10 +88,11 @@ def ranged(request: Request, path: Path, media_type: str, *,
     rather than sliced across two versions.
     """
     try:
-        size = os.stat(str(path)).st_size
+        info = os.stat(str(path))
+        size = info.st_size
     except OSError:
         return Response("Not here", status_code=404)
-    etag = f'"{int(os.stat(str(path)).st_mtime)}-{size}"'
+    etag = f'"{int(info.st_mtime)}-{size}"'
     headers = {
         "Accept-Ranges": "bytes",
         "ETag": etag,
@@ -155,10 +156,16 @@ def stream_url(item) -> str:
 
 
 def play_type(item) -> str:
+    """The type of the file that will actually be sent, not of the original.
+
+    A direct WebM is served as itself; everything else the box serves is an MP4
+    (the original, or the copy it made).  Getting this wrong makes a player show
+    "cannot play" for a file it can.
+    """
     stored = str(item["play_stored"] or "")
-    if stored.endswith(".webm"):
-        return "video/webm"
-    return "video/mp4"
+    if stored:
+        return "video/webm" if stored.endswith(".webm") else "video/mp4"
+    return "video/webm" if str(item["filename"] or "").lower().endswith(".webm") else "video/mp4"
 
 
 def _meta_line(item, status: str) -> str:
@@ -576,13 +583,13 @@ def build_router(page) -> APIRouter:
         return page(str(row["title"]), body, here="/media/")
 
     @router.api_route("/media/{media_id}/poster", methods=["GET", "HEAD"])
-    def poster(media_id: int):
+    def poster(request: Request, media_id: int):
         row, _extra = _published(media_id)
         if row is None:
             return Response("Not here", status_code=404)
         path = ark_media.poster_path(row)
         if path is not None:
-            return ranged(_Light("GET"), path, "image/jpeg", cache="public, max-age=3600")
+            return ranged(request, path, "image/jpeg", cache="public, max-age=3600")
         return Response(fallback_poster(), media_type="image/svg+xml",
                         headers={"Cache-Control": "public, max-age=300"})
 
@@ -633,22 +640,6 @@ def build_router(page) -> APIRouter:
         return RedirectResponse(f"/media/{int(media_id)}", status_code=307)
 
     return router
-
-
-class _Light:
-    """A request-shaped object for the few callers that have no Request.
-
-    ``ranged()`` reads three headers and the method; a poster is always a whole
-    file, so the object it needs is this small.  Keeping it here is cheaper and
-    clearer than teaching ``ranged()`` two shapes.
-    """
-
-    def __init__(self, method: str = "GET") -> None:
-        self.method = method
-
-    @property
-    def headers(self):
-        return {}
 
 
 def _guess_type(name: str) -> str:

@@ -215,8 +215,16 @@ def take(dest: Path, keep: int, no_files: bool, quiet: bool, dry: bool) -> int:
     # What this bundle will occupy, measured before a byte is written: the
     # database plus every shared file and save that goes in.  The manifest and
     # the restore sheet are small, so a margin covers them.
-    need = paths["db"].stat().st_size + sum(s.stat().st_size for s, _rel, _to in shared)
-    need += 256 * 1024
+    # The peak is not one bundle: the old ones are cleared after the new one is
+    # published, so `keep + 1` bundles can exist at once.
+    def _size_of(entry):
+        try:
+            return entry.stat().st_size
+        except OSError:
+            return 0                  # vanished since it was listed: not our bytes
+
+    need = _size_of(paths["db"]) + sum(_size_of(s) for s, _rel, _to in shared)
+    need = need * (max(1, int(keep)) + 1) + 256 * 1024
     if ark_space is not None:
         try:
             ark_space.require(dest, need)

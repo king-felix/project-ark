@@ -4770,8 +4770,8 @@ tool, reserve line), portal pages, README, ADMIN, USING-THE-ARK, matrix R8/R13.
   the same file without faststart and an MKV plan `remux`; a `mpeg4`/`mp3` AVI
   plans `convert` and comes back H.264/AAC. Thumbnails are chosen at 12–82 % of
   the film and written at 360 px height.
-* The suite: **738 passed, 2 skipped** (the two QR cross-checks that need optional
-  packages). Before this change it was 691 + 2. New: 28 media, 13 space, 6 config.
+* The suite: **748 passed, 2 skipped** (the two QR cross-checks that need optional
+  packages). Before this change it was 691 + 2. New: 38 media, 13 space, 6 config.
 * The Pi: `df -h /srv/ark` reports 229 GiB total, 117 GiB free → the reserve is
   **16.0 GiB** (7 %), leaving about 101 GiB of admissible growth at the time of
   measurement. `/etc/ark/ark.env` now records the percentage.
@@ -4843,3 +4843,35 @@ The three fixes (commit `4d2eab7`):
 * Deployed files are byte-identical to the repo (`sha256sum` of `ark_media.py`,
   `ark_media_web.py`, `ark_space.py`, `ark_admin.py`, `main.py`,
   `ark-media-worker`, `ark-space`).
+
+### 43.7 An independent review found nine real defects — all fixed, 3 Nov 2026
+
+A reviewer read `8363684..HEAD` against the callers and wrote down what would
+actually break. It found no way to reach an unpublished film without the owner,
+no path escape, and no missing auth — but it found defects that the tests could
+not, because the tests exercised the paths in their easiest form.
+
+| # | What was wrong | Why it mattered | Fix |
+|---|---|---|---|
+| 1 | `_run()` read ffmpeg's stdout, but `build_command()` never passed `-progress pipe:1` | **Stop, the deadline, the heartbeat and the reservation's `written` count were dead code.** A conversion ran to the end after the owner pressed Stop, and `finish(...ready)` then overwrote `cancelled` | `-nostats -progress pipe:1` in the argument array; a missing job row now means "stop"; `_job_prepare` re-reads the job state before finishing |
+| 2 | `_container()` returned `mkv` for `matroska,webm`, so a `.webm` was never `direct` | every WebM was re-encoded on the Pi — minutes to hours of work for a film the browser plays as it is | the suffix decides (with the codec), `play_type()` follows the file actually served |
+| 3 | REMUX accepted any `h264`, including 10-bit | a Hi10P MKV was repacked unchanged, labelled *ready*, and no browser could decode it | `video_ok` (8-bit 4:2:0) is required for a repack; 10-bit is converted |
+| 4 | the audio verdict used the *default* track while the encode copied the *first* | a commentary AC3 could become the sound, or the muxer could refuse a DTS track the probe never mentioned | `_stream(audio)` reports the first track, which is the one `-map 0:a:0` copies |
+| 5 | `adopt()` and `make_thumbnail()` ran `ffprobe`/`ffmpeg` **inside** a write transaction | every other writer on the box waited 8 s and then failed (`database is locked`); an upload's insert could fail after its bytes were spooled | probes happen before the transaction; the tool writes the file, the caller writes the row |
+| 6 | the single **Delete for ever** button posted without `confirm=yes` | the route refused every time: a control that could never succeed | a `details` confirmation with a required tick, matching the bulk form |
+| 7 | deleting a File Box row unlinked bytes a film still pointed at | deleting "the shared file" silently destroyed a film's only copy | the File Box refuses, names the Media page, and changes nothing |
+| 8 | the ZIM downloader's pause called `ark-space --check --need 0` | `need 0` can never fail, so the pause was a no-op and the downloader kept fetching inside the reserve; a resumed download asked for its *whole* size again | `--check` with no `--need` answers "may anything be added at all?"; the downloader asks for the remaining bytes of a `.part` |
+| 9 | an 8 GiB public body reached the card before any admission check | one unauthenticated request could drive the card to the reserve | a middleware refuses a declared `Content-Length` bigger than the room left (413) before the body is read; the residual (a client that lies) is bounded by the per-file cap and the streaming check, and is documented |
+
+Also fixed from the same review: the public filter bar could name a category only
+an unpublished film used; a caption file called `The.Matrix.720p.srt` became the
+language "the"; two English captions overwrote each other; a derived file was
+renamed without `fsync` and a short `-fs` output could be called ready (the
+playing copy's length is now measured against the source); `_media_status`
+counted a pending film as "being prepared"; a poster `HEAD` returned a body;
+`ark-backup` reserved one bundle instead of `keep+1`; and `spool` ignored space
+already promised to a running job.
+
+The suite grew by ten tests that exercise exactly those paths — including a real
+**cancel during a real encode**, which fails without `-progress`. **748 passed,
+2 skipped.**

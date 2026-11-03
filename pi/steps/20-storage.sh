@@ -74,8 +74,9 @@ ZIM_TIERS="1 2 3 4"
 # ZIM_RATE_LIMIT (default 4M/s).  0 = full speed, nobody else is using it.
 ZIM_POLITE="1"
 ZIM_RATE_LIMIT="4M"
-# Never let the card fall below this many GiB free (the downloader pauses).
-MIN_FREE_GIB="12"
+# The space the box keeps back is not set here: it is ARK_RESERVE_PERCENT, one
+# policy for every path that grows the card (see pi/api/ark_space.py and
+# /usr/local/sbin/ark-space).  The orderlies write it into this file at phase 6.2.
 ENV
 else
   ark_info "keeping existing $ARK_ETC/ark.env"

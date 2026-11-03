@@ -157,7 +157,10 @@ def spool(read, filename: str, *, limit: int | None = None,
 
     display = display_name(filename)
     available = free_bytes(dest)
-    if available <= room:
+    # Space already promised to a running job is not free space: an upload that
+    # ignores it can take the bytes a conversion was admitted on.
+    promised = ark_space.committed_for(dest)
+    if available <= room + promised:
         raise Refused("The box is nearly full — there is no room for new files. "
                       "Ask the owner to make space, then try again.")
 
@@ -175,7 +178,7 @@ def spool(read, filename: str, *, limit: int | None = None,
                     raise Refused(f"That file is too big. Files up to "
                                   f"{limit // (1024 ** 3)} GB are accepted — split it or "
                                   f"use a smaller copy, then try again.")
-                if available - written <= room:
+                if available - written <= room + promised:
                     raise Refused("The box filled up while that file was arriving. "
                                   "Ask the owner to make space, then try again.")
                 digest.update(chunk)
