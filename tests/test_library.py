@@ -412,11 +412,96 @@ def test_a_file_that_cannot_be_read_is_a_different_answer_again(tmp_path):
     assert missing.returncode == 2, missing.stderr
 
 
+DOWNLOAD = REPO / "pi" / "bin" / "ark-zim-download"
+
+
 def test_the_downloader_checks_the_digest_before_it_publishes():
-    script = (REPO / "pi" / "bin" / "ark-zim-download").read_text(encoding="utf-8")
+    script = DOWNLOAD.read_text(encoding="utf-8")
     body = script.split("fetch_one()", 1)[1].split("\ntrap ", 1)[0]
-    check = body.index("--url \"$url\" --file \"$part\"")
+    assert 'verify_part "$url" "$part" "$name"' in body, (
+        "fetch_one must ask verify_part before the file gets its final name")
     publish = body.index('mv -f "$part" "$ZIM_DIR/$name"')
-    assert check < publish, "the digest must be checked before the file gets its name"
-    assert "checksum MISMATCH" in body
-    assert '$STATE/$name.sha256' in body, "the digest that passed is kept as a receipt"
+    assert body.index('verify_part "$url" "$part" "$name"') < publish
+
+
+def _verify(tmp_path, *, meta4="", helper=None, payload=b"a library on a card\n"):
+    """Run the real ``verify_part`` from the real downloader against a real file.
+
+    Sourcing the shipped script (rather than copying its logic into the test) is
+    the point: an earlier version initialised its verdict to 9 and never reset it
+    on success, so every good download took the "helper missing" branch, was
+    published unchecked, and the log read as though the check was not installed.
+    A test that greps the source cannot see that.  This one runs it.
+    """
+    import os
+    import subprocess
+
+    faked = tmp_path / "bin"
+    faked.mkdir()
+    (faked / "flock").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    (faked / "flock").chmod(0o755)
+
+    for sub in ("zim", "state", "logs"):
+        (tmp_path / sub).mkdir()
+    part = tmp_path / "zim" / "x.zim.part"
+    part.write_bytes(payload)
+    if meta4:
+        (tmp_path / "zim" / "x.zim.meta4").write_text(meta4, encoding="utf-8")
+
+    env = {**os.environ,
+           "ZIM_DIR": str(tmp_path / "zim"),
+           "LOG_DIR": str(tmp_path / "logs"),
+           "QUEUE": str(tmp_path / "queue.tsv"),
+           "PROFILE_FILE": str(tmp_path / "profile"),
+           "PAUSE": str(tmp_path / "pause"),
+           "CHECK": str(helper or REPO / "pi" / "bin" / "ark-zim-checksum"),
+           "PATH": f"{faked}:{os.environ.get('PATH', '')}"}
+    (tmp_path / "queue.tsv").write_text("# empty\n", encoding="utf-8")
+
+    script = (f'source "{DOWNLOAD}" || exit 9\n'
+              'if verify_part "$1" "$2" "x.zim"; then echo VERDICT=ok; '
+              'else echo VERDICT=no; fi\n')
+    run = subprocess.run(["bash", "-c", script, "t", (tmp_path / "zim" / "x.zim").as_uri(),
+                          str(part)], capture_output=True, text=True, timeout=90, env=env)
+    log = (tmp_path / "logs" / "zim-download.log")
+    return run, (log.read_text(encoding="utf-8") if log.exists() else ""), part
+
+
+def _meta4(digest: str) -> str:
+    return ('<?xml version="1.0"?><metalink xmlns="urn:ietf:params:xml:ns:metalink">'
+            '<file name="x.zim">'
+            f'<hash type="sha-1">{"2" * 40}</hash><hash type="sha-256">{digest}</hash>'
+            "</file></metalink>")
+
+
+def test_a_good_download_is_published_with_the_digest_it_was_checked_against(tmp_path):
+    import hashlib
+
+    want = hashlib.sha256(b"a library on a card\n").hexdigest()
+    run, log, _part = _verify(tmp_path, meta4=_meta4(want))
+    assert "VERDICT=ok" in run.stdout, (run.stdout, run.stderr)
+    assert "checksum ok x.zim" in log, log
+    # The receipt lives beside the queue state, which the script derives from ZIM_DIR.
+    receipt = (tmp_path / "zim" / "state" / "x.zim.sha256").read_text(encoding="utf-8")
+    assert receipt.strip() == f"{want}  x.zim"
+
+
+def test_a_mismatched_download_is_removed_and_refused(tmp_path):
+    run, log, part = _verify(tmp_path, meta4=_meta4("0" * 64))
+    assert "VERDICT=no" in run.stdout, (run.stdout, run.stderr)
+    assert "checksum MISMATCH" in log
+    assert not part.exists(), "a file that is not the published one must not survive"
+
+
+def test_a_mirror_with_no_digest_keeps_the_file_and_says_unverified(tmp_path):
+    run, log, part = _verify(tmp_path)
+    assert "VERDICT=ok" in run.stdout, (run.stdout, run.stderr)
+    assert "no published checksum" in log
+    assert part.exists(), "an unpublished digest is not a reason to lose a sound file"
+
+
+def test_a_missing_helper_keeps_the_file_and_says_so(tmp_path):
+    run, log, part = _verify(tmp_path, helper=tmp_path / "nope" / "ark-zim-checksum")
+    assert "VERDICT=ok" in run.stdout, (run.stdout, run.stderr)
+    assert "is missing" in log
+    assert part.exists()
