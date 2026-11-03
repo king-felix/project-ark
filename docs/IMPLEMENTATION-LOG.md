@@ -5028,3 +5028,22 @@ revision on the remote. It is a private LAN identifier, not a credential, but it
 is exactly the kind of household detail §6 says not to publish; removing it from
 history needs the owner's explicit decision and a force-push, which this work did
 not perform. It is listed with the other pending owner decisions in `AGENTS.md`.
+
+**Performance and resource use, measured on the live box (desktop Chromium
+148.0.7778.96, not a phone).** With the 15,485,807-byte Liechtenstein pack over
+the Wi-Fi address:
+
+| | |
+|---|---|
+| Download + first map | **2.32 s** (a second run: 2.6 s) |
+| Stored components | **15,485,807 bytes in 22 chunks**, read back from IndexedDB file records (the browser's own `storage.estimate()` reported 6.6 MB, which under-reports IndexedDB; admission uses the manifest's total) |
+| Search | **0.187 s** from typing to suggestions, including the 130 ms input debounce; the index holds 1,734 places |
+| Route | **0.089 s** for Vaduz → Balzers (8.3 km, 15 directions), worker included |
+| JS heap | **30.7 MB used / 47.9 MB total** after the pack opened |
+
+A real phone's memory, battery and thermal behaviour are not proved by these
+numbers; that is §22 of the human test list.
+
+The local-data control is exercised by the browser test too: save the
+destination, see it on the device, clear it, and confirm the map (and the
+installed pack) remain.

@@ -178,6 +178,7 @@ def test_a_downloaded_region_reopens_and_routes_with_no_network(maps_box):
         pytest.skip("Chromium could not start: %s" % (exc,))
     try:
         page = context.new_page()
+        page.on("dialog", lambda dialog: dialog.accept())
         errors = []
         responses = []
         page.on("pageerror", lambda error: errors.append(str(error)))
@@ -227,6 +228,19 @@ def test_a_downloaded_region_reopens_and_routes_with_no_network(maps_box):
         steps = page.locator("#directions li").count()
         assert steps >= 3, page.inner_text("#directions")
         page.screenshot(path=str(EVIDENCE / "03-route-offline.png"), full_page=True)
+
+        # The device-local data has a real removal control, and it removes only
+        # that data — the installed pack stays.
+        page.locator("details", has_text="Saved places").locator("summary").click()
+        page.click("#save-current")
+        page.wait_for_function(
+            "() => document.querySelector('#saved-list').innerText.includes('Beta')",
+            timeout=5000)
+        page.click("#clear-local")
+        page.wait_for_function(
+            "() => document.querySelector('#saved-list').innerText.includes('No saved places yet')",
+            timeout=5000)
+        assert page.locator("#map-view").is_visible()
 
         # A route sheet with a map and directions, and a GPX file.
         with page.expect_download(timeout=15000) as download:
