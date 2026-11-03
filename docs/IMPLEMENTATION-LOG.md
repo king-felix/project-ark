@@ -5016,3 +5016,12 @@ real region, a real iPhone/Android and browser eviction remain human work
 (§22 of the human test list). Rollback is redeploying the pre-maps revision
 `b2994fd`; no database downgrade is involved, and the pack folder can be removed
 independently.
+
+**One disclosure about the deploy record.** The commit that recorded the
+deployment (`1a3f41f`) accidentally wrote the box's real home-LAN address into
+this log. The next commit (`a71c5ca`) replaces it with `<HOME-IP>`; the tracked
+tree is clean and the secrets guard passes. The value remains in the previous
+revision on the remote. It is a private LAN identifier, not a credential, but it
+is exactly the kind of household detail §6 says not to publish; removing it from
+history needs the owner's explicit decision and a force-push, which this work did
+not perform. It is listed with the other pending owner decisions in `AGENTS.md`.
