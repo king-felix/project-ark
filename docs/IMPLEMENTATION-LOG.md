@@ -4968,7 +4968,7 @@ none). A real iPhone/Android, the owner's actual region choice and browser
 eviction under real quota pressure remain human tests
 (`docs/HUMAN-TEST-LIST.md` §22). The open letter is untouched.
 
-**Tests.** `766 passed, 2 skipped` across 32 pytest files (the two browser tests
+**Tests.** `767 passed, 2 skipped` across 32 pytest files (the three browser tests
 are among them; they skip only when Playwright/Chromium or openssl is absent),
 plus **14 Node tests** for the router, search and streaming SHA-256
 (`node --test tests/js/`). The new pytest files are `tests/test_maps.py` (16) and

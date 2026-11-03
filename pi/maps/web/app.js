@@ -1162,6 +1162,20 @@ function renderSaved() {
   });
 }
 
+async function clearLocal() {
+  const answer = window.confirm(
+    "Remove the saved places and the last map view from this device? "
+    + "Downloaded regions are not removed.");
+  if (!answer) return;
+  state.saved = [];
+  await store.localPut("saved", []);
+  if (state.packKey) await store.localDelete(`view:${state.packKey}`);
+  renderSaved();
+  setStatus($("route-status"),
+    "Saved places and the last view were removed from this device. Downloaded regions were not removed.",
+    "good");
+}
+
 async function saveDestination() {
   const place = state.endpoints.to;
   if (!place) {
@@ -1280,6 +1294,7 @@ function bindEvents() {
   $("download-sheet").addEventListener("click", downloadSheet);
   $("download-gpx").addEventListener("click", downloadGPX);
   $("save-current").addEventListener("click", saveDestination);
+  $("clear-local").addEventListener("click", clearLocal);
   $("check-copy").addEventListener("click", checkCopy);
   $("pause-download").addEventListener("click", () => {
     if (!state.download) return;

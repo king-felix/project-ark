@@ -276,6 +276,41 @@ def test_a_downloaded_region_reopens_and_routes_with_no_network(maps_box):
         playback.stop()
 
 
+def test_a_device_with_no_room_is_refused_before_a_byte(maps_box):
+    """The phone's quota is shown and respected, not discovered halfway."""
+    url = "https://ark.test:%d/maps/" % maps_box["port"]
+    try:
+        playback, browser, context = _launch(maps_box["port"], maps_box["spki"])
+    except PlaywrightError as exc:
+        pytest.skip("Chromium could not start: %s" % (exc,))
+    try:
+        context.add_init_script("""
+          Object.defineProperty(navigator, 'storage', {
+            configurable: true,
+            value: {
+              estimate: async () => ({ usage: 0, quota: 4096 }),
+              persist: async () => false,
+              persisted: async () => false,
+            },
+          });
+        """)
+        page = context.new_page()
+        page.goto(url, wait_until="load")
+        page.get_by_role("button", name="Download for offline use").first.wait_for(timeout=15000)
+        page.get_by_role("button", name="Download for offline use").first.click()
+        page.wait_for_function(
+            "() => /free for this page/.test(document.querySelector('#install-status').textContent)",
+            timeout=8000)
+        text = page.inner_text("#install-status")
+        assert "pack needs" in text
+        page.click("#installed-block summary")
+        assert "Nothing is installed" in page.inner_text("#installed-list")
+    finally:
+        context.close()
+        browser.close()
+        playback.stop()
+
+
 def test_a_paused_download_keeps_its_pieces_and_resumes(maps_box):
     """An interrupted download is not a lost one — and a cancelled one is gone."""
     url = "https://ark.test:%d/maps/" % maps_box["port"]
@@ -316,6 +351,31 @@ def test_a_paused_download_keeps_its_pieces_and_resumes(maps_box):
         page.get_by_role("button", name="Continue download").first.click()
         page.locator("#map-view").wait_for(state="visible", timeout=60000)
         assert page.locator("#offline-badge").is_visible()
+
+        # Damage one stored piece on purpose.  The copy must be detectably
+        # incomplete, not silently opened as if it were whole.
+        page.locator("details", has_text="About this pack").locator("summary").click()
+        page.evaluate("""() => new Promise((resolve, reject) => {
+          const open = indexedDB.open('ark-maps');
+          open.onerror = () => reject(open.error);
+          open.onsuccess = () => {
+            const db = open.result;
+            const tx = db.transaction('chunks', 'readwrite');
+            const store = tx.objectStore('chunks');
+            const cursor = store.openKeyCursor();
+            cursor.onerror = () => reject(cursor.error);
+            cursor.onsuccess = () => {
+              const row = cursor.result;
+              if (!row) { resolve('none'); return; }
+              store.delete(row.key);
+              tx.oncomplete = () => resolve(row.key);
+            };
+          };
+        })""")
+        page.click("#check-copy")
+        page.wait_for_function(
+            "() => /damaged|missing|could not/.test(document.querySelector('#check-status').textContent)",
+            timeout=8000)
 
         # Remove it, start again, and cancel: a cancelled copy leaves nothing.
         page.click("#back-to-packs")

@@ -13,7 +13,7 @@
  *     update cannot replace the code in the middle of a route.
  */
 
-const VERSION = "ark-maps-v1";
+const VERSION = "ark-maps-v2";
 const ASSETS = [
   "./",
   "index.html",

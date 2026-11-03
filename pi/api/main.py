@@ -51,6 +51,7 @@ import ark_db
 import ark_essentials
 import ark_health
 import ark_household
+import ark_map_store
 import ark_map_web
 import ark_media
 import ark_media_web
@@ -131,6 +132,9 @@ def init_db() -> None:
     try:
         ark_storage.reconcile_temp()
         ark_arcade_install.sweep_temp()
+        # A map import that was cut off leaves staging in incoming/ or tmp/;
+        # it is never a published pack, and the sweep never touches a pack.
+        ark_map_store.Store().sweep()
         # A promise of space made by a process that is no longer running must not
         # hold the card hostage: the worker refreshes its own every few minutes.
         ark_space.reconcile()
