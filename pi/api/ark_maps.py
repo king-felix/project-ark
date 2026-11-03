@@ -888,6 +888,25 @@ def line_feature(points: Sequence[Tuple[float, float]],
             "geometry": {"type": "LineString", "coordinates": drawn}}
 
 
+def ring_area_m2(points: Sequence[Tuple[float, float]]) -> float:
+    """A closed ring's area in square metres, near enough to sort lakes from ponds.
+
+    Equirectangular projection around the ring's mean latitude: the error is a
+    fraction of a percent at regional scale, which is all a *size threshold* needs.
+    This is not a survey and nothing else in the format uses it.
+    """
+    if len(points) < 3:
+        return 0.0
+    lat0 = sum(p[0] for p in points) / len(points)
+    kx = 111320.0 * math.cos(math.radians(lat0))
+    ky = 110574.0
+    total = 0.0
+    for index, (lat1, lon1) in enumerate(points):
+        lat2, lon2 = points[(index + 1) % len(points)]
+        total += (lon1 * kx) * (lat2 * ky) - (lon2 * kx) * (lat1 * ky)
+    return abs(total) / 2.0
+
+
 def polygon_feature(points: Sequence[Tuple[float, float]],
                     properties: Optional[Dict[str, object]] = None) -> Optional[Dict[str, object]]:
     """One filled shape from a ring of `(lat, lon)` — closed here, never assumed.
@@ -1198,13 +1217,17 @@ class PackBuilder(object):
 
     def __init__(self, max_points: int = MAX_GRAPH_POINTS,
                  max_places: int = MAX_PLACES,
-                 max_buildings: int = MAX_BUILDINGS) -> None:
+                 max_buildings: int = MAX_BUILDINGS,
+                 min_water_area: float = 0.0,
+                 named_water_lines_only: bool = False) -> None:
         self.graph = Graph()
         self.layers: Dict[str, List[Dict[str, object]]] = {name: [] for name in LAYERS}
         self.places: List[Dict[str, object]] = []
         self.max_points = int(max_points)
         self.max_places = int(max_places)
         self.max_buildings = int(max_buildings)
+        self.min_water_area = float(min_water_area or 0.0)
+        self.named_water_lines_only = bool(named_water_lines_only)
         self._seen: set = set()
         self._box: Optional[List[float]] = None   # [south, west, north, east]
         self.stats = {
@@ -1212,6 +1235,7 @@ class PackBuilder(object):
             "other_ways": 0, "drawn": 0, "areas": 0, "points": 0,
             "places": 0, "repeats": 0, "places_dropped": 0,
             "buildings": 0, "buildings_dropped": 0,
+            "water_dropped": 0,
             "restrictions": 0, "restrictions_skipped": 0,
         }
 
@@ -1264,13 +1288,13 @@ class PackBuilder(object):
                   lat: float, lon: float) -> bool:
         """A single OSM node: somewhere to search for, and nothing else."""
         self.stats["points"] += 1
-        self._stretch(lat, lon)
         value, words = poi_kind(tags)
         if not value:
             return False
         name = " ".join((tags.get("name") or "").split())
         if not name:
             return False       # a place with no name is not a place to search
+        self._stretch(lat, lon)
         return self._keep(place(name, value, lat, lon, label=words,
                                 rank=search_rank(value), id=int(osm_id)))
 
@@ -1288,8 +1312,6 @@ class PackBuilder(object):
         self.stats["ways"] += 1
         if len(nodes) < 2:
             return False
-        for _nid, lat, lon in nodes:
-            self._stretch(lat, lon)
         closed = len(nodes) >= 4 and nodes[0][0] == nodes[-1][0]
         points = [(float(lat), float(lon)) for _nid, lat, lon in nodes]
         name = " ".join((tags.get("name") or "").split())
@@ -1324,6 +1346,18 @@ class PackBuilder(object):
         if layer == "buildings" and len(self.layers["buildings"]) >= self.max_buildings:
             self.stats["buildings_dropped"] += 1
             layer = ""
+        if (layer == "water" and closed and self.min_water_area > 0
+                and not name and ring_area_m2(points) < self.min_water_area):
+            # A state is full of unnamed stock tanks; at this scale they are noise
+            # and megabytes.  A named lake or reservoir is always kept.
+            self.stats["water_dropped"] += 1
+            layer = ""
+        elif (layer == "water" and not closed and self.named_water_lines_only
+                and not name):
+            # Every stream is cut into dozens of ways; the unnamed ones are the
+            # font of a state's water layer and draw nothing a traveller can name.
+            self.stats["water_dropped"] += 1
+            layer = ""
         if layer:
             props = self._properties(tags, name, value, words)
             feature = None
@@ -1347,6 +1381,13 @@ class PackBuilder(object):
             if self._keep(place(name, value, lat, lon, label=words,
                                 rank=search_rank(value), id=int(osm_id))):
                 used = True
+        # Only an object that contributes stretches the view: an extract can
+        # carry a long-distance relation's members from far outside the region
+        # (a power line's towers 2,000 km away), and one of those must not open
+        # the map — or fail the verifier — on a region it was never part of.
+        if used:
+            for _nid, lat, lon in nodes:
+                self._stretch(lat, lon)
         return used
 
     # -- turn restrictions ----------------------------------------------------

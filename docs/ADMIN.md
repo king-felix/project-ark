@@ -1759,6 +1759,26 @@ demonstration region used to prove this pipeline is Liechtenstein — a small,
 non-personal region. **The real geographic choice is yours**; the box does not
 infer a home location from anything.
 
+**A whole state does not fit one pack at full detail.** The builder's working limit
+is 400,000 routable points — about what a phone can carry and parse. A full New
+Mexico extract has **5.7 million** and Texas **23.7 million**, so a state is built
+as a *main-road atlas* instead: `--min-class secondary` (or `primary`) keeps the
+numbered and primary network and leaves the smaller roads out of the router and the
+drawing alike; `--min-water-area 250000 --named-water-lines-only` keeps the water
+layer from filling the pack with unnamed tanks and stream segments. The pack states
+this in its own limitations, and the region name carries it too ("New Mexico —
+main roads"). Street-level detail inside a town needs a smaller region, built
+without `--min-class`.
+
+```bash
+# a state-sized main-road pack
+.venv/bin/python scripts/ark-map-pack --pbf texas-latest.osm.pbf \
+  --name "Texas — main roads" --code US-TX --min-class primary \
+  --max-points 1200000 --max-buildings 0 \
+  --min-water-area 250000 --named-water-lines-only \
+  --out logs/maps/packs --bundle logs/maps/texas-main-roads.zip
+```
+
 ### Adding, checking, offering, removing
 
 1. **Add a pack** — choose the `.zip` on `/admin/maps` (up to 1 GiB) and press

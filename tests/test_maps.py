@@ -90,6 +90,51 @@ def test_pack_round_trip(tmp_path):
     assert graph.edges == 10
 
 
+def test_an_unused_object_far_away_does_not_stretch_the_region():
+    """An extract can carry a long-distance relation's members from far away.
+
+    The New Mexico extract (3 Nov 2026) held a power line's tower at 59°N in
+    British Columbia: one stray object opened the map on half a continent and
+    made the verifier refuse the pack as "more than a regional extract should".
+    A node that is not a place to search, and a way that is not drawn, must not
+    move the bounds.
+    """
+    builder = ark_maps.PackBuilder()
+    assert builder.add_point(1, {"power": "tower"}, 59.3556, -127.0899) is False
+    assert builder.add_way(2, {"power": "line"},
+                           [(10, 59.0, -127.0), (11, 59.1, -127.1)]) is False
+    assert builder.add_way(10, {"highway": "primary"},
+                           [(100, 35.0, -106.0), (101, 35.1, -106.1)]) is True
+    south, west, north, east = builder.bounds()
+    assert 34.9 <= south <= north <= 35.2
+    assert -106.2 <= west <= east <= -105.9
+
+
+def test_small_unnamed_water_is_left_out_when_a_floor_is_set():
+    """A state is full of unnamed stock tanks; a named lake is always kept."""
+    builder = ark_maps.PackBuilder(min_water_area=250000.0)
+    pond = [(10, 35.0000, -106.0000), (11, 35.0000, -106.0010),
+            (12, 35.0010, -106.0010), (13, 35.0010, -106.0000),
+            (10, 35.0000, -106.0000)]                       # about 100 m across
+    lake = [(20, 36.0000, -106.0000), (21, 36.0000, -106.0200),
+            (22, 36.0200, -106.0200), (23, 36.0200, -106.0000),
+            (20, 36.0000, -106.0000)]                       # about 2 km across
+    assert builder.add_way(1, {"natural": "water"}, pond) is False
+    assert builder.add_way(2, {"natural": "water", "name": "Stock Tank"}, pond) is True
+    assert builder.add_way(3, {"natural": "water"}, lake) is True
+    assert builder.stats["water_dropped"] == 1
+    assert len(builder.layers["water"]) == 2
+
+
+def test_unnamed_streams_can_be_left_out_while_named_rivers_stay():
+    builder = ark_maps.PackBuilder(named_water_lines_only=True)
+    line = [(30, 35.0, -106.0), (31, 35.1, -106.1)]
+    assert builder.add_way(1, {"waterway": "stream"}, line) is False
+    assert builder.add_way(2, {"waterway": "river", "name": "Rio Grande"}, line) is True
+    assert builder.stats["water_dropped"] == 1
+    assert len(builder.layers["water"]) == 1
+
+
 def test_oneway_is_one_way_for_a_car_and_not_for_feet(tmp_path):
     folder = tmp_path / "pack"
     build(folder)

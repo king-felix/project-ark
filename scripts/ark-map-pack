@@ -13,6 +13,12 @@ verified folder (or a zip of one).
         https://download.geofabrik.de/europe/liechtenstein-latest.osm.pbf \\
         --name Liechtenstein --code LI --out logs/maps/packs
 
+    # a whole state is too much for one phone pack at full detail; a main-road
+    # pack keeps the numbered and primary network and leaves local streets out
+    python3 scripts/ark-map-pack --pbf texas.osm.pbf --min-class primary \\
+        --name "Texas — main roads" --max-buildings 0 --max-points 1200000 \\
+        --out logs/maps/packs
+
     # a region already on disk
     python3 scripts/ark-map-pack --pbf region.osm.pbf --name "My Region" \\
         --source-url https://download.geofabrik.de/... --out /tmp/packs
@@ -173,13 +179,18 @@ def build(pbf: Path, args) -> Path:
 
     builder = ark_maps.PackBuilder(max_points=args.max_points,
                                    max_places=args.max_places,
-                                   max_buildings=args.max_buildings)
+                                   max_buildings=args.max_buildings,
+                                   min_water_area=args.min_water_area,
+                                   named_water_lines_only=args.named_water_lines_only)
+    rank = {name: i for i, name in enumerate(ark_maps.ROAD_CLASSES)}
+    floor = rank[args.min_class] if args.min_class else None
 
     class Handler(osmium.SimpleHandler):
         def __init__(self):
             super().__init__()
             self.unresolved = 0
             self.ways_seen = 0
+            self.left_out = 0
 
         def node(self, node):
             if not node.tags:
@@ -192,6 +203,14 @@ def build(pbf: Path, args) -> Path:
 
         def way(self, way):
             self.ways_seen += 1
+            tags = tags_of(way)
+            # A state-scale pack keeps the road classes it was asked for and
+            # leaves the rest out of both the router and the drawing, so what is
+            # drawn and what can be driven still agree.
+            if floor is not None and tags.get("highway"):
+                if rank.get(ark_maps.road_class(tags), 0) < floor:
+                    self.left_out += 1
+                    return
             points = []
             for ref in way.nodes:
                 if not ref.location.valid():
@@ -200,7 +219,7 @@ def build(pbf: Path, args) -> Path:
                 points.append((ref.ref, ref.location.lat, ref.location.lon))
             if len(points) < 2:
                 return
-            builder.add_way(way.id, tags_of(way), points)
+            builder.add_way(way.id, tags, points)
 
         def relation(self, relation):
             tags = tags_of(relation)
@@ -214,20 +233,43 @@ def build(pbf: Path, args) -> Path:
     started = time.time()
     handler.apply_file(str(pbf), locations=True)
     print("read %d ways in %.1f s" % (handler.ways_seen, time.time() - started))
+    if floor is not None:
+        kept = [name for name in ark_maps.ROAD_CLASSES if rank[name] >= floor]
+        print("kept road classes: %s (%d ways left out)"
+              % (", ".join(reversed(kept)), handler.left_out))
 
     made = builder.finish()
     stats = made["stats"]
-    limitations = args.limitations or (
-        "Turn restrictions that use a via way or a conditional time are not carried "
-        "(%d skipped). Speeds are road-class defaults, not surveyed limits. Street "
-        "addresses are not included; named places and points of interest are. "
-        "Building footprints are capped at %d. Mapped water is not a claim that it "
-        "is safe to drink, and a mapped facility is not a claim that it is open."
-        % (stats.get("restrictions_skipped", 0), args.max_buildings))
-    if stats.get("buildings_dropped"):
-        limitations += " %d further buildings were left out to keep the pack small." % (
-            stats["buildings_dropped"],)
+    if args.limitations:
+        limitations = args.limitations
+    else:
+        limitations = (
+            "Turn restrictions that use a via way or a conditional time are not carried "
+            "(%d skipped). Speeds are road-class defaults, not surveyed limits. Street "
+            "addresses are not included; named places and points of interest are. "
+            % (stats.get("restrictions_skipped", 0),))
+        if args.max_buildings > 0:
+            limitations += "Building footprints are capped at %d. " % (args.max_buildings,)
+        else:
+            limitations += "Building footprints are not carried in this pack. "
+        limitations += ("Mapped water is not a claim that it is safe to drink, and a "
+                        "mapped facility is not a claim that it is open.")
+        if stats.get("buildings_dropped") and args.max_buildings > 0:
+            limitations += (" %d further buildings were left out to keep the pack small."
+                            % (stats["buildings_dropped"],))
+        if stats.get("water_dropped") and (args.min_water_area > 0
+                                           or args.named_water_lines_only):
+            limitations += (" %d unnamed water lines or small unnamed water shapes "
+                            "were left out; named water is always kept."
+                            % (stats["water_dropped"],))
+        if floor is not None and floor > 0:
+            kept = ", ".join(reversed([name for name in ark_maps.ROAD_CLASSES
+                                       if rank[name] >= floor]))
+            limitations = ("Only %s roads are carried; local streets, service roads and "
+                           "paths are not, so routing works on the main road network only. "
+                           % (kept,)) + limitations
 
+    print("bounds      %s" % (", ".join("%.4f" % v for v in made["bounds"]),))
     staging = out / (".build-%s-%s-%d" % (ident, version, os.getpid()))
     if staging.exists():
         shutil.rmtree(staging)
@@ -319,6 +361,14 @@ def main(argv=None) -> int:
     parser.add_argument("--max-points", type=int, default=ark_maps.MAX_GRAPH_POINTS)
     parser.add_argument("--max-places", type=int, default=ark_maps.MAX_PLACES)
     parser.add_argument("--max-buildings", type=int, default=ark_maps.MAX_BUILDINGS)
+    parser.add_argument("--min-class", default="",
+                        choices=[name for name in ark_maps.ROAD_CLASSES],
+                        help="keep only this road class and above (main-road packs)")
+    parser.add_argument("--min-water-area", type=float, default=0.0,
+                        help="leave out unnamed water shapes smaller than this many "
+                             "square metres (0 keeps every shape)")
+    parser.add_argument("--named-water-lines-only", action="store_true",
+                        help="draw only named rivers and streams, not every unnamed one")
     parser.add_argument("--force", action="store_true", help="replace an existing pack version")
     args = parser.parse_args(argv)
 

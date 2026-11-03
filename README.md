@@ -451,6 +451,13 @@ the owner publishes the new one when it has passed its check, and only then do
 readers see it. Deleting a version on the Ark does not reach a phone that already
 downloaded it.
 
+**A state is bigger than a pack.** The format is built for a region a phone can
+carry and parse (400,000 routable points); a full New Mexico extract holds 5.7
+million and Texas 23.7 million. `--min-class` builds a main-road atlas instead —
+the numbered and primary network, drawn and routed, with local streets left out —
+and `--min-water-area` / `--named-water-lines-only` keep the water layer to named
+lakes and rivers. Such a pack says what it leaves out, and its name says it too.
+
 **Why Maps is on a different address.** A service worker — the browser feature
 that lets the page reopen with nothing reachable — is only allowed on a secure
 origin the device trusts. `http://ark.local` is not one, and clicking through a
