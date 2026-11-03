@@ -352,6 +352,58 @@ export class Router {
   }
 
   route(from, to, profile = "car") {
+    const result = this._routeOnce(from, to, profile);
+    if (result.ok || result.reason !== "no-route") return result;
+    // A destination can snap to a one-way node that no path can enter even
+    // though the opposite carriageway 20 m away is reachable.  Answering "no
+    // route" for a place plainly on the network is wrong, so before saying it,
+    // try the next nearest destination points within the snap limit.
+    for (const alt of this.alternatives(to.lat, to.lon, profile, result.snap.to)) {
+      const retry = this._routeOnce(from, alt, profile);
+      if (retry.ok) {
+        // The route ends at the alternative, but the distance that matters to
+        // the person is from the place they asked for.
+        retry.snap = { ...retry.snap, to: haversineM(to.lat, to.lon, alt.lat, alt.lon) };
+        retry.end = { lat: alt.lat, lon: alt.lon };
+        return retry;
+      }
+    }
+    return result;
+  }
+
+  alternatives(lat, lon, profile, firstMetres, limit = 4) {
+    const { lat: lats, lon: lons, nodes, hasMode, hasModeIn } = this.graph;
+    const inbound = (hasModeIn && hasModeIn[profile]) || hasMode[profile] || hasMode.car;
+    // A request that sits exactly on a graph point means that point: moving it
+    // to the far side of a one-way would answer a different question.  A place
+    // that had to be snapped anyway (a town centroid, a tapped spot) may be
+    // snapped to any point within the same limit that a route can actually reach.
+    if (!firstMetres || firstMetres < 1) return [];
+    const found = [];
+    for (let i = 0; i < nodes; i++) {
+      if (!inbound[i]) continue;
+      const metres = haversineM(lat, lon, lats[i], lons[i]);
+      if (metres > this.snapLimit) continue;
+      if (firstMetres != null && Math.abs(metres - firstMetres) < 10) continue;
+      found.push({ lat: lats[i], lon: lons[i], metres });
+      if (found.length > 64) {
+        found.sort((a, b) => a.metres - b.metres);
+        found.length = 32;
+      }
+    }
+    found.sort((a, b) => a.metres - b.metres);
+    const picked = [];
+    for (const item of found) {
+      if (picked.some((other) => haversineM(other.lat, other.lon, item.lat, item.lon) < 15)) {
+        continue;
+      }
+      picked.push(item);
+      if (picked.length >= limit) break;
+    }
+    return picked;
+  }
+
+  _routeOnce(from, to, profile = "car") {
     const started = Date.now();
     if (!MODE_BITS[profile]) throw new Error(`unknown way of travelling: ${profile}`);
     this._profile = profile;

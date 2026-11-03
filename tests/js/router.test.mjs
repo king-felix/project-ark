@@ -118,6 +118,23 @@ test("an only_ restriction leaves exactly one way out", () => {
   assert.equal(car.ok, true, "way 11 is the one permitted turn");
 });
 
+test("a town point that snaps to a one-way island is routed to a reachable road", () => {
+  // Nodes 2 and 3 are a two-node island: each has an incoming car edge, so a
+  // destination can snap there, but no path from the start reaches them.  A
+  // town centroid must not answer "no route" when a road 100 m away is reachable.
+  const island = [
+    { from: 0, to: 1, metres: 76, cls: 2, name: 0, way: 10, modes: 7 },
+    { from: 1, to: 0, metres: 76, cls: 2, name: 0, way: 10, modes: 7 },
+    { from: 2, to: 3, metres: 200, cls: 2, name: 1, way: 11, modes: 7 },
+    { from: 3, to: 2, metres: 200, cls: 2, name: 1, way: 11, modes: 7 },
+  ];
+  const router = routerWith(island);
+  const town = { lat: 47.0012, lon: 8.0012 };   // nearer the island than the road
+  const result = router.route(A, town, "car");
+  assert.equal(result.ok, true);
+  assert.ok(result.snap.to > 50, "the answer says how far the chosen road is");
+});
+
 test("a graph that is cut short is refused, not half-read", () => {
   const { buffer, meta } = buildGraph(edges);
   assert.throws(() => decodeGraph(buffer.slice(0, buffer.byteLength - 5), meta), /bytes/);
