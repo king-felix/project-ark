@@ -452,7 +452,7 @@ household member has opened `/household` on a phone.
 | R11 | DONE (code + test) | the pass and its settings yes; **never met a real power cut, phase not run on the box** |
 | R12 | DONE (code + test) | batch upload + every door named; real 2 GiB press is human work |
 | R13 | DONE (code + test) | shelf, ranges, worker; real phone playback is human work |
-| R14 | DONE (code + real-browser test) | desktop Chromium offline journey yes; **no real phone, no owner region, eviction unproven** |
+| R14 | DONE (code + real-browser test + live Pi) | live Pi and desktop Chromium offline journey yes; **no real phone, no owner region, eviction unproven** |
 | A | PARTIAL | accounts/community/games/health yes; players/services/backup UI no |
 | B | PARTIAL (early) | guest play + named saves + preferences yes; history/metadata/visuals no |
 | C | PARTIAL | stage 3–6 fixes yes; thermal/jobs/search cancellation no |
@@ -676,8 +676,8 @@ it converts a feature film, and whether a person finds the shelf pleasant. Those
 
 ## R14 — maps, search and NEW routes with no Ark and no internet
 
-**Status: DONE + tested in a real desktop Chromium; a real iPhone/Android device and
-the owner's chosen region are human work (`docs/HUMAN-TEST-LIST.md` §22).** The
+**Status: DONE + tested on the live Pi and in desktop Chromium; a real iPhone/Android
+device and the owner's chosen region are human work (`docs/HUMAN-TEST-LIST.md` §22).** The
 application, the graph, the search index and the drawing layers live on the device
 after one deliberate download. Reopening is served by the service worker; the router
 is a local A* over the pack's graph; the search is a local scan; no request is needed
@@ -701,8 +701,10 @@ or made for any of the defining journey.
 
 **Not proved here:** a real iPhone or Android phone (Add to Home Screen, certificate
 installation, memory and battery); the owner's actual region choice; browser eviction
-under real quota pressure; a pack larger than the demonstration; and voice/continuous
-navigation, which is not implemented and is not promised.
+under real quota pressure (refusal at a tiny quota is tested, eviction is not); a pack
+larger than the demonstration; and voice/continuous navigation, which is not
+implemented and is not promised.  The live Pi run used the real certificate pinned by
+SPKI over its Wi-Fi address and is recorded in `docs/IMPLEMENTATION-LOG.md` §44.
 
 ---
 

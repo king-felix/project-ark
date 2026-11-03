@@ -4971,7 +4971,9 @@ eviction under real quota pressure remain human tests
 **Tests.** `767 passed, 2 skipped` across 32 pytest files (the three browser tests
 are among them; they skip only when Playwright/Chromium or openssl is absent),
 plus **14 Node tests** for the router, search and streaming SHA-256
-(`node --test tests/js/`). The new pytest files are `tests/test_maps.py` (16) and
+(`node --test tests/js/`).  The third browser test refuses a device with a tiny
+quota before the first byte; the pause/resume test also deletes a stored chunk
+and proves `Check this copy` reports it. The new pytest files are `tests/test_maps.py` (16) and
 `tests/test_maps_browser.py` (2).
 
 **Deployed and measured on the box, 3 Nov 2026.** The pre-deploy database was
@@ -4984,8 +4986,9 @@ is 0700 root, so `/certificate.crt` answered **500**. Phase 66 now publishes a
 `ARK_INSTALL_COMPLETE`; `install-ark.sh --only 90-verify` printed **81 ✓**,
 including the maps app/catalogue/worker scope/certificate/admin doors.
 
-Deployed revision **`80b64f4`** (the maps feature is `048c239`; `80b64f4` is the
-certificate fix). The demonstration region was imported with
+Deployed revision **`19864d1`** (the maps feature is `048c239`; `80b64f4` is the
+certificate fix; `19864d1` adds the startup sweep, the local-data control and the
+v2 offline shell). The demonstration region was imported with
 `ark-maps --import` and published with `ark-maps --publish`; the shelf reports
 **124.6 GB free, 17.2 GB kept back, 1 pack, 15.5 MB**.
 
