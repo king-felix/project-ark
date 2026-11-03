@@ -185,8 +185,11 @@ esac
 #  Two honest states: the tool is there and can make a playable copy, or it is
 #  not and the owner's page says so.  A missing FFmpeg never fails this gate —
 #  every film that already plays keeps playing.
-if command -v ffprobe >/dev/null 2>&1 && command -v ffmpeg >/dev/null 2>&1 \
-   && ffmpeg -hide_banner -encoders 2>/dev/null | grep -q libx264; then
+media_encoders=""
+if command -v ffmpeg >/dev/null 2>&1; then
+  media_encoders="$(ffmpeg -hide_banner -encoders 2>/dev/null || true)"
+fi
+if command -v ffprobe >/dev/null 2>&1 && [[ "$media_encoders" == *libx264* ]]; then
   say_ok "video reader" "$(ffmpeg -version 2>/dev/null | head -1 | cut -c1-52)"
 else
   say_soft "video reader" "not fitted — films already play; a new one cannot be prepared"

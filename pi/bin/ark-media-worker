@@ -23,7 +23,13 @@ import sqlite3
 import sys
 import time
 
-sys.path.insert(0, os.environ.get("ARK_API_DIR", os.path.join(os.path.dirname(__file__), "..", "api")))
+# /srv/ark/api is where the installer puts the modules; the fallback beside this
+# file is for a checkout run by hand.  The unit also sets ARK_API_DIR, so a
+# helper started by systemd never depends on where the script was copied to.
+_API = os.environ.get("ARK_API_DIR") or "/srv/ark/api"
+if not os.path.isdir(_API):
+    _API = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "api")
+sys.path.insert(0, _API)
 
 import ark_db            # noqa: E402
 import ark_media         # noqa: E402

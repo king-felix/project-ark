@@ -402,13 +402,19 @@ def human_duration(seconds) -> str:
 
 
 def human_size(value) -> str:
+    """A size in the same units the rest of the portal uses (1024, not 1000).
+
+    ``ark_health.human_size`` prints "16.0 GB" for the card's reserve; a Media
+    page that printed "17.2 GB" for the same number would be describing the same
+    bytes twice and disagreeing with itself.
+    """
     if value is None:
         return "not measured"
     step = float(value)
     for unit in ("B", "kB", "MB", "GB", "TB"):
-        if step < 1000 or unit == "TB":
+        if step < 1024 or unit == "TB":
             return f"{int(step)} {unit}" if unit == "B" else f"{step:.1f} {unit}"
-        step /= 1000
+        step /= 1024
     return f"{step:.1f} TB"
 
 

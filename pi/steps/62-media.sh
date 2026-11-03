@@ -50,9 +50,14 @@ fi
 PROBE_OK=0
 ENCODE_OK=0
 if command -v ffprobe >/dev/null 2>&1; then PROBE_OK=1; fi
-if command -v ffmpeg >/dev/null 2>&1 && ffmpeg -hide_banner -encoders 2>/dev/null | grep -q "libx264"; then
-  ENCODE_OK=1
+# Capture the list first: `ffmpeg … | grep -q` under `set -o pipefail` reports a
+# false negative — grep exits on the first match, ffmpeg takes SIGPIPE, and the
+# pipeline answers 141 for a build that has the encoder.
+ENCODERS=""
+if command -v ffmpeg >/dev/null 2>&1; then
+  ENCODERS="$(ffmpeg -hide_banner -encoders 2>/dev/null || true)"
 fi
+if [[ "$ENCODERS" == *libx264* ]]; then ENCODE_OK=1; fi
 if (( PROBE_OK && ENCODE_OK )); then
   ark_ok "the video tools work, and this build can make a browser-playable copy"
 else

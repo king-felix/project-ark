@@ -20,7 +20,7 @@ Environment=ARK_API_DIR=/srv/ark/api
 # phase 15-resilience, and a film parked in RAM is a film that fails at 256 MB.
 Environment=TMPDIR=/srv/ark/tmp
 EnvironmentFile=-/etc/ark/ark.env
-ExecStart=/srv/ark/venv/bin/python /srv/ark/bin/ark-media-worker
+ExecStart=/srv/ark/venv/bin/python /usr/local/sbin/ark-media-worker
 Restart=always
 RestartSec=10
 TimeoutStopSec=20

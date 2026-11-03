@@ -33,6 +33,11 @@ for d in \
   "$ARK_ROOT/drop" \
   "$ARK_ROOT/drop/files" \
   "$ARK_ROOT/drop/tmp" \
+  "$ARK_ROOT/media" \
+  "$ARK_ROOT/media/play" \
+  "$ARK_ROOT/media/thumbs" \
+  "$ARK_ROOT/media/subs" \
+  "$ARK_ROOT/media/tmp" \
   "$ARK_ROOT/tmp" \
   "$ARK_ROOT/scripts" \
   "$ARK_ROOT/backups"

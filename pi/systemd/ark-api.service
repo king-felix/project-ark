@@ -46,7 +46,7 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=full
 ProtectHome=read-only
-ReadWritePaths=/srv/ark/api/data /srv/ark/drop /srv/ark/arcade /srv/ark/media /srv/ark/tmp
+ReadWritePaths=/srv/ark/api/data /srv/ark/drop /srv/ark/arcade -/srv/ark/media /srv/ark/tmp
 
 [Install]
 WantedBy=multi-user.target
