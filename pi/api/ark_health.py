@@ -154,9 +154,17 @@ def library_books() -> list[dict]:
         if not ident:
             continue
         title = book.get("title") or book.get("name") or ident
-        size = book.get("size") or book.get("sizeBytes") or 0
+        # ``kiwix-manage`` writes ``size`` in **KiB** — 487553 for a 499 MB bundle —
+        # while ``sizeBytes``, where it exists, is bytes.  The page sums these to say
+        # how much the library holds, so reading the number without its unit printed
+        # 86.5 "MB" over a card holding 86.5 GiB.  Normalise to bytes here, once.
+        size = book.get("sizeBytes")
+        scale = 1
+        if size is None:
+            size = book.get("size") or 0
+            scale = 1024
         try:
-            size = int(size)
+            size = int(size) * scale
         except (TypeError, ValueError):
             size = 0
         tags = (book.get("tags") or "").lower()

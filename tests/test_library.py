@@ -172,9 +172,9 @@ def test_a_missing_catalogue_is_an_empty_map_not_a_crash(ark, monkeypatch, tmp_p
 def _two_shelves(ark, monkeypatch):
     monkeypatch.setenv("ARK_CATALOG", str(CATALOG))
     _library_xml(ark, [
-        ("diy.stackexchange.com_en_all_2026-10", "Home Improvement Q&amp;A", 2086025216,
+        ("diy.stackexchange.com_en_all_2026-10", "Home Improvement Q&amp;A", 2037134,
          "_ftindex:yes;_pictures:yes"),
-        ("urban-prepper_en_all_2026-08", "Urban Prepper", 2245235712,
+        ("urban-prepper_en_all_2026-08", "Urban Prepper", 2192613,
          "_videos:yes;_ftindex:no;_pictures:yes"),
     ])
 
@@ -192,6 +192,25 @@ def test_the_shelf_page_shows_every_collection_and_links_to_it(public, ark, monk
     assert "cannot look inside this one" in body
     assert "Tap to watch" in body
     assert "Read in browser" in body
+    # 2037134 + 2192613 KiB is 4.0 GiB — the page must say GB, not MB.
+    assert "4.0 GB" in body
+
+
+def test_the_index_says_kilobytes_and_the_shelf_page_says_gigabytes(ark, monkeypatch):
+    """``kiwix-manage`` writes ``size`` in KiB; the page must not read it as bytes.
+
+    Read as bytes, a card holding 86.5 GiB printed **86.5 MB** — a number that makes
+    the library look like one book, on the one page whose whole job is to say what is
+    there.  ``sizeBytes`` (when present) is bytes; ``size`` is KiB, always.
+    """
+    import ark_health
+
+    monkeypatch.setenv("ARK_CATALOG", str(CATALOG))
+    _library_xml(ark, [
+        ("urban-prepper_en_all_2026-08", "Urban Prepper", 2192613, "_videos:yes;_ftindex:no"),
+    ])
+    book, = ark_health.library_books()
+    assert book["size"] == 2192613 * 1024, "the index's kilobytes must become bytes"
 
 
 def test_the_shelf_page_says_what_each_shelf_is_for(public, ark, monkeypatch):
@@ -206,7 +225,7 @@ def test_the_shelf_page_uses_the_plain_words_and_escapes_a_title(public, ark, mo
     monkeypatch.setenv("ARK_CATALOG", str(CATALOG))
     _library_xml(ark, [
         ("urban-prepper_en_all_2026-08", "Prepper &lt;script&gt;alert(1)&lt;/script&gt;",
-         2245235712, "_videos:yes;_ftindex:no"),
+         2192613, "_videos:yes;_ftindex:no"),
     ])
     body = public.client.get("/library", headers={"x-real-ip": "192.0.2.50"}).text
     assert "<script>alert(1)</script>" not in body
