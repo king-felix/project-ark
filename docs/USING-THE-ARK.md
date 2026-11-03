@@ -477,15 +477,17 @@ under it removes it.
 **If a film says *Needs preparing***: the box has the file, but it is in a shape this
 browser cannot play. The owner's page can make a playing copy — that is minutes for
 a repack and can be **hours** for a full conversion (about three hours for a
-90-minute 1080p film), done in the background while everything else keeps working,
-and the original is never touched. **If it says *Could not be
-prepared***, the reason is on the owner's page.
+90-minute 1080p film), done in the background while everything else keeps working.
+The upload is only removed once that copy is ready, and from then on the copy is
+the film. **If it says *Could not be prepared***, the reason is on the owner's page.
 
 **Captions** appear in the player's caption menu when the owner has added them
-(a `.vtt` or `.srt` file with the film). **Download the original** is on every film's
-page — it is the file exactly as it arrived, at the size it was uploaded. The copy
-the player uses is made for a phone screen: **720p at most**, which is why the shelf
-holds several times more films than the originals alone would allow.
+(a `.vtt` or `.srt` file with the film). **Download the original** is there while
+the box still holds the upload — the file exactly as it arrived, at the size it was
+uploaded. Once a film has been made ready to play, the box removes the larger upload
+to save room; the film itself stays. The copy the player uses is made for a phone
+screen: **720p at most**, so the shelf holds many more films than the full-size
+files alone would allow.
 
 **How to add a film:** put it in the File Box (`http://ark.lan/files`, up to 8 GB).
 It is *not* published straight away: it waits on the owner's Media page until they
@@ -656,7 +658,7 @@ ssh pi@ark.local 'sudo ark-import-calibre-library /srv/ark/imported-library'
   `.lit` `.pdb` `.prc` `.ibooks` `.kepub` `.html` `.htm`
 - It is added by the same engine Calibre uses, so metadata is read properly (title, author,
   series, cover) — not just the filename.
-- **Your original is never deleted, and a File Box link never breaks.** A file you dropped in
+- **A book you add is never taken out of the box, and a File Box link never breaks.** A file you dropped in
   the File Box is *copied* onto the shelf and stays in the box, so the download link you sent
   somebody keeps working. A file you put in the staging folder `/srv/ark/calibre-incoming/` is
   moved to `done/` once it is safely in the library. Either way the box remembers the book by its

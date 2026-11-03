@@ -245,25 +245,37 @@ def test_a_published_film_plays_as_it_is_and_in_pieces(public, ark, films):
 
 
 @needs_ffmpeg
-def test_a_film_that_needs_repacking_is_prepared_once_and_the_original_is_kept(public, ark,
-                                                                             films):
+def test_a_film_that_needs_repacking_is_prepared_once_and_the_original_is_released(public, ark,
+                                                                                  films):
+    import ark_media
     _send_video(public, films["slow"], name="Reel Two.mp4")
     media_id = _media_rows(ark)[0]["id"]
+    original = ark.root / "drop" / "files" / _media_rows(ark)[0]["stored"]
+    assert original.is_file()
     _publish(ark, media_id)
     _prepare_all(ark)
     row = _media_rows(ark)[0]
-    import ark_media
     assert row["plan"] == ark_media.REMUX
     assert row["play_stored"].endswith(".mp4")
     assert (ark.root / "media" / "play" / row["play_stored"]).is_file()
-    assert (ark.root / "drop" / "files" / row["stored"]).is_file(), "the original is kept"
+    assert row["stored"] == "", "the upload is released once the copy is ready"
+    assert not original.exists(), "the original is removed to save room"
+    with ark.db.read() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM files").fetchone()[0] == 0
     assert row["poster"] and (ark.root / "media" / "thumbs" / row["poster"]).is_file()
+    assert ark_media.playable(row) is not None
 
     stream = public.client.get(f"/media/{media_id}/stream")
     assert stream.status_code == 200
     # The playable copy is a real, self-contained MP4 that starts at the beginning.
     assert stream.headers["content-type"] == "video/mp4"
     assert int(stream.headers["content-length"]) > 1000
+    assert public.client.get(f"/media/{media_id}/download").status_code == 404
+
+    page = public.client.get(f"/media/{media_id}")
+    assert "<video" in page.text
+    assert "removed the original upload" in page.text
+    assert f"/media/{media_id}/download" not in page.text
 
 
 @needs_ffmpeg
@@ -397,15 +409,14 @@ def test_deleting_a_film_removes_its_picture_its_copy_and_its_bytes(ark, films):
     _publish(ark, media_id)
     _prepare_all(ark)
     row = _media_rows(ark)[0]
-    original = ark.root / "drop" / "files" / row["stored"]
+    assert row["stored"] == "", "a prepared film holds only its playing copy"
     made = ark.root / "media" / "play" / row["play_stored"]
     poster = ark.root / "media" / "thumbs" / row["poster"]
-    assert original.is_file() and made.is_file() and poster.is_file()
+    assert made.is_file() and poster.is_file()
     with ark.db.tx() as conn:
         result = ark_media.delete(conn, media_id)
     assert result["removed"] == 1
     assert result["freed"] > 0, "the space actually removed is reported"
-    assert not original.exists()
     assert not made.exists()
     assert not poster.exists()
     assert _media_rows(ark) == []
@@ -414,6 +425,114 @@ def test_deleting_a_film_removes_its_picture_its_copy_and_its_bytes(ark, films):
         assert conn.execute("SELECT COUNT(*) FROM media_jobs").fetchone()[0] == 0
     with ark.db.tx() as conn:
         assert ark_media.delete(conn, media_id)["removed"] == 0      # idempotent
+
+
+# ---------------------------------------------------------------------------
+#  keeping the card lean: the upload goes once the copy can stand alone
+# ---------------------------------------------------------------------------
+@needs_ffmpeg
+def test_a_film_that_plays_as_it_is_keeps_its_only_copy(public, ark, films):
+    """A direct film has no playing copy; its original *is* the film."""
+    import ark_media
+    _send_video_row(ark, films["fast"], "Straight to the shelf.mp4")
+    media_id = _media_rows(ark)[0]["id"]
+    _publish(ark, media_id)
+    _prepare_all(ark)
+    row = _media_rows(ark)[0]
+    assert row["plan"] == ark_media.DIRECT
+    assert row["stored"] and (ark.root / "drop" / "files" / row["stored"]).is_file()
+    assert row["play_stored"] == ""
+    assert public.client.get(f"/media/{media_id}/download").status_code == 200
+
+
+@needs_ffmpeg
+def test_the_file_box_share_keeps_its_original(ark, films):
+    """An adopted film's bytes are also somebody's shared file; deleting them
+    would change who can download it, so the shelf only adds the copy."""
+    import ark_media
+    name = "shared-old.avi"
+    (ark.root / "drop" / "files" / name).write_bytes(films["old"].read_bytes())
+    with ark.db.tx() as conn:
+        cur = conn.execute(
+            "INSERT INTO files (ts, name, stored, display, size, note, sha256, hidden)"
+            " VALUES ('2026-01-01T00:00:00+00:00', ?, ?, 'Shared Old.avi', ?, '', '', 0)",
+            (name, name, films["old"].stat().st_size))
+        file_id = int(cur.lastrowid)
+        row = conn.execute("SELECT * FROM files WHERE id = ?", (file_id,)).fetchone()
+        media_id = ark_media.adopt(conn, row)
+    _publish(ark, media_id)
+    _prepare_all(ark)
+    row = _media_rows(ark)[0]
+    assert row["plan"] == ark_media.CONVERT and row["play_stored"]
+    assert row["stored"] == name, "the File Box still offers these bytes"
+    assert (ark.root / "drop" / "files" / name).is_file()
+    with ark.db.read() as conn:
+        assert conn.execute("SELECT hidden FROM files WHERE id = ?",
+                            (file_id,)).fetchone()[0] == 0
+
+
+@needs_ffmpeg
+def test_an_original_is_not_released_before_a_playing_copy_exists(ark, films):
+    import ark_media
+    _send_video_row(ark, films["old"], "Not yet.avi")
+    media_id = _media_rows(ark)[0]["id"]
+    with ark.db.tx() as conn:
+        result = ark_media.release_original(conn, media_id)
+    assert result == {"removed": 0, "freed": 0, "reason": "no copy"}
+    assert _media_rows(ark)[0]["stored"]
+
+
+@needs_ffmpeg
+def test_the_sweep_releases_only_films_that_already_have_their_copy(ark, films):
+    import ark_media
+    drop = ark.root / "drop" / "files"
+    (drop / "ready.mkv").write_bytes(films["slow"].read_bytes())
+    (drop / "waiting.mkv").write_bytes(films["mkv"].read_bytes())
+    (ark.root / "media" / "play" / "m1.mp4").write_bytes(b"\x00" * 1024)
+    ready_bytes = (drop / "ready.mkv").stat().st_size
+    with ark.db.tx() as conn:
+        def film(stored, size, play):
+            cur = conn.execute(
+                "INSERT INTO files (ts, name, stored, display, size, note, sha256, hidden)"
+                " VALUES ('2026-01-01T00:00:00+00:00', ?, ?, ?, ?, '', '', 1)",
+                (stored, stored, stored, size))
+            conn.execute(
+                "INSERT INTO media (ts, file_id, title, filename, stored, size, state, plan,"
+                " play_stored) VALUES ('2026-01-01T00:00:00+00:00', ?, ?, ?, ?, ?, 'published',"
+                " 'convert', ?)", (int(cur.lastrowid), stored, stored, stored, size, play))
+        film("ready.mkv", 5000, "m1.mp4")
+        film("waiting.mkv", 3000, "")
+        result = ark_media.release_ready_originals(conn)
+    assert result["removed"] == 1
+    assert result["freed"] == ready_bytes
+    assert not (drop / "ready.mkv").exists()
+    assert (drop / "waiting.mkv").is_file()
+    assert sorted(r["stored"] for r in _media_rows(ark)) == ["", "waiting.mkv"]
+    with ark.db.tx() as conn:
+        again = ark_media.release_ready_originals(conn)
+    assert again["removed"] == 0, "the sweep is idempotent"
+
+
+@needs_ffmpeg
+def test_preparing_again_a_film_whose_upload_was_released_says_it_is_ready(public, ark,
+                                                                           films):
+    import ark_media
+    import ark_media_jobs
+    _send_video_row(ark, films["old"], "Source Gone.avi")
+    media_id = _media_rows(ark)[0]["id"]
+    _publish(ark, media_id)
+    _prepare_all(ark)
+    assert _media_rows(ark)[0]["stored"] == ""
+    with ark.db.tx() as conn:
+        ark_media.enqueue(conn, media_id, "prepare")
+    assert ark_media_jobs.work_once(2) is True
+    with ark.db.read() as conn:
+        job = conn.execute("SELECT state, detail FROM media_jobs ORDER BY id DESC"
+                           " LIMIT 1").fetchone()
+    assert job["state"] == "ready"
+    assert "removed" in job["detail"]
+    page = public.client.get(f"/media/{media_id}")
+    assert "<video" in page.text
 
 
 # ---------------------------------------------------------------------------
@@ -482,6 +601,28 @@ def test_an_owner_can_put_a_film_from_the_file_box_on_the_shelf_without_copying_
     with ark.db.read() as conn:
         assert conn.execute("SELECT hidden FROM files WHERE id = ?",
                             (file_id,)).fetchone()[0] == 0
+
+
+@needs_ffmpeg
+def test_the_owner_page_says_when_the_original_was_removed(client, ark, films):
+    cookie = claim_box(client)
+    _send_video_row(ark, films["old"], "Trimmed.avi")
+    media_id = _media_rows(ark)[0]["id"]
+    _publish(ark, media_id)
+    _prepare_all(ark)
+    page = get(client, "/admin/media?state=published", cookie=f"ark_admin={cookie}")
+    assert "original removed" in page.text
+    assert "Make a playing copy" not in page.text
+    assert "Prepare again" not in page.text
+    assert "Take a picture there" not in page.text, "nothing to take a picture from"
+    token = csrf_of(page.text)
+    answer = post(client, f"/admin/media/{media_id}/prepare", {"csrf": token},
+                  cookie=f"ark_admin={cookie}")
+    assert answer.status_code == 303
+    assert "nothing left to prepare" in urllib.parse.unquote(answer.headers["location"])
+    with ark.db.read() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM media_jobs WHERE state = 'queued'"
+                            ).fetchone()[0] == 0
 
 
 @needs_ffmpeg

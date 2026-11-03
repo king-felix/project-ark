@@ -1598,8 +1598,9 @@ Each conversion:
 * is bounded to H.264/AAC MP4 with `+faststart`, preserving the aspect ratio and
   **downscaled to 720p** whenever the short side is larger — a 1480×1080 film
   becomes 986×720, a portrait 1080×1920 clip becomes 720×1280, 720p and below are
-  left alone, and nothing is ever upscaled. The original stays full size and
-  downloadable.
+  left alone, and nothing is ever upscaled. The upload is **released** as soon as
+  the playing copy is published (see *Keeping the card lean* below); a film that
+  plays as it is keeps its only copy, because that *is* the film.
 
 **How slow is it?** Measured **under the worker's own limits** (Pi 4B, FFmpeg
 7.1.5, x264 `veryfast`/CRF 24, the service's `CPUQuota=150%`, idle I/O), on 24
@@ -1622,7 +1623,8 @@ film could not be prepared* on its own page, and *Could not be prepared* on the
 shelf — never *Getting ready*, which now means exactly one thing: a preparation job
 is queued or running. The reason the box wrote down is printed on **your** Media
 page, not on a page a visitor reads. **Make a playing copy** (or **Prepare again**)
-queues it again.
+queues it again — a film whose upload has already been released offers neither,
+because there is nothing left to prepare and the film already plays.
 
 A film that already plays is never labelled a failure because a later attempt to
 re-prepare it went wrong, and a new picture is its own job: taking a poster says
@@ -1645,12 +1647,45 @@ page prints the exact command the worker would run, built from the same function
 (`ark_media_jobs.build_command`),
 and then drop the MP4 in.
 
+### Keeping the card lean: the upload is released
+
+A playing copy makes the upload redundant, and the upload is usually the larger
+half. So when a **repack** or **conversion** finishes — the copy written, measured
+against the source and published — the box **removes the original upload** and its
+hidden File Box row. The space comes back at once; the film, its picture, its
+captions and its player do not change, and the shelf still says *Ready to play*.
+
+Four cases keep the upload, on purpose:
+
+* a film that **plays as it is** — the original is what the player serves;
+* a film whose **playing copy is not ready** — the upload is the only copy left;
+* a film **adopted from the File Box** — those bytes are also somebody's shared
+  file, and the shelf must not change who can download it;
+* a stored file that **another film still names**.
+
+The release runs after every publish, and the worker sweeps again at startup, so a
+cut between *copy published* and *upload released* cannot leave the larger file on
+the card for ever. `sudo -u pi /usr/local/sbin/ark-media-worker --trim` runs the
+same sweep by hand and reports films considered, originals released, space freed,
+and shares kept. Each release is one line in the worker's journal:
+
+```
+media 4: released the original (141964578 bytes)
+```
+
+Afterwards the film's page says so in plain English, **Download the original**
+disappears (there is no original to send), and your Media page shows *original
+removed*. **Prepare again** and **New picture** are not offered, because both need
+the upload; asking either route directly is refused with a sentence, not a failed
+job. The cost is real and worth stating: the full-quality source is gone. If a
+particular film's source matters, keep your own copy of it.
+
 ### Deleting, and what it frees
 
 Deleting removes the playing copy, the poster, the captions and the shelf row;
-the original file goes too **unless** the File Box or another film still names
-it. The page reports the bytes it actually removed. A film somebody is watching
-right now keeps its bytes until the player closes — an open handle delays
+if the original is still kept it goes too, **unless** the File Box or another film
+still names it. The page reports the bytes it actually removed. A film somebody is
+watching right now keeps its bytes until the player closes — an open handle delays
 physical reclamation, and the page does not pretend otherwise. A deletion can be
 repeated safely: a second press removes nothing and says so.
 
@@ -1678,6 +1713,7 @@ matters, keep a copy of it somewhere that is not this card.
 ```bash
 sudo systemctl status ark-media-worker          # is the worker alive?
 /usr/local/sbin/ark-media-worker --status       # what is queued, and what is missing
+/usr/local/sbin/ark-media-worker --trim         # release kept originals of films that already play
 journalctl -u ark-media-worker -n 50 --no-pager # what it did last
 ffmpeg -version                                 # is the video reader fitted?
 /usr/local/sbin/ark-space --status              # free, kept back, promised, usable

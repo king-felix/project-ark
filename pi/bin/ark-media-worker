@@ -12,6 +12,7 @@ card twice as fast as the reserve can be checked against.
     ark-media-worker              run for ever (that is what systemd starts)
     ark-media-worker --once       do everything waiting, then exit (tests, deploy)
     ark-media-worker --status     say what is queued, with no side effects
+    ark-media-worker --trim       release kept originals whose film already plays
 """
 
 from __future__ import annotations
@@ -65,10 +66,22 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Prepare films for the ARK Media shelf.")
     parser.add_argument("--once", action="store_true", help="do the waiting work, then exit")
     parser.add_argument("--status", action="store_true", help="report, change nothing")
+    parser.add_argument("--trim", action="store_true",
+                        help="release kept originals of films that already play")
     args = parser.parse_args(argv)
 
     if args.status:
         return status()
+
+    if args.trim:
+        with ark_db.tx() as conn:
+            result = ark_media.release_ready_originals(conn)
+        print(f"considered          : {result['considered']} film(s)")
+        print(f"originals released  : {result['removed']}")
+        print(f"space freed         : {ark_media.human_size(result['freed'])}")
+        if result["kept_shared"]:
+            print(f"kept (File Box share): {result['kept_shared']}")
+        return 0
 
     # Be a good neighbour: this box is somebody's library first, a video
     # converter second.

@@ -11,10 +11,13 @@ impossible to play.  So the shelf is built on three refusals to guess:
   repack.  ``plan_for()`` is the only place that decides between *direct*,
   *remux*, *convert* and *unsupported*, so no page can promise more than the
   bytes can do.
-* **One original, one place.**  The bytes stay in ``drop/files`` under the name
-  the File Box already uses; a media row *refers* to that file row and does not
-  copy it.  Derivatives (a remux, a conversion), posters and captions live under
-  ``media/`` and are the only things deleting an item has to think about.
+* **One original, one place — until the copy can stand alone.**  The bytes stay
+  in ``drop/files`` under the name the File Box already uses; a media row
+  *refers* to that file row and does not copy it.  Once a playing copy is ready
+  and verified the upload has done its job and is released
+  (``release_original``), unless the film is played straight from it or the
+  File Box still offers it.  Derivatives, posters and captions live under
+  ``media/``.
 
 Everything here is plain data and plain SQL.  The slow work — probing,
 thumbnails, conversion — lives in ``ark_media_jobs`` and runs in one background
@@ -919,14 +922,42 @@ def poster_path(row) -> Path | None:
     return candidate if candidate.is_file() else None
 
 
+def original_present(row) -> bool:
+    return original_path(row).is_file()
+
+
+def has_bytes(row) -> bool:
+    """Are the bytes a viewer needs on the card right now?
+
+    A film with a playing copy needs nothing else: the copy *is* the film, and
+    the upload it was made from may have been released to save room.  Before
+    that, the original is all there is.
+    """
+    if str(row["play_stored"] or ""):
+        return play_path(row) is not None
+    return original_present(row)
+
+
+def footprint(row) -> int:
+    """What this film actually occupies on the card now (copy plus kept upload)."""
+    total = int(row["size"] or 0) if original_present(row) else 0
+    if str(row["play_stored"] or ""):
+        copy = play_path(row)
+        total += copy.stat().st_size if copy is not None else int(row["play_size"] or 0)
+    return total
+
+
 def playable(row) -> Path | None:
-    """The file the player should serve, or ``None`` when nothing is ready."""
-    if not original_path(row).is_file():
-        return None
+    """The file the player should serve, or ``None`` when nothing is ready.
+
+    A recorded playing copy is served on its own: it was verified before it was
+    published, and once the original has been released it is the only copy.
+    """
     if str(row["play_stored"] or ""):
         return play_path(row)
     if str(row["plan"]) == DIRECT:
-        return original_path(row)
+        path = original_path(row)
+        return path if path.is_file() else None
     return None
 
 
@@ -999,6 +1030,81 @@ def delete(conn: sqlite3.Connection, media_id: int) -> dict:
     return {"removed": 1, "freed": freed}
 
 
+def release_original(conn: sqlite3.Connection, media_id: int) -> dict:
+    """Give up a film's upload once its playing copy can stand on its own.
+
+    Deleting a film and releasing its original are different decisions: this one
+    keeps the film.  It refuses in the four cases where the upload is still
+    doing work:
+
+    * a **direct** film is served from its original — there is no copy;
+    * a film with **no playing copy** has nothing to fall back to;
+    * a file the **File Box still offers** (``hidden = 0``) is a share the owner
+      made, not a spare copy;
+    * another media row names the same stored file.
+
+    Bytes go before rows: an interrupted release leaves a missing original that
+    the next attempt can finish, never bytes on the card that no record names.
+    """
+    row = item(conn, media_id)
+    if row is None:
+        return {"removed": 0, "freed": 0, "reason": "gone"}
+    stored = str(row["stored"] or "")
+    if str(row["plan"] or "") not in (REMUX, CONVERT) or not stored:
+        return {"removed": 0, "freed": 0, "reason": "kept"}
+    copy = play_path(row)
+    try:
+        if copy is None or copy.stat().st_size <= 0:
+            return {"removed": 0, "freed": 0, "reason": "no copy"}
+    except OSError:
+        return {"removed": 0, "freed": 0, "reason": "no copy"}
+    file_row = conn.execute("SELECT * FROM files WHERE stored = ?", (stored,)).fetchone()
+    if file_row is not None and not int(file_row["hidden"] or 0):
+        return {"removed": 0, "freed": 0, "reason": "shared"}
+    others = conn.execute("SELECT COUNT(*) FROM media WHERE stored = ? AND id <> ?",
+                          (stored, int(media_id))).fetchone()[0]
+    if others:
+        return {"removed": 0, "freed": 0, "reason": "shared"}
+    path = ark_storage.drop_dir() / stored
+    freed = 0
+    try:
+        freed = path.stat().st_size
+        path.unlink()
+    except FileNotFoundError:
+        freed = 0
+    except OSError:
+        return {"removed": 0, "freed": 0, "reason": "busy"}
+    if file_row is not None:
+        conn.execute("DELETE FROM files WHERE id = ?", (int(file_row["id"]),))
+    conn.execute("UPDATE media SET stored = '' WHERE id = ?", (int(media_id),))
+    return {"removed": 1, "freed": freed, "reason": "released"}
+
+
+def release_ready_originals(conn: sqlite3.Connection) -> dict:
+    """Sweep every film that has a playing copy and still holds its upload.
+
+    Run after a film is prepared and once when the worker starts, so a crash
+    between publishing the copy and releasing the upload cannot leave the larger
+    file on the card for ever.
+    """
+    rows = conn.execute(
+        "SELECT id FROM media WHERE plan IN (?, ?) AND play_stored <> ''"
+        " AND stored <> '' ORDER BY id", (REMUX, CONVERT)).fetchall()
+    removed = freed = shared = failed = 0
+    for row in rows:
+        try:
+            result = release_original(conn, int(row[0]))
+        except Exception:                          # noqa: BLE001 — one film never stops the sweep
+            failed += 1
+            continue
+        removed += int(result.get("removed") or 0)
+        freed += int(result.get("freed") or 0)
+        if result.get("reason") == "shared":
+            shared += 1
+    return {"considered": len(rows), "removed": removed, "freed": freed,
+            "kept_shared": shared, "failed": failed}
+
+
 def delete_many(conn: sqlite3.Connection, ids: Iterable[int]) -> dict:
     removed = 0
     freed = 0
@@ -1017,7 +1123,8 @@ def largest(conn: sqlite3.Connection, limit: int = 12) -> list:
 def shelf_totals(conn: sqlite3.Connection) -> dict:
     """How much the shelf holds, counted from rows — never guessed from a folder."""
     row = conn.execute(
-        "SELECT COUNT(*), COALESCE(SUM(size),0), COALESCE(SUM(play_size),0)"
-        " FROM media").fetchone()
+        "SELECT COUNT(*),"
+        " COALESCE(SUM(CASE WHEN stored <> '' THEN size ELSE 0 END), 0),"
+        " COALESCE(SUM(play_size), 0) FROM media").fetchone()
     return {"items": int(row[0] or 0), "originals": int(row[1] or 0),
             "derivatives": int(row[2] or 0)}

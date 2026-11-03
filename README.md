@@ -344,8 +344,10 @@ three different facts apart:
 
 A conversion is a **background job** with a wall-clock ceiling, an output-size
 budget, a space reservation and a cancel button. A playing copy is never larger
-than 720p — the shelf is for phones, and the full-size original stays on the card
-and downloadable. Measured on the Pi 4B **under the worker's own CPU cap**, on 24
+than 720p — the shelf is for phones — and once it is published and verified the
+larger upload is **released**, so a converted film costs about what the copy
+costs. A film that plays as it is keeps its only copy. Measured on the Pi 4B
+**under the worker's own CPU cap**, on 24
 seconds of a 1480×1080 10-bit HEVC film: 127 s decoding in software at 1080p, 95 s
 at 720p, and **45 s at 720p on the Pi's hardware decoder** (byte-identical output).
 So a 7-minute film is about 13 minutes of background work and a 90-minute film
@@ -393,8 +395,10 @@ This is an **application admission policy**, not a partition and not a quota for
 one person. Something outside the box can still fill the card; the reserve
 cannot stop that. What it does is refuse to be the thing that crosses the line,
 in a sentence that names the shortfall — and it never deletes a person's original
-to make room. Watching, deleting and the owner's pages keep working when the
-reserve is breached, so the owner can always free space.
+to make room (a film's upload is released only once its playing copy is ready,
+which is the shelf's job, not the reserve's). Watching, deleting and the owner's
+pages keep working when the reserve is breached, so the owner can always free
+space.
 
 `ARK_RESERVE_PERCENT` in `/etc/ark/ark.env` changes the percentage (0–50; a
 value outside that range falls back to 7). The owner's Overview and Media pages

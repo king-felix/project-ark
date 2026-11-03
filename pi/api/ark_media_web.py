@@ -170,8 +170,9 @@ def play_type(item) -> str:
 
 def _meta_line(item, status: str) -> str:
     bits = [ark_media.human_duration(item["duration"])]
-    if item["size"]:
-        bits.append(ark_media.human_size(item["size"]))
+    size = ark_media.footprint(item)
+    if size:
+        bits.append(ark_media.human_size(size))
     bits.append(ark_media.status_words(status))
     return " · ".join(bits)
 
@@ -315,8 +316,7 @@ def build_router(page) -> APIRouter:
 
         cards = []
         for row in rows:
-            present = ark_media.original_path(row).is_file()
-            cards.append(card(row, ark_media.status_of(row, present)))
+            cards.append(card(row, ark_media.status_of(row, ark_media.has_bytes(row))))
 
         banner = ""
         if request.query_params.get("sent"):
@@ -371,7 +371,8 @@ def build_router(page) -> APIRouter:
   {_pager(result, values)}
   {resume}
   <p class="note">Some films need a moment of preparation before they can play on a phone.
-     If one says <b>Needs preparing</b>, ask the owner — the original file is kept either way.</p>
+     If one says <b>Needs preparing</b>, ask the owner — once it is ready the box keeps
+     only the copy that plays here.</p>
 <script>
 (function () {{
   var KEY = "ark.media.recent";
@@ -420,12 +421,12 @@ def build_router(page) -> APIRouter:
                         '<p class="hint">It may have been removed, or it may be waiting for '
                         'the owner to look at it.</p><p><a href="/media/">Back to Media</a></p>',
                         here="/media/", status=404)
-        present = ark_media.original_path(row).is_file()
+        original = ark_media.original_present(row)
         last = extra["last"]
         # The film's own page does not come through `listing()`, so the latest
         # job has to be handed over explicitly — otherwise a failed preparation
         # reads as "never prepared" and the page promises work nobody is doing.
-        status = ark_media.status_of(row, present,
+        status = ark_media.status_of(row, ark_media.has_bytes(row),
                                      str(last["state"] or "") if last is not None else "")
         playable = ark_media.playable(row)
         job = extra["job"]
@@ -442,7 +443,7 @@ def build_router(page) -> APIRouter:
       <source src="{esc(stream_url(row))}" type="{esc(play_type(row))}">
       {tracks}
       <p>This browser cannot play the film here.
-         <a href="/media/{int(row['id'])}/download">Download it instead</a>.</p>
+         <a href="/media/{int(row['id'])}/stream" download>Download it instead</a>.</p>
     </video>
   </div>
   <div class="playerbar">
@@ -460,7 +461,7 @@ def build_router(page) -> APIRouter:
             detail = ""
             if status == "missing":
                 waiting = "The file is not here"
-                detail = " The original is not on the card any more."
+                detail = " The film's file is not on the card any more."
             elif job is not None:
                 waiting = "Getting ready"
                 detail = (" The box is working on it now." if str(job["state"]) == "running"
@@ -481,7 +482,7 @@ def build_router(page) -> APIRouter:
   <p><a class="smallbtn" href="/media/">Back to Media</a></p>"""
 
         download = ""
-        if present:
+        if original:
             download = (f'<p><a class="go-link" href="/media/{int(row["id"])}/download">'
                         'Download the original</a></p>')
 
@@ -495,7 +496,7 @@ def build_router(page) -> APIRouter:
         facts = [
             ("Original file", str(row["filename"] or "")),
             ("Length", ark_media.human_duration(row["duration"])),
-            ("Size", ark_media.human_size(row["size"])),
+            ("Size on this box", ark_media.human_size(ark_media.footprint(row))),
             ("Picture", f'{int(row["width"])}×{int(row["height"])} · '
                         f'{str(row["vcodec"] or "not known")}'),
             ("Sound", str(row["acodec"] or "none")),
@@ -506,10 +507,15 @@ def build_router(page) -> APIRouter:
             f'<li><b>{esc(label)}</b> <span class="sub">{esc(value)}</span></li>'
             for label, value in facts if value)
         note = ""
-        if str(row["plan"]) == ark_media.CONVERT:
-            note = ('<p class="note">The original of this film is kept exactly as it arrived. '
-                    'The box made a second copy in a shape a browser can play; both are on the '
-                    'card until the owner removes one.</p>')
+        if (str(row["plan"]) in (ark_media.REMUX, ark_media.CONVERT)
+                and str(row["play_stored"] or "")):
+            if not original:
+                note = ('<p class="note">The box made this film into a copy that plays '
+                        'here and removed the original upload to save room. What you are '
+                        'watching is that copy.</p>')
+            else:
+                note = ('<p class="note">The box made a copy of this film that plays here. '
+                        'The original upload is still on the card.</p>')
 
         body = f"""{player}
   <h2>About this film</h2>

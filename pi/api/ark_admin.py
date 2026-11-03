@@ -2517,8 +2517,9 @@ def _upload_body(ctx, rows=None, flash: str = "") -> str:
           can play is refused, and the shelf is left exactly as it was.</td></tr>
       <tr><td><b>Films</b><span class="sub">{esc(film_list)}</span></td>
           <td>Read properly by the box's video tools and put on the Media shelf, with a
-          picture. A film that needs a playing copy is prepared in the background; the
-          original is kept. Its own page has captions and a delete button.</td></tr>
+          picture. A film that needs a playing copy is prepared in the background; once
+          that copy is ready the larger upload is removed to save room. Its own page has
+          captions and a delete button.</td></tr>
     </tbody></table>
   <p class="hint">Anything else is refused by name: this page will not guess at a file.
   A game takes a few seconds to check; a batch of books is handed to the box's own book
@@ -2951,16 +2952,21 @@ def _media_job_words(row) -> str:
 def _media_row(row, csrf: str) -> str:
     """One film on the owner's page: what it is, and one button per decision."""
     item_id = int(row["id"])
-    present = ark_media.original_path(row).is_file()
-    status = ark_media.status_of(row, present)
+    original = ark_media.original_present(row)
+    status = ark_media.status_of(row, ark_media.has_bytes(row))
     title = row["title"] or ark_media.title_from_filename(str(row["filename"] or ""))
     state = str(row["state"] or "")
     picture = (f'<img class="thumb" src="/admin/media/{item_id}/poster" alt=""'
-               ' loading="lazy" width="160" height="90">' if present else
-               '<span class="thumb none" aria-hidden="true">no file</span>')
-    facts = [ark_media.human_duration(row["duration"]), ark_media.human_size(row["size"])]
+               ' loading="lazy" width="160" height="90">'
+               if ark_media.poster_path(row) is not None else
+               '<span class="thumb none" aria-hidden="true">no picture</span>')
+    facts = [ark_media.human_duration(row["duration"])]
+    if original:
+        facts.append(ark_media.human_size(row["size"]))
     if row["play_size"]:
         facts.append("playing copy " + ark_media.human_size(row["play_size"]))
+    if row["play_stored"] and not original:
+        facts.append("original removed")
     # What the *player* would use, not what the original needed: once a playing
     # copy exists, "needs a quick repack" beside "ready to play" reads like a
     # contradiction, and the owner would be right.
@@ -2974,7 +2980,7 @@ def _media_row(row, csrf: str) -> str:
         buttons.append(_media_button(item_id, "state", "hidden", csrf, "Take off the shelf"))
     else:
         buttons.append(_media_button(item_id, "state", "published", csrf, "Show on the shelf"))
-    if present:
+    if original:
         needs_copy = (str(row["plan"]) in (ark_media.REMUX, ark_media.CONVERT)
                       and not str(row["play_stored"] or ""))
         buttons.append(_media_button(
@@ -2986,6 +2992,15 @@ def _media_row(row, csrf: str) -> str:
     buttons.append(_media_delete_form(item_id, csrf, title))
     watch = (f'<a class="smallbtn" href="/media/{item_id}">Watch</a>'
              if state == ark_media.STATE_PUBLISHED and ark_media.playable(row) else "")
+    # A picture is taken from the original.  Once the upload has been released
+    # there is nothing to take one from, so the control is not offered.
+    picture_form = "" if not original else f"""
+        <form method="post" action="/admin/media/{item_id}/picture">
+          {_csrf_field(csrf)}
+          <label for="at-{item_id}">Take the picture at (seconds into the film — blank lets the box choose)</label>
+          <input id="at-{item_id}" name="at" type="text" inputmode="decimal" placeholder="65" value="">
+          <button class="smallbtn" type="submit">Take a picture there</button>
+        </form>"""
     more = f"""
       <details class="more">
         <summary>More for this film</summary>
@@ -2995,13 +3010,7 @@ def _media_row(row, csrf: str) -> str:
           <input id="title-{item_id}" name="title" type="text" maxlength="160"
                  value="{esc(title)}">
           <button class="smallbtn" type="submit">Save the name</button>
-        </form>
-        <form method="post" action="/admin/media/{item_id}/picture">
-          {_csrf_field(csrf)}
-          <label for="at-{item_id}">Take the picture at (seconds into the film — blank lets the box choose)</label>
-          <input id="at-{item_id}" name="at" type="text" inputmode="decimal" placeholder="65" value="">
-          <button class="smallbtn" type="submit">Take a picture there</button>
-        </form>
+        </form>{picture_form}
         <form method="post" action="/admin/media/{item_id}/captions" enctype="multipart/form-data">
           {_csrf_field(csrf)}
           <label for="sub-{item_id}">Add captions (.vtt or .srt)</label>
@@ -3189,8 +3198,9 @@ def _media_body(ctx, *, result=None, values=None, flash: str = "", room=None,
       <tr><td><b>Needs a quick repack</b></td><td>The same picture and sound are put in a
         box a phone opens. It costs seconds and no quality.</td></tr>
       <tr><td><b>Needs converting</b></td><td>The picture has to be rebuilt in a shape a
-        browser can decode. The original is kept, and the copy is made in the background,
-        one film at a time. A long film can take hours on this small computer.</td></tr>
+        browser can decode. The copy is made in the background, one film at a time, and
+        the upload is removed once the copy is ready. A long film can take hours on this
+        small computer.</td></tr>
     </tbody></table>
   <p class="hint">A film is never published just because it is a film. Films from the
   File Box wait here until you show them; films you add are on the shelf at once.</p>"""
@@ -3435,6 +3445,13 @@ def media_prepare(request: Request, item_id: int, csrf: str = Form("")):
             return blocked
         if ark_media.item(conn, item_id) is None:
             return _redirect("/admin/media?err=" + urllib.parse.quote("That film is gone."))
+        row = ark_media.item(conn, item_id)
+        if not ark_media.original_present(row):
+            said = ("The original upload was removed once a playing copy was ready;"
+                    " there is nothing left to prepare."
+                    if str(row["play_stored"] or "") else
+                    "The original file is not on the card any more.")
+            return _redirect("/admin/media?err=" + urllib.parse.quote(said))
         ark_media.enqueue(conn, item_id, "prepare")
         ark_db.audit(conn, action="media-prepare", actor_id=ctx.admin["id"],
                      actor_name=ctx.admin["username"], target=str(item_id), result="ok")
@@ -3461,6 +3478,11 @@ def media_picture(request: Request, item_id: int, at: str = Form(""),
             return blocked
         if ark_media.item(conn, item_id) is None:
             return _redirect("/admin/media?err=" + urllib.parse.quote("That film is gone."))
+        row = ark_media.item(conn, item_id)
+        if not ark_media.original_present(row):
+            return _redirect("/admin/media?err=" + urllib.parse.quote(
+                "A new picture has to be taken from the original, and it is no longer"
+                " on the card."))
         if stamp:
             job = conn.execute(
                 "INSERT INTO media_jobs (media_id, kind, state, ts, detail)"

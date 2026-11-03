@@ -380,7 +380,12 @@ def build_command(tool: str, source: Path, output: Path, facts: dict, plan: str,
 
 
 def make_derivative(row, *, job_id: int, plan: str | None = None) -> dict:
-    """Repack or convert one film.  The original is never touched."""
+    """Repack or convert one film.
+
+    The upload is never touched while the copy is being made, and it is only
+    released afterwards, by ``ark_media.release_original``, once the copy has
+    been verified and published.
+    """
     facts = _facts(row)
     plan = plan or str(row["plan"] or "")
     if plan not in (ark_media.REMUX, ark_media.CONVERT):
@@ -489,6 +494,17 @@ def make_derivative(row, *, job_id: int, plan: str | None = None) -> dict:
             # Deleted while it was being prepared: do not leave an orphan copy.
             _unlink(target)
             return {"ok": False, "error": "That film is no longer on the shelf."}
+        # The copy is the film now.  The upload has done its job, and the card is
+        # for watching, not for keeping two copies of everything.  A release
+        # that cannot happen is logged, never a failed film: the copy is ready.
+        try:
+            with ark_db.tx() as release:
+                freed = ark_media.release_original(release, int(row["id"]))
+            if freed.get("removed"):
+                log(f"media {int(row['id'])}: released the original "
+                    f"({freed.get('freed')} bytes)")
+        except Exception as exc:                   # noqa: BLE001
+            log(f"media {int(row['id'])}: published, but the original was kept ({exc})")
     return {"ok": True, "file": name, "bytes": written}
 
 
@@ -568,6 +584,14 @@ def _job_prepare(job_id: int, media_id: int, row) -> dict:
     with ark_db.tx() as conn:
         ark_media.heartbeat(conn, job_id, 2)
     source = ark_media.original_path(row)
+    if not source.is_file() and str(row["play_stored"] or ""):
+        # The playing copy is the film now; its upload was released to save
+        # room.  "Prepare again" has nothing left to do, and must not report a
+        # failure for a film that plainly plays.
+        with ark_db.tx() as conn:
+            ark_media.finish(conn, job_id, "ready",
+                             "Ready to play; the original was removed to save room.", 100)
+        return {"ok": True, "skipped": True, "reason": "no original"}
     facts = ark_media.probe(source)
     if not facts.get("ok"):
         with ark_db.tx() as conn:
@@ -688,4 +712,10 @@ def startup() -> dict:
     with ark_db.tx() as conn:
         recovered = ark_media.recover(conn)
         released = ark_space.reconcile(conn=conn)
-    return {**recovered, "reservations_released": released}
+        trimmed = ark_media.release_ready_originals(conn)
+    if trimmed["removed"]:
+        log(f"startup: released {trimmed['removed']} original(s), "
+            f"{trimmed['freed']} bytes")
+    return {**recovered, "reservations_released": released,
+            "originals_released": trimmed["removed"],
+            "bytes_released": trimmed["freed"]}
