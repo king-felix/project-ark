@@ -281,8 +281,8 @@ def test_the_app_is_served_with_a_worker_scope(ark, public):
     assert client.get("/maps/api/packs/../etc/passwd").status_code == 404
 
 
-def test_the_admin_maps_page_is_behind_the_sign_in(client):
-    from helpers import LAN, claim_box, get
+def test_the_admin_maps_page_imports_checks_and_publishes(client, tmp_path):
+    from helpers import LAN, claim_box, csrf_of, get
 
     first = get(client, "/admin/maps", headers=LAN)
     assert first.status_code in (303, 403)
@@ -290,3 +290,26 @@ def test_the_admin_maps_page_is_behind_the_sign_in(client):
     page = get(client, "/admin/maps", cookie="ark_admin=%s" % cookie)
     assert page.status_code == 200
     assert "No map packs are on the Ark yet" in page.text
+
+    folder = tmp_path / "pack"
+    build(folder)
+    archive = zip_pack(folder, tmp_path / "pack.zip")
+    token = csrf_of(page.text)
+    imported = client.post(
+        "/admin/maps/import",
+        data={"csrf": token},
+        files={"file": ("pack.zip", archive.read_bytes(), "application/zip")},
+        headers=LAN, cookies={"ark_admin": cookie}, follow_redirects=False)
+    assert imported.status_code == 303, imported.text[:400]
+    page = get(client, "/admin/maps", cookie="ark_admin=%s" % cookie)
+    assert "test-region" in page.text
+    assert "Checked, not offered" in page.text
+
+    token = csrf_of(page.text)
+    published = client.post(
+        "/admin/maps/publish",
+        data={"id": "test-region", "version": "2026-11-01", "on": "1", "csrf": token},
+        headers=LAN, cookies={"ark_admin": cookie}, follow_redirects=False)
+    assert published.status_code == 303, published.text[:400]
+    page = get(client, "/admin/maps", cookie="ark_admin=%s" % cookie)
+    assert "Offered to readers" in page.text

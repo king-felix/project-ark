@@ -181,7 +181,7 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 | Active branch | `feature/admin-hardening` (fast-forwarded to `main` at `acf5d29`) |
 | Schema version | `SCHEMA_VERSION = 7` (`pi/api/ark_db.py`) — migration 7 adds the film shelf and the space ledger |
 | Test suite | `766 passed, 2 skipped` across 32 files (`tests/`) |
-| Live Pi state | Deployed through log §43; `ready.ok: true`, `blocking: []`, `mode: home` (`BOOT_MODE="auto"`), `card_check: withdrawn`, 20 collections (86.5 GiB), 1291 books, 67 games, 11 guides, 1.5B AI helper active, FFmpeg + media worker fitted; reserve 7 % (16.0 GiB of the 229 GiB card) |
+| Live Pi state | Deployed through log §44 at `80b64f4`; `ready.ok: true`, `blocking: []`, `mode: home`; 20 collections (86.5 GiB), 1291 books, 67 games, 11 guides, AI active, FFmpeg fitted; 1 map pack (Liechtenstein 15.5 MB, published); reserve 17.2 GB |
 | Owner decisions pending | History rewrite + force-push for pre-`a926296` commits (log §37.6, §38.7); rotate GitHub & Pi passwords; licence choice |
 
 ### 8.1 What exists, and what each piece owns
@@ -359,7 +359,7 @@ Maps: street-address search (no address index), turn restrictions whose `via` is
 * **Power-cut & self-heal:** `15-resilience` re-arms `fsck.mode=force` (withdrawn by `ark-fsck-once`); do not re-run the phase just to copy `ark_self_heal.py`. `cmdline.txt` stays one line with `root=`. `net-watch.state` is `key=value`, never JSON. `heal_sqlite()` holds `flock` on `<name>.repair.lock` (not `-shm`) and drains `-wal` (mandatory) + `-shm` (best effort).
 * **Media & space:** the reserve is `ark_space`'s alone — no second free-space constant. Admission is `free − reserve − (promised − written)`; use `f_bavail`, never `f_bfree`. A film's bytes are its carrier row in `drop/files` (`hidden=1`), not a copy under `media/`; publication is `media.state`, checked by every public route. Ranges stay 206/416 and the proxy must not buffer `/media/`. `ffmpeg` uses argument arrays + a deadline; derivatives are written in `media/tmp` and renamed. `PRAGMA journal_mode=WAL` is a write: ask before setting it, or a reader stalls.
 * **Maps & service workers:** a certificate error is **not** a secure context for service workers even after a click-through; `isSecureContext` can be true while registration fails. The device must trust the Ark certificate (SPKI pin in the automated test). Serve `sw.js` with `Service-Worker-Allowed: /maps/` and an `ETag`; a page that re-registers without one can leave a second worker waiting. A pack version is immutable; import verifies every byte before `os.replace`; `/maps/api/` is never cached by the worker. `:8446` never proxies `/admin`.
-* **Verifier counts:** `install-ark.sh --only 90-verify` run on the Pi prints **69** `✓`; run via `scripts/03-provision.sh` it prints **74** `✓` (the wrapper adds 5 of its own). Quote the command that produced the count, and never cite gitignored `logs/*.log` paths in published docs.
+* **Verifier counts:** `install-ark.sh --only 90-verify` on this box (3 Nov 2026, maps included) printed **81** `✓`; the `03-provision.sh` wrapper adds 5. Quote the command that produced the count; never cite gitignored `logs/*.log` paths in published docs.
 
 ### 8.8 Standing rules for every stage
 

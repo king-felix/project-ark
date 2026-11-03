@@ -4973,3 +4973,46 @@ are among them; they skip only when Playwright/Chromium or openssl is absent),
 plus **14 Node tests** for the router, search and streaming SHA-256
 (`node --test tests/js/`). The new pytest files are `tests/test_maps.py` (16) and
 `tests/test_maps_browser.py` (2).
+
+**Deployed and measured on the box, 3 Nov 2026.** The pre-deploy database was
+copied to `/root/ark-db-before-maps-2026-11-02.db` (335,872 bytes; maps adds no
+migration). Phases `20-storage, 60-portal, 65-admin, 66-maps, 90-verify` ran;
+the first pass exposed one real defect — the API runs as `pi` and `/etc/ssl/ark`
+is 0700 root, so `/certificate.crt` answered **500**. Phase 66 now publishes a
+0644 copy of the **public** certificate at `/srv/ark/maps/ark-certificate.crt`,
+`ark-tls-cert` refreshes it, and the key stays 0600 root. The second pass was
+`ARK_INSTALL_COMPLETE`; `install-ark.sh --only 90-verify` printed **81 ✓**,
+including the maps app/catalogue/worker scope/certificate/admin doors.
+
+Deployed revision **`80b64f4`** (the maps feature is `048c239`; `80b64f4` is the
+certificate fix). The demonstration region was imported with
+`ark-maps --import` and published with `ark-maps --publish`; the shelf reports
+**124.6 GB free, 17.2 GB kept back, 1 pack, 15.5 MB**.
+
+The live acceptance run used `https://ark.lan:8446/maps/` resolved to the
+box's home-LAN address (`192.168.1.26`, the Wi-Fi radio), with the real box
+certificate pinned by SPKI:
+
+* download + first map in **2.5 s** for **15.5 MB**; badge **Ready offline**;
+* Wi-Fi and internet then unreachable: reload served by the service worker;
+  panned to a place never viewed; searched Vaduz and Balzers; calculated a
+  **new 8.3 km, 8-minute route with 15 ordered directions**;
+* route sheet **483,247 bytes** with an SVG map and both names; GPX downloaded;
+* closed the page, opened a new one with the Ark still unreachable, and
+  calculated a **new 7.7 km, 9-minute Schaan → Triesen route (26 directions)**;
+* **no successful non-service-worker response after the disconnect**, no page
+  errors.
+
+Live doors measured over the Wi-Fi address: `/maps/` 200, catalogue 200 with
+`liechtenstein` 15,485,807 bytes and all three modes, manifest 200, a
+`Range: bytes=0-99` request **206 with 100 bytes**, `/maps` on :80 **301** to
+the secure origin, `/certificate.crt` 200, `/admin/maps` **303** behind the
+sign-in, and `/admin` on **:8446 404**.
+
+Known cosmetic limit: the directions are segment-based, so a roundabout can
+produce several short steps ("20 m", "0 m"). They are ordered and named, and
+the map shows the shape; a future pass can group roundabout exits. The owner's
+real region, a real iPhone/Android and browser eviction remain human work
+(§22 of the human test list). Rollback is redeploying the pre-maps revision
+`b2994fd`; no database downgrade is involved, and the pack folder can be removed
+independently.
