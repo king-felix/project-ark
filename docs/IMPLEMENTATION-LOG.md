@@ -4644,3 +4644,51 @@ does not report a correct answer as a broken page.
 
 **The whole suite: 691 passed, 2 skipped, 28 files** (was 686 after §40).
 
+---
+
+## 42. The rules file is `AGENTS.md` now — 2 Nov 2026
+
+The owner replaced the tracked `.clinerules` with `AGENTS.md` and asked for the new name to stand in
+git and on GitHub. One ordinary commit on `feature/admin-hardening`: no force-push, no tag moved
+(§8.4), and nothing on the card is touched by it.
+
+**It is a condensation, not a rename.** The old file was **1291 lines / 252 319 bytes**; the new one
+is **360 lines / 41 902 bytes** — inside the 45 KiB the file has always set itself
+(*"Keep this file under 45 KiB"*), and the old one had not been for a long time. §0–§7 keep their
+subject and their substance, and §8 became a table of the tracking files plus §8.1–§8.8: what exists
+and who owns it, the ports, the state on the card, the commands, the test map, the deliberate gaps,
+the gotchas, the standing rules.
+
+**What the new file no longer carries:** the old §8.9 *OUTSTANDING* list, §8.10–§8.12a (the stage and
+deploy narratives) and §8.5 *Defects: what stages 3–6 fixed*. The new §8 table sends that reader to
+`docs/HUMAN-TEST-LIST.md` for what is unproven by a person, and the stage-by-stage record is this log
+— which is where it was written as it happened. Nothing was restored or invented: the owner's file is
+the file.
+
+**Three sentences sent a reader to a file that no longer exists, and were repaired in the same
+commit** (docs change with the behaviour, §8.8 rule 4):
+
+* `docs/HUMAN-TEST-LIST.md` — *take a backup before every deploy that migrates* now points at
+  `AGENTS.md` §8.4, where *"take sqlite3 .backup first!"* is written;
+* `docs/HUMAN-TEST-LIST.md` — *features that are absent, not untested* now points at `AGENTS.md`
+  §8.6 (*Deliberate gaps*), which is the right sentence under the new numbering;
+* `docs/REQUIREMENTS-MATRIX.md` — *the phone walk-through has not been done* now names
+  `docs/HUMAN-TEST-LIST.md`, which is where the walk-through lives, instead of a §8.9 that no
+  longer exists.
+
+**Everything else is left as written.** The `.clinerules` references earlier in this log name the
+file that was correct on the day they were written; rewriting them would make the record describe a
+tree that did not exist then. One forward-looking use also stays on purpose:
+`TO-THE-INTELLIGENCE-THAT-FINDS-THIS.md` says *"the equivalent of your .clinerules"* — a name for the
+kind of file, addressed to whatever agent is reading, not a path in this tree.
+
+**Checked before the commit.** `scripts/ark-secrets-check.sh --staged` read the staged `AGENTS.md`
+and answered `clean: 1 file(s) read, no household detail found` (exit 0) — the placeholders
+`<ACCOUNT>`, `<HOME-IP>`, `<CABLE-IP>` and `<HOUSEHOLD-SSID>` stand where §6 says an identifier must
+not be. No `.py`, `.sh`, `.yml`, `.toml` or `.ini` file in the tree mentions `.clinerules`, so no
+script, unit, phase or page reads the rules file and nothing at runtime changed.
+
+**Not proved, and not claimed:** the box was not reached from the machine that made the commit, and
+it does not need to be. Nothing in `pi/`, `staging/` or `scripts/` installs the rules file, so this
+checkpoint asks the card for nothing — the next deploy is unchanged by it.
+

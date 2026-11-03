@@ -9,7 +9,7 @@ route rules, a bundle and the arcade origin all answered on the Pi (`docs/IMPLEM
 bytes work is deployed too — layout **v5**, the catalogue on the card, and the owner's upload door
 proved end to end against a throwaway instance (§19.1). No claim below
 should still be read as "a person has used it"; the phone walk-through in
-`.clinerules` §8.9 item 2 has not been done.
+`docs/HUMAN-TEST-LIST.md` has not been done.
 
 This is the one page that answers "did we actually build the thing the requirement asks
 for?". It is deliberately blunt: a green row means there is code **and** a test that fails

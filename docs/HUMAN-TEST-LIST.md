@@ -871,8 +871,8 @@ never reads as an answer, and that a reader's eyes are not left in the middle of
 * The v5 migration has run once, on the live database. It will be proved on a card that already
   holds v5 the first time a v6 exists — a migration that has never run on real old rows is a
   migration nobody has tested. Until then: **take a `.backup` before every deploy that migrates**
-  (the rule already lives in `.clinerules` §8.9).
+  (the rule already lives in `AGENTS.md` §8.4).
 * Load, several readers at once, and a full card are measured by readiness and by `du`, not by a
   human. `tests/test_health.py` covers a full card; nothing covers twelve phones at once.
 * Anything the box has not built yet (quotas, a trash, an approval step, a backup button, a "check
-  now" button) is not a test item — it is absent, and `.clinerules` §8.6 says so.
+  now" button) is not a test item — it is absent, and `AGENTS.md` §8.6 says so.
