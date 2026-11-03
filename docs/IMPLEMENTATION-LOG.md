@@ -5537,3 +5537,118 @@ has to be kept off the box. A film adopted from the File Box keeps its original
 because the File Box still offers it as a download — the shelf adds the copy and
 changes nobody's link. Rollback is `/root/ark-db-before-trim.db` plus the tree
 at commit `f632714`; neither the film nor its copy was touched.
+
+---
+
+## 49. Two states on the map shelf — 3 Nov 2026
+
+### 49.1 What was asked, and what a state actually is
+
+"Please add maps covering New Mexico and Texas." Measured before building
+anything, with pyosmium over the Geofabrik extracts: New Mexico holds
+**5,705,969** routable points and Texas **23,686,304** at full detail, against
+a format built for **400,000** — about what one phone can carry and parse
+(graph, places and layers together). A state cannot be one full-detail pack.
+Splitting Texas into 60 packs of 400 k points is not a shelf anybody can use.
+So each state is published as a **main-road atlas**: the numbered and primary
+network, drawn and routed, with the smaller roads left out of both.
+
+### 49.2 The demo pack was removed by its owner, not by the box
+
+The Liechtenstein demo was already gone when the shelf was inspected. The admin
+access log says why: at 21:37:55 UTC the owner's browser posted
+`/admin/maps/delete` (twice refused for a wrong password, then accepted) and the
+page answered *"liechtenstein version 2026-11-02 was removed from the Ark."*
+No fault to fix, and no restore: the demo had done its job.
+
+### 49.3 Three arguments and two defects in the builder
+
+* **`--min-class`** keeps a road class and above (`secondary` for New Mexico,
+  `primary` for Texas) and drops the rest before the builder sees them, so the
+  router and the drawing stay in agreement.
+* **`--min-water-area`** leaves out unnamed water shapes below a size — a state
+  is full of stock tanks — while a named lake or reservoir is always kept.
+* **`--named-water-lines-only`** stops drawing every unnamed stream segment,
+  which alone was **121 MB** of the first New Mexico pack.
+
+Two defects surfaced with the first real state:
+
+* **A stray relation member stretched the region.** The New Mexico extract
+  carries a power line's tower at **59°N in British Columbia** (node
+  13374219996). `_stretch()` ran for every tagged node and every way, so the
+  pack's bounds reached Canada and the verifier refused it as "more than a
+  regional extract should". Only an object that *contributes* — a place to
+  search, a routable way, a drawn shape — moves the bounds now.
+* **A cap of zero read as "capped at 0".** `--max-buildings 0` now says
+  "not carried", and the "further buildings were left out" sentence is not
+  printed when none were wanted.
+
+### 49.4 The two packs
+
+| | New Mexico — main roads | Texas — main roads |
+|---|---|---|
+| Roads carried | motorway, trunk, primary, secondary | motorway, trunk, primary |
+| Graph | 258,062 points, 464,302 edges | 840,648 points, 1,320,528 edges |
+| Turn restrictions | 920 | 6,372 |
+| Searchable places | 39,640 | 40,000 (cap) |
+| Layers | forest 5,403 · water 14,458 · boundary 2,464 · major 12,362 · minor 6,588 | forest 32,551 · water 47,290 · boundary 526 · major 149,073 · minor 0 |
+| Pack size | 58,289,941 bytes (55.6 MB) | 201,286,420 bytes (192.0 MB) |
+| Bounds | 31.12–37.64 N, −111.09 to −102.16 E | 25.45–37.00 N, −106.83 to −92.62 E |
+| Data date | 2026-11-02 | 2026-11-02 |
+
+Both were built on the Mac (75 s and 396 s of extract reading), verified by the
+same check the box runs, copied as zips, and imported with `ark-maps --import`.
+Each passed a second `--verify` on the box (every fingerprint matched) and was
+published. The catalogue now lists both as ready and offered, and a Range
+request on `graph.bin` answers `206`.
+
+### 49.5 A router defect the Texas pack found
+
+Tapping Dallas (from the search) answered *"There is no route between those
+points"*. The graph was not broken: Austin's nearest node could reach 771,775
+of 840,648 points, and Dallas's nearest node could reach Austin — but Austin
+could not reach **that** node. It sat on a one-way pair whose entrance is not
+reachable from the south, 287 m from the town point, while a reachable node sat
+360 m away. The router snapped to the nearest point and gave up.
+
+`router.js` now retries the next nearest destination points (up to four, within
+the same 500 m snap limit) when the first search finds no path — but **only for
+a point that had to be snapped**. A request sitting exactly on a graph node
+still means that node, so the one-way rule keeps its honest "no route" (the
+existing test proves it), and the reported snap distance is measured from the
+place the person asked for, never from the alternative node.
+
+### 49.6 Proved in a browser, over the LAN
+
+Chromium on the Mac, `https://ark.local:8446/maps/` with the certificate not
+trusted (the documented human step), so the service worker was refused — fetch,
+IndexedDB, search and routing all still worked:
+
+* **New Mexico:** downloaded in **10.7 s**, opened with a painted canvas, search
+  "Santa Fe" returned County, City, Brew Pub, parks and fire stations; route
+  Santa Fe → Albuquerque **102 km, about 59 min**.
+* **Texas:** downloaded in **27.8–30.7 s** (192 MB), opened (canvas painted);
+  route Austin → Dallas **319 km, about 2 h 57 min**, panel in 5 s; search
+  "Houston" returned its places.
+
+### 49.7 What these packs do not do
+
+They are **main-road atlases**: local streets and street addresses are not in
+them, so a route inside a town follows the numbered arteries only. A pack that
+covers one town at street level is a different, smaller build (no `--min-class`).
+Texas is a 192 MB download and 192 MB of browser storage; New Mexico is 55.6 MB.
+`Ready offline` still needs the Ark's certificate trusted on the device — the
+automated browser refused the service worker for exactly that reason — and a
+real phone remains the test in `docs/HUMAN-TEST-LIST.md` §22.
+
+### 49.8 Evidence
+
+* `tests/test_maps.py` — 19 passed (16 before): the stray far-away object, the
+  water-area floor, and the named-water-lines rule.
+* `tests/js/` — 15 passed (14 before): a town point that snaps to a one-way
+  island is routed to a reachable road, and the one-way rule still refuses to
+  drive back up the lane.
+* Full suite: **816 passed, 2 skipped**.
+* Commits `a2d1a98` (builder) and `6d36d16` (router), both pushed; the box's
+  maps application is byte-identical to `router.js` in the commit
+  (`04d7916a…`).
