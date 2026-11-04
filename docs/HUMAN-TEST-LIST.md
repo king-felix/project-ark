@@ -1283,3 +1283,51 @@ phone's browser, or a card that is physically failing.
 **If it fails:** keep `recovery-rehearsal/`, the generation folder, and the
 sentences printed. Do not delete the live box's `recovery/` folder to make the
 rehearsal pass.
+
+---
+
+## 27. FOR YOU — a big press, and a card that is really full (30 minutes, needs a phone and a **spare** card)
+
+The admission work is proved in code and was exercised on the live box with
+bounded, non-destructive uploads (§54.6 of the implementation log). These are the
+parts a test cannot honestly claim.
+
+### 27.1 A 2 GiB press from a phone
+
+1. On a phone joined to the Ark's Wi-Fi, open `http://ark.lan/files` and send one
+   file of about 2 GiB (a film is routed to the Media shelf; a large archive stays
+   in the File Box).
+2. Watch the page while it uploads. It must not hang, and it must end in either
+   *stored* or a sentence that says **nothing was stored**.
+3. While it uploads, open `/admin/health` on a laptop and note **promised to jobs**.
+   It should be roughly twice the file's size while the upload is in flight (the
+   framework's temp copy and the route's copy exist together), and **0 B** within a
+   few seconds of the answer.
+4. Cancel one of these half-way (turn Wi-Fi off, or close the tab). Within a
+   minute **promised to jobs** must return to 0 B. If it does not, note the number
+   and the time.
+
+**What this proves:** the peak figure on a real phone and a real card; release on a
+real disconnect (the tests use a socket).
+**What it does not prove:** a body over 8 GiB, or a card that fails mid-write.
+
+### 27.2 A genuinely full card (spare card only — **never the live card**)
+
+1. Put a small spare card in a rehearsal root (do **not** fill `/srv/ark`). Set
+   `ARK_ROOT` to the rehearsal root and copy a few small files into it, or use a
+   card you are willing to erase.
+2. Fill the rehearsal filesystem until only a few hundred megabytes are left (a
+   large file written with `dd` is fine; it is a spare card).
+3. Try a File Box upload: it must be refused with a sentence naming how much is
+   needed and how much may be used, and the file must not appear.
+4. Delete one of the files you put there through the owner's page. Deletion must
+   still work while the card is full.
+5. Run `sudo ark-self-heal --dry-run` and `ark-backup --to <a folder on the same
+   card>`. The repair pass must still be able to keep a recovery copy; the backup
+   may be refused with a sentence (it is ordinary bulk work), and must say so
+   rather than half-write.
+
+**What this proves:** the refusals against real `ENOSPC`-adjacent behaviour, and
+that a full card never takes away the action that makes room.
+**If it fails:** keep the card as it is and send the exact sentences plus
+`ark-space --status`. Do not delete the live box's backups to make space.

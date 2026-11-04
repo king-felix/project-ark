@@ -6513,3 +6513,75 @@ and `docs/REQUIREMENTS-MATRIX.md` R8 were rewritten to match.
   would show.
 * An unrelated OS or shell write can still fill the card. The box notices and
   stops its own work; it cannot prevent the write.
+
+### 54.6 Deployed and proved on the live box — 4 Nov 2026
+
+**Before touching it:** `sudo ark-backup --to /srv/ark/backup --keep 3` wrote
+`ark-backup-20261104-045608` (347.8 kB; schema was still 7), the deployed source
+tree was saved as `/srv/ark/tmp/rollback-src-20261104T045605Z.tar.gz` (20.6 MB),
+and the space ledger was empty (`space_reservations` 0 rows).
+
+**The deploy, in two runs of the established one:**
+
+```
+bash scripts/03-provision.sh ark.local --only 60-portal,65-admin,90-verify
+bash scripts/03-provision.sh ark.local --only 20-storage,30-calibre,50-kiwix,58-ai,95-backup,90-verify
+```
+
+Both reported every phase **ok**, none failed (0m38s and 1m23s).
+
+**The first live check found a real defect, and it was mine.** The new
+`ark-space` parsed `--reserve`, `--touch` and `--release` but **not `--pid`** — and
+every shell path (`ark-zim-download`, `ark-ai-model-fetch`, `ark-import-books`)
+passes `$$` so the promise belongs to the long-running process rather than to the
+command that exits immediately. On the box, those calls would have been rejected
+and the downloader would have stopped with "no room promised". Fixed in `ce0dd78`
+with two tests that drive the real script (one reserves with a pid and proves the
+row carries it, then touches and releases; one proves a refusal is a sentence and
+exit 3). `20-storage` was redeployed (0m10s, ok).
+
+**Readiness and schema after the redeploy:**
+
+* `/api/ready` → **200**, `/api/health` → 200; `ark-api`, `ark-media-worker`,
+  `ark-ai`, `ark-kiwix`, `nginx` all **active**; `nginx -t` successful.
+* schema **8**; `space_reservations` carries `pid`, `boot` and `kind`, and every
+  old row still reads.
+* every changed file in `/srv/ark/src` matches `ce0dd78` byte for byte (22
+  compared, including both nginx configs and the unit file).
+
+**The shell door, on the card:**
+
+```
+ticket=$(sudo -u pi ark-space --reserve --need 1048576 --owner verify --label "deploy check" --pid $$)
+  17 | 1048576 | 0 | verify | pid 367057 | boot recorded
+ark-space --touch 17 --written 524288   → bytes 1048576, written 524288
+ark-space --release 17                  → 0 rows
+ark-space --reserve --need 1 TiB        → exit 3, "needs 1024.0 GB and 88.2 GB may be used"
+ark-space --check --need 1 MiB --essential → exit 0
+```
+
+**The request path, through the real proxy:**
+
+| What was sent | Answer | What was left |
+|---|---|---|
+| a small file to `/arcade/add` (declared length) | 400, "cannot play that kind of file" | 0 temp files, 0 rows |
+| the same multipart body **chunked** (no `Content-Length`) | 400, same sentence | 0 temp files, 0 rows |
+| 100 kB to `/board` (an address with no door) | **413** at the proxy (64k default) | nothing read by the app |
+| a 16-byte file to `POST /files` | 303, stored as `e1a4f70e47eaadd9-admission-check.txt`, downloaded back | 0 temp leftovers, 0 rows |
+
+The last one was removed again (`DELETE FROM files` for that stored name and
+`rm` of the file), so the File Box is back to **0 shared files / 0 rows**, which
+is where it started. Nothing else on the card was created.
+
+**What the owner's pages say now:** *"104.3 GB free, of which 16.0 GB is kept
+back and 0 B is promised to work already running — 88.2 GB may still be added."*
+`ark-space --status` reports `ledger: ok`, `committed 0 B`, `usable 94.8 GB`.
+
+**Not done, on purpose:** no 2 GiB press, no genuinely full card, no power cut, no
+phone. Those are `docs/HUMAN-TEST-LIST.md` §27.
+
+**Rollback:** the tarball above and commit `37b1a70` on the Mac. To go back,
+`sudo tar -C /srv/ark -xzf /srv/ark/tmp/rollback-src-20261104T045605Z.tar.gz`,
+re-run `20-storage,60-portal,65-admin`, then `sudo systemctl restart ark-api
+ark-media-worker`. The pre-deploy bundle is the records' rollback; schema 8 only
+adds columns, so an older build reads the table unchanged.
