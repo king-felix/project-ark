@@ -1019,6 +1019,20 @@ def search_books(pattern: str) -> list[dict]:
 @app.get("/api/search", response_class=HTMLResponse)
 def search(q: str = ""):
     pattern = (q or "").strip()[:120]
+    # A reader waiting five seconds with no idea whether the page is working will
+    # press the button again, which is the one thing that makes it slower.  The
+    # figure is measured, not guessed: this box searches every collection at once
+    # and a full-text index costs about a second of one of its four cores, so a
+    # card this size is a few seconds of honest work.  A small card says nothing.
+    wait_note = ""
+    try:
+        collections = len(library_books())
+    except Exception:                       # noqa: BLE001 — a note is never a page's fault
+        collections = 0
+    if collections >= 12:
+        wait_note = (f'<p class="note">There are <b>{collections}</b> collections on this '
+                     'box and they are all searched at once, so this takes a few seconds '
+                     'here. Tap once and wait — tapping again starts it over.</p>')
     # The label says what the box actually does.  It used to say "Search
     # everything", and it does not: films and games have their own lists, and a
     # person who typed a film's name and got nothing had been told a lie by the
@@ -1031,7 +1045,8 @@ def search(q: str = ""):
     <button class="go-btn" type="submit">Search the library, guides and books</button>
   </form>
   <p class="note">This looks in the encyclopedias, the manuals and the bookshelf.
-     It does not look inside the films or the games — those have their own lists.</p>"""
+     It does not look inside the films or the games — those have their own lists.</p>{wait_note}"""
+
 
     if not pattern:
         return page("Search", form + """

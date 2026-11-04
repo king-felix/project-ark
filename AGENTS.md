@@ -190,18 +190,18 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 
 | Tracking File | What it holds & when to read it |
 |---|---|
-| `docs/IMPLEMENTATION-LOG.md` | **The full record (§1–§56):** status table, decisions D1–D25, dated checkpoints. Read §1 and the tail before new work; record checkpoints there, never multi-page prose here. |
+| `docs/IMPLEMENTATION-LOG.md` | **The full record (§1–§57):** status, decisions D1–D25, dated checkpoints. Read §1 and the tail before new work; checkpoints go there, never multi-page prose here. |
 | `docs/REQUIREMENTS-MATRIX.md` | **Requirement → code → test evidence** (R1–R12, A–D). Update in the same commit as any behaviour change. |
 | `docs/HUMAN-TEST-LIST.md` | **Outstanding human/thumb tests (§1–§23):** working in code, unproven by a person on a phone or hardware. |
 | `logs/ark_status.json` & `logs/install.done` | **The box's last measured receipt** from `90-verify`. |
 
-| Baseline Fact | State (as of 4 Nov 2026) |
+| Baseline Fact | State (4 Nov 2026) |
 |---|---|
 | Released tag | `v1.0.5` = `dd3336c` (never move a tag, never force-push) |
 | Active branch | `feature/admin-hardening` (fast-forwarded to `main` at `acf5d29`) |
 | Schema version | `SCHEMA_VERSION = 8` (`pi/api/ark_db.py`) — migration 7 adds the film shelf and the space ledger; migration 8 gives a reservation its pid, boot id and kind. **No migration was added in the 4 Nov pass**: the pause is a file, and the new health/UX work changes no table |
-| Test suite | `1075 passed, 2 skipped` (48 files) |
-| Live Pi state | Deployed `cf5548a` (log §53.6); ready 200, blocking [], mode home; 27 collections (97.6 GiB), 1291 books, 67 games, 11 guides, AI, FFmpeg, 8 films, 3 maps; 2 complete recovery copies; reserve 16 GB |
+| Test suite | `1078 passed, 2 skipped` (48 files) |
+| Live Pi state | Deployed `c4944b4`+ (log §57); `90-verify` **87 ✓, no ✗**; ready 200, blocking []; Films 8, Games 67, Maps 3 — all **Ready**; reserve 16 GB. **Search misses its 1500 ms target: 4–8 s (log §56.8/§57.6)** |
 | Owner decisions pending | History rewrite + force-push (pre-`a926296`; home-LAN address in `1a3f41f`; log §37.6/§38.7/§44); rotate passwords; licence |
 
 ### 8.1 What exists, and what each piece owns
@@ -375,7 +375,7 @@ Maps: address search, `via`-way/time-conditional restrictions, live traffic, ele
 * **Maps & service workers:** a click-through certificate error is still not a secure context; the device must trust the Ark certificate. `sw.js` carries a fingerprint of every app file (`__ARK_RELEASE__`) so an installed phone updates, is served with `Service-Worker-Allowed: /maps/` and an `ETag`; `cacheFirst` reads **this release's cache only**; a pack version is immutable; `/maps/api/` is never cached; `:8446` never proxies `/admin`.
 * **Disk guard & cards:** `diskutil info -plist` says `WholeDisk` (never `Whole`); `VirtualOrPhysical = Unknown` on some physical Apple disks, `Virtual` for APFS containers — deny `Virtual`, never require `Physical`. Capacity is a band, never one of the other facts. A clone keeps the *old* partition table: boot it, then `growpart` + `resize2fs` (`docs/CARD-MIGRATION.md` §6).
 * **Maintenance:** `ark_db` connections hold `<db>.maintenance.lock` for life; repair/restore takes `<db>.repair.lock` then the gate. Never unlink either; an unavailable gate is `deferred`, not corruption.
-* **Verifier counts:** `90-verify` printed **81** `✓` on 3 Nov 2026; quote the command, not gitignored logs.
+* **Verifier counts:** `90-verify` printed **87** `✓` on 4 Nov 2026 (81 on 3 Nov); quote the command, not gitignored logs.
 
 ### 8.8 Standing rules for every stage
 
@@ -406,6 +406,6 @@ Maps: address search, `via`-way/time-conditional restrictions, live traffic, ele
 25. **A recovery copy agrees with its files:** capture is locked against save deletion/GC; a generation is published only after its database and manifest are durable; retained copies pin save blobs and small shared files in place (never a second copy of films/maps/collections); `KEEP` never removes the last complete copy. `ark-self-heal` validates refs, adopts a legacy `.good.bak`, and reports missing files.
 26. **Admission precedes receipt and belongs to a process:** a door per body, a promise before the first byte, `finally` release, release only when a pid/boot proves the worker gone. Every growth path takes `cover()`/`hold()`; an unreadable ledger refuses bulk work while recovery and deletion run.
 27. A database is replaced only by `ark_db_replace.replace()` under the turnstile and gate: stage+check, preserve main+WAL/SHM, move the journal aside (never delete), install by one rename, verify, record each step; `recover_pending()` runs before services and a `BLOCK` marker keeps `ark_db` out. Start only units that were running, and only when safe.
-28. **Joy, learning and connection are product goals.** Films, books, games, maps and the board are what the box is *for* on a long evening offline, as much as a burst pipe is. An optional feature's failure is **contained**: folders are created without raising (`ensure_dirs()` returns failures), probes are isolated (`_build()`), and it is reported as a *feature*, never as a blocking requirement. A pause is a preference, never inferred from the internet being absent.
+28. **Joy, learning and connection are product goals.** Films, books, games, maps and the board are what the box is *for* on a long evening offline, as much as a burst pipe is. An optional feature's failure is **contained**: folders are made without raising (`ensure_dirs()` returns failures), probes are isolated (`_build()`), and it is reported as a *feature*, never a blocking requirement. A pause is a preference, never inferred from lost internet.
 29. **Evidence-based completion.** Done means a command's output says so, on the machine that matters, with device, revision and workload named. Deadlines and cancellation live in the loop that owns the child, never in the child's willingness to print; publication is durable before anything is deleted; "present" is not "works".
 30. **The owner's pause is one file, one policy.** `ark_pause` is the only answer; it is checked before a claim, never mid-transaction or while a database lock is held. Integrity, recovery, deletion and essential writes stay available, and resume never enables a job the owner had separately disabled.

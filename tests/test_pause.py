@@ -358,3 +358,24 @@ def test_the_public_pages_keep_working_while_paused(ark):
         ask = client.get("/ask")
         assert ask.status_code == 200
         assert "paused" in ask.text.lower()
+
+
+def test_the_health_row_for_the_helper_agrees_with_the_helper_while_paused(ark):
+    """Found on the live box: `/ask` refused while the readiness row said it answered."""
+    import ark_ai
+    import ark_health
+    import ark_pause
+
+    engine = ark.root / "ai" / "llama-server"
+    engine.parent.mkdir(parents=True, exist_ok=True)
+    engine.write_bytes(b"#!/bin/sh\n")
+    (ark.root / "ai" / "models").mkdir(parents=True, exist_ok=True)
+    (ark.root / "ai" / "models" / "a.gguf").write_bytes(b"x" * 1024)
+    ark_pause.set_paused(True)
+    section = ark_health.ask_section()
+    assert section["ready"] is False
+    assert section["state"] == "paused"
+    assert "paused" in section["reason"].lower()
+    # And the sentence a reader sees on /ask is the same one.
+    sentence, _hint = ark_ai.not_ready_sentence()
+    assert section["reason"].startswith(sentence)

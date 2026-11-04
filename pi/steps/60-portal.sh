@@ -32,12 +32,16 @@ ark_copy "$ARK_SRC/portal/assets/ark-admin.css" "$PORTAL/assets/ark-admin.css" 6
 ark_ok "portal pages installed in $PORTAL"
 
 # ---- backend ----------------------------------------------------------------
-for f in main.py ark_db.py ark_maintenance.py ark_db_replace.py ark_recovery.py ark_storage.py ark_security.py ark_admin.py ark_recover.py ark_health.py \
+# Every module the API can reach is named here, including the ones an earlier
+# phase also installs (`ark_atomic`, `ark_maintenance`, `ark_db_replace`,
+# `ark_recovery`): phase 15 puts them there, but the portal must not depend on
+# another phase having run first to be importable.
+for f in main.py ark_db.py ark_atomic.py ark_maintenance.py ark_db_replace.py ark_recovery.py ark_storage.py ark_security.py ark_admin.py ark_recover.py ark_health.py \
          ark_admission.py \
          ark_library.py ark_arcade.py ark_arcade_install.py ark_arcade_web.py \
          ark_romdb.py ark_romdb_build.py ark_rommeta.py \
          ark_review.py ark_household.py ark_cards.py ark_qr.py ark_essentials.py \
-         ark_network.py ark_ai.py ark_ingest.py ark_doors.py \
+         ark_network.py ark_ai.py ark_ingest.py ark_doors.py ark_pause.py \
          ark_space.py ark_media.py ark_media_jobs.py ark_media_web.py \
          ark_maps.py ark_map_store.py ark_map_web.py ark_map_admin.py; do
   ark_copy "$ARK_SRC/api/$f" "$API_DIR/$f" 644 "$ARK_PI_USER:$ARK_PI_GROUP"

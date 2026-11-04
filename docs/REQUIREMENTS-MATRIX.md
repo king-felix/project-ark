@@ -876,9 +876,16 @@ The reviewed failures, each with the test that now holds it shut:
 | Many readers, seeking, search and a background job: no 5xx, targets met | `main`, `ark_media_jobs` | `test_concurrency.py` (seven tests) |
 | A game's page says JavaScript is required and names what does not need it | `ark_arcade_web.game_page()` | read in review |
 
+**Deployed and measured on the live box (4 Nov 2026, log §57):** `90-verify`
+printed **87 ✓, no ✗**; Films, Games and Maps each answer with their real counts;
+the pause was set and cleared on the box and every reader page kept answering;
+the kick file was consumed by a real importer run; `/maps/api/app` returns
+`release 725f2603cd66` and `sw.js` carries it.
+
 **Not proved here:** a real phone at all (see `docs/HUMAN-TEST-LIST.md` §29); a
-real full card; a physical power cut; the Pi's absolute numbers (the targets are
-in §56 of the log and the Pi measurement is there too).
+real full card; a physical power cut; and **the search target, which the Pi
+missed** — 4–8 s against 1500 ms, measured three ways in log §56.8, with the
+decision left to the owner in §57.6.
 
 ---
 

@@ -348,20 +348,46 @@ def test_the_library_page_is_not_reachable_without_the_proxy_naming_it():
 
 
 def test_every_backend_module_the_portal_imports_is_installed():
-    """A new module that phase 60 does not copy is a service that will not start.
+    """A module phase 60 does not copy is a service that will not start.
 
     The list of files in ``60-portal.sh`` is written by hand, so it drifts from the
-    imports in ``main.py`` the moment somebody adds one.  The failure is total and
-    obvious on the box (``ark-api`` inactive) but silent until a deploy; this makes
-    it a failing test instead.
+    imports the moment somebody adds one.  The failure is total and obvious on the
+    box (``ark-api`` inactive) but silent until a deploy.
+
+    **Transitive, not one level deep.**  The first version of this test read only
+    ``main.py``'s own imports, and on 4 November 2026 that was exactly how
+    ``ark_pause`` reached the live box uninstalled: `main` imports `ark_admin`,
+    which imports `ark_ai`, which imports `ark_pause` — none of them named it at the
+    top level, and the deploy failed at the health check with
+    ``ModuleNotFoundError: No module named 'ark_pause'``.  So every module the API
+    can reach is followed, through every file phase 60 copies.
     """
     phase = (REPO / "pi" / "steps" / "60-portal.sh").read_text(encoding="utf-8")
-    imported = set(re.findall(r"^import (ark_\w+)$", MAIN_APP, re.M))
-    imported |= set(re.findall(r"^from (ark_\w+) import", MAIN_APP, re.M))
-    assert imported, "main.py imports no backend modules — the regex has drifted"
-    for module in sorted(imported):
+    api = REPO / "pi" / "api"
+
+    def imports_of(source: str) -> set:
+        found = set(re.findall(r"^import (ark_\w+)$", source, re.M))
+        found |= set(re.findall(r"^from (ark_\w+) import", source, re.M))
+        return found
+
+    seen: set = set()
+    pending = ["main"]
+    while pending:
+        name = pending.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        path = api / (name + ".py")
+        if not path.is_file():
+            continue
+        for module in imports_of(path.read_text(encoding="utf-8")):
+            if module not in seen:
+                pending.append(module)
+
+    assert len(seen) > 5, "the import walk found almost nothing — the regex has drifted"
+    for module in sorted(seen):
         assert f"{module}.py" in phase, (
-            f"{module}.py is imported by main.py but 60-portal.sh never copies it")
+            f"{module}.py is reachable from main.py but 60-portal.sh never copies it")
 
 
 # ---------------------------------------------------------------------------

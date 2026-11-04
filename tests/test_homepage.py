@@ -175,3 +175,27 @@ def test_the_front_page_hides_the_panel_by_default():
     assert 'fetch("/api/today"' in html
     # A plan that is not today's must not read as though it were.
     assert "it may already have happened" in html
+
+
+def test_a_big_card_tells_the_reader_what_a_search_costs(ark, monkeypatch):
+    """A five-second wait with no explanation is the wait a reader abandons."""
+    import main
+
+    shelf = [
+        {"id": "i%d" % i, "stem": "stem%d" % i, "title": "Book %d" % i,
+         "size": 1000, "path": "/srv/ark/kiwix/b%d.zim" % i}
+        for i in range(20)
+    ]
+    monkeypatch.setattr(main, "library_books", lambda: shelf)
+    import ark_health
+    ark_health.forget_probes()
+    page = main.search("water")
+    assert "20</b> collections" in page.body.decode()
+    assert "takes a few seconds" in page.body.decode()
+
+
+def test_a_small_card_does_not_talk_about_a_wait(ark):
+    import main
+
+    page = main.search("water")
+    assert "takes a few seconds" not in page.body.decode()

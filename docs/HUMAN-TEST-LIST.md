@@ -1429,6 +1429,10 @@ disagreed. The original card is the rollback; do not spend it.
 
 ## 29. Living with it: daylight, a plan, and a pause (25 minutes, needs a phone)
 
+*Deployed and exercised from the console on 4 Nov 2026 (log §57): the pause, the
+resume and the kick file are hardware facts. What is still unproved is a **person**
+doing it — the page, the thumb, and the phone in the sun.*
+
 Everything in this section is working code with automated proof. What it has never
 had is a person holding the phone — in the sun, with the box on a shelf.
 

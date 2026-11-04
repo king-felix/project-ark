@@ -6985,8 +6985,56 @@ records who asked or where anybody lives. History was not rewritten.
 
 ### 56.8 The Pi, and the numbers
 
-Measured after the deploy in §57. The device, revision and workload are named
-there, with the reserve and the free space as the box reported them.
+Measured on the deployed box after §57. **Device:** Raspberry Pi 4 Model B Rev
+1.5, Linux 6.18.50+rpt-rpi-v8, 4 cores, 8 GB. **Workload:**
+`/tmp/ark-loadcheck --base http://127.0.0.1 --readers N --rounds M` — every reader
+asking `/search?q=water`, `/api/status`, `/api/health`, `/board` and `/library`,
+plus one film seek by range; `/api/health` is interleaved after every request so
+it is measured beside the load, not in a quiet corner.
+
+| Path | target | 2 readers, 3 rounds | 4 readers, 4 rounds | verdict |
+|---|---|---|---|---|
+| `/search?q=water` | p95 < 1500 ms | **p50 5359, p95 7695** | **p50 7954, p95 8099** | **MISSED** |
+| `/api/status` | p95 < 800 ms | p50 25, p95 726 | p50 52, **p95 1312** | met alone, **missed** under a search storm |
+| `/api/health` | p95 < 150 ms | p50 5, p95 6 | p50 7, p95 27 | met |
+| `/board` | p95 < 800 ms | p50 9, p95 9 | p50 12, p95 19 | met |
+| `/library` | p95 < 800 ms | p50 10, p95 10 | p50 14, p95 18 | met |
+| film seek | 206 + exact bytes | **206, 1024 b, 10 ms** | **206, 1024 b, 14 ms** | met |
+| errors | none | 0 | 0 | met |
+
+Box at rest before the run: load 0.19, 6783 MB available, `ark-api`,
+`ark-media-worker`, `nginx`, `ark-ai` and `ark-zim-downloader` all active. After:
+load 1.04, 6443 MB available — no memory ceiling approached, no swap.
+
+**The search target was missed, and it was not met by widening anything.** Three
+honest attempts, in order:
+
+1. *Measure the components.* `_search_report` 4.05–4.57 s (asked 27, answered 26,
+   late 0, one collection failing), `search_guides` 0.02 s, `search_books` 0.01 s,
+   `library_books` 0.00 s. The fan-out **is** the page cost.
+2. *Widen the fan-out,* in case it was blocked on concurrency: 6 workers 5.04 s,
+   10 → 4.79 s, 14 → 5.54 s, 20 → 4.41 s. No real change — the work is CPU-bound
+   libzim full-text search over 27 collections on four cores, about a second of
+   one core per collection.
+3. *Check whether the page was adding cost.* It is not: the same search through
+   `/search?q=water` with nothing else running took 4.37 s, and 4.0–4.6 s inside
+   the API.
+
+So the 1500 ms target is **not achievable on this card** with this fan-out, and
+the honest response is to say so rather than to move the number. What was done
+instead is a truthful sentence where the reader waits: the search page now says
+how many collections there are and that this box takes a few seconds, because a
+five-second wait with no explanation is the wait somebody abandons — and pressing
+the button again restarts it. A small card prints nothing.
+
+`/api/status` is fast warm (22 ms, measured five times) and 0.39–0.65 s when its
+five-second report cache has just expired; the 1312 ms p95 is that scan landing
+while 27 search threads hold the cores. `ark-loadcheck` prints both, so the number
+is never quoted without the condition that produced it.
+
+**These are the numbers for this card and this revision.** A card with fewer
+collections searches faster in proportion; a card with more will be slower. The
+decision that remains is the owner's, and it is in §57.6.
 
 ### 56.9 What this does not do
 
@@ -6995,3 +7043,138 @@ power cut. The pause cannot hibernate a running encode, and it does not claim to
 the encode finishes, or you stop it and lose the work. There is no measurement of
 battery saving and the page claims none. Search still does not look inside a film
 or a game, and now says so rather than pretending.
+
+---
+
+## 57. The deploy — a missing module, a pause that worked, and one number that did not — 4 Nov 2026
+
+### 57.1 What was deployed, and how
+
+`bb667af` → `c4944b4` and the three commits after it, to the box that has been
+serving since 26 Oct. Rollback points first, both taken before anything moved:
+
+* `/root/ark-db-before-outage.db` — a **read-only** connection's `.backup()`
+  (a `cp` of a live WAL database is a corrupt copy);
+* `/root/ark-src-before-outage.tgz` — the previous `/srv/ark/src`.
+
+Then the tree by the same rsync `03-provision.sh` uses, and
+`install-ark.sh --only 30-calibre,50-kiwix,58-ai,60-portal,62-media,66-maps,70-network`.
+
+### 57.2 The deploy caught a real defect the tests had missed
+
+**Phase 60 failed on the first run.** `ark-api` exited with
+`ModuleNotFoundError: No module named 'ark_pause'`, and the health check that
+guards the phase reported HTTP 000. The cause is the same class of fault the pass
+was written to remove, one level deeper than the test that guards it:
+`60-portal.sh` copies a hand-written list of modules, and `tests/test_library.py`
+checked only **`main.py`'s own imports**. `main` imports `ark_admin`, which imports
+`ark_ai`, which imports `ark_pause` — none of them named it at the top level, so
+the test passed on the Mac and the box would not start.
+
+Two things changed:
+
+* `ark_pause.py` is in the copy list (and `ark_atomic.py` with it, which phase 15
+  also installs — the portal must not depend on another phase having run first).
+* the test now walks the import graph **transitively** from `main` through every
+  file phase 60 copies, so the next module reached only through two other modules
+  fails on the Mac instead of on the box.
+
+This is worth stating plainly: the automated suite said the change was safe and it
+was not. The deploy found it, and the deploy is why it was found before anybody
+used the box.
+
+### 57.3 The second run, and the state it left
+
+Phase 60 alone: 43 `✓`, no `✗`, `ARK_INSTALL_COMPLETE`. The remaining phases:
+40 `✓`, no `✗`. Then `--only 90-verify`: **87 `✓`, no `✗`**, exit 0 (it printed 81
+on 3 Nov; the six new checks are the feature rows, the liveness door and the
+today endpoint).
+
+| Check | Result |
+|---|---|
+| `ark-api`, `ark-media-worker`, `nginx`, `ark-ai`, `ark-zim-downloader` | `enabled` + `active` |
+| `/`, `/api/health`, `/api/ready`, `/api/today`, `/api/status`, `/media/`, `/arcade/` | 200 |
+| `/maps` | 301 (to the secure origin, as designed) |
+| `/theme/light?back=/` | 303 with the cookie |
+| Films | *8 films on the shelf are ready to watch…* — **Ready** |
+| Games | *67 games on the shelf, and every player file this box needs is present. Whether a particular phone draws it is proved on that phone, not here.* — **Ready** |
+| Maps | *3 regions (296.8 MB) ready to download…* — **Ready** |
+| `/api/ready` | 200, `blocking: []`, `unavailable_features: []` |
+
+### 57.4 The pause, exercised on the live box
+
+The owner's page was not used for this; the same function it calls was:
+
+* `ark_pause.set_paused(True)` → marker present, `since 2026-11-04T19:16:13+00:00`.
+* **Every reader page answered 200** while paused: `/api/ready`, `/media/`,
+  `/board`, `/files`, `/library`, `/household`, `/arcade/`; the maps catalogue
+  redirects to its secure origin as it always does.
+* `/api/ask/status` → `available: false`, *"Heavy background work is paused by the
+  owner"*.
+* `ark-media-worker --status` → `background work : paused by the owner`.
+* `ark_media_jobs.work_once()` claimed nothing; the queue was left untouched.
+* `/api/ready` → `ok: true`, `blocking: []`, `films` state **paused** with *"8 films
+  can be watched.  Background preparation is paused by the owner."* — playback and
+  preparation separated exactly as intended.
+* **A defect this found:** the `ask` readiness row still said *"Questions are
+  answered on this box"* while `/api/ask/status` said it was not. The row did not
+  consult the pause. Fixed, tested
+  (`test_the_health_row_for_the_helper_agrees_with_the_helper_while_paused`) and
+  redeployed; the row now reads **paused**.
+* `set_paused(False)` → marker gone, `/api/ready` 200 with `ask` and `films` both
+  **available**, and the kick file was written and **consumed by a real
+  `ark-book-import.service` run 3 seconds later** (`Inactive (dead)` at 19:17:03,
+  triggered by `ark-book-import.path`). The resume path works on hardware.
+
+### 57.5 Maps, on the deployed box
+
+```
+GET https://ark.local:8446/maps/api/app
+{"release": "725f2603cd66", "app_version": 1, "files": 15, "missing": []}
+
+GET /maps/sw.js →  const VERSION = "ark-maps-" + "725f2603cd66".replace(...)
+                    service-worker-allowed: /maps/
+                    etag: "3e8b86b9…"
+```
+
+So an installed phone now has something to install: the worker's own bytes carry
+the release fingerprint, which is the signal a browser needs. The upgrade itself
+(an existing browser profile taking a new application, keeping its pack and its
+saved places, then routing with nothing reachable) is proved end to end on the
+Mac in `tests/test_maps_browser.py`; doing it on a phone is human work
+(`docs/HUMAN-TEST-LIST.md` §22 and §29).
+
+### 57.6 What the numbers say, and one decision for the owner
+
+Search on this card takes 4–8 seconds and the target of 1500 ms was missed (§56.8,
+with the three attempts and the measurements). Everything else measured met its
+target, the box kept 6.4 GB of memory free under load, and no request answered
+5xx.
+
+The options, ranked by what they cost:
+
+1. **Leave it and say so.** The page now tells the reader it takes a few seconds
+   and that tapping again starts over. Cost: nothing. Cost to the reader: four to
+   eight seconds on the one page that is a fan-out across 27 indexes.
+2. **Search fewer collections for a common word** — ask the smaller, faster books
+   first and let the encyclopedias fill in — which needs a rework of `_spread()`
+   and a way to say *"the encyclopedia is still looking"*. Cost: a real change to
+   the page's honesty rules; benefit: a hit on screen in about a second.
+3. **Carry fewer collections on a card this size.** Cost: less content; benefit:
+   the whole page gets faster in proportion.
+4. **A faster card and a Pi 5.** Out of scope for this pass and not measured.
+
+Nothing here was chosen. The number, its cause and the options are recorded so the
+decision is made with the measurement in hand rather than after it.
+
+### 57.7 What is not deployed, and what is not proved
+
+* Everything in this pass **is** deployed at `c4944b4` (plus the three commits
+  after it: the module list, the import-graph test, and the ask row).
+* **No phone has used any of it.** The light colours, the Today panel, the pause
+  from the owner's page, a film on glass — all remain in
+  `docs/HUMAN-TEST-LIST.md` §29.
+* **No physical power cut**, and the durable-publication change is proved by
+  ordering and by a short-copy refusal, not by pulling the plug.
+* The **Maps upgrade** is proved in Chromium with a real profile; a real iPhone or
+  Android device is unproved, as it was before this pass.

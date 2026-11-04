@@ -885,7 +885,17 @@ def ask_section() -> dict:
     import ark_ai
     facts = ark_ai.status()
     kept = {"engine": facts["engine"], "model": facts["model"],
-            "model_bytes": facts["model_bytes"], "answering": facts["answering"]}
+            "model_bytes": facts["model_bytes"], "answering": facts["answering"],
+            "paused": facts.get("paused", False)}
+    # The owner's pause comes first.  An engine that is up and answering while the
+    # page refuses every question is not "answered" — found on the live box on
+    # 4 November 2026, where this row still read "Questions are answered on this
+    # box" during a pause while `/api/ask/status` said `available: false`.
+    if facts.get("paused"):
+        sentence, _hint = ark_ai.NOT_READY["paused"]
+        return _section("ask", "Ask the Ark", False, f"{sentence}.",
+                        ark_ai.advice(), content=bool(facts["model"]),
+                        state="paused", **kept)
     sentence, _hint = ark_ai.NOT_READY["engine"]
     if not facts["engine"]:
         return _section("ask", "Ask the Ark", False, f"{sentence}.",
