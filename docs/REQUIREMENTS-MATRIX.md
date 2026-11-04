@@ -466,7 +466,7 @@ household member has opened `/household` on a phone.
 | R13 | DONE (code + test) | shelf, ranges, worker; real phone playback is human work |
 | R14 | DONE (code + real-browser test + live Pi) | live Pi and desktop Chromium offline journey yes; **no real phone, no owner region, eviction unproven** |
 | R15 | DONE (code + test + live Pi) | shelves, films-not-searched, digests yes; real phone playback and a person's judgement of the shelves are human work |
-| R16 | DONE (code + test) | capture/pin/retain/validate/GC yes; real-device restore is human work |
+| R16 | DONE (code + test + live check) | capture/pin/retain/validate/GC yes; scratch-root restore on the live card; a person's rehearsal remains FOR YOU |
 | A | PARTIAL | accounts/community/games/health yes; players/services/backup UI no |
 | B | PARTIAL (early) | guest play + named saves + preferences yes; history/metadata/visuals no |
 | C | PARTIAL | stage 3–6 fixes yes; thermal/jobs/search cancellation no |
@@ -766,8 +766,9 @@ Those are `docs/HUMAN-TEST-LIST.md` §23, not code claims.
 
 ## R16 — a recovery copy agrees with the files its records name
 
-**Status: DONE (code + test).** The daily pass used to keep the database and nothing
-else. A player's save is a row **and** a content-addressed blob; replacing a save
+**Status: DONE (code + test + live check).** The daily pass used to keep the database and nothing
+else; the live box now keeps two complete generations and a scratch-root restore on
+the real card returned the exact old save bytes (`docs/IMPLEMENTATION-LOG.md` §53.6). A player's save is a row **and** a content-addressed blob; replacing a save
 deleted the old blob, so an older copy restored a row whose bytes were gone.
 
 | Acceptance sentence | Where | Test |

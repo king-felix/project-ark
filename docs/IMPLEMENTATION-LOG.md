@@ -6325,3 +6325,55 @@ arcade, import, board, media, backup, recovery, self-heal) re-ran together:
 * A save replacement that happens while a **backup** holds the lock leaves the
   old blob for the next pass rather than deleting it at once; that is the
   intended trade, not a leak (GC removes it after the copies that name it retire).
+
+### 53.6 Deployed and proved on the live box — 4 Nov 2026
+
+**Before touching it:** `sudo ark-backup --to /srv/ark/backup --keep 3` wrote
+`ark-backup-20261104-040054` (347.2 kB; 0 messages, 0 shared files, 0 player
+names, 0 game saves, the import list).  The deployed source tree was saved as
+`/srv/ark/tmp/rollback-src-20261104-040058.tar.gz` (20 MB).  The previous
+deployed revision was `ed5f7e0`.
+
+**The deploy:** the established one,
+
+```
+bash scripts/03-provision.sh ark.local --only 15-resilience,60-portal,95-backup,90-verify
+```
+
+All four phases reported **ok**, none failed, in 0m53s at `1447146`.  A second
+deploy at `cf5548a` (the adoption relink fix) took 0m51s, again all four **ok**.
+
+**Hashes on the box matched the commit**, byte for byte, for
+`ark_recovery.py`, `ark_arcade.py`, `ark_db.py`, `ark_self_heal.py`,
+`ark_bundle.py`, `ark-backup` and `ark-restore`.
+
+**Readiness:** `http://127.0.0.1:8085/api/ready` → **200**, `ok: true`, `ready:
+9/9`, `blocking: []`.  `ark-self-heal --json` → `ok: true`, `problems: []`,
+`recovery_gc.status: done`, and **two** complete generations
+(`gen-20261104T040722Z-fab52424`, and the adopted
+`gen-legacy-20261103T235309Z-a14f0ddc`), both `db_ok: true`, `missing: 0`.
+`/srv/ark/api/data/ark.db.good.bak` and the newest generation's `ark.db` share
+inode `277104` — the name is a hard link, as designed.  The pre-deploy bundle
+passes `ark-backup --verify` (5 files, 347.2 kB, every fingerprint matches), and
+`ark-restore --list` still finds it.
+
+**The real card, in a scratch root:** the live database was copied with
+SQLite's `backup()` and one game file into
+`/srv/ark/tmp/recovery-rehearsal`; a rehearsal player was inserted there and a
+save `ORIGINAL-REHEARSAL-BYTES` was written through `player_save_put`.  After a
+capture, a replacement `REPLACEMENT-REHEARSAL-BYTES` was written, the old blob
+was still present and `protects()` answered **True**, the generation was
+restored with `ark_db_replace`, and `player_save_get` returned exactly
+`ORIGINAL-REHEARSAL-BYTES`.  The scratch root was removed.  The live box has
+**0 player names and 0 saves**, so no live save was touched — or could be used
+for this proof.
+
+**Not done, on purpose:** no restore over the live
+`/srv/ark/api/data/ark.db`; no physical power interruption; no phone.  The
+person's rehearsal remains `docs/HUMAN-TEST-LIST.md` §26.
+
+**Rollback:** the tarball above and commit `ed5f7e0` on the Mac.  To go back,
+`sudo tar -C /srv/ark -xzf /srv/ark/tmp/rollback-src-20261104-040058.tar.gz`,
+re-run `15-resilience`, `60-portal` and `95-backup`, then `sudo systemctl restart
+ark-api ark-media-worker ark-ai`.  The pre-deploy bundle is the records'
+rollback.
