@@ -6577,8 +6577,9 @@ is where it started. Nothing else on the card was created.
 back and 0 B is promised to work already running — 88.2 GB may still be added."*
 `ark-space --status` reports `ledger: ok`, `committed 0 B`, `usable 94.8 GB`.
 
-**Final deployed revision: `5c73525`** (the busy-path fix; its `60-portal` run
-took 0m32s, every phase ok). The code in `/srv/ark/src` matches it byte for byte.
+**Final deployed revision: `720351e`** (the self-test fix; `60-portal` + `90-verify`
+took 0m33s, every phase ok, and the verify line now reads *"a made-up cartridge was
+recognised from its own bytes"*). The code in `/srv/ark/src` matches it byte for byte.
 
 **A second defect the verification found, in the catalogue builder.** The
 self-test built its sample database in `/tmp` — a 256 MB tmpfs on this box — and
