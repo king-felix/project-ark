@@ -14,14 +14,18 @@ cannot drift apart:
 * **Nothing half-written is ever visible.**  Bytes land in ``drop/tmp`` (which
   nginx does not serve), are flushed to disk, and only then appear in
   ``drop/files``.  A refused upload leaves no residue.
-* **The cap is enforced before the disk fills, and a reserve is kept.**  The
+* **The cap is enforced before the disk fills, and room is promised first.**  The
   limit is the same number nginx is configured with (see ``pi/nginx/ark.conf``);
-  the box also refuses to write into its last 512 MiB, because a full card takes
-  the whole portal down, not just the upload.
+  the reserve is ``ark_space``'s (7 % of the receiving filesystem, or 2 GiB) —
+  there is no second number here.  Inside an upload the spool adopts the promise
+  the request already made; outside one it takes its own reservation.  A full card
+  takes the whole portal down, not just the upload, which is what the reserve is
+  for.
 """
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import mimetypes
 import os
@@ -37,6 +41,10 @@ import ark_space
 
 MAX_FILE = 2 * 1024 * 1024 * 1024          # 2 GiB per file; nginx allows 16 MiB more
 CHUNK = 1024 * 1024
+#: How far ahead an unknown-size file promises.  Ark-space's number, not a second
+#: policy: one step is small enough to refuse early and large enough that a
+#: multi-gigabyte upload does not write a ledger row every megabyte.
+STEP_BYTES = ark_space.STEP_BYTES
 TEMP_SUFFIX = ".part"
 MAX_DISPLAY = 120
 
@@ -140,51 +148,57 @@ def reserve_bytes(path: Path | None = None) -> int:
 #  the one write path
 # ---------------------------------------------------------------------------
 def spool(read, filename: str, *, limit: int | None = None,
-          min_free: int | None = None, destination: Path | None = None,
-          temp: Path | None = None) -> Stored:
+          destination: Path | None = None, temp: Path | None = None) -> Stored:
     """Stream ``read(n)`` into a hidden temp file, then publish it atomically.
 
     ``read`` is any callable taking a byte count and returning at most that many
     bytes (a file object's ``read``, a socket, ``io.BytesIO(...).read``).  An
     empty result means the end of the file.
+
+    The room this needs is **promised before it is used**, through
+    ``ark_space.cover``: inside an upload that means adopting the promise the
+    request already made (the framework's temp copy is part of the same peak), and
+    outside one it means a reservation of its own.  A file whose size is not known
+    grows its promise a step at a time and is refused before it writes past it —
+    the old check-then-write loop let two uploads spend the same free bytes.
     """
-    limit = MAX_FILE if limit is None else limit
+    limit = MAX_FILE if limit is None else int(limit)
+    if limit <= 0:
+        raise Refused("This upload is as large as one file may be — send the rest "
+                      "separately.")
     dest = Path(destination) if destination else drop_dir()
-    room = reserve_bytes(dest) if min_free is None else int(min_free)
     tmpdir = Path(temp) if temp else temp_dir()
     dest.mkdir(parents=True, exist_ok=True)
     tmpdir.mkdir(parents=True, exist_ok=True)
 
     display = display_name(filename)
-    available = free_bytes(dest)
-    # Space already promised to a running job is not free space: an upload that
-    # ignores it can take the bytes a conversion was admitted on.
-    promised = ark_space.committed_for(dest)
-    if available <= room + promised:
-        raise Refused("The box is nearly full — there is no room for new files. "
-                      "Ask the owner to make space, then try again.")
-
     digest = hashlib.sha256()
     written = 0
     fd, tmp = tempfile.mkstemp(dir=str(tmpdir), prefix="upload-", suffix=TEMP_SUFFIX)
     try:
         with os.fdopen(fd, "wb") as out:
-            while True:
-                chunk = read(CHUNK)
-                if not chunk:
-                    break
-                written += len(chunk)
-                if written > limit:
-                    raise Refused(f"That file is too big. Files up to "
-                                  f"{limit // (1024 ** 3)} GB are accepted — split it or "
-                                  f"use a smaller copy, then try again.")
-                if available - written <= room + promised:
-                    raise Refused("The box filled up while that file was arriving. "
-                                  "Ask the owner to make space, then try again.")
-                digest.update(chunk)
-                out.write(chunk)
-            out.flush()
-            os.fsync(out.fileno())
+            with ark_space.cover(dest, ark_space.first_step(dest, limit),
+                                 owner=f"spool:{display}", label="a shared file",
+                                 key="file") as receipt:
+                while True:
+                    chunk = read(CHUNK)
+                    if not chunk:
+                        break
+                    written += len(chunk)
+                    if written > limit:
+                        raise Refused(f"That file is too big. Files up to "
+                                      f"{_size_words(limit)} are accepted — split it or "
+                                      f"use a smaller copy, then try again.")
+                    # Grow *before* writing past the promise; a chunk is never
+                    # larger than a step, so there is always room for the next one.
+                    if written + CHUNK > receipt.reserved:
+                        receipt.need(ark_space.growth_step(dest, written, limit))
+                    receipt.spent("file", written)
+                    digest.update(chunk)
+                    out.write(chunk)
+                out.flush()
+                os.fsync(out.fileno())
+                receipt.spent("file", written)
         if written == 0:
             raise Refused("That file was empty, so there was nothing to share.")
         os.chmod(tmp, 0o644)
@@ -193,11 +207,22 @@ def spool(read, filename: str, *, limit: int | None = None,
                       sha256=digest.hexdigest(), path=dest / stored)
     except OSError as exc:
         _unlink(tmp)
+        if exc.errno == errno.ENOSPC:
+            raise Refused("The card filled up while that file was arriving. "
+                          "Nothing was kept. Free some room, then try again.") from exc
         raise Refused("The box could not store that file. Check that the card is "
                       "inserted and has room, then try again.") from exc
     except BaseException:
         _unlink(tmp)
         raise
+
+
+def _size_words(n: int) -> str:
+    n = int(n or 0)
+    for unit, size in (("GB", 1024 ** 3), ("MB", 1024 ** 2), ("kB", 1024)):
+        if abs(n) >= size:
+            return f"{n / size:.1f} {unit}"
+    return f"{n} bytes"
 
 
 def _publish(tmp: str, dest: Path, display: str) -> str:

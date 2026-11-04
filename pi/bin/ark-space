@@ -10,6 +10,9 @@ command they share:
     ark-space --status --json              # the same numbers for a program
     ark-space --check --need 3221225472    # exit 0 when it fits, 3 with a sentence
     ark-space --check --need 0 --path /srv/ark/kiwix
+    ark-space --reserve --need N --owner kiwix --pid $$   # print the promise id
+    ark-space --touch ID --written N       # say how much of it is on the card
+    ark-space --release ID                 # give the rest back
 
 ``--check`` prints nothing when the answer is yes — a script that only cares
 whether it may proceed should not have to parse prose.  When the answer is no it
@@ -26,7 +29,7 @@ import sys
 
 sys.path.insert(0, os.environ.get("ARK_API_DIR", "/srv/ark/api"))
 
-import ark_space  # noqa: E402
+import ark_space   # noqa: E402
 
 
 def _size(n) -> str:
@@ -48,20 +51,64 @@ def main(argv=None) -> int:
     parser.add_argument("--check", action="store_true", help="exit 0 if it fits, 3 if not")
     parser.add_argument("--status", action="store_true", help="report the numbers (default)")
     parser.add_argument("--json", action="store_true", help="report as JSON")
+    # -- the promise a long job keeps while it writes -------------------------
+    parser.add_argument("--reserve", action="store_true",
+                        help="promise --need bytes and print the reservation id")
+    parser.add_argument("--release", type=int, default=None, metavar="ID",
+                        help="give a promise back")
+    parser.add_argument("--touch", type=int, default=None, metavar="ID",
+                        help="refresh a promise, and say how much is on disk")
+    parser.add_argument("--written", type=int, default=None,
+                        help="with --touch: bytes of the promise now on the card")
+    parser.add_argument("--owner", default="", help="who is making the promise")
+    parser.add_argument("--label", default="", help="what the promise is for")
+    parser.add_argument("--essential", action="store_true",
+                        help="admit against free space alone (freeing room, saving records)")
     args = parser.parse_args(argv)
+
+    if args.release is not None:
+        import ark_db
+        with ark_db.tx() as conn:
+            ark_space.release(conn, args.release)
+        return 0
+
+    if args.touch is not None:
+        import ark_db
+        with ark_db.tx() as conn:
+            ark_space.touch(conn, args.touch, args.written)
+        return 0
+
+    if args.reserve:
+        if args.need is None:
+            print("--reserve needs --need", file=sys.stderr)
+            return 2
+        try:
+            ident = ark_space.reserve(
+                args.path or "/srv/ark", max(0, int(args.need)),
+                owner=args.owner or "ark-space", label=args.label,
+                essential=args.essential)
+        except ark_space.Refused as exc:
+            print(str(exc), file=sys.stderr)
+            return 3
+        print(ident)
+        return 0
 
     if args.check:
         if args.need is None:
             # "May anything be added at all?" — the question a downloader asks
             # before it starts another fetch.  `require(0)` can never fail, so
             # this asks the reserve directly.
-            if ark_space.slack(args.path) <= 0:
+            room = ark_space.slack(args.path)
+            if room is None:
+                print(ark_space.describe(args.path), file=sys.stderr)
+                return 3
+            if room <= 0:
                 print(ark_space.describe(args.path), file=sys.stderr)
                 return 3
             return 0
         need = max(0, int(args.need))
         try:
-            ark_space.require(args.path, need)
+            ark_space.require(args.path, need, essential=args.essential)
         except ark_space.Refused as exc:
             print(str(exc), file=sys.stderr)
             return 3
@@ -78,7 +125,10 @@ def main(argv=None) -> int:
     print(f"kept back ({pct:g}%) : {_size(room['reserve_bytes'])}")
     print(f"promised to jobs: {_size(room['committed_bytes'])}")
     print(f"may be added    : {_size(room['usable_bytes'])}")
-    if room.get("breached"):
+    if room.get("ledger") == "unreadable":
+        print("state           : the record of promised space could not be read — "
+              "large writes are refused until it can be")
+    elif room.get("breached"):
         print("state           : inside the reserve — new files and films are refused")
     return 0
 

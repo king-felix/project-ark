@@ -42,6 +42,7 @@ from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
                                RedirectResponse, StreamingResponse)
 
 import ark_admin
+import ark_admission
 import ark_ai
 import ark_arcade
 import ark_arcade_install
@@ -317,52 +318,16 @@ def certificate_door():
 
 # ---------------------------------------------------------------------------
 #  a body the card cannot hold is refused before it is written
+#
+#  The old guard here compared a declared Content-Length with the room left and
+#  then let the body arrive unreserved — two uploads could each be told there was
+#  room, and a chunked body was not checked at all.  ``ark_admission`` now wraps
+#  the framework's own receive: every body has a door, a declared body reserves
+#  its peak before the first byte is read, and an unknown-size body is admitted in
+#  bounded steps.  The middleware is registered here, outermost, so no parser can
+#  read a byte ahead of the promise.
 # ---------------------------------------------------------------------------
-BODY_DOORS = ("/files", "/admin/media/upload", "/admin/upload")
-FRAMING_MARGIN = 1024 * 1024          # multipart boundaries and headers
-
-
-@app.middleware("http")
-async def _refuse_a_body_that_cannot_fit(request: Request, call_next):
-    """Answer a declared 8 GiB upload with 413 instead of filling the card first.
-
-    The framework spools a request body to disk before a route ever sees it, so
-    the application's own check comes too late to stop the bytes arriving.  A
-    client that *declares* more than the card can spare is refused at the door;
-    a client that lies about its length is still bounded by the per-file cap and
-    by the check in ``ark_storage.spool`` while the bytes stream.
-    """
-    declared = _declared_length(request)
-    if declared is None:
-        return await call_next(request)
-    try:
-        room = ark_space.slack(ark_storage.drop_dir())
-    except ark_maintenance.Busy:
-        # This runs before the route, outside the exception handler's stack; a
-        # maintenance window must still answer a sentence rather than a 500.
-        sentence = ("The box is putting its records back just now. Nothing was "
-                    "stored — try again in a moment.")
-        if request.url.path.startswith("/api/"):
-            return JSONResponse({"ok": False, "reason": sentence}, status_code=503)
-        return error_page("The box is putting its records back just now.",
-                          "Nothing was stored.  Try again in a moment.", 503)
-    if declared > room + FRAMING_MARGIN:
-        return error_page(
-            "That upload is bigger than the room left on the card.",
-            "Nothing was stored. Ask the owner to make space, then try again.", 413)
-    return await call_next(request)
-
-
-def _declared_length(request: Request):
-    if request.method != "POST" or request.url.path not in BODY_DOORS:
-        return None
-    raw = request.headers.get("content-length")
-    if not raw:
-        return None
-    try:
-        return int(raw)
-    except ValueError:
-        return None
+app.add_middleware(ark_admission.BodyAdmissionMiddleware)
 
 
 # ---------------------------------------------------------------------------

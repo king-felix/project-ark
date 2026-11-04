@@ -33,6 +33,7 @@ ark_ok "portal pages installed in $PORTAL"
 
 # ---- backend ----------------------------------------------------------------
 for f in main.py ark_db.py ark_maintenance.py ark_db_replace.py ark_recovery.py ark_storage.py ark_security.py ark_admin.py ark_recover.py ark_health.py \
+         ark_admission.py \
          ark_library.py ark_arcade.py ark_arcade_install.py ark_arcade_web.py \
          ark_romdb.py ark_romdb_build.py ark_rommeta.py \
          ark_review.py ark_household.py ark_cards.py ark_qr.py ark_essentials.py \

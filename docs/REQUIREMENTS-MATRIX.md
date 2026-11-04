@@ -279,40 +279,47 @@ still refused, and `"no-text"` is no longer mistaken for a language called `no`.
 
 ## R8 — uploads and installs cannot fill the card or starve each other
 
-**Status: DONE, with two stated limits.** One policy (`ark_space`) owns the reserve,
-every growth path asks it, and a job whose size is known takes a cross-process
-reservation before it writes. The two limits are named at the bottom of this section:
-a request body is still spilled to the card by the web framework before the route can
-refuse it (peak = twice the file), and per-person quotas remain deliberately absent.
+**Status: DONE (code + test).** One policy (`ark_space`) owns the reserve, every
+growth path takes a cross-process reservation before it writes, and a request body
+is admitted **before the first byte is read** — declared, chunked, or both. The
+whole design, including the inventory of every path and what it cannot do, is
+[`docs/STORAGE-ADMISSION.md`](STORAGE-ADMISSION.md).
 
 | Acceptance sentence | Where | Test |
 |---|---|---|
 | A file over the per-file cap is refused while streaming | `ark_storage.spool()` | `test_storage.py` |
-| A write that would leave less than the reserve is refused | `spool()` → `ark_space.reserve_bytes()` | `test_storage.py::test_a_full_box_refuses_before_writing` |
+| A write that would leave less than the reserve is refused before the body arrives | `ark_admission` middleware → `ark_space.need()` | `test_storage.py::test_a_full_box_refuses_before_writing`; `test_media.py::test_a_declared_upload_that_cannot_fit_is_refused_before_it_is_written` |
 | The reserve is 7 % of the receiving filesystem, or 2 GiB, measured with `f_bavail` | `ark_space.reserve_for()`, `ark_space.facts()` | `test_space.py::test_the_reserve_is_seven_percent_of_the_card_that_holds_the_bytes`; `::test_a_small_card_still_keeps_two_gibibytes`; `::test_free_space_is_what_an_ordinary_account_may_write` |
-| nginx and the app agree on the maximum body | `client_max_body_size 2064m` ↔ `MAX_FILE`; `= /files` and `= /admin/media/upload` 8208m ↔ `MAX_MEDIA` | `test_config.py::test_nginx_allows_the_app_limit_plus_framing_only`; `::test_the_file_box_door_allows_a_film_and_the_server_keeps_the_smaller_cap` |
-| A game install checks free space before writing | `_ensure_room()` → `ark_space.require()` | `test_arcade_install.py::test_a_full_card_is_refused_before_a_game_is_fetched` |
-| A game download that hits `ENOSPC` leaves no temp file | `_copy_to_temp` | `test_arcade_install.py::test_a_card_that_fills_while_copying_leaves_nothing_behind` |
-| A named player's save is bounded in size | save layer limits | `test_arcade.py::test_a_save_that_is_too_large_is_refused_before_it_is_written` |
-| **One** reservation across every writer, enforced before any write | `ark_space.reserve()` / `hold()`; `space_reservations` table | `test_space.py::test_two_jobs_cannot_both_be_promised_the_same_bytes`; `::test_a_known_size_operation_is_refused_before_it_crosses_the_reserve` |
-| Bytes already written are not counted twice | `space_reservations.written`, `ark_space.touch()` | `test_space.py::test_bytes_already_written_are_not_counted_twice` |
-| A promise is released on success, failure and cancellation | `ark_space.hold()` | `test_space.py::test_a_hold_is_released_even_when_the_work_fails` |
-| A promise left by a crashed process is reconciled away | `ark_space.reconcile()`, called at portal and worker start | `test_space.py::test_a_promise_nobody_refreshed_is_released` |
-| A conversion's output is bounded, not just its input | `ark_media_jobs.output_budget()`, `-fs` in `build_command()` | `test_media.py::test_a_codec_a_browser_cannot_read_is_converted` (the command is unit-tested) |
-| The shell paths ask the same policy | `ark-space --check --need N` in `ark-zim-download`, `ark-ai-model-fetch`, `ark-backup` | `test_space.py::test_the_command_says_yes_quietly_and_no_with_a_reason` |
-| The owner can see total, free, kept back, promised and usable | `ark_space.account()`, `/admin/health`, `/admin/media` | `test_media.py::test_the_owner_page_lists_films_and_can_publish_one` |
+| The proxy refuses a body no page asked for, and never buffers one before admission | `client_max_body_size 64k` server-wide; `proxy_request_buffering off` on every listener; per-door limits | `test_config.py::test_the_proxy_default_body_is_small_and_buffering_is_off`; `::test_the_file_box_door_allows_a_film_and_the_server_keeps_the_smaller_cap`; `::test_the_save_door_did_not_grow_to_a_game_size` |
+| Every address that takes a body has a named door; an unnamed one is 64 KiB | `ark_admission.DOORS`, `PREFIX_DOORS`, `DEFAULT_DOOR` | `test_admission.py::test_an_address_with_no_door_is_small_not_unbounded` |
+| A declared body reserves its peak before the first byte is read | `Admission.begin()` | `test_admission.py::test_a_declared_body_is_refused_before_a_byte_is_read` |
+| The peak counts the framework copy and the route copy, not the file size | `Door.copies`, `Admission.begin()`, `Receipt.peak()` | `test_admission.py::test_the_peak_counts_the_framework_copy_and_the_route_s_copy` |
+| A body with no `Content-Length` is admitted in bounded steps | `Admission.saw()`, `ark_space.first_step()/growth_step()` | `test_admission.py::test_a_chunked_body_is_admitted_in_bounded_steps`; `::test_a_chunked_body_bigger_than_the_card_is_stopped` |
+| A header is not proof of size | `Admission.saw()` (`declared + 1 MiB` bound) | covered by the door limit + the chunked tests |
+| The route's spool adopts the request's promise instead of a second one | `ark_space.cover()`, `contextvar` through anyio | `test_admission.py::test_the_spool_adopts_the_request_promise_end_to_end`; `::test_a_route_adopts_the_request_s_promise_instead_of_promising_twice` |
+| Two real processes cannot be promised the same bytes | `space_reservations`, `BEGIN IMMEDIATE` | `test_admission.py::test_six_processes_cannot_be_promised_the_same_bytes` |
+| Bounded concurrency: a fifth large body is told to come back | `BodyAdmissionMiddleware`, `ARK_BODY_SLOTS` | `test_admission.py::test_only_a_bounded_number_of_large_bodies_are_received_at_once` |
+| A disconnect or a cancellation releases the promise | middleware `finally` | `test_admission.py::test_a_client_that_walks_away_leaves_no_promise` |
+| Bytes already written are not counted twice | `space_reservations.written`, `Receipt.spent()` | `test_space.py::test_bytes_already_written_are_not_counted_twice`; `test_admission.py::test_bytes_written_are_not_promised_twice` |
+| `reserved` is a peak, not a sum of stages | `Receipt.peak()` | `test_admission.py::test_a_promise_is_the_peak_on_disk_not_a_sum_of_every_stage` |
+| A promise belongs to a process: a live worker keeps it, a dead one loses it | `ark_space.live()`, `pid`, `boot` (migration 8) | `test_admission.py::test_a_live_worker_keeps_its_promise_however_old_the_heartbeat_is`; `::test_a_killed_worker_s_promise_is_released`; `::test_a_promise_from_a_previous_boot_is_released_even_if_its_pid_is_alive`; `::test_a_clock_that_jumped_backwards_does_not_release_a_promise` |
+| An unreadable ledger is not an empty one | `LedgerUnreadable`, `committed_for() -> None`, `slack() -> None` | `test_admission.py::test_a_bulk_write_is_refused_when_the_ledger_cannot_be_read`; `::test_a_page_says_not_measured_rather_than_zero` |
+| Recovery, deletion and the owner's pages still work when admission refuses | `essential=True`, `ark_space.essential_room()` | `test_admission.py::test_an_essential_write_is_still_admitted_when_the_ledger_is_broken`; `::test_the_recovery_copy_is_kept_even_when_admission_would_refuse`; `::test_deleting_a_file_still_works_when_the_card_is_full` |
+| Somebody else filling the card stops the upload | `Admission.refresh()` every 4 MiB | `test_admission.py::test_another_writer_filling_the_card_stops_the_upload` |
+| A conversion's output is bounded, not just its input | `ark_media_jobs.output_budget()`, `-fs`, `ark_space.hold()` | `test_media.py::test_a_codec_a_browser_cannot_read_is_converted` |
+| Every shell path reserves, not merely checks | `ark-space --reserve/--touch/--release` in `ark-zim-download`, `ark-ai-model-fetch`, `ark-backup`, `ark-import-books` | `test_space.py::test_the_command_says_yes_quietly_and_no_with_a_reason` |
+| The owner can see total, free, kept back, promised and usable | `ark_space.account()`, `/admin/health`, `/admin/media` | `test_media.py::test_the_owner_page_lists_films_and_can_publish_one`; `test_health.py` |
+| Half-finished copies are swept, resumable ones are not | `ark_self_heal.SWEEP_RULES` | `test_self_heal.py::test_old_temp_files_are_swept_and_fresh_ones_are_left` |
 | Per-person quotas | — | **absent by design** (a box in a room, not a service) |
-| A request body waits **on the card**, not in the 256 MB tmpfs | `client_body_temp_path /srv/ark/tmp/nginx` (all three vhosts), `TMPDIR=/srv/ark/tmp` in `ark-api.service` | `test_config.py::test_a_body_on_its_way_to_disk_waits_on_the_card`; `test_config.py::test_the_app_spills_an_upload_onto_the_card_too` |
-| The folder a body waits in exists before nginx is asked to start | `20-storage.sh`, `60-portal.sh`, `65-admin.sh` (`$ARK_ROOT/tmp`, `775`, the `pi` account) | `test_config.py::test_a_body_on_its_way_to_disk_waits_on_the_card` |
-| Retention/cleanup of half-arrived bodies | `drop/tmp` and `arcade/tmp` swept by pattern and age; **`/srv/ark/tmp` deliberately not swept** | `test_self_heal.py::test_old_temp_files_are_swept_and_fresh_ones_are_left` |
 
-**The honest sentence:** no application write can now take the card into the space the
-box keeps back, and two jobs started together cannot both be promised the same bytes.
-Two limits stay, and both are stated on the pages that do the work: a request body is
-still spilled to the card by the web framework (`TMPDIR=/srv/ark/tmp`) before the route
-checks anything, so a multi-gigabyte upload peaks at about twice its size; and a process
-outside the application (a package, a log) can still fill the card — the reserve is an
-admission policy, not a partition.
+**The honest sentence:** no application write can take the card into the space the
+box keeps back, two jobs started together cannot both be promised the same bytes,
+and a body that has not been admitted is not read. Two limits stay, and both are
+stated on the pages that do the work: an *unrelated* OS or shell write can still
+fill the card — the box notices on the next step and stops its own work, but the
+reserve is an admission policy, not a partition; and a multi-gigabyte upload peaks
+at about twice its size, because the framework's temp copy and the route's copy
+exist together, which is why the promise is `2 × the file` rather than the file.
 
 ---
 
@@ -458,7 +465,7 @@ household member has opened `/household` on a phone.
 | R5 | PARTIAL | write safety + headers yes; admission policy no |
 | R6 | DONE (code + test) | all; on-box nginx unproven |
 | R7 | PARTIAL | gate yes; inventory/queue/metadata no |
-| R8 | PARTIAL | per-writer refusal yes; one shared budget no |
+| R8 | DONE (code + test) | one budget, before receipt, across processes; real 2 GiB press and a real full card are human work |
 | R9 | DONE (code + test + proved on the box) | all; search quality unmeasured |
 | R10 | DONE (code + test) | all on the Mac; **no model on the box, nothing in a browser, not deployed** |
 | R11 | DONE (code + test) | the pass and its settings yes; **never met a real power cut, phase not run on the box** |
@@ -488,9 +495,10 @@ evidence about the box.
    `pending` state and an owner approval step, keep reading/downloading open, and write the
    test that proves a closed box still serves everything already published. This is a small
    change with a large safety return.
-3. **R8 one budget** — a single `ark_storage.reserve()` consulted by the File Box, the game
-   installer and the save writer, with a cross-process lock and a two-writer test. Without
-   it, the per-writer checks are honest but not sufficient.
+3. ~~**R8 one budget**~~ **done** — one ledger (`ark_space`), one admission door
+   (`ark_admission`), every writer promises before it writes, and the peak a request
+   costs is reserved before its body is read. What remains is human: a real 2 GiB
+   press on a phone and a genuinely full card (`docs/HUMAN-TEST-LIST.md`).
 4. **R7 thumbnails + a second source** — add a thumbnail column, a local route and an owner
    upload/fetch step (the Games page does not offer one today), then add one non-Game-Boy
    source so the shelf is not a single point of failure. Only after that is a population run

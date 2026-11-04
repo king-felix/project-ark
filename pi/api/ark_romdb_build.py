@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import ark_romdb as romdb
+import ark_space
 
 SOURCE_REPO = "https://github.com/libretro/libretro-database.git"
 SOURCE_URL = "https://github.com/libretro/libretro-database"
@@ -266,36 +267,44 @@ def write_db(rows: List[Dict[str, Any]], path: Path, facts: Dict[str, Any], *, s
         except OSError:
             pass  # nothing to sweep, which is the usual case
 
-    conn = sqlite3.connect(str(temp))
-    try:
-        conn.executescript(SCHEMA)
-        conn.execute("PRAGMA synchronous = OFF")
-        placeholders = ", ".join("?" for _ in COLUMNS)
-        insert = "INSERT INTO roms (%s) VALUES (%s)" % (", ".join(COLUMNS), placeholders)
-        batch: List[Tuple[Any, ...]] = []
-        for row in rows:
-            batch.append(tuple(row.get(col) for col in COLUMNS))
-            if len(batch) >= 4000:
+    # A rebuild keeps the old catalogue and writes a new one beside it, so the
+    # peak is both.  It is admitted as essential work: a catalogue is bounded and
+    # generated, it is rebuilt from a console or a workstation that may have no
+    # ledger at all, and the free-space check is what keeps it honest.
+    previous = path.stat().st_size if path.is_file() else 0
+    need = previous + max(64 * 1024 ** 2, previous)
+    with ark_space.hold(path.parent, need, owner="romdb",
+                        label="the game catalogue", essential=True):
+        conn = sqlite3.connect(str(temp))
+        try:
+            conn.executescript(SCHEMA)
+            conn.execute("PRAGMA synchronous = OFF")
+            placeholders = ", ".join("?" for _ in COLUMNS)
+            insert = "INSERT INTO roms (%s) VALUES (%s)" % (", ".join(COLUMNS), placeholders)
+            batch: List[Tuple[Any, ...]] = []
+            for row in rows:
+                batch.append(tuple(row.get(col) for col in COLUMNS))
+                if len(batch) >= 4000:
+                    conn.executemany(insert, batch)
+                    batch = []
+            if batch:
                 conn.executemany(insert, batch)
-                batch = []
-        if batch:
-            conn.executemany(insert, batch)
-        meta = {
-            "format": "1",
-            "built": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "source": source or SOURCE_URL,
-            "source_date": str(facts.get("source_date", "")),
-            "source_commit": str(facts.get("source_commit", "")),
-            "systems": str(facts.get("systems", "")),
-            "rows": str(len(rows)),
-            "playable": str(sum(1 for r in rows if r.get("playable"))),
-        }
-        conn.executemany("INSERT INTO meta (key, value) VALUES (?, ?)", sorted(meta.items()))
-        conn.commit()
-        conn.execute("PRAGMA optimize")
-        conn.commit()
-    finally:
-        conn.close()
+            meta = {
+                "format": "1",
+                "built": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "source": source or SOURCE_URL,
+                "source_date": str(facts.get("source_date", "")),
+                "source_commit": str(facts.get("source_commit", "")),
+                "systems": str(facts.get("systems", "")),
+                "rows": str(len(rows)),
+                "playable": str(sum(1 for r in rows if r.get("playable"))),
+            }
+            conn.executemany("INSERT INTO meta (key, value) VALUES (?, ?)", sorted(meta.items()))
+            conn.commit()
+            conn.execute("PRAGMA optimize")
+            conn.commit()
+        finally:
+            conn.close()
 
     try:
         os.chmod(temp, 0o644)

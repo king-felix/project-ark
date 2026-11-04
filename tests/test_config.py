@@ -29,20 +29,25 @@ EMULATOR = REPO / "pi" / "arcade" / "emulatorjs"
 UNITS = {"k": 1024, "m": 1024 ** 2, "g": 1024 ** 3}
 
 
-def _nginx_body_limit() -> int:
-    match = re.search(r"^\s*client_max_body_size\s+(\d+)([kKmMgG])\s*;", NGINX, re.M)
+def _nginx_body_limit(text: str = NGINX) -> int:
+    """The server-wide default: what a body may be if no door names its own."""
+    match = re.search(r"^\s*client_max_body_size\s+(\d+)([kKmMgG])\s*;", text, re.M)
     assert match, "client_max_body_size is missing from the portal server block"
     return int(match.group(1)) * UNITS[match.group(2).lower()]
 
 
-def test_nginx_allows_the_app_limit_plus_framing_only():
-    import ark_storage
+def test_the_proxy_default_body_is_small_and_buffering_is_off():
+    """A page that takes no upload must not be able to park one on the card.
 
-    limit = _nginx_body_limit()
-    assert limit >= ark_storage.MAX_FILE, "nginx would refuse a file the backend accepts"
-    assert limit <= ark_storage.MAX_FILE + 16 * 1024 ** 2, (
-        "nginx must not accept bodies the backend will only throw away"
-    )
+    This used to be 2064m for the whole server *with buffering on*: a chunked
+    POST to any address could write two gigabytes into /srv/ark/tmp/nginx before
+    the backend saw a byte, so application admission never got the chance to run.
+    """
+    assert _nginx_body_limit() == 64 * 1024
+    assert "proxy_request_buffering off;" in NGINX
+
+    admin = (REPO / "pi" / "nginx" / "ark-admin.conf").read_text(encoding="utf-8")
+    assert "proxy_request_buffering off;" in admin
 
 
 def test_ssh_stays_key_and_password_without_root_and_secrets_stay_out_of_git():
@@ -503,7 +508,8 @@ def test_every_console_has_a_screen_shape():
 def test_a_game_a_visitor_picks_has_a_door_of_its_own_on_both_origins():
     """One exact path takes a 64 MB body; every other path under /arcade/ does not.
 
-    A save is at most 16 MiB, so ``/arcade/`` keeps its 20m on the public portal.
+    A save is at most 16 MiB and a save import at most 32 MiB, so ``/arcade/``
+    keeps 40m — both plus framing, and far below a game's 64 MB.
     A game file needs MAX_DOWNLOAD plus multipart framing, and that needs naming
     on the origin the file is actually uploaded through — the public portal and
     the secure player origin both serve the same page.
@@ -525,11 +531,19 @@ def test_a_game_a_visitor_picks_has_a_door_of_its_own_on_both_origins():
 
 
 def test_the_save_door_did_not_grow_to_a_game_size():
-    """The public /arcade/ prefix stays small: a save is 16 MiB, never a game."""
+    """The public /arcade/ prefix stays small: 16 MiB saves and a 32 MiB import."""
+    import ark_arcade
+    import ark_arcade_install
+
     text = (REPO / "pi" / "nginx" / "ark.conf").read_text(encoding="utf-8")
     prefix = re.search(r"location /arcade/ \{(.*?)\n\s*\}", text, re.S)
     assert prefix, "the public shelf location is missing"
-    assert "client_max_body_size 20m;" in prefix.group(1), prefix.group(1)
+    body = prefix.group(1)
+    assert "client_max_body_size 40m;" in body, body
+    assert "proxy_request_buffering off;" in body, body
+    # 40 MiB is above the app's import cap and well below a game's.
+    assert 40 * 1024 ** 2 >= ark_arcade.MAX_IMPORT
+    assert 40 * 1024 ** 2 < ark_arcade_install.MAX_DOWNLOAD
 
 
 # ---------------------------------------------------------------------------
@@ -684,9 +698,10 @@ def test_the_file_box_door_allows_a_film_and_the_server_keeps_the_smaller_cap():
     wanted = ark_media.MAX_MEDIA // (1024 ** 2) + 16
     assert f"client_max_body_size {wanted}m;" in body
     assert "proxy_request_buffering off;" in body
-    # Everything else on :80 keeps the shared-file cap.
+    # Everything else on :80 gets the small default: a body that is refused must
+    # never be read off the network first.
     server = re.search(r"server \{(.*?)\n    location", NGINX, re.S)
-    assert server and "client_max_body_size 2064m;" in server.group(1)
+    assert server and "client_max_body_size 64k;" in server.group(1)
 
 
 MEDIA_UNIT = (REPO / "pi" / "systemd" / "ark-media-worker.service").read_text(encoding="utf-8")
@@ -725,11 +740,19 @@ def test_the_api_unit_may_write_the_shelf_it_serves():
 
 
 def test_the_reserve_is_asked_not_repeated():
-    """One policy, asked by every Python growth path — never a second constant."""
-    storage = (REPO / "pi" / "api" / "ark_storage.py").read_text(encoding="utf-8")
-    ingest = (REPO / "pi" / "api" / "ark_ingest.py").read_text(encoding="utf-8")
-    arcade = (REPO / "pi" / "api" / "ark_arcade_install.py").read_text(encoding="utf-8")
-    assert "MIN_FREE_RESERVE" not in storage
-    assert "ark_space.reserve_bytes" in storage
-    assert "ark_space.reserve_bytes(folder)" in ingest
+    """One policy, asked by every Python growth path — and asked for a *promise*.
+
+    Every writer that can grow the card takes room through ``ark_space.cover``:
+    inside an upload that adopts the promise the request already made, and outside
+    one it is a reservation of its own.  A bare ``require`` is a check that another
+    job can pass at the same moment, so it is not what these paths use.
+    """
+    api = REPO / "pi" / "api"
+    for name in ("ark_storage.py", "ark_ingest.py", "ark_arcade_install.py",
+                 "ark_map_store.py", "ark_essentials.py"):
+        text = (api / name).read_text(encoding="utf-8")
+        assert "ark_space.cover" in text, name
+        assert "MIN_FREE_RESERVE" not in text, name
+    # The arcade's pre-copy check stays, and now fails closed on an unreadable ledger.
+    arcade = (api / "ark_arcade_install.py").read_text(encoding="utf-8")
     assert "ark_space.require(where" in arcade

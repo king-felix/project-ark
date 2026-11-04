@@ -16,7 +16,8 @@ API_DIR = Path(__file__).resolve().parents[1] / "pi" / "api"
 if str(API_DIR) not in sys.path:
     sys.path.insert(0, str(API_DIR))
 
-MODULES = ("main", "ark_admin", "ark_security", "ark_db", "ark_maintenance",
+MODULES = ("main", "ark_admission", "ark_admin", "ark_security", "ark_db",
+           "ark_maintenance",
            "ark_db_replace", "ark_recovery",
            "ark_storage", "ark_health",
            "ark_space", "ark_media", "ark_media_jobs", "ark_media_web",

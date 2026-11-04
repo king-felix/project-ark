@@ -6377,3 +6377,139 @@ person's rehearsal remains `docs/HUMAN-TEST-LIST.md` §26.
 re-run `15-resilience`, `60-portal` and `95-backup`, then `sudo systemctl restart
 ark-api ark-media-worker ark-ai`.  The pre-deploy bundle is the records'
 rollback.
+
+---
+
+## 54. Shared storage admission — the whole path, before the first byte
+
+**(3 November 2026, branch `feature/admin-hardening`, from baseline `448638b`.)**
+
+### 54.1 What was wrong
+
+The ledger from §31 was real but only half a policy:
+
+* an upload was checked with a declared `Content-Length` and then allowed to arrive
+  **unreserved**, so two uploads could each be told the same free bytes were theirs;
+* a body with **no** `Content-Length` was not checked at all;
+* the middleware covered three POST paths and ran after nginx had already buffered
+  the body to the card (`proxy_request_buffering` was on, and the server-wide cap
+  was 2064m);
+* `committed_for()` swallowed every error and returned **0**, so a ledger that could
+  not be read looked exactly like a card with no promises;
+* a reservation was released after `STALE_SECONDS` because its heartbeat looked old —
+  which threw away a legitimate hour-long encode and could also keep a power cut's
+  promise for ever;
+* only media derivatives and map imports reserved; books, games, ZIM downloads, AI
+  models, backups and recovery copies used a one-shot `require` or nothing at all;
+* an upload was written **twice** before any check (Starlette's spool, then the
+  route's own), and nothing counted the second copy;
+* `media/tmp` and Starlette's own `TMPDIR` spool had no janitor.
+
+### 54.2 What was built
+
+**`pi/api/ark_space.py` — the ledger, v2.**
+
+* a reservation is the **peak**, not a sum of stages (`Receipt.peak()`), and
+  `written` is subtracted exactly once;
+* a row records the **pid** and the **boot id** (migration 8). `live()` releases a
+  promise only when the process is provably gone or the box restarted. A heartbeat
+  only decides for rows written before the pid existed (24 h grace). A clock that
+  jumps backwards releases nothing;
+* `LedgerUnreadable` (a `Refused`) is raised for a bulk write when the records
+  cannot be read — `None` is not zero;
+* `essential=True` admits recovery, restore, db replacement, the carry-away pack
+  and the catalogue rebuild against real free space alone, and works even when
+  there is no ledger at all;
+* `first_step()` / `growth_step()` bound an unknown-size write by a step **and** by
+  the room that exists now (a fixed 16 MiB step refuses a 1 MiB file on an 8 MiB
+  card);
+* `current_admission()` / `cover()` let a route's own spool adopt the request's
+  promise instead of opening a second one.
+
+**`pi/api/ark_admission.py` — the door.**
+
+* a raw ASGI middleware wraps `receive`, so multipart, `request.body()` and a
+  streaming reader are all counted by one arithmetic;
+* every path has a door; the default is 64 KiB. Named doors sit in one table;
+* a declared body reserves `length × copies + framing` **before** the first byte;
+  a refusal never reads the body;
+* no `Content-Length`: the promise starts at `min(16 MiB, free)` and grows by
+  `growth_step()`; the body is stopped mid-stream the moment the next step cannot
+  be promised;
+* every 4 MiB the real filesystem is asked again, so another writer filling the
+  card stops the upload;
+* at most four large bodies in flight (`ARK_BODY_SLOTS`), then 503;
+* release in `finally` — success, refusal, exception, disconnect.
+
+**The other growth paths.** `ark_storage.spool`, `ark_ingest.spool_book`,
+`ark_arcade_install.spool_upload`/`publish_candidate`, `ark_map_store` (archive +
+extraction under one growing promise), `ark_essentials.build`, `ark_romdb_build`,
+`ark_recovery.capture` (essential), `ark_db_replace`/`ark-restore` (essential),
+`ark-backup`, `ark-import-books`, `ark-zim-download`, `ark-ai-model-fetch`,
+`ark-media-worker` (unchanged hold, now with room-bounded growth elsewhere).
+
+**`ark_db.current_transaction()`.** A ledger write made while a route already holds
+`BEGIN IMMEDIATE` joins that transaction. Opening a second connection was not merely
+slow: SQLite has one writer, so publishing a game waited and then failed with the
+file already staged. `test_arcade_add` found this on the first run.
+
+**nginx.** Server-wide `client_max_body_size` 64k (was 2064m) and
+`proxy_request_buffering off` on every listener; `/arcade/` 40m (was 20m, which
+refused a legal 32 MiB save import at the proxy). The per-door limits stay.
+
+**Sweeps.** `media/tmp/*.part` (a killed encode leaves up to a conversion's whole
+budget), and `tmp/tmp????????` (Starlette's own spool). `kiwix/*.part` and
+`ai/models/.*.part` remain: they are resumable work, not rubbish.
+
+**`ark-arcade-discover.service`** gets `TMPDIR=/srv/ark/tmp`, so its catalogue build
+stops unpacking into the 256 MB tmpfs.
+
+### 54.3 Tests
+
+`tests/test_admission.py` (28) and `tests/test_space.py` (13, one rewritten to the
+new liveness rule), plus updates to `test_config.py`, `test_storage.py`,
+`test_media.py`, `tests/conftest.py`, `tests/helpers.py`.
+
+The suite: **921 passed, 2 skipped** in 207.54 s, with `tests/test_maps_browser.py`
+excluded (Playwright is not part of this run; those two pass unchanged when the
+browser stack is present).
+
+What the new tests use that the old ones could not:
+
+* **six real processes** on one simulated card — exactly two of six 4 MiB promises
+  succeed, and the ledger sums to 8 MiB;
+* a **real uvicorn**, a real socket, half a multipart body, then a disconnect — the
+  promise is released and nothing is stored;
+* **chunked** multipart (no `Content-Length`) through the app, admitted in steps and
+  stopped when the card cannot take the next one;
+* the **peak** proved by a file that fits once and not twice;
+* the **route's spool adopting the request's receipt** (a spy on `hold()` proves no
+  second reservation is opened);
+* **bounded concurrency** over a bare ASGI app: the second large body gets 503;
+* an **unreadable ledger** refusing bulk work while a recovery copy and a deletion
+  still proceed;
+* **another writer** taking the card mid-upload, with the upload stopped by a
+  sentence.
+
+### 54.4 Documentation
+
+New: `docs/STORAGE-ADMISSION.md` (the whole design, every path, the arithmetic,
+what cannot be enforced). `AGENTS.md` gained the admission ownership row, the
+gotcha and the standing rule, and its test map moved to `docs/TEST-MAP.md` so the
+standing-rules file is back under its 45 KiB limit (42.7 KB). README, ADMIN
+(*what "kept back" and "promised" mean*, and a table of the refusal messages),
+and `docs/REQUIREMENTS-MATRIX.md` R8 were rewritten to match.
+
+### 54.5 What is not proved
+
+* No physical power cut. The boot-id rule is proved by writing a row from another
+  boot; the plug is still a human test.
+* No real phone and no real full card: `ENOSPC` is proved against the policy's
+  bounded simulated capacity (`ARK_SPACE_FAKE`, inert unless all three variables
+  are set) and a real 8 MiB tmpfs cannot be mounted without root here.
+* `hdiutil` is not usable in this environment, so the disposable-filesystem route
+  was not available; the simulated card is the substitute, and it models `free` as
+  `base − written` so the arithmetic a test sees is the arithmetic a real card
+  would show.
+* An unrelated OS or shell write can still fill the card. The box notices and
+  stops its own work; it cannot prevent the write.

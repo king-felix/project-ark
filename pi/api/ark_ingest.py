@@ -247,11 +247,6 @@ def spool_book(read, filename: str, *, limit: Optional[int] = None) -> Book:
                       "knows how to add.")
     folder = incoming_dir()
     folder.mkdir(parents=True, exist_ok=True)
-    available = ark_storage.free_bytes(folder)
-    room = ark_space.reserve_bytes(folder)
-    if available <= room:
-        raise Refused("The card is nearly full — there is no room for another book. "
-                      "Make some space, then try again.")
 
     digest = hashlib.sha256()
     written = 0
@@ -260,20 +255,29 @@ def spool_book(read, filename: str, *, limit: Optional[int] = None) -> Book:
     fd = os.open(str(temp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         with os.fdopen(fd, "wb") as out:
-            while True:
-                chunk = read(CHUNK)
-                if not chunk:
-                    break
-                written += len(chunk)
-                if written > limit:
-                    raise Refused("That file is larger than this page will take "
-                                  f"({_size_words(limit)}).")
-                if available - written <= room:
-                    raise Refused("The card filled up while that book was arriving.")
-                digest.update(chunk)
-                out.write(chunk)
-            out.flush()
-            os.fsync(out.fileno())
+            # The book is promised before it is written, and the promise grows a
+            # step at a time: two presses can then not both be told the same free
+            # bytes are theirs.  Inside a request this adopts the promise the
+            # upload already made instead of counting the same bytes twice.
+            with ark_space.cover(folder, ark_space.first_step(folder, limit),
+                                 owner=f"book:{display}", label="a book",
+                                 key="book") as receipt:
+                while True:
+                    chunk = read(CHUNK)
+                    if not chunk:
+                        break
+                    written += len(chunk)
+                    if written > limit:
+                        raise Refused("That file is larger than this page will take "
+                                      f"({_size_words(limit)}).")
+                    if written + CHUNK > receipt.reserved:
+                        receipt.need(ark_space.growth_step(folder, written, limit))
+                    receipt.spent("book", written)
+                    digest.update(chunk)
+                    out.write(chunk)
+                out.flush()
+                os.fsync(out.fileno())
+                receipt.spent("book", written)
         if written == 0:
             raise Refused("That file was empty, so there was nothing to add.")
         os.chmod(temp, 0o644)

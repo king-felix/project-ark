@@ -1027,6 +1027,16 @@ SWEEP_RULES: Tuple[Tuple[str, str, float], ...] = (
     ("drop/tmp", ".*.tmp", STALE_TEMP_HOURS),
     ("arcade/tmp", "rom-*.part", STALE_UPLOAD_HOURS),
     ("arcade/tmp", "upload-*", STALE_UPLOAD_HOURS),
+    #: A film's half-written derivative.  A killed worker (or a power cut during an
+    #: encode) leaves up to a conversion's whole budget here, and nothing else
+    #: looked at this folder — it was the largest unreclaimed temp on the card.
+    ("media/tmp", "*.part", STALE_UPLOAD_HOURS),
+    ("media/tmp", "*.jpg.part", STALE_UPLOAD_HOURS),
+    #: Starlette's own spool: a request body rolled out of memory into TMPDIR
+    #: (/srv/ark/tmp).  ``tmp????????`` is the name ``tempfile`` makes and nothing
+    #: else is matched — nginx's subfolders and the deliberate ``.part`` files the
+    #: downloaders resume are untouched.
+    ("tmp", "tmp????????", STALE_UPLOAD_HOURS),
     #: A book on its way in from the owner's batch page (``ark_ingest.spool_book``).
     #: The name keeps a leading dot AND a ``.part`` suffix, so the book importer and
     #: the File Box ignore it; a cut in the middle of a 400 MB book therefore leaves

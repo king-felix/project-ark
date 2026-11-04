@@ -129,6 +129,17 @@ finish() { # <part file> <final name> [sha256]
   say "answering from another model, restart it:  sudo systemctl restart ark-ai"
 }
 
+# The one storage policy, and the promise this run holds (if any).  Both are
+# defined before the arguments are read, because the copy path needs them just as
+# the download path does.
+SPACE="${SPACE:-/usr/local/sbin/ark-space}"
+ticket=""
+
+release_ticket() {
+  [[ -n "${ticket:-}" && -x "${SPACE:-}" ]] || return 0
+  "$SPACE" --release "$ticket" >/dev/null 2>&1 || true
+}
+
 # ---------------------------------------------------------------------------
 url=""; from=""; name=""; want=""; action=0
 while (( $# )); do
@@ -155,7 +166,23 @@ if [[ -n "$from" ]]; then
   name="${name:-$(basename "$from")}"
   part="$MODELS/.$name.part"
   say "Copying $from …"
-  cp -f "$from" "$part"
+  # The copy is a second full copy on this card, so it is promised before it
+  # starts — the same rule the download follows.
+  if [[ -x "$SPACE" ]]; then
+    need_bytes="$(file_size "$from")"
+    ticket="$("$SPACE" --reserve --need "$need_bytes" --path "$MODELS" \
+              --owner "ai-model" --label "$name" --pid $$ 2>&1)" || {
+      say "! not enough room on the card for that model — nothing was copied"
+      say "  ${ticket}"
+      exit 3
+    }
+  fi
+  if ! cp -f "$from" "$part"; then
+    rm -f "$part"
+    release_ticket
+    die "the copy did not finish — nothing was kept"
+  fi
+  release_ticket
   finish "$part" "$name" "$want"
   exit 0
 fi
@@ -169,18 +196,24 @@ say "(a few hundred megabytes; it can be stopped with Ctrl-C and started again)"
 # The words are the largest single download on a metered link, so the box is
 # asked before the first byte: ark-space keeps 7 % of the card (or 2 GiB) for the
 # portal, and the helper is a want, not a need.
-SPACE="${SPACE:-/usr/local/sbin/ark-space}"
 if [[ -x "$SPACE" ]]; then
   need_bytes="$(curl -sIL --max-time 20 "$url" 2>/dev/null \
     | tr -d '\r' | awk 'tolower($1)=="content-length:"{n=$2} END{print n+0}')"
-  if ! "$SPACE" --check --need "${need_bytes:-0}" --path "$MODELS"; then
+  # A promise, not a check: the model is the largest single download on a metered
+  # link, and a promise is what stops a second job being told the same bytes are
+  # free while this one is still arriving.
+  ticket="$("$SPACE" --reserve --need "${need_bytes:-0}" --path "$MODELS" \
+            --owner "ai-model" --label "$name" --pid $$ 2>&1)" || {
     say "! not enough room on the card for that model — nothing was downloaded"
+    say "  ${ticket}"
     exit 3
-  fi
+  }
 fi
 
 if ! curl -fL --retry 3 --retry-delay 2 -C - -o "$part" "$url"; then
+  release_ticket
   say "! the download did not finish — the part file is kept, so running this again continues it"
   exit 1
 fi
+release_ticket
 finish "$part" "$name" "$want"

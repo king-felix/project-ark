@@ -7,6 +7,8 @@ on, and the point of ``ark_space`` is that the arithmetic is the same everywhere
 
 from __future__ import annotations
 
+import subprocess
+import sys
 import time
 
 import pytest
@@ -129,12 +131,22 @@ def test_a_hold_is_released_even_when_the_work_fails(ark, monkeypatch):
         assert ark_space.committed(conn, 7) == 0
 
 
-def test_a_promise_nobody_refreshed_is_released(ark, monkeypatch):
+def test_a_promise_whose_process_is_gone_is_released(ark, monkeypatch):
+    """The promise belongs to a process, not to a heartbeat.
+
+    A killed worker's row goes at the next reconcile; a *live* worker's row stays
+    however quiet it has been (proved in ``tests/test_admission.py``).  This is
+    the rule that replaced "delete anything older than fifteen minutes", which
+    either leaked a power cut's promises or threw away a real hour-long encode.
+    """
     import ark_space
     _fixed(100 * 1024 ** 3, 10 * 1024 ** 3, monkeypatch, ark_space)
+    gone = subprocess.Popen([sys.executable, "-c", "pass"])
+    gone.wait()
     with ark_db_tx(ark) as conn:
         ark_space.reserve("/srv/ark", 1024 ** 3, owner="dead-job", conn=conn)
-        conn.execute("UPDATE space_reservations SET heartbeat = ?", (time.time() - 9999,))
+        conn.execute("UPDATE space_reservations SET pid = ?, boot = ?, heartbeat = ?",
+                     (gone.pid, ark_space.current_boot(), time.time() - 9999))
     with ark_db_tx(ark) as conn:
         assert ark_space.reconcile(conn=conn) == 1
         assert ark_space.committed(conn, 7) == 0

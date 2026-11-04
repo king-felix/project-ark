@@ -251,6 +251,7 @@ def take(dest: Path, keep: int, no_files: bool, quiet: bool, dry: bool) -> int:
         # The order is gate -> state, the same order a restore takes them, so the
         # two can wait for each other without deadlocking.
         ticket = None
+        receipt = None
         if ark_maintenance is not None:
             try:
                 ticket = ark_maintenance.admit(paths["db"])
@@ -291,10 +292,18 @@ def take(dest: Path, keep: int, no_files: bool, quiet: bool, dry: bool) -> int:
                     need = need * (max(1, int(keep)) + 1) + 256 * 1024
                     if ark_space is not None:
                         try:
-                            ark_space.require(dest, need)
+                            # The whole peak is promised, not merely checked: two
+                            # backups (or a backup beside an upload) must not both
+                            # be told the same free bytes are theirs.
+                            receipt = ark_space.open_receipt(
+                                dest, owner="ark-backup", label="a backup")
+                            receipt.need(need)
                         except ark_space.Refused as exc:
                             # Nothing has been copied into it yet, but the name
                             # exists; a refused run must not leave a half backup.
+                            if receipt is not None:
+                                receipt.release()
+                                receipt = None
                             shutil.rmtree(partial, ignore_errors=True)
                             return fail(str(exc))
                         room = ark_space.account(dest)
@@ -379,6 +388,8 @@ def take(dest: Path, keep: int, no_files: bool, quiet: bool, dry: bool) -> int:
                     shutil.rmtree(partial, ignore_errors=True)
                     raise
         finally:
+            if receipt is not None:
+                receipt.release()
             if ticket is not None:
                 ticket.release()
 

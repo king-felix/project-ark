@@ -12,6 +12,10 @@ Group=pi
 Environment=ARK_ROOT=/srv/ark
 Environment=ARK_ARCADE_SRC=/srv/ark/src/arcade
 Environment=ARK_ARCADE_DATA=/srv/ark/arcade
+#  The catalogue build unpacks a source tree with tempfile, and PrivateTmp=yes
+#  gives this unit the 256 MB tmpfs /tmp.  A checkout that lands there fails on
+#  a card with room to spare; TMPDIR is the only knob, so keep it on the card.
+Environment=TMPDIR=/srv/ark/tmp
 # The pinned first shelf is idempotent.  A failed fetch (no internet yet) must
 # not stop the discovery that follows; the dash is deliberately non-fatal.
 ExecStart=-/usr/local/sbin/ark-arcade --seed
@@ -23,7 +27,7 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=full
 ProtectHome=read-only
-ReadWritePaths=/srv/ark/arcade /srv/ark/api/data
+ReadWritePaths=/srv/ark/arcade /srv/ark/api/data /srv/ark/tmp
 
 [Install]
 WantedBy=multi-user.target

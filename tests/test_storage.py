@@ -112,12 +112,22 @@ def test_empty_file_is_refused(public):
 
 
 def test_a_full_box_refuses_before_writing(public, monkeypatch):
-    import ark_storage
-    monkeypatch.setattr(ark_storage, "free_bytes", lambda path=None: 1024)
+    """A card inside its reserve is refused at the door, not after the copy.
+
+    The old check lived inside ``ark_storage.spool``, so the framework had already
+    written the whole body to the card before anybody said no.  Admission now
+    promises the peak first, refuses without reading the body, and answers with a
+    page that says nothing was stored.
+    """
+    import ark_space
+    from helpers import tiny_card
+
+    tiny_card(monkeypatch, ark_space, total=100 * 1024 ** 2, free=100 * 1024 ** 2)
     answer = public.client.post("/files", files={"file": ("x.txt", b"data", "text/plain")},
                                 follow_redirects=False)
-    assert answer.status_code == 303
-    assert "full" in urllib.parse.unquote(answer.headers["location"]).lower()
+    assert answer.status_code == 507
+    assert "not enough room" in answer.text.lower()
+    assert "nothing was stored" in answer.text.lower()
     assert _stored(public.ark) == []
     assert _temp_leftovers(public.ark) == []
 

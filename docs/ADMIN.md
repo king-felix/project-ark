@@ -346,6 +346,51 @@ list is an estimate: a folder the box could not read is left out rather than
 shown as zero. The same numbers are in `http://ark.lan/api/status` under
 `sections` → `storage` → `facts` for anyone who prefers JSON.
 
+### What "kept back" and "promised" mean
+
+Four figures answer four different questions, and the page labels all four:
+
+* **Free right now** — what the filesystem says an ordinary account may write
+  (`f_bavail`, so the slice ext4 keeps for root does not count).
+* **Kept back for the box** — 7 % of *this* card, or 2 GiB, whichever is larger.
+  Nothing is admitted that would cross it; that is what keeps the portal
+  answering when the card is nearly full.
+* **Promised to jobs running now** — bytes an upload, a conversion, a download, a
+  backup or a map import has said it will use but has not written yet. A promise
+  is a row in the database every process can see, so two jobs started together
+  cannot both be told the same free bytes are theirs.
+* **May still be added** — free minus kept back minus promised. That is the only
+  number a new large write is measured against.
+
+A refusal is a sentence, never a blank page or a stack trace:
+
+| What you see | What happened | What to do |
+|---|---|---|
+| *That upload is bigger than this box accepts* (413) | the body was over that address's door, refused before it was read | split it, or use the File Box for a film |
+| *There is not enough room on the card* (507) | the promise would have crossed the reserve | delete something, then try again |
+| *The box is already receiving other files* (503) | four large uploads were already in flight | wait for one to finish |
+| *The box could not read its own record of space promised…* (503) | the ledger could not be opened, so the box will not guess | try again in a moment; if it keeps saying it, **Health** will show the records problem |
+| *The card filled up while that file was arriving* | somebody or something outside the box took the room mid-upload | free some space and try again; nothing was kept |
+
+**Deleting always works.** So do stopping a film job, cancelling a download from
+the console, the owner's pages, and the recovery copies the box keeps for itself
+— a full card must never take away the actions that make room or save the
+records. Recovery work is admitted against real free space alone, ignoring what
+other jobs have promised, precisely so that "full" cannot also mean
+"unrepairable".
+
+On a console, a job that writes for a long time can hold its own promise:
+
+```bash
+ticket="$(sudo ark-space --reserve --need 2000000000 --owner my-job --pid $$)"
+sudo ark-space --touch "$ticket" --written 500000000   # as it writes
+sudo ark-space --release "$ticket"                     # however it ends
+```
+
+`--essential` is for the box's own recovery work; do not use it for ordinary
+content. The full design, including every path and what it cannot do, is in
+[`STORAGE-ADMISSION.md`](STORAGE-ADMISSION.md).
+
 The same verdict is machine-readable at `http://ark.lan/api/ready` — **200**
 when every part a reader needs works, **503** when one does not, with the
 identical reasons in the body. `http://ark.lan/api/health` is deliberately *not*

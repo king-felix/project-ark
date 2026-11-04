@@ -745,7 +745,7 @@ def _space_allows(db_path: Any, need: int) -> Tuple[bool, str]:
         return True, ""
     try:
         ark_space.require(Path(db_path).parent, int(need), owner="recovery",
-                          label="a recovery copy")
+                          label="a recovery copy", essential=True)
         return True, ""
     except ark_space.Refused as exc:
         return False, str(exc)
@@ -967,6 +967,15 @@ def capture(db_path: Any, *, root: Optional[Path] = None,
         folder = generations_dir(target)
         stage = folder / ("." + name + ".partial")
         final = folder / name
+        # A recovery copy is *essential*: it is admitted against real free space,
+        # ignoring what other jobs have promised, because refusing to keep the
+        # records is worse than competing for the last few bytes.  The promise is
+        # still written down, so the copy is visible to everything else while it
+        # is being made and released however this ends.
+        receipt = ark_space.open_receipt(folder, owner="recovery",
+                                         label="a recovery copy", kind="recovery",
+                                         essential=True)
+        receipt.need(size + SPACE_MARGIN)
         try:
             if stage.exists():
                 shutil.rmtree(stage)
@@ -1026,6 +1035,9 @@ def capture(db_path: Any, *, root: Optional[Path] = None,
                 "policy": {"keep": int(keep), "pin_limit": PIN_LIMIT,
                            "hash_limit": HASH_LIMIT},
             }
+            receipt.need((stage / DATABASE).stat().st_size
+                         + sum(int(ref["size"] or 0) for ref in pinned)
+                         + SPACE_MARGIN)
             _write_manifest(stage, manifest)
             fsync_dir(stage)
             _adopt_tree(stage)
@@ -1034,12 +1046,14 @@ def capture(db_path: Any, *, root: Optional[Path] = None,
             _adopt_tree(final)
             _refresh_good_bak(target, final)
         except BaseException:
+            receipt.release()
             try:
                 if stage.exists():
                     shutil.rmtree(stage)
             except OSError:
                 pass
             raise
+        receipt.release()
 
         removed = _prune(target, keep)
         said = "a recovery copy was kept (%s)" % name

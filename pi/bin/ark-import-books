@@ -23,6 +23,7 @@ import os
 import re
 import shutil
 import sqlite3
+import subprocess
 import sys
 import time
 import urllib.error
@@ -41,8 +42,56 @@ BOOK_EXT = {
 }
 
 
+#: The one storage policy, from a shell script's point of view.  A book that
+#: reaches Calibre is copied again into the library and never removed from the
+#: folder it arrived in, so importing is a *permanent* growth — the one path that
+#: must ask before it copies rather than afterwards.
+SPACE = os.environ.get("ARK_SPACE", "/usr/local/sbin/ark-space")
+
+
 def log(msg):
     print(f"[import] {msg}", flush=True)
+
+
+def reserve_room(size, name):
+    """Promise room for the library's copy: the id, ``None`` for no policy, ``False`` refused.
+
+    The pid handed to the ledger is this process's own, so a run that is killed
+    leaves a promise the next pass can recognise as dead instead of holding the
+    card hostage.
+    """
+    if not (os.path.isfile(SPACE) and os.access(SPACE, os.X_OK)):
+        return None
+    try:
+        done = subprocess.run(
+            [SPACE, "--reserve", "--need", str(int(size)), "--path", LIBRARY,
+             "--owner", "import-books", "--label", os.path.basename(name),
+             "--pid", str(os.getpid())],
+            capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as exc:
+        log(f"could not ask for room ({exc}) — importing without a promise")
+        return None
+    if done.returncode == 0:
+        return done.stdout.strip()
+    log(done.stderr.strip() or "not enough room for the library's copy")
+    return False
+
+
+def release_room(ticket):
+    if not ticket:
+        return
+    try:
+        subprocess.run([SPACE, "--release", str(ticket)],
+                       capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        pass          # a promise whose process has ended is released by the ledger
+
+
+def _size_of(path):
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return 0
 
 
 def _stamp():
@@ -189,8 +238,16 @@ def calibredb_add(files):
     log(f"using {exe}")
     ok = True
     for path in files:
-        proc = subprocess.run([exe, "add", "--library-path", LIBRARY, path],
-                              capture_output=True, text=True)
+        ticket = reserve_room(_size_of(path), path)
+        if ticket is False:
+            ok = False
+            log(f"skipped: {os.path.basename(path)} — no room for the library's copy")
+            continue
+        try:
+            proc = subprocess.run([exe, "add", "--library-path", LIBRARY, path],
+                                  capture_output=True, text=True)
+        finally:
+            release_room(ticket)
         if proc.returncode == 0:
             log(f"added: {os.path.basename(path)}")
             _retire(path)
@@ -288,12 +345,20 @@ def upload_via_web(files):
 
     ok = True
     for path in files:
+        ticket = reserve_room(_size_of(path), path)
+        if ticket is False:
+            ok = False
+            log(f"skipped: {os.path.basename(path)} — no room for the library's copy")
+            continue
         with open(path, "rb") as fh:
             payload = fh.read()
-        status, body = session.post(
-            "/upload", {"csrf_token": token},
-            {"btn-upload": (os.path.basename(path), payload)},
-        )
+        try:
+            status, body = session.post(
+                "/upload", {"csrf_token": token},
+                {"btn-upload": (os.path.basename(path), payload)},
+            )
+        finally:
+            release_room(ticket)
         if status in (200, 302):
             log(f"uploaded: {os.path.basename(path)}")
             _retire(path)

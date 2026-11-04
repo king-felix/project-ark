@@ -453,8 +453,11 @@ def _usable_bytes(path: Path) -> Optional[int]:
     """
     try:
         import ark_space
-        facts = ark_space.facts(path)
-        value = facts.get("usable_bytes")
+        # Replacing a database is a recovery operation: it is admitted against
+        # real free space, not against other jobs' promises, so a card that is
+        # full (or a ledger that cannot be read) never stops the records being
+        # put back.  The reserve itself is still kept back.
+        value = ark_space.essential_room(path)
         if value is not None:
             return int(value)
     except Exception:                         # noqa: BLE001 — measurement is optional

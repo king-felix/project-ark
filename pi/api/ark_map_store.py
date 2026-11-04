@@ -276,25 +276,44 @@ class Store:
 
     # -- import ---------------------------------------------------------------
 
-    def _spool(self, stream: BinaryIO, target: Path) -> int:
-        """Write an upload to the card, bounded and with the reserve in mind."""
+    def _spool(self, stream: BinaryIO, target: Path, receipt=None) -> int:
+        """Write an upload to the card, bounded and with its room promised first.
+
+        ``receipt`` is the promise this import already holds.  Without one (a
+        caller that is not an import) a local promise is opened and released
+        here.  The archive is promised a step at a time, so a 1 GiB pack does not
+        reserve its whole size before the first byte and an unknown-size stream
+        still cannot write past what it has promised.
+        """
         written = 0
-        with target.open("wb") as handle:
-            while True:
-                block = stream.read(SPOOL_BLOCK)
-                if not block:
-                    break
-                written += len(block)
-                if written > MAX_ARCHIVE_BYTES:
-                    raise Refused("That archive is larger than %s, the most this "
-                                  "shelf imports in one piece." % _human(MAX_ARCHIVE_BYTES))
-                if written % (16 * SPOOL_BLOCK) < SPOOL_BLOCK:
-                    if ark_space.slack(self.root) < SPACE_MARGIN:
-                        raise Refused("The card is close to its reserve; there is no room "
-                                      "to receive another pack.")
-                handle.write(block)
-            handle.flush()
-            os.fsync(handle.fileno())
+        held = receipt
+        local = None
+        if held is None:
+            local = ark_space.open_receipt(self.root, owner="maps-import",
+                                           label="a map pack", kind="maps")
+            held = local
+        try:
+            held.need(ark_space.first_step(self.root, MAX_ARCHIVE_BYTES))
+            with target.open("wb") as handle:
+                while True:
+                    block = stream.read(SPOOL_BLOCK)
+                    if not block:
+                        break
+                    written += len(block)
+                    if written > MAX_ARCHIVE_BYTES:
+                        raise Refused("That archive is larger than %s, the most this "
+                                      "shelf imports in one piece." % _human(MAX_ARCHIVE_BYTES))
+                    if written + SPOOL_BLOCK > held.reserved:
+                        held.need(ark_space.growth_step(self.root, written,
+                                                        MAX_ARCHIVE_BYTES))
+                    held.spent("archive", written)
+                    handle.write(block)
+                handle.flush()
+                os.fsync(handle.fileno())
+                held.spent("archive", written)
+        finally:
+            if local is not None:
+                local.release()
         return written
 
     def _zip_entries(self, archive: Path) -> List[zipfile.ZipInfo]:
@@ -332,10 +351,12 @@ class Store:
                               % _human(MAX_EXTRACTED_BYTES))
         return infos
 
-    def _extract(self, archive: Path, staging: Path) -> Path:
+    def _extract(self, archive: Path, staging: Path, receipt=None) -> Path:
         """Extract safely and answer the folder that holds manifest.json."""
         infos = self._zip_entries(archive)
         staging.mkdir(parents=True, exist_ok=True)
+        archive_size = archive.stat().st_size if receipt is not None else 0
+        extracted = 0
         with zipfile.ZipFile(archive) as bundle:
             for info in infos:
                 name = info.filename
@@ -344,6 +365,10 @@ class Store:
                 target = staging.joinpath(*name.split("/"))
                 target.parent.mkdir(parents=True, exist_ok=True)
                 written = 0
+                if receipt is not None:
+                    # The archive and the folder it expands to exist together, so
+                    # the peak is both of them plus the file being written now.
+                    receipt.need(archive_size + extracted + int(info.file_size) + SPOOL_BLOCK)
                 with bundle.open(info) as source, target.open("xb") as sink:
                     while True:
                         block = source.read(SPOOL_BLOCK)
@@ -358,6 +383,9 @@ class Store:
                 if info.file_size and written != info.file_size:
                     raise Refused("%s arrived with %d bytes and the archive said %d."
                                   % (name, written, info.file_size))
+                extracted += written
+                if receipt is not None:
+                    receipt.spent("extract", extracted)
         roots = {str(path.relative_to(staging)).split("/")[0] for path in staging.rglob("manifest.json")}
         if roots == {"manifest.json"}:
             return staging
@@ -410,16 +438,19 @@ class Store:
         archive = self.incoming / ("upload-%s.zip.part" % token)
         staging = self.tmp / ("import-%s" % token)
         try:
-            size = self._spool(stream, archive)
-            if not size:
-                raise Refused("The uploaded archive was empty.")
-            infos = self._zip_entries(archive)
-            projected = sum(int(info.file_size) for info in infos) + size
-            with ark_space.hold(self.root, projected, owner="maps-import",
-                                label=filename or "map pack") as receipt:
-                root = self._extract(archive, staging)
-                written = sum(path.stat().st_size for path in root.rglob("*") if path.is_file())
-                receipt.spent(written)
+            # One promise covers the whole import: the archive arriving, the
+            # folder it expands to while the archive still exists, and the
+            # published version (a rename, so no third copy).  Inside an upload
+            # this adopts the request's promise rather than reserving the body a
+            # second time; from a console it is a reservation of its own.
+            with ark_space.cover(self.root, 0, owner="maps-import",
+                                 label=filename or "map pack",
+                                 key="archive") as receipt:
+                size = self._spool(stream, archive, receipt)
+                if not size:
+                    raise Refused("The uploaded archive was empty.")
+                self._zip_entries(archive)          # refuses a bad archive first
+                root = self._extract(archive, staging, receipt)
                 return self._publish_folder(root)
         except ark_space.Refused as exc:
             raise Refused(str(exc))
@@ -452,10 +483,10 @@ class Store:
                 # The copy is the growth this import causes, so it asks the one
                 # storage policy for room before it starts.
                 size = sum(path.stat().st_size for path in source.rglob("*") if path.is_file())
-                with ark_space.hold(self.root, size, owner="maps-import",
-                                    label=source.name) as receipt:
+                with ark_space.cover(self.root, size, owner="maps-import",
+                                     label=source.name, key="archive") as receipt:
                     shutil.copytree(source, staging, symlinks=False)
-                    receipt.spent(size)
+                    receipt.spent("archive", size)
                     root = staging
                     if not (root / "manifest.json").is_file():
                         found = [path for path in root.rglob("manifest.json")]
@@ -477,11 +508,9 @@ class Store:
             os.replace(source, archive)
             infos = self._zip_entries(archive)
             projected = sum(int(info.file_size) for info in infos) + archive.stat().st_size
-            with ark_space.hold(self.root, projected, owner="maps-import",
-                                label=source.name) as receipt:
-                root = self._extract(archive, staging)
-                written = sum(path.stat().st_size for path in root.rglob("*") if path.is_file())
-                receipt.spent(written)
+            with ark_space.cover(self.root, projected, owner="maps-import",
+                                 label=source.name, key="archive") as receipt:
+                root = self._extract(archive, staging, receipt)
                 return self._publish_folder(root)
         except ark_space.Refused as exc:
             raise Refused(str(exc))

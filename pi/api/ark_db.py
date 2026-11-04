@@ -21,6 +21,7 @@ recreating the well-known bootstrap account.
 
 from __future__ import annotations
 
+import contextvars
 import os
 import sqlite3
 import tempfile
@@ -42,7 +43,7 @@ ARK_ROOT = Path(os.environ.get("ARK_ROOT", "/srv/ark"))
 DB_PATH = Path(os.environ.get("ARK_DB", str(ARK_ROOT / "api" / "data" / "ark.db")))
 MARKER_PATH = Path(os.environ.get("ARK_MARKER", str(DB_PATH.parent / "ark.installed")))
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 # ---------------------------------------------------------------------------
 #  migrations — append, never edit an entry that has already shipped
@@ -464,6 +465,22 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             " ON space_reservations(device)",
         ],
     ),
+    (
+        8,
+        [
+            # -- a promise belongs to a process, not to a clock ---------------
+            # The first ledger had only a heartbeat, so a worker killed by a power
+            # cut and a legitimate hour-long encode looked the same once fifteen
+            # minutes had passed.  A row now records the pid that made it and the
+            # boot it was made in: a promise is released when that process is
+            # provably gone, never because it has been quiet.  The defaults keep
+            # every old row readable — an empty pid/boot means "written before this
+            # column existed", which the reconcile path treats generously.
+            "ALTER TABLE space_reservations ADD COLUMN pid INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE space_reservations ADD COLUMN boot TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE space_reservations ADD COLUMN kind TEXT NOT NULL DEFAULT ''",
+        ],
+    ),
 ]
 
 
@@ -602,6 +619,21 @@ def _drop_after_commit(conn: sqlite3.Connection) -> None:
         pass
 
 
+#: The write transaction this thread's call stack is inside, if any.
+#:
+#: A ledger write made while a route already holds ``BEGIN IMMEDIATE`` must join
+#: that transaction rather than open a second connection: SQLite has one writer,
+#: and a second connection would wait for the first and then fail — in the middle
+#: of publishing a game, with the file already staged.  ``ark_space`` asks this
+#: instead of guessing.
+_TX: contextvars.ContextVar = contextvars.ContextVar("ark_tx", default=None)
+
+
+def current_transaction():
+    """The connection of the write transaction this call is inside, or ``None``."""
+    return _TX.get()
+
+
 @contextmanager
 def tx(immediate: bool = True, conn: sqlite3.Connection | None = None):
     """A write transaction that always closes the connections it opened.
@@ -627,9 +659,11 @@ def tx(immediate: bool = True, conn: sqlite3.Connection | None = None):
     if own:
         conn = connect()
     started = not conn.in_transaction
+    token = None
     try:
         if started:
             conn.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
+            token = _TX.set(conn)
         yield conn
         if started:
             conn.execute("COMMIT")
@@ -647,6 +681,8 @@ def tx(immediate: bool = True, conn: sqlite3.Connection | None = None):
             _drop_after_commit(conn)
         raise
     finally:
+        if token is not None:
+            _TX.reset(token)
         if own:
             conn.close()
 

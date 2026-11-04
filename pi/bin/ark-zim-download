@@ -87,6 +87,21 @@ room_for() {   # [bytes] — may this much be added without crossing the reserve
   fi
 }
 
+reserve_room() {   # <bytes> <label> — promise what is still to fetch; prints the id
+  # A promise, not a check: two downloads (or a download beside an upload) must
+  # not both be told the same free bytes are theirs.  The id is printed on stdout
+  # so the caller can refresh it as the file grows and give it back however this
+  # ends.  No policy installed (an older box) prints nothing and changes nothing.
+  [[ -x "$SPACE" ]] || return 0
+  "$SPACE" --reserve --need "$1" --path "$ZIM_DIR" --owner "zim-download" \
+           --label "$2" --pid $$ 2>>"$LOG"
+}
+
+release_room() {   # <id>
+  [[ -n "${1:-}" && -x "$SPACE" ]] || return 0
+  "$SPACE" --release "$1" >>"$LOG" 2>&1 || true   # || true: a tidy-up never fails a download
+}
+
 free_gib() {   # REPORTING ONLY: the policy is room_for(); this is what a page shows
   local b
   b="$(df -B1 --output=avail "$ZIM_DIR" 2>/dev/null | tail -1 | tr -dc '0-9')"
@@ -210,6 +225,18 @@ fetch_one() {   # <url> <bytes> <filename> <label>
       rm -f "$ZIM_DIR/$name.aria2"   # a stale control file is what created the mess
     fi
   fi
+  # What is still to arrive is promised before the first byte of it.  A resumed
+  # bundle promises only the part that is missing; a refused promise leaves the
+  # entry in the queue for a later pass instead of filling the card.
+  local remaining ticket="" start_b
+  start_b="$(part_bytes "$part")"
+  remaining=$(( bytes - start_b ))
+  (( remaining > 0 )) || remaining=1
+  ticket="$(reserve_room "$remaining" "$name")" || ticket=""
+  if [[ -z "$ticket" ]] && [[ -x "$SPACE" ]]; then
+    log "no room promised for $name ($remaining bytes still to fetch) — leaving it queued"
+    return 1
+  fi
   while (( attempt < 3 )); do
     attempt=$(( attempt + 1 ))
     if (( attempt == 1 )); then
@@ -237,6 +264,13 @@ fetch_one() {   # <url> <bytes> <filename> <label>
         # when this number is real).
         (( rate > 0 )) || rate=0
         write_status "$label" "$now_b" "$bytes" "$rate"
+        if [[ -n "$ticket" ]]; then
+          # Only the bytes written since the promise count: the part that was
+          # already there was never promised by this run, and reporting it as
+          # "written" would tell the ledger the job needs no room at all.
+          "$SPACE" --touch "$ticket" --written "$(( now_b - start_b ))" \
+                   >>"$LOG" 2>&1 || true
+        fi
         prev_b=$now_b; prev_t=$now_t
       fi
     done
@@ -249,6 +283,7 @@ fetch_one() {   # <url> <bytes> <filename> <label>
   # the catalogue "length" is the exact file size; allow 1% for republished files
   if (( got < bytes - bytes / 100 )); then
     log "incomplete $name: $got of $bytes bytes — keeping the partial file"
+    release_room "$ticket"
     return 1
   fi
   # Size can lie. A stale .aria2 control file makes aria2 "resume" into pieces
@@ -260,13 +295,18 @@ fetch_one() {   # <url> <bytes> <filename> <label>
   if [[ -n "$alloc" ]] && (( alloc < got - got / 50 )); then
     log "corrupt $name: $got bytes claimed, only $alloc allocated (holes) — discarding for a clean retry"
     rm -f "$part" "$part.aria2" "$ZIM_DIR/$name.aria2"
+    release_room "$ticket"
     return 1
   fi
-  verify_part "$url" "$part" "$name" || return 1
+  if ! verify_part "$url" "$part" "$name"; then
+    release_room "$ticket"
+    return 1
+  fi
   mv -f "$part" "$ZIM_DIR/$name"
   chmod 644 "$ZIM_DIR/$name"
   date -Is >"$STATE/$name.done"
   log "complete $name ($got bytes)"
+  release_room "$ticket"
   return 0
 }
 

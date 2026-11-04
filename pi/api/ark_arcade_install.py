@@ -536,11 +536,12 @@ def _free_bytes(where: Path) -> int:
 
 
 def _ensure_room(needed: int, where: Path) -> None:
-    """Leave the box room to keep working, not just room for this game.
+    """Ask the one policy before a game is copied, and refuse if it cannot answer.
 
-    The answer comes from ``ark_space`` — the reserve every other growth path
-    uses — so a game cannot be admitted into space a film or a collection has
-    already promised.
+    ``ark_space.require`` is fail-closed: a ledger the box cannot read is not a
+    ledger with nothing promised, so the copy does not start.  The bytes
+    themselves are promised by :func:`_copy_to_temp` and :func:`spool_upload` for
+    the whole time they are being written, not just checked once here.
     """
     try:
         ark_space.require(where, int(needed))
@@ -584,19 +585,24 @@ def _copy_to_temp(source: Path) -> Path:
     """Copy a file the owner supplied into temp, with the same room and ENOSPC guard."""
     data_size = source.stat().st_size
     arc.ensure_dirs()
-    _ensure_room(data_size, arc.temp_root())
     import tempfile
 
     fd, name = tempfile.mkstemp(prefix="rom-", suffix=".part", dir=str(arc.temp_root()))
     try:
-        with open(source, "rb") as src, os.fdopen(fd, "wb") as dst:
-            while True:
-                chunk = src.read(1024 * 1024)
-                if not chunk:
-                    break
-                dst.write(chunk)
-            dst.flush()
-            os.fsync(dst.fileno())
+        with ark_space.cover(arc.temp_root(), data_size, owner="arcade:publish",
+                             label="a game", key="game") as receipt:
+            with open(source, "rb") as src, os.fdopen(fd, "wb") as dst:
+                copied = 0
+                while True:
+                    chunk = src.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    copied += len(chunk)
+                    receipt.spent("game", copied)
+                    dst.write(chunk)
+                dst.flush()
+                os.fsync(dst.fileno())
+                receipt.spent("game", copied)
     except OSError as exc:
         try:
             os.unlink(name)
@@ -654,16 +660,27 @@ def spool_upload(stream, *, filename: str = "", limit: int = MAX_DOWNLOAD) -> Pa
     written = 0
     try:
         with os.fdopen(fd, "wb") as out:
-            while True:
-                chunk = stream.read(1024 * 1024)
-                if not chunk:
-                    break
-                written += len(chunk)
-                if written > limit:
-                    raise InstallRefused("That file is larger than this box will accept.")
-                out.write(chunk)
-            out.flush()
-            os.fsync(out.fileno())
+            # A game is promised before it is written, and the promise grows a
+            # step at a time.  Inside an upload this adopts the promise the request
+            # already made; the arcade's own downloader gets a reservation of its
+            # own.  Either way, two games cannot both be promised the same bytes.
+            with ark_space.cover(arc.temp_root(), ark_space.first_step(arc.temp_root(), limit),
+                                 owner=f"arcade:{filename or 'a game'}",
+                                 label="a game", key="game") as receipt:
+                while True:
+                    chunk = stream.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    written += len(chunk)
+                    if written > limit:
+                        raise InstallRefused("That file is larger than this box will accept.")
+                    if written + 1024 * 1024 > receipt.reserved:
+                        receipt.need(ark_space.growth_step(arc.temp_root(), written, limit))
+                    receipt.spent("game", written)
+                    out.write(chunk)
+                out.flush()
+                os.fsync(out.fileno())
+                receipt.spent("game", written)
         if written == 0:
             raise InstallRefused("That file is empty.")
         os.chmod(name, 0o600)

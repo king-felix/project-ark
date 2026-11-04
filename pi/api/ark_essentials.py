@@ -30,6 +30,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+import ark_space
+
 PACK_NAME = "ark-essentials.zip"
 MANIFEST = "MANIFEST.txt"
 START = "START-HERE.txt"
@@ -339,20 +341,38 @@ def build(out_dir, *, vault, sheet=None, when=None) -> dict:
     out.mkdir(parents=True, exist_ok=True)
     part = out / (PACK_NAME + ".partial")
     rows = [(name, len(data), _sha256(data)) for name, data in payload]
-    with zipfile.ZipFile(part, "w", zipfile.ZIP_DEFLATED) as archive:
-        for name, data in payload:
-            info = zipfile.ZipInfo(name, date_time=_STAMP)
-            info.compress_type = zipfile.ZIP_DEFLATED
-            info.external_attr = 0o644 << 16
-            archive.writestr(info, data)
-        info = zipfile.ZipInfo(MANIFEST, date_time=_STAMP)
-        info.compress_type = zipfile.ZIP_DEFLATED
-        info.external_attr = 0o644 << 16
-        archive.writestr(info, _manifest_text(built, rows, missing).encode("utf-8"))
-    with open(part, "rb+") as handle:
-        os.fsync(handle.fileno())
-    target = pack_path(out)
-    os.replace(part, target)
+    # The pack is a second copy of pages that are already on the card, so its
+    # room is promised before the first member is written.  It is small (the
+    # vault is bounded per page), which is why it was easy to leave unchecked.
+    needed = sum(len(data) for _name, data in payload) + 1024 * 1024
+    try:
+        # Essential on purpose: this is the file a household carries away when the
+        # box does not boot.  It is a bounded pack of a few pages, admitted against
+        # real free space, so a ledger the box cannot read must not be the reason
+        # the one thing you can take with you was not made.
+        with ark_space.cover(out, needed, owner="essentials",
+                             label="the carry-away pack", key="pack",
+                             essential=True):
+            with zipfile.ZipFile(part, "w", zipfile.ZIP_DEFLATED) as archive:
+                for name, data in payload:
+                    info = zipfile.ZipInfo(name, date_time=_STAMP)
+                    info.compress_type = zipfile.ZIP_DEFLATED
+                    info.external_attr = 0o644 << 16
+                    archive.writestr(info, data)
+                info = zipfile.ZipInfo(MANIFEST, date_time=_STAMP)
+                info.compress_type = zipfile.ZIP_DEFLATED
+                info.external_attr = 0o644 << 16
+                archive.writestr(info, _manifest_text(built, rows, missing).encode("utf-8"))
+            with open(part, "rb+") as handle:
+                os.fsync(handle.fileno())
+            target = pack_path(out)
+            os.replace(part, target)
+    except BaseException:
+        try:
+            part.unlink()
+        except OSError:
+            pass                              # never written, or already renamed
+        raise
     blob = target.read_bytes()
     return {"path": str(target), "bytes": len(blob), "sha256": _sha256(blob),
             "built": built, "members": len(payload) + 1,

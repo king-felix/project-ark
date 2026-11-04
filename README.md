@@ -384,12 +384,30 @@ for root is not counted as room the box can use. On the 256 GB card in this
 build that is about 16 GiB kept back.
 
 The policy is centralised in `pi/api/ark_space.py`; the shell scripts ask the
-same module through `/usr/local/sbin/ark-space --check --need N`, so there is no
-second number anywhere. An operation whose size is known before it starts
-(a conversion, a collection, a model, a backup) takes a **reservation** in the
-database first, shared by every process: admission is
+same module through `/usr/local/sbin/ark-space`, so there is no second number
+anywhere. **Every** growth path takes a reservation in the database first, shared
+by every process: admission is
 `free − reserve − (promised but not yet written) ≥ need`, and bytes that have
 reached the disk are subtracted from the promise so nothing is counted twice.
+
+Uploads are admitted **before the first byte is read**, not after the framework
+has already spooled them: `pi/api/ark_admission.py` gives every address a door
+(the default is 64 KiB), promises a declared body's peak up front, and grows a
+body with no `Content-Length` in bounded steps. The peak is honest — the
+framework's temp file and the route's own copy exist at the same time, so a 2 GiB
+upload is promised 4 GiB — and the promise is released however the request ends,
+including a phone that walks out of range. During receipt the real filesystem is
+asked again every 4 MiB, so somebody else filling the card stops the upload
+instead of being assumed away.
+
+A promise belongs to a **process**, not to a clock: the ledger records the pid and
+the boot, a live worker keeps its space however long it has been quiet, and a
+power cut releases everything at the next start. A ledger the box cannot read is
+**not** an empty ledger — a bulk write is refused rather than told that nothing is
+promised, while recovery, deletion and the pages that free space keep working.
+
+The whole design — every path, the arithmetic, what is enforced and what cannot
+be — is in [`docs/STORAGE-ADMISSION.md`](docs/STORAGE-ADMISSION.md).
 
 This is an **application admission policy**, not a partition and not a quota for
 one person. Something outside the box can still fill the card; the reserve

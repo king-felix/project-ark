@@ -176,7 +176,10 @@ def test_the_box_refuses_a_film_when_the_card_is_inside_its_reserve(public, ark,
         "path": "/srv/ark", "device": 7, "total_bytes": 100 * 1024 ** 3, "free_bytes": 0,
         "reserve_bytes": 7 * 1024 ** 3, "usable_bytes": 0, "percent": 7.0})
     answer = _send_video(public, films["fast"])
-    said = urllib.parse.unquote(answer.headers["location"]).lower()
+    # Admission refuses before the body is read: a page that says nothing was
+    # stored, not a redirect to a form with an error on it.
+    assert answer.status_code == 507
+    said = answer.text.lower()
     assert "nearly full" in said or "not enough room" in said
     assert _media_rows(ark) == []
     assert _drop_files(ark) == []
@@ -930,17 +933,21 @@ def test_a_category_appears_only_when_a_readable_film_uses_it(ark):
         assert ark_media.categories(conn) == ["Repairs"]
 
 
-@needs_ffmpeg
 def test_a_declared_upload_that_cannot_fit_is_refused_before_it_is_written(public, ark,
                                                                          monkeypatch):
+    """The body is never read: the promise is refused before the first byte.
+
+    507 (not 413) is the honest status — the file is a legal size, the card is
+    full — and it comes from admission, not from the route's own spool.
+    """
     import ark_space
-    import main
-    monkeypatch.setattr(main, "FRAMING_MARGIN", 0)
-    monkeypatch.setattr(ark_space, "slack", lambda path=None: 10)
+    from helpers import tiny_card
+
+    tiny_card(monkeypatch, ark_space, total=100 * 1024 ** 2, free=100 * 1024 ** 2)
     answer = public.client.post("/files", files={"file": ("x.txt", b"x" * 100, "text/plain")},
                                 follow_redirects=False)
-    assert answer.status_code == 413
-    assert "bigger than the room" in answer.text
+    assert answer.status_code == 507
+    assert "not enough room" in answer.text.lower()
     assert list((ark.root / "drop" / "files").iterdir()) == []
 
 

@@ -92,3 +92,19 @@ def add_admin(client, cookie: str, *, your_password: str, username: str,
                 headers=headers, cookie=f"ark_admin={cookie}")
     match = re.search(r'<pre class="code temp">([^<]+)</pre>', made.text)
     return made.text, (match.group(1) if match else "")
+
+
+def tiny_card(monkeypatch, space, *, total=100 * 1024 ** 2, free=100 * 1024 ** 2):
+    """Make the policy measure a small, empty card instead of this machine's disk.
+
+    A real card cannot be filled to prove a refusal, and filling the one under the
+    test suite would be worse.  Every reader of ``ark_space`` — pages, admission,
+    the spool — goes through ``facts``/``device_key``, so patching those two is
+    the whole filesystem as far as the box is concerned.
+    """
+    monkeypatch.setattr(space, "facts", lambda path=None: {
+        "path": "/srv/ark", "device": 7, "total_bytes": total, "free_bytes": free,
+        "reserve_bytes": space.reserve_for(total),
+        "usable_bytes": max(0, free - space.reserve_for(total)),
+        "percent": space.reserve_percent()})
+    monkeypatch.setattr(space, "device_key", lambda path=None: 7)

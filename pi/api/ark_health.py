@@ -103,7 +103,9 @@ def now_iso() -> str:
 
 
 def human_size(n) -> str:
-    n = float(n or 0)
+    if n is None:
+        return "not measured yet"
+    n = float(n)
     for unit in ("B", "kB", "MB", "GB", "TB"):
         if n < 1024 or unit == "TB":
             return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
@@ -541,8 +543,8 @@ def storage_section() -> dict:
     (or 2 GiB, whichever is larger), measured at the moment somebody looks — so a
     bigger card keeps back more, and a smaller one still gets its floor.
     """
-    free = ark_space.free_bytes(ark_root())
     room = ark_space.account(ark_root())
+    free = room["free_bytes"]
     parts = storage_breakdown()
     facts = {
         "free_bytes": free,
@@ -554,6 +556,15 @@ def storage_section() -> dict:
         "breakdown_bytes": sum(p["bytes"] for p in parts),
         **card_facts(),
     }
+    if room["ledger"] == "unreadable":
+        return _section(
+            "storage", "Space on the card", True,
+            f"{human_size(free)} is free, but the box could not read its own record of "
+            "space promised to work already running — so it will not start another "
+            "large write.",
+            "Nothing already on the card was touched.  Watching, deleting and the "
+            "owner's pages keep working, and the box tries the record again on the next "
+            "pass.", **facts)
     if room["breached"]:
         return _section(
             "storage", "Space on the card", False,
@@ -566,7 +577,8 @@ def storage_section() -> dict:
     return _section(
         "storage", "Space on the card", True,
         f"{human_size(free)} free, of which {human_size(room['reserve_bytes'])} is kept "
-        "back for the box.", "", **facts)
+        f"back and {human_size(room['committed_bytes'])} is promised to work already "
+        f"running — {human_size(room['usable_bytes'])} may still be added.", "", **facts)
 
 
 # ---------------------------------------------------------------------------

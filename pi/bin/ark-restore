@@ -141,6 +141,28 @@ class RestoreRefused(Exception):
 # ---------------------------------------------------------------------------
 #  what is already here
 # ---------------------------------------------------------------------------
+def essential_room(path: Path):
+    """Room for a restore, measured the same way the box measures everything else.
+
+    A restore is *essential*: the reserve is still kept back, but other jobs'
+    promises are ignored, because refusing to put the records back would be worse
+    than competing for the last few bytes.  ``None`` means the question could not
+    be asked, and the restore proceeds — a card that cannot be measured is not a
+    card that is full.
+    """
+    try:
+        import ark_space
+        value = ark_space.essential_room(path)
+        if value is not None:
+            return int(value)
+    except Exception:                        # noqa: BLE001 — measurement is optional
+        pass
+    try:
+        return int(shutil.disk_usage(str(path)).free)
+    except OSError:
+        return None
+
+
 def occupancy(paths: dict) -> str | None:
     """Why this box must not be overwritten without --force, or None if it may.
 
@@ -435,6 +457,17 @@ def restore(bundle_path: Path, *, force: bool, dry: bool, no_files: bool,
         return plan_restore(data, bundle_path, paths, force=force, no_files=no_files,
                             ledger_mode=ledger_mode, keep_owner=keep_owner,
                             no_service=no_service)
+
+    # Room for the bytes this bundle will put back, asked before any unit is
+    # stopped.  A bundle that cannot fit is refused while the box is still
+    # serving, not discovered half-way through a restore.
+    needed = sum(int(entry.get("size") or 0) for entry in data["entries"])
+    room = essential_room(paths["db"].parent)
+    if room is not None and needed > room:
+        return stop("there is not enough room on the card for this backup: it needs "
+                    "%s and %s may be used.  Nothing was changed.  Free some room "
+                    "(or restore to a bigger card) and try again."
+                    % (bundle_tools.human_size(needed), bundle_tools.human_size(room)))
 
     # A restore must not start on top of an interrupted replacement.  Resolve it
     # first (finish a verified install, put the coherent original back, or leave

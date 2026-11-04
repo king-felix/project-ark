@@ -500,8 +500,7 @@ def accept(read, filename: str, *, state: str, added_by: str = "", note: str = "
     if not is_video_name(display):
         raise Refused("That file is not a kind of video this box knows.")
     stored = ark_storage.spool(
-        read, display, limit=capped,
-        min_free=ark_space.reserve_bytes(ark_storage.drop_dir()))
+        read, display, limit=capped)
     try:
         facts = probe(stored.path)
         if not facts.get("ok"):
