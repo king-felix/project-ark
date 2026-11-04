@@ -200,7 +200,7 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 | Released tag | `v1.0.5` = `dd3336c` (never move a tag, never force-push) |
 | Active branch | `feature/admin-hardening` (fast-forwarded to `main` at `acf5d29`) |
 | Schema version | `SCHEMA_VERSION = 8` (`pi/api/ark_db.py`) — migration 7 adds the film shelf and the space ledger; migration 8 gives a reservation its pid, boot id and kind. **No migration was added in the 4 Nov pass**: the pause is a file, and the new health/UX work changes no table |
-| Test suite | `1078 passed, 2 skipped` (48 files) |
+| Test suite | `1080 passed, 2 skipped` (48 files) |
 | Live Pi state | Deployed `c4944b4`+ (log §57); `90-verify` **87 ✓, no ✗**; ready 200, blocking []; Films 8, Games 67, Maps 3 — all **Ready**; reserve 16 GB. **Search misses its 1500 ms target: 4–8 s (log §56.8/§57.6)** |
 | Owner decisions pending | History rewrite + force-push (pre-`a926296`; home-LAN address in `1a3f41f`; log §37.6/§38.7/§44); rotate passwords; licence |
 

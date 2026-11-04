@@ -10,7 +10,7 @@ Chromium is present.*
 |---|---|
 | an optional folder that is a file does not stop the API; missing FFmpeg; absent helper; broken catalogue; direct playback with a broken poster folder | `tests/test_containment.py` (6) |
 | a silent child at its deadline, a partial line, continuous output, stderr growth, cancellation, reaping | `tests/test_subprocess_bounds.py` (7) |
-| the owner's pause: the file, restart survival, fail-closed, the worker deferring, recovery still running, the page, CSRF, audit, stop, the kick file, reader pages | `tests/test_pause.py` (18) |
+| the owner's pause: the file, restart survival, fail-closed, the worker deferring, recovery still running, the page, CSRF, audit, stop, the kick file, reader pages, the game timer, game assets | `tests/test_pause.py` (21) |
 | durable film publication: fsync order, a short copy keeping the upload, the sweep using the same rule | `tests/test_film_durability.py` (6) |
 | eight readers, liveness beside load, search/status/board targets, range requests under load, a background job beside readers, a paused box, the cached report | `tests/test_concurrency.py` (7) |
 | the front page's claims, the honest fallback, the reading order, search labelling, where progress is kept, light colours, the theme route, Today / Together | `tests/test_homepage.py` (15) |

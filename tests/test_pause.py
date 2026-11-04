@@ -13,6 +13,7 @@ behaviours under test are the ones the application and the worker decide.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -379,3 +380,45 @@ def test_the_health_row_for_the_helper_agrees_with_the_helper_while_paused(ark):
     # And the sentence a reader sees on /ask is the same one.
     sentence, _hint = ark_ai.not_ready_sentence()
     assert section["reason"].startswith(sentence)
+
+
+def test_the_game_timer_does_not_change_the_shelf_while_paused(ark, monkeypatch, capsys):
+    """`ark-arcade --seed` / `--discover` are what the weekly timer runs."""
+    import importlib.util
+    import sys
+
+    import ark_pause
+
+    script = Path(__file__).resolve().parents[1] / "pi" / "bin" / "ark-arcade"
+    spec = importlib.util.spec_from_loader(
+        "ark_arcade_cli", importlib.machinery.SourceFileLoader("ark_arcade_cli", str(script)))
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["ark_arcade_cli"] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        pass
+
+    monkeypatch.setenv("ARK_API_DIR", str(Path(__file__).resolve().parents[1] / "pi" / "api"))
+    monkeypatch.setenv("ARK_PAUSE_MARKER", str(ark_pause.marker_path()))
+    ark_pause.set_paused(True)
+    for argv in (["--seed"], ["--discover", "--auto"]):
+        assert module.main(argv) == 0
+        out = capsys.readouterr().out
+        assert "paused by the owner" in out, out
+    sys.modules.pop("ark_arcade_cli", None)
+
+
+def test_game_files_are_still_delivered_while_paused(ark):
+    """A pause stops preparation; it never stops a game somebody is playing."""
+    import ark_pause
+    import main
+    from fastapi.testclient import TestClient
+
+    ark_pause.set_paused(True)
+    with TestClient(main.app) as client:
+        asset = client.get("/arcade/emulator/loader.js", follow_redirects=False)
+        assert asset.status_code == 200, asset.status_code
+        assert asset.content
+        shelf = client.get("/arcade/", follow_redirects=False)
+        assert shelf.status_code == 200
