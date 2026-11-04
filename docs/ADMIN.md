@@ -945,7 +945,7 @@ runs **before the portal opens**, plus the settings that make the next cut cheap
 | **The clock is in the past** — a Pi has no battery-backed clock, so it wakes up believing it is the day the card was written. Every "3 hours ago" is wrong and a copy looks like it came from the future | The newest file on the card is the best evidence of the real time: if anything is newer than the clock, the clock is set from it (two minutes of slack). `fake-hwclock` also remembers the last known time across a cold boot |
 | **A small file is half written** — `ark_status.json`, the import ledger | The file is checked; if it will not read, it is set aside as `…corrupt-<stamp>` (the last three are kept) and the `.bak` beside it is put back **only if it reads**. A repair is never invented |
 | **The network watchdog's counters are damaged** | They are not JSON — three numbers as `key=value` lines — so they are checked by their own rule. Damaged ⇒ set aside, and the watchdog starts from zero, which can only make a rescue *slower*, never wrong |
-| **The database will not open** | Checked with SQLite's own `quick_check`. Damaged ⇒ the pass first resolves any interrupted replacement, then takes the repair turn and the exclusive maintenance gate, checks again with the box quiet, and puts the newest copy that passes the same check in its place through `ark_db_replace`: the original main file and its `-wal`/`-shm` are preserved, the old journal is moved aside (never deleted), the new file is verified, and every step is recorded. If another program still has the records open it reports **deferred** and changes nothing — an unavailable lock is not damage. A replacement that cannot be resolved leaves a `BLOCK` marker and keeps the box stopped. **It never deletes a database** |
+| **The database will not open** | Checked with SQLite's own `quick_check`. Damaged ⇒ the pass first resolves any interrupted replacement, then takes the repair turn and the exclusive maintenance gate, checks again with the box quiet, and puts the newest recovery copy whose database passes `quick_check` and whose records' files are accounted for in its place through `ark_db_replace`: the original main file and its `-wal`/`-shm` are preserved, the old journal is moved aside (never deleted), the new file is verified, and every step is recorded. If another program still has the records open it reports **deferred** and changes nothing — an unavailable lock is not damage. A replacement that cannot be resolved leaves a `BLOCK` marker and keeps the box stopped. **It never deletes a database** |
 | **Half-built uploads, bundles and catalogue temp files** | Swept after 6–12 hours, **by pattern and age**, never by guessing. A published file is never touched |
 | **A library catalogue that lists books which are not there** | Rebuilt from the ZIMs the card really has |
 
@@ -1012,8 +1012,9 @@ re-run of the phase is what proves them:
   gate, so a repair of either stops `ark-calibre.service` first and starts it again
   afterwards — only if it was running, and only when the repair left the file safe
   to open. `ark.db` needs no exception: every one of its users takes the gate.
-* **It takes no copy.** A copy is still the owner's deliberate act (§9), and the
-  daily pass is a *repair*, not a backup timer.
+* **It takes no *backup*.** The daily pass keeps two small recovery copies of the
+  records (below) — not a bundle of the shared files. A bundle is still the owner's
+  deliberate act (§9).
 * **It counts a repair as a repair, not as a fault.** Only what is left needing a
   person makes the verifier say a bad word.
 * **It cannot survive a card that is physically dying.** It repairs what a cut
@@ -1574,8 +1575,8 @@ Stated plainly, because a missing control is better than a fake one:
   `.gguf` onto the card (§12). The engine is installed by phase `58-ai`; the words
   are a deliberate act, like a game.
 * A power cut is **repaired, not prevented**: the box cannot survive a card that
-  has stopped reading, the pass takes no copy, and nothing on any page can run it
-  by hand (§13).
+  has stopped reading, the pass keeps only its small recovery copies (not a backup of
+  the library), and nothing on any page can run it by hand (§13).
 * Emergency content review (first aid, water, electrical) is still pending.
 
 The audit history, the account rules above, the transport boundary, the
@@ -1750,6 +1751,47 @@ games and the films (`ark_bundle.EXCLUDED`, printed in every manifest). A restor
 therefore brings the shelf's *records* back and the box says which films it no
 longer has — it does not, and cannot, bring the films themselves. If a film
 matters, keep a copy of it somewhere that is not this card.
+
+### The recovery copy the box keeps for itself
+
+The daily repair pass (and the boot before the portal opens) also keeps **two
+recovery copies** of its own records. A copy is one folder under
+`/srv/ark/api/data/recovery/generations/`: `ark.db`, copied with SQLite's own
+`backup()` and checked, plus `manifest.json`, which names every external file
+those records expect and the fingerprint it expects.
+
+A player's save is a row **and** a blob beside it, so a recovery copy that held
+only the database would restore a row whose bytes the next save had already
+deleted. Saves and ordinary shared files are therefore **pinned in place** while
+a copy is retained: replacing or deleting a save leaves the blob until the copy
+that names it retires. Nothing is duplicated — the manifest points at the file
+that is already on the card, and films, maps and the offline library are
+deliberately left out (they are re-imported, not personal state; the manifest
+says so). Deleting a shared file that a retained copy **pins** retires that copy
+first, so no copy is left making a promise it cannot keep. A film's bytes are
+recorded but never pinned; deleting a film is allowed to free them, and a copy
+that named them then reports them missing.
+
+Two copies are kept (`KEEP = 2` in `pi/api/ark_recovery.py`). A new copy is
+published only after its database and manifest are durable and every file it
+claims has been checked; an older copy is removed only after that. A copy that
+names a file already gone is marked incomplete and reported, and it does not
+stop a fresh copy being taken. The database-only name beside the records is
+dropped when the copy it points at is retired, so the next pass cannot adopt the
+pre-change records by accident. A copy that
+will not fit inside the card's reserve is refused — the last good copy is never
+deleted to make room for an unverified one. An older database-only
+`<db>.good.bak` is adopted once (it is now a hard link to the newest generation's
+database), and any file it already names as missing is reported, not hidden.
+
+```bash
+sudo /usr/local/sbin/ark-self-heal --json | python3 -m json.tool   # recovery_copies, recovery_gc
+ls -la /srv/ark/api/data/recovery/generations/                     # the copies themselves
+sudo /usr/local/sbin/ark-backup --verify /srv/ark/backup/<name>    # an explicit bundle, too
+```
+
+A restore from an explicit bundle retires the older recovery copies: they
+describe the records the restore replaced. The next daily pass keeps a fresh one.
 
 ### First aid
 

@@ -70,6 +70,11 @@ try:                                          # optional during a deploy catch-u
 except ImportError:                            # pragma: no cover - deploy fault
     ark_db_replace = None  # type: ignore[assignment]
 
+try:                                          # the coherent-copy module
+    import ark_recovery
+except ImportError:                            # pragma: no cover - deploy fault
+    ark_recovery = None  # type: ignore[assignment]
+
 FORMAT = 1
 CHUNK = 1024 * 1024
 STAMP = re.compile(r"^ark-backup-\d{8}-\d{6}(-\d+)?$")
@@ -299,6 +304,69 @@ def verify_bundle(bundle: Path) -> tuple:
         if entry.get("to") is not None and safe_rel(entry.get("to")) is None:
             problems.append(f"{rel} would be put back outside the box: {entry.get('to')!r}")
     return data, problems
+
+
+def capture_lock(db: Path, *, wait: float = 30.0):
+    """The lock a backup and a save deletion share.
+
+    A backup is a reader of the records and a copier of the files beside them.
+    It holds this for the whole run (and the shared maintenance gate around it),
+    so a save replacement cannot delete the blob the database copy just named,
+    and a File Box deletion cannot remove a shared file half-way through the
+    copy.  A missing module is a deploy fault: refusing is better than writing a
+    bundle that might not agree with itself.
+    """
+    if ark_recovery is None:                  # pragma: no cover - deploy fault
+        raise RuntimeError(
+            "ark_recovery is missing from the box's API tree; re-run the installer "
+            "phase 95-backup before trusting a backup")
+    return ark_recovery.capture_lock(db, wait=wait)
+
+
+def check_references(bundle: Path, data: dict) -> dict:
+    """Which files the copied records name that this bundle does not carry.
+
+    ``verify_bundle`` proves every file *in* the bundle.  This asks the other
+    question: does the database copy name a save or a shared file that was never
+    copied?  It is the check that catches a snapshot-versus-file race, and it is
+    reported rather than refused because an old bundle made with ``--no-files``
+    is still a valid records-only backup.
+    """
+    if ark_recovery is None:                  # pragma: no cover - deploy fault
+        return {"available": False, "missing_saves": [], "missing_files": [],
+                "excluded_bulk": []}
+    database = Path(bundle) / "database" / "ark.db"
+    if not database.is_file():
+        return {"available": False, "missing_saves": [], "missing_files": [],
+                "excluded_bulk": []}
+    try:
+        refs, _problems = ark_recovery.references_from_database(database)
+    except Exception as exc:                  # noqa: BLE001 — an unreadable copy is reported
+        return {"available": False, "missing_saves": [], "missing_files": [],
+                "excluded_bulk": [],
+                "said": "%s could not be asked what it names (%s)" % (database.name, exc)}
+    carried = {entry.get("to") for entry in (data.get("entries") or [])
+               if isinstance(entry, dict) and entry.get("to")}
+    missing_saves = []
+    missing_files = []
+    excluded_bulk = []
+    for ref in refs:
+        to = ref.get("to")
+        if not to or to in carried:
+            continue
+        if ref.get("kind") == "save":
+            missing_saves.append(to)
+        elif str(to).startswith("media/"):
+            # A film's playing copy, picture and captions are deliberately not
+            # in a bundle (``ark_bundle.EXCLUDED``).  Their absence is the
+            # documented trade, not a damaged bundle; the film's records still
+            # come back and the box says what it cannot play.
+            excluded_bulk.append(to)
+        else:
+            missing_files.append(to)
+    return {"available": True, "missing_saves": missing_saves,
+            "missing_files": missing_files, "excluded_bulk": excluded_bulk,
+            "records_only": bool(data.get("no_files"))}
 
 
 def bundle_size(bundle: Path) -> tuple:

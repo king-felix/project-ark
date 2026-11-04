@@ -27,6 +27,10 @@ this module is the one place that knows about all three:
   replaces a perfectly good file with an older copy — losing every row committed
   since that copy was taken.  ``quick_check_state()`` keeps those answers apart
   (``ok``/``damaged``/``unasked``/``absent``) so nothing downstream has to guess.
+  A good copy is now a **recovery generation** (``ark_recovery``): the database, a
+  manifest of every file its records name, and the pins that keep a save blob
+  alive while the copy can still be put back.  ``quick_check`` alone is not the
+  verdict; the generation's files are read too, and a missing one is reported.
 
 Two things this module deliberately does **not** do: it never deletes a database,
 and it never touches a file it does not recognise.  A row and its file can
@@ -69,6 +73,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 import ark_atomic
 import ark_db_replace
 import ark_maintenance as maintenance
+import ark_recovery
 
 try:  # every machine that runs this is Linux or macOS; Windows is not a box
     import fcntl
@@ -617,54 +622,35 @@ def harden(path: Any) -> str:
 
 def snapshot(path: Any, *, hours: float = GOOD_COPY_HOURS,
              stamp: Optional[float] = None) -> bool:
-    """Keep one known-good copy of a database, at most once a day.
+    """Keep one coherent recovery copy, at most once a day.
 
-    Written with SQLite's own ``backup()`` into a temp file and renamed into place:
-    a plain copy of a live WAL database can miss the last commits, which is the same
-    mistake ``ark-backup`` avoids by using ``backup()`` too.
+    The copy is a **generation** (``ark_recovery``): SQLite's own ``backup()`` of
+    the records, a manifest of every external file those records name, and the
+    pins that keep a save blob alive while the copy can still be put back.  The
+    old ``.good.bak`` is still written, as a hard link to the same database, so
+    an older repair and a person's habit keep working — but the manifest is what
+    says whether the copy is whole.
+
+    A copy taken while another process is mid-write is a copy of a moving target;
+    ``backup()`` would keep restarting and could still catch a torn page from a
+    writer that never finishes.  The boot pass has the database to itself, and that
+    is when this copy is taken.
     """
     target = Path(path)
-    good = Path(str(target) + ".good.bak")
-    when = now() if stamp is None else float(stamp)
-    try:
-        if good.is_file() and (when - good.stat().st_mtime) < hours * 3600:
-            return False
-    except OSError:
-        pass
-    # A copy taken while another process is mid-write is a copy of a moving target;
-    # ``backup()`` would keep restarting and could still catch a torn page from a
-    # writer that never finishes.  The boot pass has the database to itself, and that
-    # is when this copy is taken.
     if writer_busy(target):
         return False
-    tmp = Path(str(target) + ".good.tmp")
     try:
-        if tmp.exists():
-            tmp.unlink()
-        # Read-write on purpose: a live database is in WAL, and SQLite's read-only
-        # mode refuses it when the ``-wal`` file may need reading.  Opening it
-        # read-write is what ``ark-backup`` does too, and it takes no lock that a
-        # reader waits on.
-        src = sqlite3.connect(str(target), timeout=5.0)
-        try:
-            dst = sqlite3.connect(str(tmp), timeout=5.0)
-            try:
-                src.backup(dst)
-                dst.commit()
-            finally:
-                dst.close()
-        finally:
-            src.close()
-        os.replace(str(tmp), str(good))
-        ark_atomic.fsync_dir(good.parent)
-        return True
-    except (OSError, sqlite3.Error):
-        try:
-            if tmp.exists():
-                tmp.unlink()
-        except OSError:
-            pass
+        # A database-only copy from before this module is described before a
+        # newer generation can hide it: its missing files are worth saying once.
+        if not ark_recovery.published(target):
+            ark_recovery.adopt_legacy(target, now=stamp)
+        result = ark_recovery.capture(target, min_interval_hours=hours,
+                                      now=stamp, reason="the repair pass")
+    except (OSError, sqlite3.Error, ark_recovery.RecoveryRefused):
         return False
+    except Exception:                        # noqa: BLE001 — a copy must not stop the pass
+        return False
+    return result.status == "captured"
 
 
 def _sidecar(target: Path, suffix: str) -> Path:
@@ -943,38 +929,82 @@ def heal_sqlite(path: Any, *, dry_run: bool = False,
             track: Dict[str, Any] = {"replaced": False, "safe": False}
             refused = ""
             try:
-                for candidate in (Path(str(target) + ".good.bak"),
-                                  Path(str(target) + ark_atomic.BACKUP_SUFFIX)):
-                    if not candidate.is_file():
-                        continue
-                    good_state, _good_said = quick_check_state(candidate)
-                    if good_state != "ok":
-                        continue
-                    outcome = _copy_over_status(candidate, target, track)
-                    if outcome == "ok":
-                        return ("restored",
-                                "%s came back unreadable (%s); the good copy from before "
-                                "it was put back." % (target.name, answer_again))
-                    if outcome == "unsafe":
-                        safe_to_start = False
+                with ark_recovery.capture_lock(target, wait=LOCK_WAIT) as files_held:
+                    if not files_held:
+                        return ("locked",
+                                "%s is being copied right now, so nothing was "
+                                "changed — the pass will try again." % target.name)
+                    # A generation knows what its records need.  Ask it first, then
+                    # fall back to the older database-only names for a card that has
+                    # not been through this module yet.
+                    source = None
+                    try:
+                        source = ark_recovery.restore_source(target)
+                    except (OSError, sqlite3.Error, ark_recovery.RecoveryRefused):
+                        source = None
+                    candidates = []
+                    if source is not None:
+                        candidates.append((source.path, source))
+                    for candidate in (Path(str(target) + ".good.bak"),
+                                      Path(str(target) + ark_atomic.BACKUP_SUFFIX)):
+                        if any(candidate == known[0] for known in candidates):
+                            continue
+                        candidates.append((candidate, None))
+                    for candidate, origin in candidates:
+                        if not candidate.is_file():
+                            continue
+                        good_state, _good_said = quick_check_state(candidate)
+                        if good_state != "ok":
+                            continue
+                        outcome = _copy_over_status(candidate, target, track)
+                        if outcome == "ok":
+                            try:
+                                # The old .good.bak described the records this
+                                # repair just replaced; make it describe the ones
+                                # now in place.
+                                ark_recovery.mark_good(target, candidate)
+                            except Exception:    # noqa: BLE001 — the restore already succeeded
+                                pass
+                            said = ("%s came back unreadable (%s); the good copy from "
+                                    "before it was put back."
+                                    % (target.name, answer_again))
+                            missing = list(getattr(origin, "missing", None) or [])
+                            mismatched = list(getattr(origin, "mismatched", None) or [])
+                            if missing or mismatched:
+                                # The records are back; the files they name are not
+                                # all here.  Saying so is the difference between a
+                                # repair and a silent half-restore.
+                                detail = ("The copy names %d file%s that %s no longer on "
+                                          "the card: %s."
+                                          % (len(missing) + len(mismatched),
+                                             "" if len(missing) + len(mismatched) == 1 else "s",
+                                             "is" if len(missing) + len(mismatched) == 1 else "are",
+                                             ", ".join(str(item.get("to")) for item in
+                                                       (missing + mismatched)[:4])))
+                                said += " " + detail
+                                if problems is not None:
+                                    problems.append(detail)
+                            return ("restored", said)
+                        if outcome == "unsafe":
+                            safe_to_start = False
+                            detail = str(track.get("said") or "").strip()
+                            return ("unsafe",
+                                    "%s came back unreadable (%s); %s"
+                                    % (target.name, answer_again,
+                                       detail or "the original could not be put back.  Do "
+                                       "not start the box."))
+                        refused = candidate.name
+                    if refused:
                         detail = str(track.get("said") or "").strip()
-                        return ("unsafe",
+                        return ("left",
                                 "%s came back unreadable (%s); %s"
                                 % (target.name, answer_again,
-                                   detail or "the original could not be put back.  Do "
-                                   "not start the box."))
-                    refused = candidate.name
-                if refused:
-                    detail = str(track.get("said") or "").strip()
+                                   detail or "the good copy could not be put back and the "
+                                   "original was left where it is."))
                     return ("left",
-                            "%s came back unreadable (%s); %s"
-                            % (target.name, answer_again,
-                               detail or "the good copy could not be put back and the "
-                               "original was left where it is."))
-                return ("left",
-                        "%s came back unreadable (%s) and there is no good copy of it on "
-                        "the card — it was left where it is."
-                        % (target.name, answer_again))
+                            "%s came back unreadable (%s) and there is no good copy of it on "
+                            "the card — it was left where it is."
+                            % (target.name, answer_again))
             finally:
                 # A service is started again only when the outcome left the file
                 # safe to open: either nothing was replaced, or the replacement
@@ -1007,6 +1037,7 @@ SWEEP_RULES: Tuple[Tuple[str, str, float], ...] = (
     ("kiwix", ".library-*", 1.0),
     ("api/data", ".*.tmp", STALE_TEMP_HOURS),
     ("api/data", "*.good.tmp", STALE_TEMP_HOURS),
+    ("api/data", "*.good.bak.tmp", STALE_TEMP_HOURS),
     #: A temp file from the one careful writer (the repair report, and the watchdog's
     #: counters since they are written by rename): the name keeps a leading dot, so a
     #: half-written file can never be mistaken for the real one.
@@ -1157,6 +1188,9 @@ def run(root: Optional[Path] = None, *, dry_run: bool = False,
         "json": [],
         "state": {"state": "absent", "said": ""},
         "recovery": [],
+        "recovery_copies": [],
+        "recovery_gc": {},
+        "recovery_warnings": [],
         "databases": [],
         "catalogues": [],
         "library": {"state": "absent", "said": ""},
@@ -1252,6 +1286,46 @@ def run(root: Optional[Path] = None, *, dry_run: bool = False,
             # database this second, and its own receipt says what it found.
             report["problems"].append(said)
 
+    #  The recovery copies are part of the pass, not a side effect of it.  A
+    #  database-only copy made before this module existed is adopted once; every
+    #  retained copy is checked against the files its records name; and what
+    #  neither the live records nor a retained copy needs is cleared away.
+    live = base / "api" / "data" / "ark.db"
+    if live.is_file():
+        if not dry_run:
+            try:
+                adopted = ark_recovery.adopt_legacy(live, root=base, now=stamp)
+            except Exception as exc:      # noqa: BLE001 — one copy must not stop the pass
+                adopted = None
+                report["problems"].append(
+                    "the older database-only copy could not be adopted (%s)." % exc)
+            if adopted is not None:
+                report["recovery_copies"].append({
+                    "name": adopted.generation,
+                    "state": adopted.status,
+                    "complete": bool((adopted.manifest or {}).get("complete")),
+                    "said": adopted.said,
+                })
+                if adopted.status == "refused" or adopted.missing:
+                    report["problems"].append(adopted.said)
+        try:
+            audit = ark_recovery.validate_all(live, root=base)
+        except Exception as exc:          # noqa: BLE001 — ditto
+            audit = {"generations": [],
+                     "problems": ["the recovery copies could not be checked (%s)." % exc],
+                     "warnings": []}
+        report["recovery_copies"].extend(audit.get("generations") or [])
+        report["recovery_warnings"] = audit.get("warnings") or []
+        report["problems"].extend(audit.get("problems") or [])
+        if not dry_run:
+            try:
+                collected = ark_recovery.gc(live, root=base, now=stamp)
+            except Exception as exc:      # noqa: BLE001 — ditto
+                collected = {"status": "failed", "problems": [str(exc)]}
+            report["recovery_gc"] = collected
+            if collected.get("status") == "deferred" and collected.get("problems"):
+                report["problems"].extend(collected["problems"])
+
     for path in catalogue_targets(base):
         if not path.is_file():
             continue
@@ -1302,6 +1376,24 @@ def summary(report: Dict[str, Any]) -> List[str]:
         add(item.get("said"))
     library = report.get("library") or {}
     add(library.get("said"))
+    for item in report.get("recovery_copies") or []:
+        if item.get("state") == "adopted" or not item.get("db_ok", True) \
+                or item.get("missing") or item.get("mismatched") or item.get("state") == "refused":
+            add(item.get("said"))
+    for warning in report.get("recovery_warnings") or []:
+        add(warning)
+    collected = report.get("recovery_gc") or {}
+    bits = []
+    if collected.get("removed"):
+        bits.append("%d file%s no copy needs" % (
+            collected["removed"], "" if collected["removed"] == 1 else "s"))
+    for key, word in (("partials", "unfinished copy"), ("retired", "retired copy"),
+                      ("pruned", "old copy")):
+        count = len(collected.get(key) or [])
+        if count:
+            bits.append("%d %s%s" % (count, word, "" if count == 1 else "s"))
+    if bits:
+        lines.append("Recovery housekeeping: " + ", ".join(bits) + " cleared away.")
     swept = report.get("swept") or []
     if swept:
         lines.append("%d half-written thing%s cleared away: %s" %

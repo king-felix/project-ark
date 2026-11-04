@@ -1151,3 +1151,130 @@ interruption can do that, and it is deliberately not part of this rehearsal.
 not delete `BLOCK` or `ark.db.recovery/`; they are the evidence. The interesting
 line is the one naming the phase, and whether `ark.db` is the original or the
 candidate. Bring it back to the next session.
+
+---
+
+## 26. FOR YOU — a save that an older recovery copy still needs (20 minutes, **rehearsal root only**)
+
+**Do not do this against the live records or the live saves.** The point is to prove
+the real card and the real `pi` account keep a save blob alive for an older recovery
+copy, and that restoring that copy reads the exact bytes. A copy that holds the
+database but not the blob is the defect this exercise is looking for.
+
+### A. Look at what the box already keeps (2 minutes, safe)
+
+```bash
+sudo /usr/local/sbin/ark-self-heal --json | python3 -m json.tool
+ls -la /srv/ark/api/data/recovery/generations/
+```
+
+You should see up to two `gen-*` folders, each with `ark.db` and
+`manifest.json`. In the JSON, `recovery_copies` should have `db_ok: true` and
+`pinned_missing: []` for each. `recovery_warnings` may name a film that was
+deleted after a copy — that is a bulk file deliberately not kept, not a save.
+
+**What this proves:** the pass is running on the real box and the copies exist.
+**What it does not prove:** that a restore reads the right bytes.
+
+### B. Restore a copy in a rehearsal root (15 minutes, **not the live box**)
+
+Use a spare card, a spare box, or a throwaway folder on this one. Never point
+`ARK_DB` at `/srv/ark/api/data/ark.db`.
+
+1. Make a rehearsal root and copy the records and **one** real save with SQLite's
+   own copy:
+
+```bash
+sudo -u pi bash -s <<'SH'
+set -e
+root=/srv/ark/tmp/recovery-rehearsal
+rm -rf "$root"
+mkdir -p "$root/api/data" "$root/arcade/saves" "$root/arcade/games" "$root/drop/files"
+/srv/ark/venv/bin/python - <<'PY'
+import sqlite3
+src = sqlite3.connect("/srv/ark/api/data/ark.db")
+dst = sqlite3.connect("/srv/ark/tmp/recovery-rehearsal/api/data/ark.db")
+src.backup(dst)
+dst.close(); src.close()
+PY
+save=$(find /srv/ark/arcade/saves -type f -name '*.bin' | head -n 1)
+rel=${save#/srv/ark/arcade/saves/}
+mkdir -p "$root/arcade/saves/$(dirname "$rel")"
+cp "$save" "$root/arcade/saves/$rel"
+printf '%s\n' "$rel"
+SH
+```
+
+2. Keep a recovery copy of the rehearsal root, then replace the save and prove the
+   old blob is still there:
+
+```bash
+sudo -u pi env ARK_ROOT=/srv/ark/tmp/recovery-rehearsal \
+  ARK_DB=/srv/ark/tmp/recovery-rehearsal/api/data/ark.db \
+  PYTHONPATH=/srv/ark/api /srv/ark/venv/bin/python - <<'PY'
+import shutil
+from pathlib import Path
+import ark_db, ark_arcade, ark_recovery
+
+cap = ark_recovery.capture(ark_db.DB_PATH, reason="human rehearsal")
+print(cap.status, cap.generation, cap.said)
+
+with ark_db.read() as conn:
+    row = conn.execute("SELECT * FROM player_saves LIMIT 1").fetchone()
+    game = conn.execute("SELECT filename FROM games WHERE id = ?",
+                        (row["game_id"],)).fetchone()
+player, game_id = row["player_id"], row["game_id"]
+kind, slot = row["kind"], row["slot"]
+old = ark_arcade.save_file(player, row)
+print("the save the copy names:", old)
+
+# The rehearsal root needs the game's own file, because a save refuses to
+# attach to a game whose bytes are not on the card.
+source = Path("/srv/ark/arcade/games") / game["filename"]
+target = Path(ark_db.DB_PATH).parents[2] / "arcade" / "games" / game["filename"]
+target.parent.mkdir(parents=True, exist_ok=True)
+shutil.copy2(source, target)
+
+with ark_db.tx() as conn:
+    ark_arcade.player_save_put(conn, player, game_id, kind, slot,
+                               b"the replacement the rehearsal wrote")
+print("old blob still there:", old.is_file())
+print("pinned by a retained copy:", ark_recovery.protects(ark_db.DB_PATH, old))
+PY
+```
+
+3. Restore the generation over the **rehearsal** database, and read the save:
+
+```bash
+sudo -u pi env ARK_ROOT=/srv/ark/tmp/recovery-rehearsal \
+  ARK_DB=/srv/ark/tmp/recovery-rehearsal/api/data/ark.db \
+  PYTHONPATH=/srv/ark/api /srv/ark/venv/bin/python - <<'PY'
+import ark_db, ark_arcade, ark_recovery, ark_db_replace
+source = ark_recovery.restore_source(ark_db.DB_PATH)
+print("restoring", source.generation, "complete:", source.complete,
+      "missing:", source.missing)
+result = ark_db_replace.replace(source.path, ark_db.DB_PATH,
+                                reason="human rehearsal restore")
+print(result.status, result.said)
+with ark_db.read() as conn:
+    row = conn.execute("SELECT * FROM player_saves LIMIT 1").fetchone()
+    kept = ark_arcade.player_save_get(conn, row["player_id"], row["game_id"],
+                                      row["kind"], row["slot"])
+print("restored bytes:", kept["data"] if kept else None)
+PY
+```
+
+4. The last line must be the bytes that were there **before** the replacement —
+   not `the replacement the rehearsal wrote`. Then remove the rehearsal root:
+
+```bash
+rm -rf /srv/ark/tmp/recovery-rehearsal
+```
+
+**What this proves:** the real card's `fsync`/rename/lock behaviour, the real
+`pi` account, and that a retained copy's save is the original bytes.
+**What it does not prove:** a power cut between `fsync` and the next write, a
+phone's browser, or a card that is physically failing.
+**If it fails:** keep `recovery-rehearsal/`, the generation folder, and the
+sentences printed. Do not delete the live box's `recovery/` folder to make the
+rehearsal pass.

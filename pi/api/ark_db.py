@@ -552,6 +552,56 @@ def connect() -> sqlite3.Connection:
     return conn
 
 
+def defer_until_commit(conn: sqlite3.Connection, action) -> bool:
+    """Run ``action`` only after the transaction this connection is in commits.
+
+    A save is a row *and* a blob.  The row update may be nested inside a caller's
+    transaction (an import, a route that writes more than one thing), so removing
+    the blob it replaced inside that block would take the bytes away before the
+    row that stopped naming them is durable — and a capture between the two sees
+    the old row naming a file that is gone.  Actions registered here run after the
+    outermost ``COMMIT``, and are discarded on ``ROLLBACK``.  An action that
+    raises is ignored: a leftover blob is collected later, a lost one is not.
+
+    Answers ``True`` when the action was registered; ``False`` when this
+    connection is not in a transaction (the caller may act now); ``None`` when it
+    is in one but cannot hold the list (the caller must leave the bytes alone).
+    """
+    if not conn.in_transaction:
+        return False
+    actions = getattr(conn, "_ark_after_commit", None)
+    if actions is None:
+        actions = []
+        try:
+            conn._ark_after_commit = actions
+        except AttributeError:               # pragma: no cover - exotic connection
+            return None
+    actions.append(action)
+    return True
+
+
+def _run_after_commit(conn: sqlite3.Connection) -> None:
+    actions = getattr(conn, "_ark_after_commit", None)
+    if not actions:
+        return
+    try:
+        conn._ark_after_commit = []
+    except AttributeError:                   # pragma: no cover - exotic connection
+        pass
+    for action in actions:
+        try:
+            action()
+        except Exception:                    # noqa: BLE001 — cleanup never fails a commit
+            pass
+
+
+def _drop_after_commit(conn: sqlite3.Connection) -> None:
+    try:
+        conn._ark_after_commit = []
+    except AttributeError:                   # pragma: no cover - exotic connection
+        pass
+
+
 @contextmanager
 def tx(immediate: bool = True, conn: sqlite3.Connection | None = None):
     """A write transaction that always closes the connections it opened.
@@ -566,6 +616,10 @@ def tx(immediate: bool = True, conn: sqlite3.Connection | None = None):
     save row and a file must be published together.  A caller that passes a
     plain read connection gets a real transaction on it, still closed by this
     function only if this function opened it.
+
+    The outermost commit also runs any after-commit actions registered with
+    :func:`defer_until_commit` — file cleanup that must not happen before the row
+    that made the file unreferenced is durable.  A rollback discards them.
     """
     if isinstance(immediate, sqlite3.Connection):   # tx(conn) — the older call shape
         conn, immediate = immediate, True
@@ -579,12 +633,18 @@ def tx(immediate: bool = True, conn: sqlite3.Connection | None = None):
         yield conn
         if started:
             conn.execute("COMMIT")
+            # The row is durable now; only here may a save's replaced blob (or a
+            # file a delete made unreferenced) be removed.
+            _run_after_commit(conn)
     except BaseException:
         if started:
             try:
                 conn.execute("ROLLBACK")
             except sqlite3.Error:
                 pass  # nothing was open any more; the connection is closed below
+            # The row changes were undone; the files they would have freed are
+            # still named by the records that survived.
+            _drop_after_commit(conn)
         raise
     finally:
         if own:

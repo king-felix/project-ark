@@ -6165,3 +6165,163 @@ Mac. To go back, `sudo tar -C /srv/ark -xzf
 /srv/ark/tmp/rollback-src-20261104-005251.tar.gz`, re-run `15-resilience`,
 `60-portal` and `95-backup`, then `sudo systemctl restart ark-api
 ark-media-worker ark-ai`. The pre-deploy bundle is the records' rollback.
+
+---
+
+## 53. A recovery copy that agrees with the files its records name — 3 Nov 2026
+
+### 53.1 The finding, at `448638b` / `ed5f7e0`
+
+The daily pass kept `<db>.good.bak`: SQLite's own copy of the records and nothing
+else.  A game save is **not** one file.  `ark_arcade.player_save_put()` writes the
+new bytes under a content-addressed blob, moves the row to it, and only then
+deletes the blob it replaced.  So a database-only copy taken before that
+replacement names a blob the next save removes.  Putting the copy back after a
+cut restores a row whose file is gone: the page then answers *nothing* rather than
+the save the person made.
+
+The same race existed in an explicit `ark-backup`: it copied the database, then
+walked the files beside it.  A save committed between those two moments could
+leave the copied records naming a blob the walk did not copy.
+
+### 53.2 One authority: `pi/api/ark_recovery.py`
+
+A **generation** is a directory under `<data>/recovery/generations/` holding:
+
+* `ark.db` — SQLite `backup()`, switched to one self-contained DELETE-mode file,
+  fsynced and checked with `quick_check`;
+* `manifest.json` — the database's size/sha256 and every external file the
+  records name, with `to`, `kind`, `pin`, `bulk`, size, sha256 where affordable,
+  and whether the file was present at capture.
+
+The database is the only thing copied.  Save blobs and ordinary shared files are
+**pinned in place**; films/their derivatives and files over `PIN_LIMIT` (64 MiB)
+are recorded by size and never pinned.  Nothing duplicates the film, map or
+encyclopedia libraries; the manifest says so in `excluded`, and the test proves a
+generation folder contains only `ark.db` and `manifest.json`.
+
+**The lock.** `state.lock` beside the generations is taken **exclusively** for a
+capture, a backup, a restore, a media delete or a `discard`; **shared, without
+waiting**, by `player_save_put`'s deletion step and by `_prune_blobs`.  Capture
+therefore copies the database and reads its references while no deletion can run;
+a deletion that begins after the copy sees the pin.  A player never waits for a
+copy; the bytes are simply left for the next pass.  The order is always
+maintenance gate → state lock (backup/restore), so the two cannot deadlock.
+
+**Publication.** Stage under `.gen-*.partial`; copy and check the database;
+compute and check the references; write the manifest with fsync and rename;
+fsync the directory; only then rename the stage to `gen-*` and fsync the parent.
+An interrupted capture is a dot-directory `gc` removes, never a copy.
+
+**The commit rule.** The first version of this work still had a real race, found
+by the concurrency test after the first green run: `player_save_put()` can be
+called inside a **caller's** transaction (an import, a route that writes more
+than one thing).  Its own `ark_db.tx(conn)` is then a nested no-op, so the step
+that removes the blob it replaced ran *before* the row update was durable.  A
+capture between those two moments copied the old row and found the blob gone.
+`ark_db.defer_until_commit()` now registers that removal (and the prune) to run
+after the **outermost** `COMMIT`; a rollback discards it.  The test failed 1 in
+3 runs before the change and passed 20 consecutive runs after it.
+
+**Retiring a copy.** `.good.bak` is normally a hard link to the newest
+generation's database.  When that generation is retired (a File Box file was
+deleted, a restore replaced the records), the link would otherwise point at the
+*pre-change* records, and the next pass could adopt it as its only copy.
+`_retire_now()` drops the name when it is the same inode, `adopt_legacy()` refuses
+a link that still resolves to a `.retired-*` database, and `capture()` does not
+let an **incomplete** copy suppress a fresh one for a day.  The same rule keeps a
+retired directory out of the "unfinished capture" sweep and out of its sentence.
+
+**Retention and space.** `KEEP = 2`.  A new copy is published before an old one is
+removed; `_prune()` never removes the only copy whose manifest was complete.  The
+space check uses `ark_space.require()` on the database's filesystem, before the
+state lock (the policy opens a read connection).  A copy that will not fit is
+refused; nothing is deleted to make it fit.
+
+**Validation.** `validate()` re-reads the database sha256 and `quick_check`, then
+every referenced file: presence, size, and sha256 for pinned files and everything
+up to `HASH_LIMIT`.  A bulk playing copy over the limit is checked by size; the
+manifest records that choice.  `validate_all()` is what the pass reports.
+
+**Migration.** An older `<db>.good.bak` is adopted once, as a generation with a
+manifest and an honest `missing` list.  After that `.good.bak` is a hard link to
+the newest generation's database — still the name older tools expect, with no
+second copy of the bytes.
+
+### 53.3 Integration
+
+* `pi/api/ark_arcade.py` — `_forget()` and `_prune_blobs()` consult
+  `ark_recovery.protects()` under the shared lock.  A replaced or deleted save
+  keeps its old blob while a retained copy names it.
+* `pi/api/ark_self_heal.py` — `snapshot()` adopts a legacy copy and captures a
+  generation; the damaged branch asks `restore_source()` first and reports any
+  missing referenced file alongside its *restored* sentence; `run()` adopts,
+  validates and garbage-collects, and `summary()` prints what it did.
+* `pi/bin/ark_bundle.py` / `ark-backup` / `ark-restore` — a bundle takes the
+  maintenance gate shared and the recovery state lock across the database copy
+  and the file copies, in that order.  The manifest carries a `references` block
+  (the copied records against the bundle's entries), and `--verify`/restore print
+  any save the bundle does not carry.  A restore retires the recovery copies that
+  describe the records it replaced.
+* `pi/api/ark_admin.py` — deleting a File Box file goes through
+  `ark_recovery.discard()`: copies that pin it are retired first, and if the lock
+  cannot be had the row is kept and the owner is asked to try again.
+* `pi/api/ark_media.py` — film-file deletion takes the same lock; a busy lock
+  leaves the bytes rather than splitting a copy.
+* Phases `15-resilience`, `60-portal` and `95-backup` install the module;
+  `tests/conftest.py` isolates it like every other API module.
+
+### 53.4 Tests
+
+`tests/test_recovery.py` (28) builds a throwaway box and proves:
+
+* create, capture, replace three times, restore the generation with
+  `ark_db_replace`, and read the exact original bytes/revision;
+* a put nested inside a caller's transaction removes its old blob only after the
+  outer commit — a copy taken in between sees the old row and the old blob together;
+* a replaced and a deleted save both keep the blob a retained copy names; GC
+  keeps it while pinned and removes it after retirement;
+* an interrupted capture is never published, and a capture that fails before
+  publication leaves no `gen-*`;
+* a restore takes the copies that described the replaced records out of service;
+* no space refuses the new copy and leaves the last verified one intact;
+* retention keeps two and removes the oldest only after a newer complete copy;
+* a capture in progress makes GC wait; a save does not wait for a capture and
+  keeps both blobs;
+* three writer threads and a copier thread leave every published generation with
+  no missing or mismatched pinned file; a GC thread may run beside them and only
+  removes what no live row and no retained copy needs;
+* validation notices a changed blob and a missing blob;
+* a database-only `.good.bak` is adopted with its missing save named;
+* a small shared file is pinned and not copied; a film is bulk, recorded, and
+  not copied; a large shared file is bulk even when its row says zero; deleting a
+  pinned shared file retires its copy;
+* an explicit backup, with a save replacement landing exactly between the
+  database copy and the file copy, still carries the blob its records name;
+* a put inside a caller's transaction leaves the old blob until that transaction
+  commits, and a copy taken in between sees the old row and old blob together;
+* a retired copy is not re-adopted from `.good.bak`; an incomplete copy does not
+  suppress a fresh one; a retired directory is not swept as an unfinished copy;
+* an incomplete copy names its missing file, a hidden ordinary document is still
+  pinned, and a film delete refuses while a copy owns its bytes;
+* the repair pass restores a generation and reports no false problem.
+
+Full suite with the three browser maps excluded: **893 passed, 2 skipped** in
+199.82 s (`895 collected`).  The directly affected suites (db, durability,
+arcade, import, board, media, backup, recovery, self-heal) re-ran together:
+**270 passed** in 64.28 s.
+
+### 53.5 What is not proved
+
+* No generation was restored over the **live** records.  The live box is
+  inspected non-destructively; `docs/HUMAN-TEST-LIST.md` §26 is the rehearsal on a
+  real card/account, in a throwaway root, never against `/srv/ark`.
+* No physical power interruption was performed during a capture.  The
+  interrupted-publication test uses a process-level failure; a torn page or a cut
+  between `fsync` and the next write is still hardware-only.
+* No phone was used.  Bulk content (films, maps, the offline library) is
+  deliberately excluded from automatic copies; a film deleted after a copy is
+  reported as missing by `validate()`, not recovered.
+* A save replacement that happens while a **backup** holds the lock leaves the
+  old blob for the next pass rather than deleting it at once; that is the
+  intended trade, not a leak (GC removes it after the copies that name it retire).

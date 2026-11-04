@@ -41,6 +41,7 @@ import ark_map_store
 import ark_media
 import ark_media_jobs
 import ark_media_web
+import ark_recovery
 import ark_review
 import ark_security as sec
 import ark_space
@@ -1528,7 +1529,17 @@ def file_delete(request: Request, file_id: int, current_password: str = Form("")
             return _redirect("/admin/community?err=" + urllib.parse.quote(
                 "That file is a film on the Media shelf. Delete it from the Media page, "
                 "so its picture and playing copy go with it. Nothing was deleted."))
-        removed = _remove_from_card(row["stored"] or row["name"])
+        name = row["stored"] or row["name"]
+        removed = _remove_from_card(name)
+        if not removed and (ark_storage.drop_dir() / name).exists():
+            # A capture or a backup is using the files beside the records.  The
+            # record is not removed on its own: that would leave bytes on the
+            # card no page names and no pass can reclaim.  The person can try
+            # again when the copy has finished.
+            return shell("Community", _notice(
+                "bad", "<b>Nothing was deleted.</b> That file is being copied just now, "
+                       "or the card will not let it go. Try again in a moment."),
+                ctx=ctx, status=409)
         conn.execute("DELETE FROM files WHERE id = ?", (file_id,))
         ark_db.audit(conn, action="file-delete", actor_id=me["id"], actor_name=me["username"],
                      target=row["display"] or row["name"], result="ok",
@@ -1538,16 +1549,24 @@ def file_delete(request: Request, file_id: int, current_password: str = Form("")
 
 
 def _remove_from_card(name: str) -> bool:
-    """Delete one file from the shared folder, and only from that folder."""
+    """Delete one file from the shared folder, and only from that folder.
+
+    A retained recovery copy may name this file.  ``ark_recovery.discard``
+    retires those copies first, under the lock a capture also takes, so the
+    delete cannot land between a copy naming the file and the manifest
+    protecting it.  When the lock cannot be had, the file is left where it is
+    and the caller keeps the record too: bytes on the card with no page naming
+    them are not a delete anybody can finish.
+    """
     folder = ark_storage.drop_dir()
     target = folder / name
     if target.parent != folder or target.name in ("", ".", ".."):
         return False          # never follow a name out of the folder
     try:
-        target.unlink()
-        return True
-    except OSError:
-        return False          # already gone, or the card went read-only
+        return ark_recovery.discard(ark_db.DB_PATH, target,
+                                    reason="the owner deleted it from the File Box")
+    except Exception:         # noqa: BLE001 — a broken copy must not cost the file
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -3576,6 +3595,14 @@ def media_delete(request: Request, item_id: int, confirm: str = Form(""),
         if blocked is not None:
             return blocked
         result = ark_media.delete(conn, item_id)
+        if result.get("reason") == "busy":
+            ark_db.audit(conn, action="media-delete", actor_id=ctx.admin["id"],
+                         actor_name=ctx.admin["username"], target=str(item_id),
+                         result="refused",
+                         detail="the bytes are being copied just now")
+            return _redirect("/admin/media?err=" + urllib.parse.quote(
+                "Nothing was deleted. The box is copying that film just now; "
+                "try again in a moment."))
         ark_db.audit(conn, action="media-delete", actor_id=ctx.admin["id"],
                      actor_name=ctx.admin["username"], target=str(item_id), result="ok",
                      detail=f"freed about {result['freed']} bytes")
@@ -3602,7 +3629,13 @@ def media_delete_many(request: Request, ids: Optional[List[int]] = Form(None),
         result = ark_media.delete_many(conn, chosen)
         ark_db.audit(conn, action="media-delete", actor_id=ctx.admin["id"],
                      actor_name=ctx.admin["username"], target=f"{result['removed']} films",
-                     result="ok", detail=f"freed about {result['freed']} bytes")
+                     result="ok" if not result.get("busy") else "partial",
+                     detail=f"freed about {result['freed']} bytes; "
+                            f"{result.get('busy', 0)} still being copied")
+    if result.get("busy"):
+        return _redirect("/admin/media?err=" + urllib.parse.quote(
+            f"{result['removed']} deleted; {result['busy']} could not be removed just "
+            "now because the box is copying them. Try again in a moment."))
     return _redirect("/admin/media?ok=" + urllib.parse.quote(
         f"{result['removed']} deleted, about {ark_media.human_size(result['freed'])} removed. "
         "A file somebody is watching right now only becomes free space when they close it."))

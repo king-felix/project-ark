@@ -772,12 +772,16 @@ A pass repairs, or says what it could not: **a clock in the past** is set forwar
 to the newest file on the card; **a half-written small file**
 (`ark_status.json`, the import ledger, the network watchdog's counters) is set
 aside as `…corrupt-<stamp>` and the copy from before is put back only if that
-copy reads; **a database SQLite cannot open** is replaced only by a copy that
-passes the same `quick_check`, and one with no good copy is left exactly where it
-is; **half-built uploads and bundles** are swept after 6–12 hours; **a library
-catalogue listing books that are gone** is rebuilt. It never deletes a database,
-never starts a service it did not stop, and takes no copy — a copy is still your
-deliberate act (see above). A damaged database is replaced only under the
+copy reads; **a database SQLite cannot open** is replaced only by a recovery copy
+whose database passes `quick_check` and whose referenced files are accounted for,
+and one with no good copy is left exactly where it is; **half-built uploads and
+bundles** are swept after 6–12 hours; **a library catalogue listing books that are
+gone** is rebuilt. It never deletes a database, never starts a service it did not
+stop, and keeps two small recovery copies of the records — not a backup bundle.
+A save is a row *and* a blob, so a retained copy pins the save blobs its records
+name: replacing or deleting a save does not take away the bytes an older copy
+still needs. Nothing is duplicated: films, maps and the offline library are
+pointed at, never copied, and are re-imported rather than pretended. A damaged database is replaced only under the
 maintenance gate, and the replacement is a recorded sequence: the original main
 file and its `-wal`/`-shm` are preserved, the old journal is moved aside rather
 than deleted, the new file is verified, and a crash is resolved at the next start.

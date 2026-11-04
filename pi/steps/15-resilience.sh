@@ -30,7 +30,7 @@ ark_step "PHASE 1b — surviving a power cut"
 # ---- the tool and the two modules it imports --------------------------------
 # ark_maintenance.py is the maintenance protocol both this pass and every
 # ordinary database connection follow; it ships beside the repair module.
-for mod in ark_atomic.py ark_maintenance.py ark_db_replace.py ark_self_heal.py; do
+for mod in ark_atomic.py ark_maintenance.py ark_db_replace.py ark_recovery.py ark_self_heal.py; do
   ark_copy "$ARK_SRC/api/$mod" "$ARK_ROOT/api/$mod" 644 root:root
 done
 ark_copy "$ARK_SRC/bin/ark-self-heal" /usr/local/sbin/ark-self-heal 755 root:root

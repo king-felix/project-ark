@@ -32,19 +32,42 @@ import os
 import re
 import sqlite3
 import tempfile
+import threading
 import time
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import ark_db
+import ark_recovery
 import ark_security as sec
 
 # ---------------------------------------------------------------------------
 #  constants
 # ---------------------------------------------------------------------------
 PACKAGE_DIR = Path(__file__).resolve().parent
+
+#: One lock per player/game folder.  A save is a row and a blob, and two
+#: concurrent puts on the same row could otherwise interleave as: A reads the
+#: row, B commits a new blob and removes the old one, A decides the old blob is
+#: still there and commits a row naming it.  The lock covers "read the row,
+#: write/confirm the blob, commit the row, remove what it replaced" for one save
+#: folder.  It is process-local on purpose: the API is the only writer of saves,
+#: and a restore stops it at the maintenance gate.
+_SAVE_LOCKS: Dict[Tuple[int, int], threading.RLock] = {}
+_SAVE_LOCKS_GUARD = threading.Lock()
+
+
+def _save_lock(player_id: int, game_id: int) -> threading.RLock:
+    key = (int(player_id), int(game_id))
+    with _SAVE_LOCKS_GUARD:
+        lock = _SAVE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _SAVE_LOCKS[key] = lock
+        return lock
+
 
 MAX_SAVE = 16 * 1024 * 1024           # one save file; bigger than any honest save
 SAVE_LIST_LIMIT = 100                 # per player, per game
@@ -656,13 +679,47 @@ def save_file(player_id: int, row: Any) -> Optional[Path]:
 
 
 def _forget(path: Optional[Path]) -> None:
-    """Remove a file this box made, and say nothing if it is already gone."""
+    """Remove a file this box made — unless a retained recovery copy needs it.
+
+    The recovery copy's manifest is the second opinion this function used to
+    lack.  A save that was replaced is unreferenced by the live records, but an
+    older recovery database can still name its blob; deleting it would make that
+    copy a promise the box cannot keep.  The shared side of the recovery lock is
+    taken without waiting, so a player never pauses behind a backup; a capture in
+    progress simply leaves the bytes for the next pass.
+    """
     if path is None:
         return
+    db = ark_db.DB_PATH
     try:
-        path.unlink()
-    except OSError:
-        pass
+        with ark_recovery.deletion_guard(db) as held:
+            if not held:
+                return
+            if ark_recovery.protects(db, path):
+                return
+            try:
+                path.unlink()
+            except OSError:
+                pass
+    except Exception:                        # noqa: BLE001 — never break a save over housekeeping
+        return
+
+
+def _defer_or_run(conn: sqlite3.Connection, action) -> None:
+    """Run file housekeeping now, or after the caller's transaction commits.
+
+    A save put may be nested inside a larger transaction.  Removing the blob it
+    replaced before that transaction commits is how a capture comes to copy the
+    old row and find the file already gone; the row and the deletion must become
+    durable in that order.  When the action cannot be registered, the bytes are
+    left for the next pass — a leftover is cheaper than a lost save.
+    """
+    try:
+        registered = ark_db.defer_until_commit(conn, action)
+    except Exception:                        # noqa: BLE001 — never fail a save over cleanup
+        return
+    if registered is False:
+        action()
 
 
 def _prune_blobs(conn: sqlite3.Connection, player_id: int, game_id: int) -> None:
@@ -672,29 +729,43 @@ def _prune_blobs(conn: sqlite3.Connection, player_id: int, game_id: int) -> None
     crashed put left behind or a save that has been replaced.  Age is the guard: a
     blob younger than ``STALE_BLOB_HOURS`` may belong to another browser saving
     right now, and deleting a save somebody is in the middle of writing is far
-    worse than leaving a file for another day.
+    worse than leaving a file for another day.  A blob named by a retained
+    recovery copy is never unreferenced, however old it is.
     """
     folder = blob_dir(player_id, game_id)
+    db = ark_db.DB_PATH
     try:
-        named = {str(r[0]) for r in conn.execute(
-            "SELECT blob FROM player_saves WHERE player_id = ? AND game_id = ? AND blob <> ''",
-            (int(player_id), int(game_id))).fetchall()}
-    except sqlite3.DatabaseError:
+        with ark_recovery.deletion_guard(db) as held:
+            if not held:
+                return
+            try:
+                named = {str(r[0]) for r in conn.execute(
+                    "SELECT blob FROM player_saves WHERE player_id = ? AND game_id = ? "
+                    "AND blob <> ''",
+                    (int(player_id), int(game_id))).fetchall()}
+            except sqlite3.DatabaseError:
+                return
+            protected, unknown = ark_recovery.protected_paths(db)
+            if unknown:
+                return
+            cutoff = time.time() - STALE_BLOB_HOURS * 3600.0
+            try:
+                entries = list(os.scandir(str(folder)))
+            except OSError:
+                return
+            for entry in entries:
+                if entry.name in named:
+                    continue
+                try:
+                    if not entry.is_file(follow_symlinks=False) or entry.stat().st_mtime > cutoff:
+                        continue
+                    if str(Path(entry.path).resolve()) in protected:
+                        continue
+                    os.unlink(entry.path)
+                except OSError:
+                    continue
+    except Exception:                        # noqa: BLE001 — leave bytes, never break a save
         return
-    cutoff = time.time() - STALE_BLOB_HOURS * 3600.0
-    try:
-        entries = list(os.scandir(str(folder)))
-    except OSError:
-        return
-    for entry in entries:
-        if entry.name in named:
-            continue
-        try:
-            if not entry.is_file(follow_symlinks=False) or entry.stat().st_mtime > cutoff:
-                continue
-            os.unlink(entry.path)
-        except OSError:
-            continue
 
 
 def saves_for(conn: sqlite3.Connection, player_id: int,
@@ -818,11 +889,22 @@ def player_save_put(conn: sqlite3.Connection, player_id: int, game_id: int, kind
     how a save used to come back as "the file does not match its record".
     """
     game = _check_game(conn, game_id)
-    filename = save_filename(kind, slot)
     if not data:
         raise SaveRefused("That save is empty — there is nothing to keep.")
     if len(data) > MAX_SAVE:
         raise SaveRefused("That save is larger than this box keeps (16 MB).")
+    with _save_lock(player_id, game["id"]):
+        return _player_save_put_locked(conn, player_id, game, kind, slot, data,
+                                       expected_revision=expected_revision,
+                                       expected_sha=expected_sha)
+
+
+def _player_save_put_locked(conn: sqlite3.Connection, player_id: int,
+                            game: Dict[str, Any], kind: str, slot: int, data: bytes,
+                            expected_revision: Optional[int] = None,
+                            expected_sha: str = "") -> Dict[str, Any]:
+    """The part of a put that must not interleave with another put in this folder."""
+    filename = save_filename(kind, slot)
     row = conn.execute(
         "SELECT * FROM player_saves WHERE player_id = ? AND game_id = ? AND kind = ? AND slot = ?",
         (int(player_id), int(game["id"]), kind, int(slot)),
@@ -871,17 +953,23 @@ def player_save_put(conn: sqlite3.Connection, player_id: int, game_id: int, kind
                 raise SaveConflict("This save changed somewhere else. Reload the game before saving.")
     except BaseException:
         # The row is the truth.  Bytes no row names are unreferenced rather than
-        # wrong, and the next successful put in this folder clears them away.
-        _prune_blobs(conn, player_id, game["id"])
+        # wrong; prune them only after the transaction that holds the row is
+        # durable (or leave them for the next pass).
+        _defer_or_run(conn, lambda: _prune_blobs(conn, player_id, game["id"]))
         raise
 
-    # Step 3 — what this save replaced, now that the record has landed.
-    if previous_blob and previous_blob != blob:
-        _forget(blob_path(player_id, game["id"], previous_blob))
-    if row and not previous_blob:
-        # A row from before the blob layout: its old slot file is redundant now.
-        _forget(save_path(player_id, game["id"], kind, slot))
-    _prune_blobs(conn, player_id, game["id"])
+    # Step 3 — what this save replaced, now that the record has landed.  The
+    # record's transaction may belong to a caller (an import, a route); the
+    # removal waits for it to commit.
+    def _after_commit() -> None:
+        if previous_blob and previous_blob != blob:
+            _forget(blob_path(player_id, game["id"], previous_blob))
+        if row and not previous_blob:
+            # A row from before the blob layout: its old slot file is redundant.
+            _forget(save_path(player_id, game["id"], kind, slot))
+        _prune_blobs(conn, player_id, game["id"])
+
+    _defer_or_run(conn, _after_commit)
     return {
         "game_id": int(game["id"]), "slug": game["slug"], "kind": kind, "slot": int(slot),
         "filename": filename, "size": len(data), "sha256": digest,
@@ -892,18 +980,20 @@ def player_save_put(conn: sqlite3.Connection, player_id: int, game_id: int, kind
 
 def player_save_get(conn: sqlite3.Connection, player_id: int, game_id: int,
                     kind: str, slot: int) -> Optional[Dict[str, Any]]:
-    row = conn.execute(
-        "SELECT * FROM player_saves WHERE player_id = ? AND game_id = ? AND kind = ? AND slot = ?",
-        (int(player_id), int(game_id), kind, int(slot)),
-    ).fetchone()
-    if not row:
-        return None
-    path = save_file(player_id, row)
-    if path is None or not path.is_file():
-        return None
-    data = path.read_bytes()
-    if sha256_bytes(data) != row["sha256"]:
-        raise SaveConflict("The save file on this box does not match its record. It was not handed out.")
+    with _save_lock(player_id, game_id):
+        row = conn.execute(
+            "SELECT * FROM player_saves WHERE player_id = ? AND game_id = ? "
+            "AND kind = ? AND slot = ?",
+            (int(player_id), int(game_id), kind, int(slot)),
+        ).fetchone()
+        if not row:
+            return None
+        path = save_file(player_id, row)
+        if path is None or not path.is_file():
+            return None
+        data = path.read_bytes()
+        if sha256_bytes(data) != row["sha256"]:
+            raise SaveConflict("The save file on this box does not match its record. It was not handed out.")
     out = _row(row)
     out.pop("blob", None)
     out["data"] = data
@@ -918,13 +1008,27 @@ def player_save_delete(conn: sqlite3.Connection, player_id: int, save_id: int) -
     ).fetchone()
     if not row:
         return False
-    with ark_db.tx(conn):
-        conn.execute("DELETE FROM player_saves WHERE id = ? AND player_id = ?",
-                     (int(save_id), int(player_id)))
-    # Nothing names these bytes any more, so they may go — and only now.
-    _forget(save_file(player_id, row))
-    _forget(save_path(player_id, int(row["game_id"]), row["kind"], int(row["slot"])))
-    _prune_blobs(conn, player_id, int(row["game_id"]))
+    with _save_lock(player_id, int(row["game_id"])):
+        # Read it again under the lock: a put in another thread may have replaced
+        # this save between the first read and now.
+        row = conn.execute(
+            "SELECT * FROM player_saves WHERE id = ? AND player_id = ?",
+            (int(save_id), int(player_id)),
+        ).fetchone()
+        if not row:
+            return False
+        with ark_db.tx(conn):
+            conn.execute("DELETE FROM player_saves WHERE id = ? AND player_id = ?",
+                         (int(save_id), int(player_id)))
+        # Nothing names these bytes any more, so they may go — after the row's
+        # transaction commits, never before.
+        def _after_commit() -> None:
+            _forget(save_file(player_id, row))
+            _forget(save_path(player_id, int(row["game_id"]), row["kind"],
+                              int(row["slot"])))
+            _prune_blobs(conn, player_id, int(row["game_id"]))
+
+        _defer_or_run(conn, _after_commit)
     return True
 
 

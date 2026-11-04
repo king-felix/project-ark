@@ -345,7 +345,10 @@ you there by itself); the name is only for games and cannot change anything on t
 Three saves per game are kept, and **Download all my saves** gives you one zip to keep
 somewhere else. **Put these saves back** takes that zip on another Ark. If a save was
 changed on another device while a game was open, the box refuses the older one and asks
-you to reload — it never lets an old tab overwrite a newer game.
+you to reload — it never lets an old tab overwrite a newer game. The box also keeps two
+small recovery copies of its own records; while one is kept, the save bytes it names are
+kept too, so replacing a save today does not make yesterday's copy a lie. Those copies
+never include films or the offline library.
 
 ### 3.8 Is it happy? — `http://ark.lan/api/status`
 
@@ -791,7 +794,7 @@ Re-provisioning is idempotent: re-running any phase repairs it rather than dupli
 | Forgot the address | — | `ark.lan`, `ark.local`, `10.42.0.1` — all the same box |
 | After a power cut the times look wrong (“3 hours ago” about something made yesterday) | the Pi has no clock battery, so it woke up in the past | nothing — the box sets the clock from the newest file on the card before any page opens. If it is still wrong, `sudo ark-self-heal --dry-run` says what it thinks |
 | A page mentions a repair, or a file was “set aside” | the box found a half-written file after a cut and kept it rather than using it | nothing; `cat /srv/ark/logs/self-heal.log` reads like a sentence. A *repair* is not a fault — only the line under `problems` needs a person |
-| The box ran on after a cut with an empty shelf, or a page said the records could not be opened | the database would not open | it keeps the damaged file and puts back the last copy that passes the check; if none does, **What is working** names it. A copy is the only cure: `sudo ark-backup --to /srv/ark/backup` |
+| The box ran on after a cut with an empty shelf, or a page said the records could not be opened | the database would not open | it keeps the damaged file and puts back the newest recovery copy whose database and files agree; if none does, **What is working** names it. A bundle is still the cure for a lost card: `sudo ark-backup --to /srv/ark/backup` |
 
 ---
 

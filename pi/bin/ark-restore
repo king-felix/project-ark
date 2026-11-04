@@ -68,6 +68,7 @@ open still makes the restore refuse rather than write underneath it.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import pwd
 import shutil
@@ -87,6 +88,10 @@ if str(_API_DIR) not in sys.path:
     sys.path.insert(0, str(_API_DIR))
 import ark_maintenance                    # noqa: E402 — the one maintenance rule
 import ark_db_replace                     # noqa: E402 — the one replacement sequence
+try:                                      # the coherent-copy module (optional mid-deploy)
+    import ark_recovery
+except ImportError:                       # pragma: no cover - deploy fault
+    ark_recovery = None  # type: ignore[assignment]
 
 #: How long the restore waits for a repair pass to finish before refusing.  A
 #: repair is a handful of file operations; past this the restore says so and
@@ -410,6 +415,18 @@ def restore(bundle_path: Path, *, force: bool, dry: bool, no_files: bool,
             " or find a copy whose fingerprints all match (`ark-backup --verify <folder>`).")
         return 1
     say(f"Checked {len(data['entries'])} files in {bundle_path.name}: every fingerprint matches.")
+    references = bundle_tools.check_references(bundle_path, data)
+    if references.get("available") and references.get("missing_saves"):
+        say(f"Note: {len(references['missing_saves'])} game save"
+            f"{'s' if len(references['missing_saves']) != 1 else ''} named by the records "
+            f"{'are' if len(references['missing_saves']) != 1 else 'is'} not in this bundle"
+            + (" (it is records-only)." if references.get("records_only") else
+               "; those saves will read as missing after the restore."))
+    if references.get("available") and references.get("missing_files") \
+            and not references.get("records_only"):
+        say(f"Note: {len(references['missing_files'])} shared file"
+            f"{'s' if len(references['missing_files']) != 1 else ''} named by the records "
+            "is not in this bundle; those downloads will read as missing after the restore.")
 
     if dry:
         pending = ark_db_replace.recover_pending(paths["db"], dry_run=True)
@@ -468,6 +485,7 @@ def restore(bundle_path: Path, *, force: bool, dry: bool, no_files: bool,
         results: list[dict] = []
         refusal = ""
         safe_to_start = True
+        retired: list[str] = []
         #: Set the moment the main file is the new one, and again when no journal of
         #: the old one survives.  A failure between the two is the one outcome that
         #: must leave the box dark (see ``put_database``).
@@ -482,27 +500,63 @@ def restore(bundle_path: Path, *, force: bool, dry: bool, no_files: bool,
                                "backup was not put back and nothing was changed.  Close "
                                "it (or stop it) and try again.")
                 else:
-                    for entry in data["entries"]:
-                        to = entry.get("to")
-                        if not to:
-                            continue                        # RESTORE-ME.txt and friends
-                        target = inside_or_none(paths["root"], to)
-                        if target is None:
-                            refusal = (f"the manifest wants to write outside the box: "
-                                       f"{to!r} — refused")
-                            break
-                        source = bundle_path / entry["path"]
-                        if entry["path"] == "database/ark.db":
-                            results.append(put_database(source, target, False, db_state))
-                        elif entry["path"].startswith("calibre-incoming/"):
-                            results.append(put_ledger(source, paths, False,
-                                                      "no" if no_files else ledger_mode))
-                        elif entry["path"].startswith("arcade-saves/"):
-                            if not no_files:
-                                results.append(put_private_file(source, target, False,
-                                                                replace=force))
-                        elif not no_files:
-                            results.append(put_file(source, target, False))
+                    # The gate keeps every connection out; this keeps a capture
+                    # (and a backup) out of the files beside the records for the
+                    # same window.  Both are taken gate-then-state, so a capture
+                    # that is already running finishes first instead of the two
+                    # waiting on each other.
+                    files_lock = (ark_recovery.capture_lock(paths["db"], wait=GATE_WAIT)
+                                  if ark_recovery is not None
+                                  else contextlib.nullcontext(True))
+                    with files_lock as files_held:
+                        if not files_held:
+                            refusal = ("another copy or a backup is using the files "
+                                       "beside the records right now, so the backup was "
+                                       "not put back.  Nothing was changed.")
+                        else:
+                            for entry in data["entries"]:
+                                to = entry.get("to")
+                                if not to:
+                                    continue                    # RESTORE-ME.txt and friends
+                                target = inside_or_none(paths["root"], to)
+                                if target is None:
+                                    refusal = (f"the manifest wants to write outside the "
+                                               f"box: {to!r} — refused")
+                                    break
+                                source = bundle_path / entry["path"]
+                                if entry["path"] == "database/ark.db":
+                                    restored_source = source
+                                    results.append(put_database(source, target, False,
+                                                                db_state))
+                                elif entry["path"].startswith("calibre-incoming/"):
+                                    results.append(put_ledger(source, paths, False,
+                                                              "no" if no_files else ledger_mode))
+                                elif entry["path"].startswith("arcade-saves/"):
+                                    if not no_files:
+                                        results.append(put_private_file(
+                                            source, target, False, replace=force))
+                                elif not no_files:
+                                    results.append(put_file(source, target, False))
+                            # The copies that describe the records this run
+                            # replaced are retired before the lock is released: a
+                            # capture that slipped into the gap would otherwise be
+                            # retired by this same restore.  Their database copies
+                            # are moved, never deleted, and the next pass describes
+                            # the box as it is.
+                            if db_state["replaced"] and ark_recovery is not None:
+                                try:
+                                    retired = ark_recovery.retire_all_locked(
+                                        paths["db"],
+                                        reason="the records were restored from a bundle")
+                                except Exception as exc:  # noqa: BLE001 — the restore stands
+                                    say("(The older recovery copies could not be "
+                                        f"retired: {exc}.)")
+                                try:
+                                    if restored_source is not None:
+                                        ark_recovery.mark_good(paths["db"], restored_source)
+                                except Exception:      # noqa: BLE001 — the records are in place
+                                    say("(The database-only copy beside the records was "
+                                        "not refreshed; the next pass will make one.)")
         except RestoreRefused as refused:
             # A refusal is only worth what it protects: everything already written
             # keeps its owner, and whether the box may be started again is decided by
@@ -543,6 +597,10 @@ def restore(bundle_path: Path, *, force: bool, dry: bool, no_files: bool,
     say("Done.  The records are in place"
         + (" and everything paused for the copy has been started again."
            if paused else "."))
+    if retired:
+        say(f"Retired {len(retired)} older recovery cop{'y' if len(retired) == 1 else 'ies'}: "
+            "they described the records this restore replaced. The next daily pass keeps "
+            "a fresh one.")
     if ledger_mode == "auto" and not no_files:
         beside = paths["ledger"].with_name(paths["ledger"].name + ".from-backup")
         if beside.exists():

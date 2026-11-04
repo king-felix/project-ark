@@ -1,8 +1,8 @@
 # Project ARK — requirements matrix
 
-**Date:** 1 November 2026  
-**Branch:** `feature/admin-hardening`  
-**Suite:** `617 passed, 2 skipped` (27 files; `python -m pytest -o addopts='--strict-markers' -q`, Mac, throwaway databases) — the two skips are QR cross-checks that need `qrcode` / `opencv-python-headless` on the machine  
+**Date:** 3 November 2026
+**Branch:** `feature/admin-hardening`
+**Suite:** `893 passed, 2 skipped` (`895 collected`, 36 files; `python -m pytest tests --ignore=tests/test_maps_browser.py -o addopts='--strict-markers' -q`, Mac, throwaway databases) — the two skips are QR cross-checks that need `qrcode` / `opencv-python-headless` on the machine; the three Chromium maps tests are excluded by the project's usual command
 **Hardware:** **deployed 25 Oct 2026** — `90-verify` green, `/api/ready` 200, the doors, the book
 route rules, a bundle and the arcade origin all answered on the Pi (`docs/IMPLEMENTATION-LOG.md`
 §15), `ark-arcade --import` answered honestly three times on the box (§18.4), and the name-from-the-
@@ -466,6 +466,7 @@ household member has opened `/household` on a phone.
 | R13 | DONE (code + test) | shelf, ranges, worker; real phone playback is human work |
 | R14 | DONE (code + real-browser test + live Pi) | live Pi and desktop Chromium offline journey yes; **no real phone, no owner region, eviction unproven** |
 | R15 | DONE (code + test + live Pi) | shelves, films-not-searched, digests yes; real phone playback and a person's judgement of the shelves are human work |
+| R16 | DONE (code + test) | capture/pin/retain/validate/GC yes; real-device restore is human work |
 | A | PARTIAL | accounts/community/games/health yes; players/services/backup UI no |
 | B | PARTIAL (early) | guest play + named saves + preferences yes; history/metadata/visuals no |
 | C | PARTIAL | stage 3–6 fixes yes; thermal/jobs/search cancellation no |
@@ -760,6 +761,32 @@ search box is allowed to be vague about which is which.
 **Not proved here:** that a real phone plays these films smoothly, that a person finds the
 shelves well named, or that a 2 GB video shelf is pleasant to browse on a small screen.
 Those are `docs/HUMAN-TEST-LIST.md` §23, not code claims.
+
+---
+
+## R16 — a recovery copy agrees with the files its records name
+
+**Status: DONE (code + test).** The daily pass used to keep the database and nothing
+else. A player's save is a row **and** a content-addressed blob; replacing a save
+deleted the old blob, so an older copy restored a row whose bytes were gone.
+
+| Acceptance sentence | Where | Test |
+|---|---|---|
+| A retained recovery copy names every save, shared file and film file its records expect, with size and digest where affordable | `ark_recovery.references()`, `capture()` | `test_recovery.py::test_a_recovery_copy_restores_the_exact_bytes_its_row_named`; `::test_a_small_shared_file_is_pinned_and_not_copied`; `::test_a_film_is_recorded_but_not_pinned_or_copied` |
+| Saves (and small shared files) are pinned in place; a replacement or delete cannot take away a blob a retained copy needs | `ark_arcade._forget()`/`_prune_blobs()`, `ark_recovery.protects()` | `::test_replacing_a_save_keeps_its_blob_while_a_copy_names_it`; `::test_deleting_a_save_leaves_its_bytes_while_a_copy_names_them`; `::test_a_save_never_waits_for_a_copy_and_never_loses_its_bytes` |
+| Capture and GC take turns on one lock, so a blob cannot vanish between identification and protection | `ark_recovery.capture_lock()`/`deletion_guard()`/`gc()` | `::test_a_capture_in_progress_makes_collection_wait_instead_of_guessing`; `::test_saves_and_copies_at_once_never_leave_a_copy_naming_a_gone_blob` |
+| A copy is published only after its database and manifest are durable and checked | `ark_recovery.capture()` stage → fsync → rename | `::test_an_interrupted_copy_is_never_published_and_is_cleared`; `::test_a_copy_that_fails_before_publication_leaves_no_generation` |
+| Retention is bounded, and the last verified copy is never spent to fit a new one | `KEEP = 2`, `_prune()`, `_space_allows()` | `::test_a_copy_that_cannot_fit_leaves_the_last_verified_copy_alone`; `::test_retention_removes_an_old_copy_only_after_a_newer_one_is_whole` |
+| Validation reads referenced files, not only `quick_check` | `ark_recovery.validate()` | `::test_validation_notices_a_missing_blob_and_a_changed_one` |
+| An older database-only `.good.bak` is adopted once and its missing files are named | `ark_recovery.adopt_legacy()`, `ark_self_heal.snapshot()` | `::test_an_old_database_only_copy_is_adopted_and_its_missing_files_named` |
+| An explicit backup is coherent too: the DB copy and the files beside it cannot be split by a save replacement | `ark_bundle.capture_lock()`, `ark-backup.take()` | `::test_a_backup_cannot_be_split_by_a_save_landing_during_the_copy` |
+| Deleting a pinned shared file retires the copy that needs it; films/maps/collections are never duplicated | `ark_recovery.discard()`, `EXCLUDED` | `::test_deleting_a_pinned_shared_file_retires_the_copy_that_needs_it`; `::test_a_recovery_copy_does_not_copy_the_library` |
+
+**Not proved here:** a restore of a generation against the **live** records (the
+live box is only inspected; a real-device rehearsal is `docs/HUMAN-TEST-LIST.md`
+§26), a physical power interruption during capture, and a phone. The film, map
+and encyclopedia libraries are deliberately excluded from automatic copies; a
+film whose bytes are gone is reported by `validate()`, never silently promised.
 
 ---
 

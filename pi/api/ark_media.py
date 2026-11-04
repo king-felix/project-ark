@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 import ark_db
+import ark_recovery
 import ark_space
 import ark_storage
 
@@ -977,6 +978,30 @@ def captions(conn: sqlite3.Connection, media_id: int) -> list:
 # ---------------------------------------------------------------------------
 #  deleting
 # ---------------------------------------------------------------------------
+def _discard(path: Path, reason: str) -> Optional[int]:
+    """Remove one film file under the recovery lock; answer the bytes freed.
+
+    A film's bytes are recorded by a recovery copy but never pinned: they are
+    bulk content, and holding a 20 GiB playing copy for two days after a person
+    deletes the film would be a worse promise than the one this module makes.
+    The lock still matters: a backup copying this file cannot have it vanish
+    half-way through the copy, and a capture cannot name a file that is being
+    removed.  ``None`` means the file is still there because another copy owns
+    the moment; ``0`` means it was already gone; a positive number is what was
+    actually freed.
+    """
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return 0
+    try:
+        if not ark_recovery.discard(ark_db.DB_PATH, path, reason=reason):
+            return None
+    except Exception:                        # noqa: BLE001 — leave the bytes, never split a copy
+        return None
+    return int(size or 0)
+
+
 def delete(conn: sqlite3.Connection, media_id: int) -> dict:
     """Remove one film: its work, its derivatives, and the bytes nobody else uses.
 
@@ -993,21 +1018,27 @@ def delete(conn: sqlite3.Connection, media_id: int) -> dict:
         return {"removed": 0, "freed": 0}
     stored = str(row["stored"] or "")
     freed = 0
+    busy = False
     for path in (poster_path(row), play_path(row)):
         if path is None:
             continue
-        try:
-            freed += path.stat().st_size
-            path.unlink()
-        except OSError:
-            pass
+        amount = _discard(path, "a film was deleted")
+        if amount is None:
+            busy = True
+        else:
+            freed += amount
     for caption in captions(conn, media_id):
-        try:
-            path = subs_dir() / str(caption["stored"])
-            freed += path.stat().st_size
-            path.unlink()
-        except OSError:
-            pass
+        path = subs_dir() / str(caption["stored"])
+        amount = _discard(path, "a film was deleted")
+        if amount is None:
+            busy = True
+        else:
+            freed += amount
+    if busy:
+        # A copy or a backup owns a file this second.  The film stays on the
+        # shelf and the owner can try again; removing the rows now would leave
+        # bytes on the card that no page names and no pass can reclaim.
+        return {"removed": 0, "freed": freed, "reason": "busy"}
     conn.execute("DELETE FROM media_subs WHERE media_id = ?", (int(media_id),))
     conn.execute("DELETE FROM media_jobs WHERE media_id = ?", (int(media_id),))
     conn.execute("DELETE FROM media WHERE id = ?", (int(media_id),))
@@ -1021,11 +1052,10 @@ def delete(conn: sqlite3.Connection, media_id: int) -> dict:
                                 (stored,)).fetchone()[0]
         if not others and file_row is not None and int(carriers or 0) <= 1:
             path = ark_storage.drop_dir() / stored
-            try:
-                freed += path.stat().st_size
-                path.unlink()
-            except OSError:
-                pass
+            amount = _discard(path, "a film was deleted")
+            if amount is None:
+                return {"removed": 0, "freed": freed, "reason": "busy"}
+            freed += amount
             conn.execute("DELETE FROM files WHERE id = ?", (int(file_row["id"]),))
     return {"removed": 1, "freed": freed}
 
@@ -1066,13 +1096,14 @@ def release_original(conn: sqlite3.Connection, media_id: int) -> dict:
     if others:
         return {"removed": 0, "freed": 0, "reason": "shared"}
     path = ark_storage.drop_dir() / stored
-    freed = 0
     try:
         freed = path.stat().st_size
-        path.unlink()
     except FileNotFoundError:
         freed = 0
     except OSError:
+        return {"removed": 0, "freed": 0, "reason": "busy"}
+    if not ark_recovery.discard(ark_db.DB_PATH, path,
+                                reason="a film's upload was released"):
         return {"removed": 0, "freed": 0, "reason": "busy"}
     if file_row is not None:
         conn.execute("DELETE FROM files WHERE id = ?", (int(file_row["id"]),))
@@ -1108,11 +1139,14 @@ def release_ready_originals(conn: sqlite3.Connection) -> dict:
 def delete_many(conn: sqlite3.Connection, ids: Iterable[int]) -> dict:
     removed = 0
     freed = 0
+    busy = 0
     for media_id in list(ids):
         result = delete(conn, int(media_id))
         removed += int(result["removed"])
         freed += int(result["freed"])
-    return {"removed": removed, "freed": freed}
+        if result.get("reason") == "busy":
+            busy += 1
+    return {"removed": removed, "freed": freed, "busy": busy}
 
 
 def largest(conn: sqlite3.Connection, limit: int = 12) -> list:

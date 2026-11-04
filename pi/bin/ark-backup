@@ -197,7 +197,7 @@ def _adopt(tree: Path, dest: Path) -> None:
 #  taking one
 # ---------------------------------------------------------------------------
 def take(dest: Path, keep: int, no_files: bool, quiet: bool, dry: bool) -> int:
-    paths, shared = plan(no_files)
+    paths = bundle_tools.box_paths()
     if not paths["db"].is_file():
         return fail(f"there is no database at {paths['db']} — there is nothing to back up yet")
 
@@ -208,6 +208,7 @@ def take(dest: Path, keep: int, no_files: bool, quiet: bool, dry: bool) -> int:
         # The folder itself is not a backup, and `--list` should find something
         # rather than an error, so the plan is made against a folder that exists.
         dest.mkdir(parents=True, exist_ok=True)
+        paths, shared = plan(no_files)
         shared_bytes = sum(s.stat().st_size for s, rel, _ in shared if rel.startswith("files/"))
         saves_bytes = sum(s.stat().st_size for s, rel, _ in shared if rel.startswith("arcade-saves/"))
         n_shared = sum(1 for _, rel, _ in shared if rel.startswith("files/"))
@@ -223,30 +224,6 @@ def take(dest: Path, keep: int, no_files: bool, quiet: bool, dry: bool) -> int:
             say("  import list:  yes")
         say("Nothing was written (--dry-run).")
         return 0
-
-    # What this bundle will occupy, measured before a byte is written: the
-    # database plus every shared file and save that goes in.  The manifest and
-    # the restore sheet are small, so a margin covers them.
-    # The peak is not one bundle: the old ones are cleared after the new one is
-    # published, so `keep + 1` bundles can exist at once.
-    def _size_of(entry):
-        try:
-            return entry.stat().st_size
-        except OSError:
-            return 0                  # vanished since it was listed: not our bytes
-
-    need = _size_of(paths["db"]) + sum(_size_of(s) for s, _rel, _to in shared)
-    need = need * (max(1, int(keep)) + 1) + 256 * 1024
-    if ark_space is not None:
-        try:
-            ark_space.require(dest, need)
-        except ark_space.Refused as exc:
-            return fail(str(exc))
-        room = ark_space.account(dest)
-        if not quiet:
-            say(f"Room after this copy: about {bundle_tools.human_size(room['usable_bytes'])} "
-                f"may still be added; {bundle_tools.human_size(room['reserve_bytes'])} is kept "
-                "back for the box.")
 
     dest.mkdir(parents=True, exist_ok=True)
     os.chmod(dest, 0o700)
@@ -268,56 +245,142 @@ def take(dest: Path, keep: int, no_files: bool, quiet: bool, dry: bool) -> int:
             say(f"Cleaned up {swept} unfinished backup{'s' if swept != 1 else ''} "
                 "from an earlier run.")
 
-        partial = dest / f"{name}.partial"
-        partial.mkdir()
-        os.chmod(partial, 0o700)
+        # The shared gate keeps a replacement out for the whole run; the state
+        # lock keeps a save replacement (or a File Box delete) from removing a
+        # file between the database copy naming it and the bundle carrying it.
+        # The order is gate -> state, the same order a restore takes them, so the
+        # two can wait for each other without deadlocking.
+        ticket = None
+        if ark_maintenance is not None:
+            try:
+                ticket = ark_maintenance.admit(paths["db"])
+            except ark_maintenance.Busy as exc:
+                return fail(str(exc))
         try:
-            entries = [bundle_tools.database_entry(partial, "database/ark.db",
-                                                   "api/data/ark.db", paths["db"])]
-            for source, rel, to in shared:
-                entries.append(bundle_tools.file_entry(partial, source, rel, to))
-            if paths["ledger"].is_file():
-                entries.append(bundle_tools.file_entry(
-                    partial, paths["ledger"], "calibre-incoming/.imported.json",
-                    "calibre-incoming/.imported.json"))
+            with bundle_tools.capture_lock(paths["db"], wait=10.0) as held:
+                if not held:
+                    return fail("another copy or a restore is using the files beside "
+                                "the records right now — try again in a moment")
 
-            sheet = RESTORE_ME.format(when=datetime.now().strftime("%d %B %Y at %H:%M"),
-                                      name=name)
-            sheet_path = partial / "RESTORE-ME.txt"
-            bundle_tools.write_text(sheet_path, sheet, 0o644)
-            entries.append({"path": "RESTORE-ME.txt", "to": None,
-                            "size": sheet_path.stat().st_size,
-                            "sha256": bundle_tools.sha256_file(sheet_path),
-                            "mode": "0644"})
+                partial = dest / f"{name}.partial"
+                partial.mkdir()
+                os.chmod(partial, 0o700)
+                try:
+                    # The records first.  A save accepted after this instant is
+                    # not in this copy, so its blob is not needed; a blob named
+                    # *by* this copy cannot be deleted while the lock is held.
+                    entries = [bundle_tools.database_entry(partial, "database/ark.db",
+                                                           "api/data/ark.db", paths["db"])]
 
-            copied_db = partial / "database" / "ark.db"
-            data = {
-                "format": bundle_tools.FORMAT,
-                "tool": "ark-backup",
-                "created": bundle_tools.iso_now(),
-                "name": name,
-                "hostname": os.uname().nodename if hasattr(os, "uname") else "unknown",
-                "release": git_describe(paths["root"]),
-                "schema_version": _count(copied_db, "SELECT MAX(version) FROM schema_version"),
-                "ark_root": str(paths["root"]),
-                "entries": entries,
-                "totals": {"files": len(entries),
-                           "bytes": sum(e["size"] for e in entries)},
-                "excluded": bundle_tools.EXCLUDED,
-                "counts": {"messages": _count(copied_db, "SELECT COUNT(*) FROM notes"),
-                           "shared_files": _count(copied_db, "SELECT COUNT(*) FROM files"),
-                           "players": _count(copied_db, "SELECT COUNT(*) FROM players"),
-                           "player_saves": _count(copied_db, "SELECT COUNT(*) FROM player_saves"),
-                           "administrators": _count(copied_db, "SELECT COUNT(*) FROM admins")},
-            }
-            bundle_tools.write_manifest(partial, data)
-            # The bundle belongs to the box, not to root: the pages that report
-            # copies run as pi, and a root-only bundle reads as "no copy yet".
-            _adopt(partial, dest)
-            os.replace(partial, final)          # publish by rename: no half backups
-        except BaseException:
-            shutil.rmtree(partial, ignore_errors=True)
-            raise
+                    # Now look at the files beside the copied records.  The walk
+                    # is a superset of what the copy names (a save that landed a
+                    # moment ago may be included with no row in this copy), which
+                    # is harmless; a named blob that is missing is not.
+                    paths, shared = plan(no_files)
+
+                    # What this bundle will occupy, measured before a byte of the
+                    # files is written.  The peak is `keep + 1` bundles: the old
+                    # ones are cleared only after the new one is published.
+                    def _size_of(entry):
+                        try:
+                            return entry.stat().st_size
+                        except OSError:
+                            return 0      # vanished since it was listed: not our bytes
+
+                    need = _size_of(paths["db"]) + sum(_size_of(s) for s, _rel, _to in shared)
+                    need = need * (max(1, int(keep)) + 1) + 256 * 1024
+                    if ark_space is not None:
+                        try:
+                            ark_space.require(dest, need)
+                        except ark_space.Refused as exc:
+                            # Nothing has been copied into it yet, but the name
+                            # exists; a refused run must not leave a half backup.
+                            shutil.rmtree(partial, ignore_errors=True)
+                            return fail(str(exc))
+                        room = ark_space.account(dest)
+                        if not quiet:
+                            say(f"Room after this copy: about "
+                                f"{bundle_tools.human_size(room['usable_bytes'])} "
+                                f"may still be added; "
+                                f"{bundle_tools.human_size(room['reserve_bytes'])} is kept "
+                                "back for the box.")
+
+                    for source, rel, to in shared:
+                        entries.append(bundle_tools.file_entry(partial, source, rel, to))
+                    if paths["ledger"].is_file():
+                        entries.append(bundle_tools.file_entry(
+                            partial, paths["ledger"], "calibre-incoming/.imported.json",
+                            "calibre-incoming/.imported.json"))
+
+                    sheet = RESTORE_ME.format(
+                        when=datetime.now().strftime("%d %B %Y at %H:%M"), name=name)
+                    sheet_path = partial / "RESTORE-ME.txt"
+                    bundle_tools.write_text(sheet_path, sheet, 0o644)
+                    entries.append({"path": "RESTORE-ME.txt", "to": None,
+                                    "size": sheet_path.stat().st_size,
+                                    "sha256": bundle_tools.sha256_file(sheet_path),
+                                    "mode": "0644"})
+
+                    copied_db = partial / "database" / "ark.db"
+                    data = {
+                        "format": bundle_tools.FORMAT,
+                        "tool": "ark-backup",
+                        "created": bundle_tools.iso_now(),
+                        "name": name,
+                        "hostname": os.uname().nodename if hasattr(os, "uname") else "unknown",
+                        "release": git_describe(paths["root"]),
+                        "schema_version": _count(copied_db, "SELECT MAX(version) FROM schema_version"),
+                        "ark_root": str(paths["root"]),
+                        "entries": entries,
+                        "totals": {"files": len(entries),
+                                   "bytes": sum(e["size"] for e in entries)},
+                        "excluded": bundle_tools.EXCLUDED,
+                        "no_files": bool(no_files),
+                        "counts": {"messages": _count(copied_db, "SELECT COUNT(*) FROM notes"),
+                                   "shared_files": _count(copied_db, "SELECT COUNT(*) FROM files"),
+                                   "players": _count(copied_db, "SELECT COUNT(*) FROM players"),
+                                   "player_saves": _count(copied_db,
+                                                          "SELECT COUNT(*) FROM player_saves"),
+                                   "administrators": _count(copied_db,
+                                                            "SELECT COUNT(*) FROM admins")},
+                    }
+                    # The other half of "the manifest is the claim": does the
+                    # copied database name a file this bundle does not carry?
+                    references = bundle_tools.check_references(partial, data)
+                    data["references"] = references
+                    if references.get("available") and references.get("missing_saves"):
+                        if no_files:
+                            if not quiet:
+                                say("Records only (--no-files): %d game save%s named by the "
+                                    "records %s not in this bundle."
+                                    % (len(references["missing_saves"]),
+                                       "" if len(references["missing_saves"]) == 1 else "s",
+                                       "is" if len(references["missing_saves"]) == 1 else "are"))
+                        else:
+                            say("Not copied: %d game save%s named by the records could not "
+                                "be found on the card. The rest of the bundle is whole; a "
+                                "restore will report those saves missing."
+                                % (len(references["missing_saves"]),
+                                   "" if len(references["missing_saves"]) == 1 else "s"))
+                    if references.get("available") and references.get("missing_files") \
+                            and not no_files:
+                        say("Not copied: %d shared file%s named by the records could not "
+                            "be found on the card. The bundle still restores the records; "
+                            "those downloads will read as missing."
+                            % (len(references["missing_files"]),
+                               "" if len(references["missing_files"]) == 1 else "s"))
+                    bundle_tools.write_manifest(partial, data)
+                    # The bundle belongs to the box, not to root: the pages that
+                    # report copies run as pi, and a root-only bundle reads as
+                    # "no copy yet".
+                    _adopt(partial, dest)
+                    os.replace(partial, final)    # publish by rename: no half backups
+                except BaseException:
+                    shutil.rmtree(partial, ignore_errors=True)
+                    raise
+        finally:
+            if ticket is not None:
+                ticket.release()
 
     kept, removed = prune(dest, keep)
     if not quiet:
@@ -393,6 +456,17 @@ def verify(path: Path) -> int:
     files, size = bundle_tools.bundle_size(path)
     say(f"{path.name} is whole: {files} files, {bundle_tools.human_size(size)}, "
         f"every fingerprint matches.")
+    references = bundle_tools.check_references(path, data)
+    if references.get("available") and references.get("missing_saves"):
+        say(f"  but {len(references['missing_saves'])} game save"
+            f"{'s' if len(references['missing_saves']) != 1 else ''} named by the records "
+            f"{'are' if len(references['missing_saves']) != 1 else 'is'} not in it"
+            + (" (this is a records-only bundle)." if references.get("records_only") else "."))
+    if references.get("available") and references.get("missing_files") \
+            and not references.get("records_only"):
+        say(f"  and {len(references['missing_files'])} shared file"
+            f"{'s' if len(references['missing_files']) != 1 else ''} named by the records "
+            "is not in it; those downloads will read as missing.")
     if data.get("schema_version") is not None:
         say(f"Records were at layout version {data['schema_version']}, "
             f"made {data.get('created', '?')}.")
