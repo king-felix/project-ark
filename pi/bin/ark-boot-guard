@@ -54,28 +54,81 @@ done
 systemctl start ark-kiwix.service >/dev/null 2>&1 || true
 
 # ---- 3. prove it ------------------------------------------------------------
-wait_ok() {
-  local i code
+# Two different questions, deliberately asked separately.
+#
+#   * Is the **web stack** answering?  That is what this unit may restart.
+#     A 200 from `/` proves nginx is up; it does **not** prove the backend is,
+#     because `/` is a static file that nginx serves whether or not the API
+#     behind it exists.  So the check that gates a restart is the backend's own
+#     liveness door, not the front page.
+#   * Is the **box ready**?  `/api/ready` answers that, and the answer is
+#     recorded, never acted on: a film that cannot be prepared or a map shelf
+#     with no regions is not a reason to restart a web stack that is serving
+#     the library perfectly well.  Restarting on "not ready" is how a small
+#     optional fault becomes a whole-box outage.
+#
+# The old check only asked the first question, and asked it of the static page,
+# so a boot with a dead backend logged "portal answering" — the paperwork said
+# the box was fine and the interactive pages were not there.
+wait_code() {   # <url>  -> prints the HTTP code, non-zero when it is not 2xx/3xx
+  local url="$1" i code
   for i in $(seq 1 15); do
-    code="$(curl -s -o /dev/null -m 5 -w '%{http_code}' http://127.0.0.1/ 2>/dev/null || echo 000)"
-    [[ "$code" == "200" || "$code" == "302" ]] && { printf '%s' "$code"; return 0; }
+    code="$(curl -s -o /dev/null -m 5 -w '%{http_code}' "$url" 2>/dev/null || echo 000)"
+    [[ "$code" == 2* || "$code" == 3* ]] && { printf '%s' "$code"; return 0; }
     sleep 2
   done
   printf '%s' "${code:-000}"
   return 1
 }
 
-if code="$(wait_ok)"; then
-  say "portal answering locally (HTTP $code)"
-else
-  say "portal did not answer ($code) — restarting the web stack once"
+api_code="$(wait_code http://127.0.0.1/api/health || true)"
+if [[ "$api_code" != 2* && "$api_code" != 3* ]]; then
+  say "the backend is not answering ($api_code) — restarting the web stack once"
   systemctl restart ark-api.service >/dev/null 2>&1 || true
   systemctl restart nginx.service >/dev/null 2>&1 || true
-  if code="$(wait_ok)"; then
-    say "portal answering after restart (HTTP $code)"
+  api_code="$(wait_code http://127.0.0.1/api/health || true)"
+  if [[ "$api_code" == 2* || "$api_code" == 3* ]]; then
+    say "backend answering after restart (HTTP $api_code)"
   else
-    say "WARNING: portal still not answering ($code) — a human needs to look at this"
+    say "WARNING: the backend still is not answering ($api_code) — a human needs to look"
   fi
+else
+  say "backend answering (HTTP $api_code)"
+fi
+
+portal_code="$(wait_code http://127.0.0.1/ || true)"
+if [[ "$portal_code" == 2* || "$portal_code" == 3* ]]; then
+  say "front page answering (HTTP $portal_code)"
+else
+  say "WARNING: the front page did not answer ($portal_code) — nginx needs looking at"
+fi
+
+# The truthful verdict, written down and never acted on.  Blocking a boot on
+# this would turn "the films shelf has nothing on it yet" into "the box will not
+# start"; hiding it would make the log a document that says everything is fine.
+if [[ "$api_code" == 2* || "$api_code" == 3* ]]; then
+  ready_line="$(curl -sS -m 20 http://127.0.0.1/api/ready 2>/dev/null | python3 -c '
+import json, sys
+try:
+    report = json.load(sys.stdin)
+except Exception:
+    print("could not be read"); raise SystemExit(0)
+blocking = report.get("blocking") or []
+features = report.get("unavailable_features") or []
+if blocking:
+    print("NOT READY — " + ", ".join(blocking))
+else:
+    print("core ready")
+if features:
+    print("optional not available: " + ", ".join(features))
+' 2>/dev/null || true)"
+  if [[ -n "$ready_line" ]]; then
+    while IFS= read -r line; do say "readiness: $line"; done <<<"$ready_line"
+  else
+    say "readiness: the answer could not be read"
+  fi
+else
+  say "readiness: not asked (the backend is not answering)"
 fi
 
 say "boot guard done — mode $(cat /etc/ark/mode 2>/dev/null || echo unknown)"

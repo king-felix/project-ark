@@ -104,7 +104,11 @@ def test_a_broken_collection_does_not_break_the_page(public, monkeypatch):
 def test_the_public_search_page_answers_with_nothing_installed(public):
     page = public.client.get("/search?q=water", headers=LAN)
     assert page.status_code == 200
-    assert "Search everything" in page.text
+    # The button names what is actually searched.  "Search everything" was a
+    # promise the box cannot keep: films and games have their own lists, and a
+    # person who typed a film's name deserved to be told so.
+    assert "Search the library, guides and books" in page.text
+    assert "does not look inside the films or the games" in page.text
 
 
 # ---------------------------------------------------------------------------

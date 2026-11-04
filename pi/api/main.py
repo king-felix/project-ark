@@ -23,6 +23,7 @@ cannot travel over plain HTTP even by accident.
 
 from __future__ import annotations
 
+import contextvars
 import html
 import inspect
 import mimetypes
@@ -114,6 +115,44 @@ LIBRARY_HITS = 32
 HITS_PER_COLLECTION = 4
 
 app = FastAPI(title="Project ARK", docs_url=None, redoc_url=None, openapi_url=None)
+
+# ---------------------------------------------------------------------------
+#  how a page looks — dark by default, light on request
+# ---------------------------------------------------------------------------
+#: The box ships OLED-dark because that is what a phone at 2 a.m. in a room with
+#: the power out wants.  It is not what everybody wants at noon in a garden, so
+#: the same pages come in a light, high-contrast presentation — chosen once,
+#: kept in a cookie, and applied *before the first paint* so a reader who asked
+#: for it never sees a black flash.
+THEME_COOKIE = "ark_theme"
+THEMES = ("dark", "light")
+_THEME = contextvars.ContextVar("ark_theme", default="dark")
+
+
+@app.middleware("http")
+async def _remember_theme(request: Request, call_next):
+    choice = (request.query_params.get("theme")
+              or request.cookies.get(THEME_COOKIE) or "dark").strip().lower()
+    _THEME.set(choice if choice in THEMES else "dark")
+    return await call_next(request)
+
+
+@app.get("/theme/{choice}")
+def set_theme(choice: str, back: str = ""):
+    """Choose how the box looks, then return where the reader was.
+
+    A route rather than a cookie set by script: a person who has turned JavaScript
+    off still gets the light version and the links they came from.
+    """
+    choice = (choice or "").strip().lower()
+    target = back if (back.startswith("/") and not back.startswith("//")) else "/"
+    if choice not in THEMES:
+        return RedirectResponse(target, status_code=303)
+    response = RedirectResponse(target, status_code=303)
+    # A year, on this site only, never sent anywhere else.
+    response.set_cookie(THEME_COOKIE, choice, max_age=365 * 24 * 3600,
+                        httponly=False, samesite="lax")
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -209,17 +248,22 @@ def page(title: str, body: str, here: str = "", tagline: str = "",
         current = ' aria-current="page"' if href == here else ""
         parts.append(f'<a href="{esc(href)}"{current}>{esc(label)}</a>')
     sub = f'<p class="tagline">{esc(tagline)}</p>' if tagline else ""
+    theme = _THEME.get()
+    scheme = "light" if theme == "light" else "dark"
+    theme_link = (f'<a href="/theme/dark?back={urllib.parse.quote(here or "/")}">Dark colours</a>'
+                  if theme == "light" else
+                  f'<a href="/theme/light?back={urllib.parse.quote(here or "/")}">Light colours</a>')
     doc = f"""<!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="{scheme}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="dark">
-<meta name="theme-color" content="#000000">
+<meta name="color-scheme" content="{scheme}">
+<meta name="theme-color" content="{'#ffffff' if scheme == 'light' else '#000000'}">
 <title>{esc(title)} — Project Ark</title>
 <link rel="stylesheet" href="/assets/ark.css">
 </head>
-<body>
+<body class="theme-{scheme}">
 <a class="skip" href="#main">Skip to the main content</a>
 <div class="wrap">
   <header>
@@ -235,6 +279,7 @@ def page(title: str, body: str, here: str = "", tagline: str = "",
     <p><b>Project Ark</b> — the library that lives on a small computer. No accounts, no tracking.</p>
     <p>Looking after this box? The owner's own pages are at
       <b>https://ark.local:8443/admin</b> — they ask for a password.</p>
+    <p>{theme_link}</p>
   </footer>
 </div>
 </body>
@@ -351,6 +396,50 @@ def health():
     code runs, so a monitor does not page on a full card or a paused shelf.
     """
     return ark_health.liveness()
+
+
+@app.get("/api/today")
+def today():
+    """The owner's pinned note, as the front page's "Today / Together" panel.
+
+    Reused records, not a second calendar: a pinned, unresolved message on the
+    board *is* the household's announcement, and the existing moderator buttons
+    already decide which one it is.  Nothing here is invented, and nothing is
+    revealed that the board does not already show to everyone.
+
+    ``stale`` is honest about age.  A movie night from four days ago is not
+    cancelled — the box cannot know that — but leaving it on the front page as
+    though it were today would be worse than saying when it was written.
+    """
+    with ark_db.read() as conn:
+        row = conn.execute(
+            "SELECT id, ts, name, body FROM notes"
+            " WHERE hidden = 0 AND pinned = 1 AND resolved = 0"
+            " ORDER BY id DESC LIMIT 1").fetchone()
+    if row is None:
+        return JSONResponse({"present": False},
+                            headers={"Cache-Control": "no-store"})
+    hours = None
+    try:
+        then = datetime.fromisoformat(str(row["ts"]).replace("Z", "+00:00"))
+        if then.tzinfo is None:
+            then = then.replace(tzinfo=timezone.utc)
+        hours = max(0.0, (datetime.now(timezone.utc) - then).total_seconds() / 3600.0)
+    except (TypeError, ValueError):
+        hours = None
+    return JSONResponse({
+        "present": True,
+        "id": int(row["id"]),
+        "ts": str(row["ts"]),
+        "name": str(row["name"] or ""),
+        "body": str(row["body"] or ""),
+        "age_hours": hours,
+        # A plan written more than a day and a half ago is still shown, and said
+        # to be older than today.
+        "stale": bool(hours is not None and hours >= 36),
+        "when": ago(str(row["ts"])),
+        "link": "/board",
+    }, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/ready")
@@ -930,19 +1019,28 @@ def search_books(pattern: str) -> list[dict]:
 @app.get("/api/search", response_class=HTMLResponse)
 def search(q: str = ""):
     pattern = (q or "").strip()[:120]
+    # The label says what the box actually does.  It used to say "Search
+    # everything", and it does not: films and games have their own lists, and a
+    # person who typed a film's name and got nothing had been told a lie by the
+    # button.  The two links under it are the other halves of "everything".
     form = f"""
   <form action="/search" method="get" role="search">
     <label for="q">What do you need to look up?</label>
     <input id="q" name="q" type="search" value="{esc(pattern)}"
            placeholder="water filter, broken pipe, fever…" autocomplete="off" enterkeyhint="search">
-    <button class="go-btn" type="submit">Search everything</button>
-  </form>"""
+    <button class="go-btn" type="submit">Search the library, guides and books</button>
+  </form>
+  <p class="note">This looks in the encyclopedias, the manuals and the bookshelf.
+     It does not look inside the films or the games — those have their own lists.</p>"""
 
     if not pattern:
         return page("Search", form + """
   <h2>How to get a good answer</h2>
   <p class="hint">Type one or two words — “bleach water”, “burn”, “radiator leak”.
-     Short and specific beats a whole sentence.</p>""", here="/search",
+     Short and specific beats a whole sentence.</p>
+  <h2>Looking for something to watch or play?</h2>
+  <div class="nav"><a href="/media/">Films on this box</a><a href="/arcade/">Games on this box</a></div>""",
+                    here="/search",
                     tagline="One box that looks in the encyclopedias, the manuals and the bookshelf.")
 
     report = _search_report(pattern)

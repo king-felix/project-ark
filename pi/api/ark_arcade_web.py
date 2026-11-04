@@ -428,6 +428,11 @@ def game_page(request: Request, slug: str) -> Response:
     </div>
     <p class="arcade-note">Use the arrow keys or the on-screen pad. The game runs on this
     box; nothing is downloaded while you play. <a href="/arcade/static/notices.txt">About the games</a></p>
+    <noscript><p class="arcade-note"><b>A game needs JavaScript.</b> It is the one thing
+    on this box that does. Everything else — the library, the books, the guides, the
+    films and the messages — reads normally with it turned off.</p></noscript>
+    <p class="arcade-note">A save is kept <b>on the Ark</b> under a player name. Playing
+    as a guest keeps nothing.</p>
     {_prefs_panel(game, prefs, csrf) if prefs else ''}
     {_save_panel(game, player, rows, csrf, prefs)}
     <script>{boot}</script>

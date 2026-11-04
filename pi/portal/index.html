@@ -5,8 +5,25 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#000000">
-<title>Project ARK — everything you need, offline</title>
+<title>Project ARK — what you need, on the box in the room</title>
 <link rel="stylesheet" href="/assets/ark.css">
+<script>
+/* The one thing done before the first paint: honour the reader's colour choice.
+   A person who asked for light colours should never see a black flash while the
+   rest of the page loads.  Without JavaScript the page is simply the dark one,
+   which is what it always was. */
+(function () {
+  try {
+    var match = document.cookie.match(/(?:^|;\s*)ark_theme=(light|dark)/);
+    var choice = match ? match[1] : "dark";
+    if (choice === "light") {
+      document.documentElement.className = "light";
+      document.querySelector('meta[name="color-scheme"]').content = "light";
+      document.querySelector('meta[name="theme-color"]').content = "#ffffff";
+    }
+  } catch (e) { /* a browser with cookies off keeps the dark page */ }
+})();
+</script>
 </head>
 <body>
 <a class="skip" href="#main">Skip to the main content</a>
@@ -15,12 +32,18 @@
   <header>
     <span class="logo">Project Ark</span>
     <h1>Everything you need.<br>No internet required.</h1>
-    <p class="tagline">Encyclopedias, books, repair guides and first-aid manuals — all kept on this box, all readable from your phone.</p>
+    <p class="tagline">A small computer in this room that carries the library, the
+      manuals, the films, the games and the maps — for the days the internet is not
+      there, and for the evenings it is.</p>
   </header>
 
-  <p class="status" id="status">
-    <span class="dot" aria-hidden="true"></span>
-    <span><b>Ready.</b> Tap anything below. Nothing here needs a login or an internet connection.</span>
+  <!-- The strip is honest about what it knows.  It starts by saying it is still
+       checking, never "Ready": the old page claimed Ready in plain HTML and kept
+       that claim when the backend could not be reached at all. -->
+  <p class="status" id="status" role="status" aria-live="polite">
+    <span class="dot wait" id="status-dot" aria-hidden="true"></span>
+    <span id="status-text"><b>Checking what is on the box…</b>
+      Everything below works without this message.</span>
   </p>
 
   <div class="popup" id="popup" hidden>
@@ -32,113 +55,169 @@
   <noscript>
     <p class="popup"><b>If this opened inside a “Sign in to Wi-Fi” window,</b>
       close it and type <b>http://ark.lan</b> into your normal browser instead.
-      Everything on this page still works without JavaScript.</p>
+      Everything on this page still works without JavaScript; the line above
+      just will not update itself.</p>
   </noscript>
 
-  <main id="main">
-  <h2>Find something</h2>
-  <form action="/search" method="get" role="search">
-    <label for="q">What do you need to look up?</label>
-    <input id="q" name="q" type="search" placeholder="water filter, broken pipe, fever…"
-           autocomplete="off" enterkeyhint="search">
-    <button class="go-btn" type="submit">Search everything</button>
-  </form>
-  <p class="note">Searches the encyclopedias, the survival manuals and the guide pages at once.</p>
+  <!-- Today / Together.  Filled from a pinned message on the board, and simply
+       absent when the owner has not pinned one.  No calendar, no second list. -->
+  <section id="today" hidden aria-labelledby="today-heading">
+    <h2 id="today-heading">Today / Together</h2>
+    <div class="card" id="today-card">
+      <span class="t" id="today-title">A plan</span>
+      <span class="d" id="today-body"></span>
+      <span class="go" id="today-when"></span>
+    </div>
+  </section>
 
-  <h2>Start here</h2>
-  <div class="grid">
+  <main id="main">
+
+  <h2>If something is wrong</h2>
+  <p class="hint">The practical things, first. Every one of these is on the box and
+    opens with no internet.</p>
+  <div class="grid two">
+    <a class="card primary" href="/household">
+      <span class="ico" aria-hidden="true">🏠</span>
+      <span class="t">This Household</span>
+      <span class="d">The page for the day something goes wrong: where the water and
+        the power stop, who to ring, and the eight situations with the page that
+        answers each one.</span>
+      <span class="go">Open the household page</span>
+    </a>
+    <a class="card" href="/vault/quick-card.html">
+      <span class="ico" aria-hidden="true">🖨️</span>
+      <span class="t">Pocket Cards to Print</span>
+      <span class="d">One page each — bleeding, burns, CPR, water, power cut, leaks.
+        Print them, put them on the wall, and they work when nothing else does.</span>
+      <span class="go">Open the printable cards</span>
+    </a>
+    <a class="card" href="/vault/#repair">
+      <span class="ico" aria-hidden="true">🔧</span>
+      <span class="t">Repair Guides</span>
+      <span class="d">Plumbing, wiring and household fixes, written so a beginner can
+        follow them.</span>
+      <span class="go">Open the repair guides</span>
+    </a>
     <a class="card" href="/ask">
-      <span class="badge">New</span>
       <span class="ico" aria-hidden="true">💬</span>
       <span class="t">Ask the Ark</span>
-      <span class="d">Type a question in your own words and get an answer made on this box. No internet, no account. It can be wrong — the guides are the truth.</span>
+      <span class="d">Type a question in your own words and get an answer made on this
+        box. It can be wrong — the guides are the truth.</span>
       <span class="go">Tap here to ask a question</span>
     </a>
-    <a class="card primary" href="/library">
+  </div>
+  <div class="nav">
+    <a href="/cards">Cards to get back on</a>
+    <a href="/recovery.txt">If the box will not start</a>
+    <a href="/essentials.zip">Take the small pages away</a>
+  </div>
+
+  <h2>Read, watch, play</h2>
+  <p class="hint">Learning and enjoyment are not an afterthought here. A long evening
+    with no internet is what this box is for as much as a burst pipe is.</p>
+  <form action="/search" method="get" role="search">
+    <label for="q">Look something up</label>
+    <input id="q" name="q" type="search" placeholder="water filter, broken pipe, fever…"
+           autocomplete="off" enterkeyhint="search">
+    <button class="go-btn" type="submit">Search the library, guides and books</button>
+  </form>
+  <p class="note">That one box looks in the encyclopedias, the manuals and the
+    bookshelf. It does not look inside the films or the games — each of those has its
+    own list, linked below.</p>
+
+  <div class="grid">
+    <a class="card" href="/library">
       <span class="badge">Biggest</span>
       <span class="ico" aria-hidden="true">📚</span>
       <span class="t">Offline Library</span>
-      <span class="d">Encyclopedias, medical references, repair answer archives, and films on getting ready. Filed by what you need, not by name. Read or watch in your browser.</span>
+      <span class="d">Encyclopedias, medical references, repair answer archives, and
+        films on getting ready. Filed by what you need, not by name.</span>
       <span class="go">Tap here to see what is on the shelves</span>
     </a>
     <a class="card" href="/books/">
       <span class="ico" aria-hidden="true">📖</span>
       <span class="t">Books</span>
-      <span class="d">Full-length books on a shelf, cover first. Tap a cover to read or to download it for later.</span>
+      <span class="d">Full-length books on a shelf, cover first. Tap a cover to read,
+        or to download it for later.</span>
       <span class="go">Tap here to browse the shelf</span>
     </a>
     <a class="card" href="/vault/">
       <span class="ico" aria-hidden="true">🧰</span>
       <span class="t">Manuals &amp; Guides</span>
-      <span class="d">Short, plain-English pages you can read on a phone or print on paper: water, first aid, power, repairs.</span>
+      <span class="d">Short, plain-English pages you can read on a phone or print on
+        paper: water, first aid, power, repairs.</span>
       <span class="go">Tap here to open the manuals</span>
     </a>
   </div>
-  <h2>When something breaks</h2>
-  <div class="grid two">
-    <a class="card" href="/vault/#repair">
-      <span class="ico" aria-hidden="true">🔧</span>
-      <span class="t">Repair Guides</span>
-      <span class="d">Plumbing, wiring and household fixes, written so a beginner can follow them.</span>
-      <span class="go">Open the repair guides</span>
-    </a>
-    <a class="card" href="/vault/quick-card.html">
-      <span class="ico" aria-hidden="true">🖨️</span>
-      <span class="t">Pocket Cards to Print</span>
-      <span class="d">Eight one-page cards — bleeding, burns, CPR, water, power cut, leaks. Print them and put them on the wall.</span>
-      <span class="go">Open the printable cards</span>
-    </a>
-    <a class="card" href="/household">
-      <span class="ico" aria-hidden="true">🏠</span>
-      <span class="t">This Household</span>
-      <span class="d">Who lives here, where the water and the power stop, who to ring — and when somebody last read each emergency page.</span>
-      <span class="go">Open the household page</span>
-    </a>
-    <a class="card" href="/cards">
-      <span class="ico" aria-hidden="true">📱</span>
-      <span class="t">Card to Get Back On</span>
-      <span class="d">Three squares a phone camera can read, and the address written under each. Print them and keep them beside the router.</span>
-      <span class="go">Show the cards to print</span>
-    </a>
-  </div>
 
-  <h2>For everybody here</h2>
   <div class="grid two">
-    <a class="card" href="/board">
-      <span class="ico" aria-hidden="true">📌</span>
-      <span class="t">Message Board</span>
-      <span class="d">Leave a note for the next person: what is broken, what was fixed, who needs help.</span>
-      <span class="go">Read or post a message</span>
-    </a>
-    <a class="card" href="/files">
-      <span class="ico" aria-hidden="true">📎</span>
-      <span class="t">File Box</span>
-      <span class="d">Share a file with everyone on the network — a photo of a broken part, a shopping list, a PDF.</span>
-      <span class="go">Look inside or add a file</span>
-    </a>
     <a class="card" href="/media/">
       <span class="ico" aria-hidden="true">🎬</span>
       <span class="t">Films</span>
-      <span class="d">Films kept on this box, with pictures. Tap one to watch it — captions and a resume point included, and nothing to sign in to.</span>
+      <span class="d">Films kept on this box, with pictures. Tap one to watch it —
+        captions and a resume point included, nothing to sign in to.</span>
       <span class="go">Tap here to see the films</span>
     </a>
     <a class="card" href="/arcade/">
       <span class="ico" aria-hidden="true">🎮</span>
       <span class="t">Games</span>
-      <span class="d">Small games that run right here in the browser. Pick one up for a few minutes; nothing to install.</span>
+      <span class="d">Small games that run right here in the browser. Pick one up for
+        a few minutes; nothing to install, and you can play as a guest.</span>
       <span class="go">Tap here to see the games</span>
     </a>
     <a class="card" href="/maps">
       <span class="badge">Carry it</span>
       <span class="ico" aria-hidden="true">🗺️</span>
       <span class="t">Maps</span>
-      <span class="d">Download a region to your phone, then browse it, search it and plan new routes with no Ark and no internet. The map is kept on your device.</span>
+      <span class="d">Download a region to your phone, then browse it, search it and
+        plan new routes with no Ark and no internet. The map is kept on your
+        device.</span>
       <span class="go">Open Maps and download a region</span>
     </a>
   </div>
 
+  <h2>Where your place is kept</h2>
+  <p class="hint">Two different promises, and it matters which one you are relying on.</p>
+  <ul class="clean">
+    <li><b>A film's resume point</b>
+      <span class="sub">Kept in <b>this browser, on this device</b>. It survives closing
+        the tab and restarting the phone. A different phone starts the film from the
+        beginning — the box does not keep a watch history, by design.</span></li>
+    <li><b>A game save</b>
+      <span class="sub">Kept <b>on the Ark</b>, under a player name you choose. That is
+        the only reason the box asks for a name: without one there is nowhere to put a
+        save, so guest play does not keep one.</span></li>
+    <li><b>A map you downloaded</b>
+      <span class="sub">Kept <b>in this browser, on this device</b>. Another phone has to
+        download its own copy, and removing it here never touches the Ark or anybody
+        else's phone.</span></li>
+    <li><b>A message or a shared file</b>
+      <span class="sub">Kept <b>on the Ark</b>, where everyone on this Wi-Fi can see
+        it.</span></li>
+  </ul>
+
+  <h2>For everybody here</h2>
+  <p class="hint">The box is shared. Leave something for the next person.</p>
+  <div class="grid two">
+    <a class="card" href="/board">
+      <span class="ico" aria-hidden="true">📌</span>
+      <span class="t">Message Board</span>
+      <span class="d">Leave a note for the next person: what is broken, what was fixed,
+        who needs help — or what is happening tonight.</span>
+      <span class="go">Read or post a message</span>
+    </a>
+    <a class="card" href="/files">
+      <span class="ico" aria-hidden="true">📎</span>
+      <span class="t">File Box</span>
+      <span class="d">Share a file with everyone on the network — a photo of a broken
+        part, a shopping list, a PDF.</span>
+      <span class="go">Look inside or add a file</span>
+    </a>
+  </div>
+
   <h2>Not sure how this works?</h2>
-  <p class="hint">One page explains the whole thing in plain words — including what to do if you opened this inside a Wi-Fi sign-in window.</p>
+  <p class="hint">One page explains the whole thing in plain words — including what to do
+    if you opened this inside a Wi-Fi sign-in window.</p>
   <div class="nav">
     <a href="/help.html">How to use the Ark</a>
     <a href="http://ark.lan">Open ark.lan</a>
@@ -146,14 +225,19 @@
   </main>
 
   <footer>
-    <p><b>Project Ark</b> — a small computer that carries a library. No accounts needed, no tracking, no internet.</p>
-    <p>Addresses that work: <b>http://ark.local</b> (any computer or phone on this Wi-Fi) · <b>http://ark.lan</b> and <b>http://10.42.0.1</b> (phones on The-Ark-Offline)</p>
+    <p><b>Project Ark</b> — a small computer that carries a library. No accounts needed,
+      no tracking, no internet.</p>
+    <p>Addresses that work: <b>http://ark.local</b> (any computer or phone on this Wi-Fi)
+      · <b>http://ark.lan</b> and <b>http://10.42.0.1</b> (phones on The-Ark-Offline)</p>
     <p>Looking after this box? The owner's own pages are at
       <b>https://ark.local:8443/admin</b> — they ask for a password.</p>
+    <p><a href="/theme/light?back=/" id="theme-link">Light colours</a>
+      — easier to read in daylight.</p>
   </footer>
 
 <script>
-/* Progressive enhancement only — every link and the search box work without it. */
+/* Progressive enhancement only — every link and the search box work without it.
+   Nothing here is required to reach anything on this page. */
 (function () {
   "use strict";
 
@@ -177,9 +261,17 @@
     });
   }
 
-  // Live status: what is on the box, and how far the current download is.
-  var strip = document.getElementById("status");
-  if (!strip || !window.fetch) { return; }
+  // The light/dark link keeps the reader where they were.
+  var themeLink = document.getElementById("theme-link");
+  if (themeLink) {
+    var light = document.documentElement.className === "light";
+    themeLink.textContent = light ? "Dark colours" : "Light colours";
+    themeLink.href = (light ? "/theme/dark?back=/" : "/theme/light?back=/");
+  }
+
+  function plain(text) {
+    return String(text || "").replace(/[<>&"]/g, "");
+  }
 
   function size(n) {
     if (!n) { return "0 MB"; }
@@ -195,56 +287,134 @@
     return m + " min";
   }
 
-  function plain(text) {
-    return String(text || "").replace(/[<>&"]/g, "");
+  var strip = document.getElementById("status");
+  var dotEl = document.getElementById("status-dot");
+  var textEl = document.getElementById("status-text");
+
+  function setStrip(dot, html) {
+    if (!strip) { return; }
+    dotEl.className = dot;
+    textEl.innerHTML = html;
+  }
+
+  /* When the backend cannot be reached, the page says so — and says what still
+     works, because almost everything on it is a plain link to a file or a page
+     that does not need the backend at all.  The old strip kept a cheerful
+     "Ready." in that case, which was a claim nothing had checked. */
+  function offlineNotice() {
+    setStrip("dot no",
+      "<b>The box is not answering its own status check.</b> " +
+      "The manuals, the household page, the cards and the maps page are plain pages " +
+      "and should still open. The library, the books, the board and the films need the " +
+      "backend, so one of those may not. " +
+      '<a href="/api/ready">See what the box says</a>.');
   }
 
   function refresh() {
+    if (!window.fetch) { offlineNotice(); return; }
     fetch("/api/status", { cache: "no-store" })
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (s) {
-        if (!s) { return; }
+        if (!s) { offlineNotice(); return; }
         var bits = [];
-        if (s.library && s.library.titles) { bits.push("<b>" + s.library.titles + "</b> reference collections"); }
-        if (s.books && s.books.count)      { bits.push("<b>" + s.books.count + "</b> books"); }
-        if (s.guides && s.guides.count)    { bits.push("<b>" + s.guides.count + "</b> guides and manuals"); }
+        if (s.library && s.library.titles) {
+          bits.push("<b>" + s.library.titles + "</b> reference collections");
+        }
+        if (s.books && s.books.count) { bits.push("<b>" + s.books.count + "</b> books"); }
+        if (s.guides && s.guides.count) {
+          bits.push("<b>" + s.guides.count + "</b> guides and manuals");
+        }
+        var byKey = {};
+        (s.sections || []).forEach(function (row) { byKey[row.key] = row; });
+        ["films", "games", "maps"].forEach(function (key) {
+          var row = byKey[key];
+          if (row && row.ready) {
+            if (key === "films" && row.facts && row.facts.playable) {
+              bits.push("<b>" + row.facts.playable + "</b> film(s) to watch");
+            }
+            if (key === "games" && row.facts && row.facts.games) {
+              bits.push("<b>" + row.facts.games + "</b> games");
+            }
+            if (key === "maps" && row.facts && row.facts.regions) {
+              bits.push("<b>" + row.facts.regions + "</b> map region(s)");
+            }
+          }
+        });
         var dl = s.downloads || {};
         var tail = "";
         if (dl.pending) {
-          tail = " Still bringing more in: <b>" + dl.pending + "</b> collection(s) on the way";
+          tail = " Still bringing more in: <b>" + dl.pending +
+                 "</b> collection(s) on the way";
           if (dl.current_total > 0 && dl.current_bytes > 0 && typeof dl.percent === "number") {
             tail += " — <b>" + dl.percent + "%</b> of " + plain(dl.current) +
                     " (" + size(dl.current_bytes) + " of " + size(dl.current_total) + ")";
             if (dl.eta_seconds) { tail += ", about " + duration(dl.eta_seconds) + " left"; }
           }
-          if (typeof dl.overall_percent === "number") {
-            tail += "; <b>" + dl.overall_percent + "%</b> of all of it is already here";
-          }
           tail += ".";
         }
-        // If a part cannot be used, the strip says why in the owner's own words
+        // If a part cannot be used, the strip says why in the box's own words
         // instead of showing a cheerful dot over a broken shelf.  A part that is
         // merely empty (nothing on the card yet) is amber; something that exists
-        // and cannot be served is red.
+        // and cannot be served is red.  Films, games and maps are named as
+        // optional: they never make the reading side look broken.
         var dot = "dot";
-        if (s.ok === false && s.sections) {
-          var broken = s.sections.filter(function (x) {
-            return !x.ready && x.key !== "downloads";
-          });
-          var serious = broken.filter(function (x) { return x.content; })[0];
-          var empty = broken.filter(function (x) { return !x.content; })[0];
-          dot = serious ? "dot no" : "dot wait";
-          var first = serious || empty;
-          if (first) { tail += " " + plain(first.reason); }
+        var broken = (s.sections || []).filter(function (x) {
+          return !x.ready && x.key !== "downloads";
+        });
+        var serious = broken.filter(function (x) {
+          return x.content && x.key !== "films" && x.key !== "games" && x.key !== "maps";
+        })[0];
+        var optional = broken.filter(function (x) {
+          return x.key === "films" || x.key === "games" || x.key === "maps";
+        });
+        var empty = broken.filter(function (x) { return !x.content; })[0];
+        if (serious) {
+          dot = "dot no";
+          tail += " " + plain(serious.reason);
+        } else if (optional.length) {
+          dot = "dot wait";
+          tail += " " + plain(optional[0].reason);
+        } else if (empty) {
+          dot = "dot wait";
+          tail += " " + plain(empty.reason);
         }
-        strip.innerHTML = '<span class="' + dot + '" aria-hidden="true"></span><span>' +
+        setStrip(dot,
           (bits.length ? "On board right now: " + bits.join(" · ") + "." : "<b>Ready.</b>") +
-          tail + " Nothing here needs a login.</span>";
+          tail + " Nothing here needs a login.");
       })
-      .catch(function () { /* no API yet — the static text stays */ });
+      .catch(offlineNotice);
+  }
+
+  // ---------------------------------------------------------------------
+  //  Today / Together — one pinned note, or no panel at all
+  // ---------------------------------------------------------------------
+  function refreshToday() {
+    var section = document.getElementById("today");
+    if (!section || !window.fetch) { return; }
+    fetch("/api/today", { cache: "no-store" })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) {
+        if (!data || !data.present || !data.body) { section.hidden = true; return; }
+        document.getElementById("today-body").textContent = data.body;
+        var when = document.getElementById("today-when");
+        if (data.stale) {
+          /* Honest about age.  The box cannot know whether the evening happened,
+             so it says when the plan was written instead of implying it is now. */
+          when.textContent = "Written " + (data.when || "a while ago") +
+            " — it may already have happened. The board has anything newer.";
+        } else {
+          when.textContent = "Added " + (data.when || "just now") +
+            ". The board has the details.";
+        }
+        document.getElementById("today-title").textContent =
+          data.name ? "From " + data.name : "A plan for everybody";
+        section.hidden = false;
+      })
+      .catch(function () { section.hidden = true; });
   }
 
   refresh();
+  refreshToday();
   // Keep the figure honest while a big collection comes in — but never poll a
   // tab nobody is looking at.
   setInterval(function () { if (!document.hidden) { refresh(); } }, 30000);

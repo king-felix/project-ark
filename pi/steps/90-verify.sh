@@ -149,6 +149,9 @@ check_says "/media/"              "films shelf words" "Films kept on this box"
 check_page "/arcade/static/ark-arcade.css" "game shelf stylesheet"
 check_page "/arcade/emulator/loader.js"    "game player"
 check_page "/api/status"          "live status"
+check_page "/api/health"          "liveness door"
+check_page "/api/today"           "the plan for today"
+check_says "/api/health"          "liveness does not pretend to be a verdict" "/api/ready"
 check_page "/maps"                "maps sends you to its secure origin" "301"
 check_page "/certificate.crt"     "the Ark certificate is offered" "200"
 check_page "/vault/"              "manuals index"
@@ -232,6 +235,13 @@ esac
 # 503 with the reasons when one does not.  An empty shelf is reported softly: a
 # box that is still filling up is not broken.  Anything that has content but
 # cannot serve it is a failure, and that is the whole point of this block.
+#
+# Three parts are **features**, not requirements: Films, Games and Maps.  They
+# are reported by the same answer and they are held to a different bar — a shelf
+# that cannot serve a film is worth a soft note and never a ✗, because the
+# library, the books, the guides, the board and the File Box are what the box
+# promises, and turning one empty shelf into a failed gate is how a gate stops
+# being read.
 ready_json="$(curl -sS --max-time 25 http://127.0.0.1/api/ready 2>/dev/null || true)"
 if [[ -z "$ready_json" ]]; then
   say_bad "readiness answer" "the portal did not answer /api/ready"
@@ -239,15 +249,21 @@ else
   ready_rows="$(printf '%s' "$ready_json" | python3 -c '
 import json, sys
 report = json.load(sys.stdin)
+features = {"films", "games", "maps"}
 for s in report.get("sections", []):
+    optional = s.get("key") in features
     if s.get("ready"):
         flag = "ready"
+    elif optional:
+        flag = "feature"
     elif s.get("content"):
         flag = "broken"
     else:
         flag = "empty"
     reason = " ".join(str(s.get("reason") or "").split())
     label = " ".join(str(s.get("label") or s.get("key") or "").split())
+    if optional and not s.get("ready"):
+        label = label + " (optional)"
     print("\t".join([flag, label, reason]))
 ' 2>/dev/null || true)"
   ready_rows="${ready_rows:-}"
@@ -257,9 +273,10 @@ for s in report.get("sections", []):
     while IFS=$'\t' read -r flag label reason; do
       [[ -n "$label" ]] || continue
       case "$flag" in
-        ready)  say_ok   "$label" "$reason" ;;
-        empty)  say_soft "$label" "$reason" ;;
-        *)      say_bad  "$label" "$reason" ;;
+        ready)   say_ok   "$label" "$reason" ;;
+        empty)   say_soft "$label" "$reason" ;;
+        feature) say_soft "$label" "$reason" ;;
+        *)       say_bad  "$label" "$reason" ;;
       esac
     done <<<"$ready_rows"
   fi

@@ -247,3 +247,58 @@ details.more .smallbtn{justify-self:start}
   a{color:#000;text-decoration:none}
 }
 
+/* =========================================================================
+   LIGHT — the same pages, for daylight
+   =========================================================================
+   Dark is the default because the box is often read at night with the power
+   out.  It is not the only place it is read: a phone in a garden at noon has
+   the sun on the glass, and a black page is then a mirror.  This is a *reading*
+   variant, not a second design — same layout, same targets, same focus ring,
+   same DOM.  It is applied by a class on <html>, so it works with JavaScript
+   turned off, and the choice is a cookie set by the /theme route.
+   ========================================================================= */
+html.light{
+  --bg:#fff; --panel:#fff; --panel2:#f4f4f2; --line:#c9c9c4;
+  --ink:#101014; --dim:#4a4a52; --go:#0b6b33; --warn:#8a5a00; --bad:#a3231a;
+}
+html.light body{background:var(--bg);color:var(--ink)}
+html.light .logo{background:#eaf6ee;border-color:#9fceb2;color:#0b6b33}
+html.light .status{background:#fafaf8;border-color:#c9c9c4}
+html.light .card,
+html.light .film,
+html.light .chip,
+html.light .nav a{background:#fbfbf9;border-color:#c9c9c4}
+html.light .card:hover,
+html.light .card:focus-visible,
+html.light .film:hover,
+html.light .film:focus-visible{background:#f1f1ee;border-color:#9a9a94}
+html.light .card.primary{background:#eaf6ee;border-color:#9fceb2}
+html.light .card .badge{background:#eaf6ee;border-color:#9fceb2;color:#0b6b33}
+html.light .nav a[aria-current=page]{background:#eaf6ee;border-color:#9fceb2;color:#0b6b33}
+html.light input[type=text],
+html.light input[type=search],
+html.light textarea,
+html.light select{background:#fff;border-color:#b9b9b4;color:var(--ink)}
+html.light .note{color:#43434a}
+html.light .popup{background:#fff8e6;border-color:#d9b25a;color:#4a3708}
+html.light .copy{background:#fff2d0;border-color:#c99a2a;color:#3c2c05}
+html.light .answer{background:#f4faf6;border-left-color:var(--go)}
+html.light footer{border-top-color:#c9c9c4;color:#5a5a62}
+html.light footer a{color:#0b6b33}
+html.light .film-meta,
+html.light .hint,
+html.light .tagline,
+html.light .card .d,
+html.light ul.clean .sub{color:#43434a}
+html.light ul.clean li{border-bottom-color:#e2e2de}
+html.light .skip{background:var(--go);color:#fff}
+html.light a:focus-visible,
+html.light button:focus-visible,
+html.light input:focus-visible,
+html.light textarea:focus-visible,
+html.light select:focus-visible{outline:3px solid #0b6b33;outline-offset:2px}
+/* Print always goes light: a wall card printed from a dark page is a black
+   square, and the box offers several pages specifically to be printed. */
+@media print{
+  html,body{background:#fff!important;color:#000!important}
+}
