@@ -7,6 +7,7 @@ on, and the point of ``ark_space`` is that the arithmetic is the same everywhere
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import time
@@ -187,6 +188,58 @@ def test_the_command_says_yes_quietly_and_no_with_a_reason(ark, monkeypatch, cap
     assert cli.main(["--check", "--need", str(1024 ** 2), "--path", "/srv/ark"]) == 0
     assert capsys.readouterr().out == ""
     assert cli.main(["--check", "--need", str(9 * 1024 ** 3)]) == 3
+    assert "not enough room" in capsys.readouterr().err.lower()
+
+
+def _cli():
+    """The real ``ark-space`` script, loaded as a module (it is not a package)."""
+    import importlib.util
+    from importlib.machinery import SourceFileLoader
+    from pathlib import Path
+    repo = Path(__file__).resolve().parents[1]
+    loader = SourceFileLoader("ark_space_cli", str(repo / "pi/bin/ark-space"))
+    spec = importlib.util.spec_from_loader("ark_space_cli", loader)
+    cli = importlib.util.module_from_spec(spec)
+    loader.exec_module(cli)
+    return cli
+
+
+def test_the_command_can_hold_a_promise_for_a_long_job(ark, monkeypatch, capsys):
+    """The shell door a downloader or a backup uses: reserve, touch, release.
+
+    The pid matters: a promise written by a command that exits immediately would be
+    released by the next reconcile, and the long job it was holding room for would
+    have none.  A script passes ``$$``; this proves the argument reaches the row.
+    """
+    import ark_space
+
+    _fixed(100 * 1024 ** 3, 10 * 1024 ** 3, monkeypatch, ark_space)
+    cli = _cli()
+    assert cli.main(["--reserve", "--need", str(4 * 1024 ** 2),
+                     "--owner", "long-job", "--pid", str(os.getpid())]) == 0
+    ticket = int(capsys.readouterr().out.strip())
+    with ark.db.read() as conn:
+        row = conn.execute("SELECT bytes, written, pid FROM space_reservations"
+                           " WHERE id = ?", (ticket,)).fetchone()
+    assert row["bytes"] == 4 * 1024 ** 2
+    assert row["pid"] == os.getpid()
+
+    assert cli.main(["--touch", str(ticket), "--written", str(1024 ** 2)]) == 0
+    with ark.db.read() as conn:
+        assert conn.execute("SELECT written FROM space_reservations WHERE id = ?",
+                            (ticket,)).fetchone()[0] == 1024 ** 2
+
+    assert cli.main(["--release", str(ticket)]) == 0
+    with ark.db.read() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM space_reservations").fetchone()[0] == 0
+
+
+def test_the_command_refuses_and_says_why_on_a_full_card(ark, monkeypatch, capsys):
+    import ark_space
+
+    _fixed(100 * 1024 ** 3, 1024 ** 2, monkeypatch, ark_space)
+    cli = _cli()
+    assert cli.main(["--reserve", "--need", str(4 * 1024 ** 2), "--owner", "job"]) == 3
     assert "not enough room" in capsys.readouterr().err.lower()
 
 

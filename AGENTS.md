@@ -180,7 +180,7 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 | Released tag | `v1.0.5` = `dd3336c` (never move a tag, never force-push) |
 | Active branch | `feature/admin-hardening` (fast-forwarded to `main` at `acf5d29`) |
 | Schema version | `SCHEMA_VERSION = 8` (`pi/api/ark_db.py`) — migration 7 adds the film shelf and the space ledger; migration 8 gives a reservation its pid, boot id and kind |
-| Test suite | `923 collected`; `921 passed, 2 skipped` with 3 browser maps excluded (37 files) |
+| Test suite | `925 collected`; `923 passed, 2 skipped` with 3 browser maps excluded (37 files) |
 | Live Pi state | Deployed `cf5548a` (log §53.6); ready 200, blocking [], mode home; 27 collections (97.6 GiB), 1291 books, 67 games, 11 guides, AI, FFmpeg, 8 films, 3 maps; 2 complete recovery copies; reserve 16 GB |
 | Owner decisions pending | History rewrite + force-push (pre-`a926296`; home-LAN address in `1a3f41f`; log §37.6/§38.7/§44); rotate GitHub & Pi passwords; licence choice |
 

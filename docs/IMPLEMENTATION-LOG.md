@@ -6470,7 +6470,7 @@ stops unpacking into the 256 MB tmpfs.
 new liveness rule), plus updates to `test_config.py`, `test_storage.py`,
 `test_media.py`, `tests/conftest.py`, `tests/helpers.py`.
 
-The suite: **921 passed, 2 skipped** in 207.54 s, with `tests/test_maps_browser.py`
+The suite: **923 passed, 2 skipped** in 210.47 s, with `tests/test_maps_browser.py`
 excluded (Playwright is not part of this run; those two pass unchanged when the
 browser stack is present).
 

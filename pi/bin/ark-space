@@ -61,6 +61,8 @@ def main(argv=None) -> int:
     parser.add_argument("--written", type=int, default=None,
                         help="with --touch: bytes of the promise now on the card")
     parser.add_argument("--owner", default="", help="who is making the promise")
+    parser.add_argument("--pid", type=int, default=None,
+                        help="the process the promise belongs to (a script passes $$)")
     parser.add_argument("--label", default="", help="what the promise is for")
     parser.add_argument("--essential", action="store_true",
                         help="admit against free space alone (freeing room, saving records)")
@@ -86,7 +88,7 @@ def main(argv=None) -> int:
             ident = ark_space.reserve(
                 args.path or "/srv/ark", max(0, int(args.need)),
                 owner=args.owner or "ark-space", label=args.label,
-                essential=args.essential)
+                essential=args.essential, pid=args.pid)
         except ark_space.Refused as exc:
             print(str(exc), file=sys.stderr)
             return 3
