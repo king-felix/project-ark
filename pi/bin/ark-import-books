@@ -48,6 +48,12 @@ BOOK_EXT = {
 #: must ask before it copies rather than afterwards.
 SPACE = os.environ.get("ARK_SPACE", "/usr/local/sbin/ark-space")
 
+#: The owner's one pause for heavy background work (ark_pause).  The importer is
+#: part of that policy: a book can wait a few hours; a box asked to be quiet
+#: should not start copying gigabytes because somebody dropped a file.
+PAUSE = os.environ.get("ARK_PAUSE_MARKER", "/srv/ark/api/data/background-paused")
+KICK = os.environ.get("ARK_PAUSE_KICK", "/srv/ark/api/data/background-kick")
+
 
 def log(msg):
     print(f"[import] {msg}", flush=True)
@@ -379,6 +385,21 @@ def main(argv):
     if args.status:
         print(f"books={book_count()}")
         return 0
+
+    # --list is a question, not work: it is allowed while paused.  Anything that
+    # would copy a book is not.
+    if not args.list:
+        # A resume touches this file so the watcher runs again after a paused
+        # drop.  Consume it first, whether or not the pause is still on: a later
+        # resume writes it again and that is what wakes the watcher.
+        try:
+            os.unlink(KICK)
+        except OSError:
+            pass
+        if os.path.exists(PAUSE):
+            log("background work is paused by the owner — the books stay where they "
+                "are and are imported when background work resumes")
+            return 0
 
     files = candidates(args.files or DROP_DIRS)
     if not files:

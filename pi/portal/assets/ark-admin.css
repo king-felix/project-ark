@@ -55,6 +55,7 @@ input[type="file"]::file-selector-button {
 
 /* notices -------------------------------------------------------------- */
 .status.good .dot { background: var(--go); }
+.status.wait .dot { background: var(--warn); }
 .status.bad  { border-color: #4a1f1a; background: #170a08; color: #ffd9d3; }
 .status.bad .dot { background: var(--bad); }
 

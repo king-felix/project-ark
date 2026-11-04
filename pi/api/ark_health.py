@@ -31,6 +31,7 @@ from pathlib import Path
 
 import ark_db
 import ark_media
+import ark_pause
 import ark_space
 import ark_storage
 
@@ -39,6 +40,24 @@ import ark_storage
 # home page would ask the library six times a minute for nothing.
 PROBE_TIMEOUT = float(os.environ.get("ARK_PROBE_TIMEOUT", "0.8"))
 PROBE_CACHE_SECONDS = 10.0
+
+#: How long a whole readiness answer is reused.  A phone left on the home page
+#: asks every thirty seconds; without this each ask walked every section.  Five
+#: seconds keeps the answer fresh for a person pressing reload while making a
+#: page-load burst — and the owner's page, which asks *now* — one scan.
+REPORT_CACHE_SECONDS = float(os.environ.get("ARK_HEALTH_REPORT_CACHE", "5"))
+
+#: The words every section may use for its condition.  ``ready`` stays the
+#: yes/no a script acts on; ``state`` is the sentence a person needs, because
+#: "not ready" covers an empty shelf, a paused worker, a missing tool and a
+#: genuinely broken service, and those are four different mornings.
+STATES = ("available", "empty", "preparing", "paused", "degraded",
+          "unavailable", "unmeasured")
+
+#: The features a reader may enjoy, beside the core.  They are reported by the
+#: same readiness answer but they can never make the box "not ready": a film
+#: shelf with no films is a shelf waiting, not a broken library.
+FEATURE_SECTIONS = ("films", "games", "maps")
 
 # A download that has not reported for this long is called stalled.  The
 # downloader writes every 15 seconds while it is fetching, so two minutes is
@@ -311,6 +330,7 @@ def download_state() -> dict:
 #  probing a loopback service — "is anything answering at this address?"
 # ---------------------------------------------------------------------------
 _PROBE_CACHE: dict[str, tuple[float, bool]] = {}
+_REPORT_CACHE: dict[str, object] = {"at": 0.0, "value": None}
 
 
 def answers(url: str, timeout: float | None = None) -> bool:
@@ -340,6 +360,8 @@ def answers(url: str, timeout: float | None = None) -> bool:
 def forget_probes() -> None:
     """Drop every cached answer — the owner's page asks the box again with this."""
     _PROBE_CACHE.clear()
+    _REPORT_CACHE["at"] = 0.0
+    _REPORT_CACHE["value"] = None
 
 
 
@@ -347,16 +369,21 @@ def forget_probes() -> None:
 #  one section, and the sentence that goes with it
 # ---------------------------------------------------------------------------
 def _section(key: str, label: str, ready: bool, reason: str,
-             action: str = "", content: bool = True, **facts) -> dict:
+             action: str = "", content: bool = True, state: str = "", **facts) -> dict:
     """One row of the answer.
 
-    ``ready`` is the verdict a reader cares about.  ``content`` says whether
-    there is anything on the card for that section yet — a box that is still
-    filling up is not broken, and the checks use this to tell the two apart.
+    ``ready`` is the verdict a script acts on.  ``content`` says whether there is
+    anything on the card for that section yet — a box that is still filling up is
+    not broken.  ``state`` is the finer truth a person reads: an empty shelf, a
+    paused worker and a missing tool are all "not ready" to a script and three
+    different sentences to the owner.  When a caller does not name one it is
+    derived from those two facts rather than invented.
     """
+    if state not in STATES:
+        state = "available" if ready else ("unavailable" if content else "empty")
     return {"key": key, "label": label, "ready": bool(ready), "reason": reason,
             "action": action if not ready else "", "content": bool(content),
-            "facts": facts}
+            "state": state, "facts": facts}
 
 
 RESTART_ADVICE = ("Switch the box off, wait five seconds and switch it back on.  If this "
@@ -877,24 +904,363 @@ def ask_section() -> dict:
         "no internet needed.", "", content=True, **kept)
 
 
+
+# ---------------------------------------------------------------------------
+#  the things people came for that are not "core"
+# ---------------------------------------------------------------------------
+def films_section() -> dict:
+    """Films: what can be watched now, and what is still being prepared.
+
+    Playback and preparation are two different capabilities and this row keeps
+    them apart.  A phone can watch every film that already has its bytes even
+    when FFmpeg is absent, the poster folder is broken, or the owner has paused
+    background work — so those are said in their own words, never as "Films are
+    broken" over a shelf that plays.
+    """
+    try:
+        with ark_db.read() as conn:
+            rows = conn.execute(
+                "SELECT id, title, state, plan, stored, play_stored, play_size, size"
+                " FROM media ORDER BY id").fetchall()
+            jobs = {str(r[0]): int(r[1]) for r in conn.execute(
+                "SELECT state, COUNT(*) FROM media_jobs GROUP BY state").fetchall()}
+    except Exception as exc:                     # noqa: BLE001 — a row cannot 500 a page
+        return _section(
+            "films", "Films", False,
+            "The film shelf's records cannot be read.",
+            "This is a database problem, not a film problem.  Reading, books, games and "
+            "the File Box still work; switch the box off and on, and if it stays like "
+            "this copy the records off before anything else.",
+            state="unavailable", error=type(exc).__name__)
+
+    published = [r for r in rows if str(r["state"] or "") == "published"]
+    playable = sum(1 for r in published if ark_media.playable(r) is not None)
+    waiting = int(jobs.get("queued", 0)) + int(jobs.get("running", 0))
+    tools = ark_media.tools_present()
+    paused = ark_pause.paused()
+    play_dir_ok = ark_media.play_dir().is_dir()
+    facts = {
+        "published": len(published),
+        "playable": playable,
+        "waiting": waiting,
+        "running": int(jobs.get("running", 0)),
+        "failed": int(jobs.get("failed", 0)),
+        "tools": tools,
+        "paused": paused,
+        "play_folder": play_dir_ok,
+        # A poster folder or a video tool is preparation, never playback.
+        "posters": ark_media.thumbs_dir().is_dir(),
+    }
+
+    if not published and not waiting:
+        return _section(
+            "films", "Films", False,
+            "No films have been put on the shelf yet.",
+            "The owner can add one from the Films page; everything else on the box "
+            "works without it.", content=False, state="empty", **facts)
+
+    if not play_dir_ok and any(str(r["play_stored"] or "") for r in published):
+        return _section(
+            "films", "Films", playable > 0,
+            "A converted film's playing copy is recorded, but the folder those copies "
+            "live in cannot be opened.",
+            "Films that need no converting still play.  The owner can look at the "
+            "Media page; a card that refuses this folder usually needs looking at.",
+            state="degraded" if playable else "unavailable", **facts)
+
+    if paused:
+        if waiting:
+            return _section(
+                "films", "Films", playable > 0,
+                f"{playable} film{'' if playable == 1 else 's'} can be watched.  The "
+                f"owner has paused background work, so {waiting} film"
+                f"{'' if waiting == 1 else 's'} waiting to be prepared will not start.",
+                "", state="paused", **facts)
+        return _section(
+            "films", "Films", playable > 0,
+            f"{playable} film{'' if playable == 1 else 's'} can be watched.  Background "
+            "preparation is paused by the owner.",
+            "", state="paused", **facts)
+
+    if not tools and waiting:
+        return _section(
+            "films", "Films", playable > 0,
+            f"{playable} film{'' if playable == 1 else 's'} can be watched, but "
+            f"{waiting} waiting film{'' if waiting == 1 else 's'} cannot be prepared: "
+            "this box has no video tool installed.",
+            "Films already prepared still play.  The owner can install FFmpeg in the "
+            "Media phase of the build; nothing else on the box is affected.",
+            state="degraded" if playable else "unavailable", **facts)
+
+    if playable == 0:
+        detail = (f"{len(published)} film{'' if len(published) == 1 else 's'} are on the "
+                  "shelf but none has playable bytes yet.")
+        state = "preparing" if waiting else "unavailable"
+        return _section(
+            "films", "Films", False, detail,
+            "A film is ready when its playing copy is written.  The Films page says "
+            "which films are being prepared; a failed one can be prepared again by "
+            "the owner.", state=state, **facts)
+
+    if playable < len(published):
+        return _section(
+            "films", "Films", True,
+            f"{playable} of {len(published)} films can be watched; the rest are still "
+            "being prepared or could not be.",
+            "", state="degraded", **facts)
+    return _section(
+        "films", "Films", True,
+        f"{playable} film{'' if playable == 1 else 's'} on the shelf "
+        f"{'is' if playable == 1 else 'are'} ready to watch, with pictures and "
+        "captions where they came with the film.",
+        "", **facts)
+
+
+def games_section() -> dict:
+    """Games: the shelf, its ROMs, and the player files a browser needs.
+
+    Presence is not proof of play: this check can say the files are all here and
+    the player loads, and it cannot say a particular phone drew a frame.  The
+    reason says that out loud rather than turning "present" into a promise.
+    """
+    import ark_arcade
+
+    try:
+        with ark_db.read() as conn:
+            rows = conn.execute(
+                "SELECT slug, title, system, core, filename, published, hidden"
+                " FROM games ORDER BY id").fetchall()
+    except Exception as exc:                     # noqa: BLE001
+        return _section(
+            "games", "Games", False,
+            "The game shelf's records cannot be read.",
+            "Reading, films, books and the File Box still work.  Switch the box off and "
+            "on; if this stays like this the records need looking at.",
+            state="unavailable", error=type(exc).__name__)
+
+    shelf = [r for r in rows if int(r["published"] or 0) and not int(r["hidden"] or 0)]
+    emu = ark_arcade.emulator_dir()
+    loader = emu / "loader.js"
+    engine = emu / "emulator.min.js"
+    template = ark_arcade.template_dir() / "page.html"
+    missing_player = [p.name for p in (loader, engine, template) if not p.is_file()]
+    missing_roms = []
+    missing_cores = []
+    seen_cores = set()
+    for row in shelf:
+        name = str(row["filename"] or "")
+        path = ark_arcade.games_dir() / name
+        if not name or name != Path(name).name or not path.is_file():
+            missing_roms.append(str(row["title"] or row["slug"]))
+        core = str(row["core"] or "")
+        if core and core not in seen_cores:
+            seen_cores.add(core)
+            if not (emu / "cores" / (core + "-wasm.data")).is_file():
+                missing_cores.append(core)
+    facts = {
+        "games": len(shelf),
+        "systems": len({str(r["system"] or "") for r in shelf}),
+        "missing_player_files": missing_player,
+        "missing_cores": sorted(missing_cores),
+        "missing_games": len(missing_roms),
+        "device_test": "not proved on a phone",
+    }
+    if not shelf:
+        return _section(
+            "games", "Games", False,
+            "No games have been added yet.",
+            "The owner can add a game file from the Games page.  The rest of the box "
+            "does not depend on it.", content=False, state="empty", **facts)
+    if missing_player:
+        return _section(
+            "games", "Games", False,
+            "The shelf has games, but the player files are not installed.",
+            "This is part of the build, not something a reader did.  The games are "
+            "still on the card; ask whoever looks after the box to re-run the portal "
+            "phase.", state="unavailable", **facts)
+    if missing_cores:
+        return _section(
+            "games", "Games", False,
+            f"The shelf has games, but this player is missing the part for "
+            f"{', '.join(sorted(missing_cores))}.",
+            "Only those games are affected; the others still play.  Ask whoever looks "
+            "after the box to re-run the portal phase, which installs every player "
+            "part.", state="degraded", **facts)
+    if missing_roms:
+        return _section(
+            "games", "Games", False,
+            f"{len(missing_roms)} game file{'' if len(missing_roms) == 1 else 's'} named "
+            "on the shelf cannot be found on the card.",
+            "The other games still play.  The owner can look on the Games page; a game "
+            "whose file is gone can be added again.", state="degraded", **facts)
+    return _section(
+        "games", "Games", True,
+        f"{len(shelf)} game{'' if len(shelf) == 1 else 's'} on the shelf, and every "
+        "player file this box needs is present.  Whether a particular phone draws it "
+        "is proved on that phone, not here.",
+        "", **facts)
+
+
+def maps_section() -> dict:
+    """Maps: the regions this box can hand out — never whether a phone kept one.
+
+    The second question ("has *this* phone downloaded a usable copy?") is answered
+    by the Maps page on the phone, because only that device can see its own
+    storage and its own service worker.  This row refuses to guess it.
+    """
+    try:
+        import ark_map_store
+        rows = ark_map_store.Store().rows()
+    except Exception as exc:                     # noqa: BLE001
+        return _section(
+            "maps", "Maps", False,
+            "The map shelf cannot be read.",
+            "Everything else on the box still works.  Switch the box off and on; if the "
+            "shelf stays unreadable, the maps folder on the card needs looking at.",
+            state="unavailable", error=type(exc).__name__)
+
+    published = [r for r in rows if r.get("published")]
+    ready = [r for r in published if r.get("ready")]
+    missing = [r for r in published if not r.get("ready")]
+    total = sum(int(r.get("bytes") or r.get("size") or 0) for r in ready)
+    facts = {
+        "regions": len(ready),
+        "published": len(published),
+        "missing_files": len(missing),
+        "bytes": total,
+        "device_copy": "measured on the phone that downloaded it",
+    }
+    if not published:
+        return _section(
+            "maps", "Maps", False,
+            "No regions are on the map shelf yet.",
+            "The Maps page explains how the owner adds one; the rest of the box works "
+            "without it.", content=False, state="empty", **facts)
+    if not ready:
+        return _section(
+            "maps", "Maps", False,
+            "The regions on the shelf are missing files, so none can be downloaded.",
+            "The owner can look at the Maps page and import the region again.  A copy "
+            "already on a phone is that phone's and is not affected.",
+            state="unavailable", **facts)
+    if missing:
+        return _section(
+            "maps", "Maps", True,
+            f"{len(ready)} region{'' if len(ready) == 1 else 's'} can be downloaded; "
+            f"{len(missing)} published region{'' if len(missing) == 1 else 's'} "
+            f"{'is' if len(missing) == 1 else 'are'} missing files and "
+            f"{'is' if len(missing) == 1 else 'are'} not offered.",
+            "", state="degraded", **facts)
+    return _section(
+        "maps", "Maps", True,
+        f"{len(ready)} region{'' if len(ready) == 1 else 's'} "
+        f"({human_size(total)}) ready to download.  Whether this phone already kept "
+        "one is shown on the Maps page on the phone.",
+        "", **facts)
+
+
 SECTIONS = (library_section, books_section, manuals_section, messages_section,
             files_section, storage_section, backup_section, downloads_section,
-            ask_section)
+            ask_section,
+            # Features a reader may enjoy.  Reported by the same answer, never
+            # allowed to make the core box "not ready".
+            films_section, games_section, maps_section)
 
 
 # ---------------------------------------------------------------------------
 #  the whole picture
 # ---------------------------------------------------------------------------
-def report() -> dict:
-    """Every section, plus the one verdict a caller should act on."""
-    sections = [build() for build in SECTIONS]
+def _build(build) -> dict:
+    """One section, with its own failure contained.
+
+    A health check that can raise is a health check that turns the page that
+    reports a fault into a second fault.  Each probe is isolated: a broken
+    optional shelf produces its own red row, and the sections beside it still
+    answer.
+    """
+    try:
+        return build()
+    except Exception as exc:                     # noqa: BLE001 — isolation is the point
+        key = build.__name__.replace("_section", "")
+        labels = {"library": "Offline Library", "books": "Books",
+                  "manuals": "Manuals & Guides", "messages": "Message Board",
+                  "files": "File Box", "storage": "Space on the card",
+                  "backup": "Latest copy", "downloads": "Incoming collections",
+                  "ask": "Ask the Ark", "films": "Films", "games": "Games",
+                  "maps": "Maps"}
+        return {
+            "key": key, "label": labels.get(key, key.title()), "ready": False,
+            "reason": "This check could not finish.",
+            "action": ("Nothing else has been changed by it.  Switch the box off and on; "
+                       "if this row stays like this, the part it checks needs looking at."),
+            "content": True, "state": "unavailable",
+            "facts": {"error": type(exc).__name__},
+        }
+
+
+def report(force: bool = False) -> dict:
+    """Every section, plus the one verdict a caller should act on.
+
+    The answer is reused for a few seconds.  ``ok`` means **the core** answered:
+    library, books, manuals, messages, the File Box and room on the card.  Films,
+    games and maps ride along in their own rows and can never turn a working
+    library into a 503 — that separation is the whole point of calling them
+    features rather than requirements.
+
+    ``force=True`` (the owner's page, after it clears the probe cache) scans now.
+    """
+    now = time.monotonic()
+    cached = _REPORT_CACHE.get("value")
+    if (not force and cached is not None
+            and now - float(_REPORT_CACHE.get("at") or 0) < REPORT_CACHE_SECONDS):
+        return cached                       # a dict is read-only to every caller
+
+    sections = [_build(build) for build in SECTIONS]
     blocking = [s["label"] for s in sections
                 if s["key"] in BLOCKING_SECTIONS and not s["ready"]]
-    return {
+    features = [s for s in sections if s["key"] in FEATURE_SECTIONS]
+    result = {
         "checked": now_iso(),
         "ok": not blocking,
+        # The contract has not changed: `ok`/`blocking` are the core verdict a
+        # script may act on, and `ready`/`total` still count every row.
+        "scope": "core",
+        "feature_ok": all(s["ready"] for s in features),
         "ready": sum(1 for s in sections if s["ready"]),
         "total": len(sections),
         "blocking": blocking,
+        "unavailable_features": [s["label"] for s in features if not s["ready"]],
         "sections": sections,
+    }
+    _REPORT_CACHE["at"] = now
+    _REPORT_CACHE["value"] = result
+    return result
+
+
+def liveness() -> dict:
+    """Cheap: is this process answering, and what did it last say about readiness?
+
+    Deliberately does **not** build a report.  ``/api/health`` used to call the
+    whole readiness scan, so a monitor asking "are you alive?" every five seconds
+    walked the library, the bookshelf and every optional shelf with it.  Liveness
+    and readiness are different questions; this answers only the first and hands
+    back the last measured verdict, clearly labelled as remembered.
+    """
+    now = time.monotonic()
+    cached = _REPORT_CACHE.get("value")
+    age = None
+    if cached is not None:
+        age = max(0.0, round(now - float(_REPORT_CACHE.get("at") or 0), 1))
+    return {
+        "live": True,
+        "scope": "backend-process",
+        "ready": cached["ok"] if cached is not None else None,
+        "readiness": "measured" if cached is not None else "not checked",
+        "readiness_age_seconds": age,
+        "blocking": cached["blocking"] if cached is not None else [],
+        "note": ("The backend answered. This is not a health verdict — see /api/ready. "
+                 + ("The verdict below was measured recently."
+                    if cached is not None else
+                    "Readiness has not been measured in this process yet.")),
+        "time": now_iso(),
     }

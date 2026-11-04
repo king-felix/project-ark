@@ -38,6 +38,7 @@ sys.path.insert(0, str(API_DIR))
 import ark_arcade as arc                    # noqa: E402
 import ark_arcade_install as install       # noqa: E402
 import ark_db                              # noqa: E402
+import ark_pause                           # noqa: E402
 import ark_romdb as romdb                  # noqa: E402
 import ark_rommeta as rommeta              # noqa: E402
 
@@ -152,6 +153,13 @@ def main(argv=None) -> int:
         return 2
 
     ark_db.migrate()
+    # The two things the weekly timer runs are background work.  An explicit
+    # ``--import`` by the owner is not: that is a decision made at the console,
+    # and the pause is about the box deciding to work on its own.
+    if (args.seed or args.discover) and ark_pause.paused():
+        _say("background work is paused by the owner — the shelf is not being changed; "
+             "resume it on the owner's Background work page")
+        return 0
     code = 0
     with ark_db.read() as conn:
         if args.match:

@@ -30,6 +30,7 @@ from typing import List, Optional
 from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
+import ark_ai
 import ark_db
 import ark_doors
 import ark_essentials
@@ -41,6 +42,7 @@ import ark_map_store
 import ark_media
 import ark_media_jobs
 import ark_media_web
+import ark_pause
 import ark_recovery
 import ark_review
 import ark_security as sec
@@ -241,6 +243,7 @@ def ago(iso: str) -> str:
 ADMIN_NAV = (
     ("/admin", "Overview"),
     ("/admin/health", "What is working"),
+    ("/admin/background", "Background work"),
     ("/admin/upload", "Add files"),
     ("/admin/media", "Media"),
     ("/admin/maps", "Maps"),
@@ -816,6 +819,17 @@ def overview(request: Request):
         for e in events
     ) or '<li>No recorded activity yet.</li>'
     stats = _dashboard(health, notes)
+    if ark_pause.paused():
+        background_block = (
+            _notice("wait", "<b>Heavy background work is paused.</b> Reading, watching, "
+                            "games, maps and messages are unaffected.")
+            + '<p class="note"><a href="/admin/background">See what is paused and '
+              'resume it</a></p>')
+    else:
+        background_block = (
+            '<p class="note">Heavy jobs (film preparation, imports, discovery, '
+            'collection downloads) run one at a time. '
+            '<a href="/admin/background">Pause them for a while</a>.</p>')
     body = f"""
   {_notice("good", f"<b>You are the administrator.</b> {active} enabled "
                    f"account{'s' if active != 1 else ''} on this box.")}
@@ -837,6 +851,8 @@ def overview(request: Request):
   <p class="nav"><a href="/admin/accounts">Manage administrators</a></p>
   <h2>Recent activity</h2>
   <ul class="clean">{recent}</ul>
+  <h2>Background work</h2>
+  {background_block}
   {health_block}"""
     return shell("Overview", body, ctx=ctx,
                  tagline="The owner's side of the box.")
@@ -875,10 +891,23 @@ def _storage_breakdown(section: dict) -> str:
             f'folders.{card}</span>')
 
 
+STATE_WORDS = {
+    "available": ("Ready", "state"),
+    "empty": ("Nothing yet", "state wait"),
+    "preparing": ("Preparing", "state wait"),
+    "paused": ("Paused by you", "state wait"),
+    "degraded": ("Partly working", "state wait"),
+    "unavailable": ("Not ready", "state no"),
+    "unmeasured": ("Not measured", "state wait"),
+}
+
+
 def _health_row(section: dict) -> str:
     """One part of the box: its state, what that means, and what to do."""
-    state = ("<span class=\"state\">Ready</span>" if section["ready"]
-             else "<span class=\"state no\">Not ready</span>")
+    word, style = STATE_WORDS.get(section.get("state", ""),
+                                  ("Ready" if section["ready"] else "Not ready",
+                                   "state" if section["ready"] else "state no"))
+    state = f'<span class="{style}">{esc(word)}</span>'
     fix = (f'<span class="fix">What to do: {esc(section["action"])}</span>'
            if section["action"] else "")
     extra = _storage_breakdown(section) if section["key"] == "storage" else ""
@@ -904,13 +933,20 @@ def health_page(request: Request):
             return blocked
 
     ark_health.forget_probes()
-    report = ark_health.report()
+    report = ark_health.report(force=True)
     rows = "".join(_health_row(s) for s in report["sections"])
+    feature_trouble = [s for s in report["sections"]
+                       if s["key"] in ark_health.FEATURE_SECTIONS and not s["ready"]]
 
     if report["ok"]:
         headline = _notice(
             "good", "<b>Everything a visitor needs is working.</b> "
-                    f"{report['ready']} of {report['total']} parts answered.")
+                    f"{report['ready']} of {report['total']} parts answered."
+                    + (f" {len(feature_trouble)} optional part"
+                       f"{'s' if len(feature_trouble) != 1 else ''} "
+                       f"{'need' if len(feature_trouble) != 1 else 'needs'} attention; "
+                       "reading, books, guides, messages and the File Box are unaffected."
+                       if feature_trouble else ""))
     else:
         count = len(report["blocking"])
         names = esc(", ".join(report["blocking"])) or "some parts"
@@ -929,9 +965,286 @@ def health_page(request: Request):
   {waiting_line}
   <p class="note">Reload this page to check again. It only looks — it never starts,
      stops or deletes anything. Downloading is ordinary work in progress, so a
-     waiting download does not count as something being wrong.</p>"""
+     waiting download does not count as something being wrong. <b>Films, Games and
+     Maps are features, not requirements:</b> they are reported here and never make
+     the reading side of the box fail.</p>"""
     return shell("What is working", body, ctx=ctx,
                  tagline="Every part of the box, and the reason behind each answer.")
+
+
+
+# ---------------------------------------------------------------------------
+#  background work — one switch for the heavy, optional jobs
+# ---------------------------------------------------------------------------
+def _job_word(job) -> str:
+    if job is None:
+        return "Nothing is being prepared right now."
+    title = str(job["title"] or job["filename"] or "a film")
+    progress = int(float(job["progress"] or 0))
+    return (f'<b>{esc(title)}</b> is being prepared ({progress}% written).  '
+            "An encode cannot resume from the middle, so this one is allowed to "
+            "finish; nothing new will start.")
+
+
+def _background_body(ctx: Ctx, *, flash: str = "", running=None, counts=None,
+                     downloads=None) -> str:
+    state = ark_pause.requested()
+    paused = bool(state["paused"])
+    counts = counts or {}
+    running_jobs = int(counts.get("running", 0))
+    queued = int(counts.get("queued", 0))
+    failed = int(counts.get("failed", 0))
+
+    try:
+        helper = ark_ai.status()
+    except Exception:                       # noqa: BLE001 — never break this page
+        helper = {"engine": False, "model": "", "answering": False, "paused": paused,
+                  "available": False}
+    try:
+        dl = downloads or ark_health.progress()
+    except Exception:                       # noqa: BLE001
+        dl = {"reported": False, "pending": 0, "current": "", "paused": paused}
+
+    now_lines = []
+    if running_jobs:
+        now_lines.append("<li><b>Films.</b> " + _job_word(running) + "</li>")
+    else:
+        now_lines.append(
+            "<li><b>Films.</b> Nothing is being prepared"
+            + (f"; {queued} film{'' if queued == 1 else 's'} are waiting." if queued
+               else ".") + "</li>")
+    if paused:
+        now_lines.append(
+            "<li><b>Incoming collections.</b> No new collection is being fetched.  A "
+            "download that was running stops at a resumable piece and keeps its partial "
+            "file.</li>")
+        now_lines.append(
+            "<li><b>Books.</b> A book dropped in the File Box stays there; the importer "
+            "will not run until you resume.</li>")
+        now_lines.append(
+            "<li><b>Game discovery.</b> The weekly check will not run.  Every game "
+            "already on the shelf still plays.</li>")
+        if helper.get("answering"):
+            now_lines.append(
+                "<li><b>Ask the Ark.</b> The helper is loaded but idle; questions are "
+                "refused with a sentence while the pause is on.</li>")
+        else:
+            now_lines.append(
+                "<li><b>Ask the Ark.</b> The helper is not running and will not be "
+                "started while the pause is on.</li>")
+    else:
+        if dl.get("current"):
+            now_lines.append(
+                "<li><b>Incoming collections.</b> "
+                f"“{esc(dl['current'])}” is coming in"
+                + (f" ({int(dl['percent'])}%)." if dl.get("percent") is not None else ".")
+                + "</li>")
+        elif dl.get("pending"):
+            now_lines.append(
+                f"<li><b>Incoming collections.</b> {int(dl['pending'])} waiting; the "
+                "downloader starts the next one by itself.</li>")
+        else:
+            now_lines.append(
+                "<li><b>Incoming collections.</b> Nothing is waiting to be fetched.</li>")
+        now_lines.append(
+            "<li><b>Books and games.</b> The book watcher and the weekly game check run "
+            "as usual.</li>")
+        now_lines.append(
+            "<li><b>Ask the Ark.</b> "
+            + ("The helper is answering questions." if helper.get("available")
+               else "The helper is not available; the page says why."
+               if helper.get("engine") or helper.get("model")
+               else "No helper is fitted on this box.") + "</li>")
+
+    if paused:
+        switch = f"""
+  <form method="post" action="/admin/background/resume">
+    {_csrf_field(ctx.csrf)}
+    <button class="go-btn" type="submit">Resume background work</button>
+  </form>
+  <p class="note">Resuming lets the waiting work start again — a queued film, the book
+     importer and the collection downloader.  It does not switch on anything you had
+     already turned off, and it does not start a game download or a backup.</p>"""
+        headline = _notice(
+            "wait", "<b>Background work is paused.</b> Reading, watching, games, maps, "
+                    "messages and the File Box keep working normally.  New preparation "
+                    "waits.")
+    else:
+        switch = f"""
+  <form method="post" action="/admin/background/pause">
+    {_csrf_field(ctx.csrf)}
+    <button class="go-btn" type="submit">Pause background work</button>
+  </form>
+  <p class="note">Pausing stops new films being prepared, holds the book importer and the
+     weekly game check, and lets a collection download stop at a resumable piece.  A film
+     already being converted is allowed to finish.  Nothing is deleted, and every page a
+     reader uses keeps working.</p>"""
+        headline = _notice(
+            "good", "<b>Background work is allowed.</b> Heavy jobs run one at a time and "
+                    "always behind the pages people are reading.")
+
+    stop = ""
+    if running is not None:
+        stop = f"""
+  <h2>Stop the film being prepared</h2>
+  <p class="note">This is the deliberate way to stop a long conversion.  The upload is
+     <b>kept</b>; the half-written playing copy is thrown away; preparing it again starts
+     that film from the beginning.  It is not the same as pausing — the pause lets this
+     job finish.</p>
+  <form method="post" action="/admin/background/stop">
+    {_csrf_field(ctx.csrf)}
+    <input type="hidden" name="media_id" value="{int(running['media_id'])}">
+    <button class="go-btn small" type="submit">Stop this film now</button>
+  </form>"""
+
+    facts = f"""
+  <ul class="clean">
+    {' '.join(now_lines)}
+  </ul>"""
+
+    working = """
+  <h2>What a pause never stops</h2>
+  <ul class="clean">
+    <li><b>Reading and watching.</b> The library, the books, the guides, the manuals and
+      every film that is already prepared.</li>
+    <li><b>Games and maps.</b> Play, saves, and a region already downloaded to a
+      phone.</li>
+    <li><b>People.</b> The message board, the File Box, the household page and the
+      printed cards.</li>
+    <li><b>Safety work.</b> Integrity checks, recovery, backups, and deleting something
+      you no longer want.</li>
+  </ul>
+  <p class="note">The box does not treat “no internet” as a request to stop having fun.
+     This switch is yours alone; it is never set by a timer and it survives a restart.</p>"""
+
+    if failed:
+        facts += (f'<p class="note">{failed} film job'
+                  f'{"" if failed == 1 else "s"} have failed and will keep saying so until '
+                  'somebody prepares the film again. They are not retried in a loop.</p>')
+
+    flash_html = _notice("good", flash) if flash else ""
+    return f"""
+  {headline}
+  {flash_html}
+  {switch}
+  <h2>What is happening now</h2>
+  {facts}
+  {stop}
+  {working}
+  <p class="note">Measured on this box when you opened the page.  This page cannot see
+     the worker processes themselves; the queue and the current job are what the records
+     say they owe.</p>"""
+
+
+def _background_counts(conn):
+    rows = conn.execute("SELECT state, COUNT(*) FROM media_jobs GROUP BY state").fetchall()
+    counts = {str(r[0]): int(r[1]) for r in rows}
+    running = conn.execute(
+        "SELECT j.*, m.title, m.filename FROM media_jobs j"
+        " LEFT JOIN media m ON m.id = j.media_id"
+        " WHERE j.state = 'running' ORDER BY j.id LIMIT 1").fetchone()
+    return counts, running
+
+
+@router.get("/background", response_class=HTMLResponse)
+def background_page(request: Request, done: str = ""):
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.tx() as conn:
+        if (blocked := _gate_recovery(conn)) is not None:
+            return blocked
+        ctx = _load_ctx(conn, request, ark_db.session_epoch(conn))
+        if (blocked := _need_session(ctx, request)) is not None:
+            return blocked
+        counts, running = _background_counts(conn)
+    flash = {"paused": "Heavy background work is paused.",
+             "resumed": "Heavy background work is allowed again.",
+             "stopped": "The film was stopped.  Its upload is still on the card."}.get(done, "")
+    body = _background_body(ctx, flash=flash, running=running, counts=counts)
+    return shell("Background work", body, ctx=ctx,
+                 tagline="One switch for the heavy jobs — and an honest list of what still works.")
+
+
+@router.post("/background/pause", response_class=HTMLResponse)
+def background_pause(request: Request, csrf: str = Form("")):
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.tx() as conn:
+        ctx = _load_ctx(conn, request, ark_db.session_epoch(conn))
+        if (blocked := _need_session(ctx, request)) is not None:
+            return blocked
+        if (blocked := _need_csrf(ctx, csrf)) is not None:
+            return blocked
+        before = ark_pause.paused()
+        state = ark_pause.set_paused(True)
+        if before or not state.get("changed", True):
+            ark_db.audit(conn, action="background-pause", actor_id=ctx.admin["id"],
+                         actor_name=ctx.admin["username"], result="unchanged",
+                         detail="already paused")
+        else:
+            ark_db.audit(conn, action="background-pause", actor_id=ctx.admin["id"],
+                         actor_name=ctx.admin["username"], result="ok",
+                         detail="heavy background work paused")
+    return _redirect("/admin/background?done=paused")
+
+
+@router.post("/background/resume", response_class=HTMLResponse)
+def background_resume(request: Request, csrf: str = Form("")):
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.tx() as conn:
+        ctx = _load_ctx(conn, request, ark_db.session_epoch(conn))
+        if (blocked := _need_session(ctx, request)) is not None:
+            return blocked
+        if (blocked := _need_csrf(ctx, csrf)) is not None:
+            return blocked
+        before = ark_pause.paused()
+        state = ark_pause.set_paused(False)
+        if state.get("paused"):
+            ark_db.audit(conn, action="background-resume", actor_id=ctx.admin["id"],
+                         actor_name=ctx.admin["username"], result="failed",
+                         detail="the pause marker could not be removed")
+            return _redirect("/admin/background?done=")
+        ark_db.audit(conn, action="background-resume", actor_id=ctx.admin["id"],
+                     actor_name=ctx.admin["username"], result="ok" if before else "unchanged",
+                     detail="heavy background work allowed again")
+    return _redirect("/admin/background?done=resumed")
+
+
+@router.post("/background/stop", response_class=HTMLResponse)
+def background_stop(request: Request, media_id: int = Form(0), csrf: str = Form("")):
+    """Stop the one film being prepared — a bounded, explicit action.
+
+    The web application is not given a service-control command.  The only thing
+    this route can stop is the media job the records say is **running right
+    now**, and only when the form names the same film; a stale page cannot cancel
+    a different job.
+    """
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.tx() as conn:
+        ctx = _load_ctx(conn, request, ark_db.session_epoch(conn))
+        if (blocked := _need_session(ctx, request)) is not None:
+            return blocked
+        if (blocked := _need_csrf(ctx, csrf)) is not None:
+            return blocked
+        running = conn.execute(
+            "SELECT * FROM media_jobs WHERE state = 'running' ORDER BY id LIMIT 1").fetchone()
+        if running is None:
+            ark_db.audit(conn, action="background-stop", actor_id=ctx.admin["id"],
+                         actor_name=ctx.admin["username"], result="nothing-running",
+                         detail="no film was being prepared")
+            return _redirect("/admin/background")
+        if int(running["media_id"]) != int(media_id or 0):
+            ark_db.audit(conn, action="background-stop", actor_id=ctx.admin["id"],
+                         actor_name=ctx.admin["username"], result="refused",
+                         detail="the named film is not the one running")
+            return _redirect("/admin/background")
+        cancelled = ark_media.cancel(conn, int(media_id))
+        ark_db.audit(conn, action="background-stop", actor_id=ctx.admin["id"],
+                     actor_name=ctx.admin["username"], target=f"media:{int(media_id)}",
+                     result="ok", detail=f"stopped {cancelled} job(s); upload kept")
+    return _redirect("/admin/background?done=stopped")
 
 
 # ---------------------------------------------------------------------------

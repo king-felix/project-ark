@@ -169,6 +169,12 @@ DOORS: Tuple[Dict[str, str], ...] = (
      "who": "the owner",
      "what": "Every part of the box, whether it is working, and what to do when it "
              "is not."},
+    {"group": "Behind the sign-in", "address": "https://{host}:8443/admin/background",
+     "name": "Background work",
+     "who": "the owner",
+     "what": "One switch for the heavy jobs: preparing films, importing books, "
+             "looking for games and fetching collections. Pausing it leaves reading, "
+             "watching, games, maps and messages working."},
     {"group": "Behind the sign-in", "address": "https://{host}:8443/admin/doors",
      "name": "Addresses",
      "who": "the owner",

@@ -413,3 +413,99 @@ def test_a_paused_download_keeps_its_pieces_and_resumes(maps_box):
         context.close()
         browser.close()
         playback.stop()
+
+
+def test_an_installed_page_takes_a_newer_application_and_keeps_its_pack(maps_box, tmp_path):
+    """The update that used to never arrive.
+
+    The reviewed arrangement named the service worker's cache with a constant
+    somebody had to remember to change, so a phone that had already kept the page
+    went on running the old code for ever.  The Ark now fingerprints every
+    application file and serves ``sw.js`` with that fingerprint in it: change one
+    byte of the page and the browser has a genuine new worker to install.
+
+    What must survive the update is the point of it — the downloaded pack, the
+    saved places, and the ability to reopen with nothing reachable.
+    """
+    source = Path(__file__).resolve().parents[1] / "pi" / "maps" / "web"
+    web = tmp_path / "web"
+    shutil.copytree(source, web)
+    import os
+    os.environ["ARK_MAPS_WEB"] = str(web)
+    url = "https://ark.test:%d/maps/" % maps_box["port"]
+    try:
+        playback, browser, context = _launch(maps_box["port"], maps_box["spki"])
+    except PlaywrightError as exc:
+        pytest.skip("Chromium could not start: %s" % (exc,))
+    try:
+        page = context.new_page()
+        page.on("dialog", lambda dialog: dialog.accept())
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        page.goto(url, wait_until="load")
+        page.get_by_role("button", name="Download for offline use").first.wait_for(timeout=15000)
+        first_release = page.evaluate(
+            "() => fetch('/maps/api/app', {cache: 'no-store'}).then(r => r.json())")
+        assert first_release["release"]
+
+        page.get_by_role("button", name="Download for offline use").first.click()
+        page.locator("#map-view").wait_for(state="visible", timeout=60000)
+        assert "Ready offline" in page.inner_text("#offline-badge")
+
+        # A place saved on this device, to be found again after the update.
+        page.fill("#to-input", "Beta")
+        page.locator("#to-suggestions button").first.wait_for(timeout=5000)
+        page.locator("#to-suggestions button").first.click()
+        page.locator("details", has_text="Saved places").locator("summary").click()
+        page.click("#save-current")
+        page.wait_for_function(
+            "() => document.querySelector('#saved-list').innerText.includes('Beta')",
+            timeout=5000)
+
+        # A newer build of the page lands on the Ark.
+        app = web / "app.js"
+        app.write_text('window.__ARK_TEST_BUILD__ = 2;\n' + app.read_text(encoding="utf-8"),
+                       encoding="utf-8")
+        second_release = page.evaluate(
+            "() => fetch('/maps/api/app', {cache: 'no-store'}).then(r => r.json())")
+        assert second_release["release"] != first_release["release"]
+
+        # The reader is told, rather than having the code swapped under them.
+        page.reload(wait_until="load")
+        page.locator("#update-note").wait_for(state="visible", timeout=20000)
+        assert "newer version" in page.inner_text("#update-note")
+        context.on("serviceworker", lambda w: print("SW-WORKER", w.url, file=__import__("sys").stderr))
+        page.click("#update-now")
+        # The page takes the new worker and reloads itself; wait for the upgraded
+        # script to run rather than for a fixed number of seconds.
+        page.wait_for_function("() => window.__ARK_TEST_BUILD__ === 2", timeout=25000)
+
+        # The pack and the saved places are still this device's.
+        page.locator("#map-view").wait_for(state="visible", timeout=20000)
+        assert "Ready offline" in page.inner_text("#offline-badge")
+        page.locator("details", has_text="Saved places").locator("summary").click()
+        assert "Beta" in page.inner_text("#saved-list")
+
+        # And the upgraded page still works with the Ark and the internet gone.
+        context.set_offline(True)
+        page.reload(wait_until="load")
+        page.locator("#map-view").wait_for(state="visible", timeout=20000)
+        assert page.evaluate("() => window.__ARK_TEST_BUILD__") == 2
+        page.fill("#from-input", "Gamma")
+        page.locator("#from-suggestions button").first.wait_for(timeout=5000)
+        page.locator("#from-suggestions button").first.click()
+        page.fill("#to-input", "Delta")
+        page.locator("#to-suggestions button").first.wait_for(timeout=5000)
+        page.locator("#to-suggestions button").first.click()
+        page.click("#route-button")
+        page.locator("#route-panel").wait_for(state="visible", timeout=10000)
+        page.wait_for_function(
+            "document.querySelector('#route-summary').textContent.length > 0", timeout=10000)
+        assert "Route ready" in page.inner_text("#route-status")
+        assert errors == [], errors
+    finally:
+        context.close()
+        browser.close()
+        playback.stop()
+        import os
+        os.environ.pop("ARK_MAPS_WEB", None)

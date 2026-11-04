@@ -122,6 +122,64 @@ def _asset_headers(path: Path) -> Dict[str, str]:
     return headers
 
 
+#: Where the service worker's cache name is written.  ``sw.js`` is served with
+#: this replaced by the release fingerprint, so **any** change to any application
+#: file produces a byte-different worker script — which is the only signal a
+#: browser uses to install one.  A hand-edited version constant was the old
+#: arrangement and it drifted: an already-installed phone kept the old page for
+#: ever, because nothing in it had changed as far as the browser could see.
+RELEASE_TOKEN = "__ARK_RELEASE__"
+
+_RELEASE_CACHE: Dict[str, object] = {"key": "", "value": ""}
+
+
+def _asset_files() -> list:
+    folder = ark_map_store.web_root()
+    found = []
+    for name in sorted(APP_ASSETS):
+        path = folder / name
+        if path.is_file():
+            found.append((name, path))
+    return found
+
+
+def app_release() -> str:
+    """A short fingerprint of the whole application, from its real bytes.
+
+    Cheap enough to ask on every page load (the files are small and the answer is
+    reused until one of them changes), and impossible to forget to bump: it *is*
+    the files.
+    """
+    files = _asset_files()
+    key = "|".join("%s:%d:%d" % (name, path.stat().st_size, int(path.stat().st_mtime))
+                   for name, path in files)
+    if _RELEASE_CACHE.get("key") == key and _RELEASE_CACHE.get("value"):
+        return str(_RELEASE_CACHE["value"])
+    digest = hashlib.sha256()
+    for name, path in files:
+        digest.update(name.encode("utf-8"))
+        try:
+            digest.update(path.read_bytes())
+        except OSError:
+            continue
+    value = digest.hexdigest()[:12]
+    _RELEASE_CACHE["key"] = key
+    _RELEASE_CACHE["value"] = value
+    return value
+
+
+def app_release_facts() -> dict:
+    """What a page (and the owner's Health page) may say about this release."""
+    files = _asset_files()
+    return {
+        "release": app_release(),
+        "app_version": ark_maps.APP_VERSION,
+        "files": len(files),
+        "missing": [name for name in APP_ASSETS
+                    if not (ark_map_store.web_root() / name).is_file()],
+    }
+
+
 def _read_asset(name: str) -> Optional[Tuple[Path, bytes]]:
     folder = ark_map_store.web_root()
     if name not in APP_ASSETS:
@@ -129,7 +187,13 @@ def _read_asset(name: str) -> Optional[Tuple[Path, bytes]]:
     path = folder / name
     if not path.is_file():
         return None
-    return path, path.read_bytes()
+    data = path.read_bytes()
+    if name == "sw.js":
+        # The same substitution makes the worker's *own* bytes change whenever the
+        # application does, so the browser has a reason to update it.
+        data = data.replace(RELEASE_TOKEN.encode("utf-8"),
+                            app_release().encode("utf-8"))
+    return path, data
 
 
 def _parse_range(header: str, size: int) -> Optional[Tuple[int, int]]:
@@ -193,6 +257,20 @@ def build_router() -> APIRouter:
             "pack_schema": ark_maps.PACK_SCHEMA,
             "packs": rows,
         }, headers={"Cache-Control": "no-store", **SECURITY_HEADERS})
+
+    # -- which build of this page is loaded --------------------------------
+
+    @router.get("/maps/api/app")
+    def app_facts():
+        """The release the page should be showing, and the version packs require.
+
+        ``app_version`` is the *format* compatibility number packs name in their
+        manifest (``app.min``..``app.max``); ``release`` is which build of the
+        page this is.  Two different questions, and confusing them is how a page
+        tells a phone its pack is incompatible when the only change was a colour.
+        """
+        return JSONResponse(app_release_facts(),
+                            headers={"Cache-Control": "no-store", **SECURITY_HEADERS})
 
     # -- one pack's description ---------------------------------------------
 

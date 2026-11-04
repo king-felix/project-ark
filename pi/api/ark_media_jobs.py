@@ -27,13 +27,17 @@ import json
 import os
 import random
 import re
+import select
 import subprocess
-import tempfile
+import threading
 import time
+from collections import deque
 from pathlib import Path
 
+import ark_atomic
 import ark_db
 import ark_media
+import ark_pause
 import ark_space
 
 #: Bounded, and generous enough for a long film on a slow card.
@@ -122,51 +126,187 @@ def _cancelled(job_id: int) -> bool:
         return False
 
 
+#: How much of a tool's complaint is kept.  A tool that writes a gigabyte of
+#: warnings must not become a gigabyte in this process's memory; the last few
+#: lines are what names the fault, and the beginning of a runaway log says
+#: nothing a person can use.
+STDERR_TAIL_BYTES = 64 * 1024
+
+#: How often a running job asks whether the owner pressed Stop.  The deadline is
+#: checked on every loop turn; the database is not, because a query four times a
+#: second for an hour is its own kind of busy-work.
+CANCEL_CHECK_SECONDS = 1.0
+
+#: How long a killed tool is given to disappear before it is killed again and
+#: left to the kernel.  A child that will not be reaped is a worse fault than the
+#: film it was working on.
+KILL_GRACE_SECONDS = 5.0
+
+
+class _Tail:
+    """The last bytes of a stream, bounded, safe to read from another thread."""
+
+    def __init__(self, limit: int = STDERR_TAIL_BYTES):
+        self.limit = limit
+        self._chunks: deque = deque()
+        self._size = 0
+        self._lock = threading.Lock()
+
+    def feed(self, chunk: bytes) -> None:
+        with self._lock:
+            self._chunks.append(chunk)
+            self._size += len(chunk)
+            while self._size > self.limit and self._chunks:
+                self._size -= len(self._chunks.popleft())
+
+    def text(self) -> str:
+        with self._lock:
+            return b"".join(self._chunks).decode("utf-8", "replace")
+
+
+def _drain(stream, sink: _Tail) -> None:
+    """Read a pipe to the end, keeping only its tail.  Never raises outward."""
+    try:
+        while True:
+            chunk = stream.read(8192)
+            if not chunk:
+                return
+            sink.feed(chunk)
+    except (OSError, ValueError):
+        return
+    finally:
+        try:
+            stream.close()
+        except Exception:
+            pass
+
+
 def _run(cmd: list[str], *, job_id: int = 0, deadline: float, on_line=None) -> None:
     """Run a tool, streaming its ``-progress`` lines, and stop it when told.
+
+    The deadline and the owner's Stop are enforced by this loop, not by the tool
+    and not by the arrival of a line.  The old loop checked both *inside*
+    ``for line in proc.stdout``: a child that said nothing — a decoder waiting on
+    a damaged block, a wrapper that had not printed its first progress line — was
+    waited on for ever, and a 0.4-second sleeper "succeeded" against a 0.05-second
+    deadline because the loop body never ran at all.  Now:
+
+    * ``select`` wakes the loop at least ten times a second, so silence is
+      observed exactly like output;
+    * stdout is read in bytes and split into lines here, so a partial line left
+      in the pipe cannot hide the deadline either;
+    * stderr is drained by one thread into a bounded tail, so a tool that floods
+      stderr cannot block on a full pipe or grow this process without limit;
+    * every exit path kills and reaps the child, then waits for the drain thread.
 
     The process is killed rather than merely abandoned: a conversion left running
     after its job was cancelled would keep the card busy and the reservation
     honest for hours.
     """
     started = time.monotonic()
-    # stderr goes to a real temporary file, never a pipe: a pipe nobody drains
-    # while the loop is reading stdout fills up and the tool blocks forever — the
-    # classic way a bounded job becomes an unbounded one.
-    with tempfile.TemporaryFile(mode="w+b") as errfile:
-        try:
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=errfile,
-                                    stdin=subprocess.DEVNULL, bufsize=1, text=True,
-                                    errors="replace")
-        except OSError as exc:
-            raise RuntimeError(f"The box could not start its video tool ({exc}).") from exc
-        last = ""
-        try:
-            assert proc.stdout is not None
-            for line in proc.stdout:
-                line = line.strip()
-                if line:
-                    last = line
-                    if on_line is not None:
-                        on_line(line)
-                if job_id and _cancelled(job_id):
-                    proc.kill()
-                    raise Stopped("cancelled")
-                if time.monotonic() - started > deadline:
-                    proc.kill()
-                    raise RuntimeError("That took longer than this box will spend on it.")
-            proc.wait(timeout=10)
-            if proc.returncode != 0:
-                errfile.seek(0)
-                err = errfile.read().decode("utf-8", "replace") or last
-                raise RuntimeError(_tail(err))
-        finally:
-            if proc.poll() is None:
-                proc.kill()
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                stdin=subprocess.DEVNULL, bufsize=0)
+    except OSError as exc:
+        raise RuntimeError(f"The box could not start its video tool ({exc}).") from exc
+
+    tail = _Tail()
+    drain = threading.Thread(target=_drain, args=(proc.stderr, tail), daemon=True)
+    drain.start()
+
+    last = ""
+    buffer = b""
+    checked = 0.0
+    stop_reason = ""
+
+    def handle(line: str) -> None:
+        nonlocal last
+        line = line.strip()
+        if not line:
+            return
+        last = line
+        if on_line is not None:
+            on_line(line)
+
+    def lines_from(data: bytes, *, final: bool = False) -> None:
+        nonlocal buffer
+        buffer += data
+        while b"\n" in buffer:
+            raw, buffer = buffer.split(b"\n", 1)
+            handle(raw.decode("utf-8", "replace"))
+        if final and buffer:
+            handle(buffer.decode("utf-8", "replace"))
+            buffer = b""
+
+    try:
+        stream = proc.stdout
+        assert stream is not None
+        fd = stream.fileno()
+        while True:
             try:
-                proc.stdout.close()
-            except Exception:
+                ready, _, _ = select.select([fd], [], [], 0.1)
+            except (OSError, ValueError):
+                # The pipe was closed under us — treat it as the end of output,
+                # and let the return code say whether the tool thought it failed.
+                ready = []
+            if ready:
+                chunk = os.read(fd, 65536)
+                if not chunk:
+                    break
+                lines_from(chunk)
+            now = time.monotonic()
+            if job_id and now - checked >= CANCEL_CHECK_SECONDS:
+                checked = now
+                if _cancelled(job_id):
+                    stop_reason = "cancelled"
+                    break
+            if now - started > deadline:
+                stop_reason = "deadline"
+                break
+        lines_from(b"", final=True)
+        if not stop_reason:
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                stop_reason = "stalled"
+            else:
+                if proc.returncode != 0:
+                    raise RuntimeError(_tail(tail.text() or last))
+    finally:
+        if proc.poll() is None:
+            try:
+                proc.kill()
+            except OSError:
                 pass
+            try:
+                proc.wait(timeout=KILL_GRACE_SECONDS)
+            except subprocess.TimeoutExpired:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=KILL_GRACE_SECONDS)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+        try:
+            proc.stdout.close()
+        except Exception:
+            pass
+        drain.join(timeout=2.0)
+
+    if stop_reason == "cancelled":
+        raise Stopped("cancelled")
+    if stop_reason == "deadline":
+        raise RuntimeError("That took longer than this box will spend on it.")
+    if stop_reason == "stalled":
+        raise RuntimeError("The video tool stopped answering and was stopped.")
+
+
+def _fsync_file(path) -> None:
+    """Make a file's own bytes durable, without waiting for the whole card."""
+    fd = os.open(str(path), os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def _tail(text: str) -> str:
@@ -486,6 +626,21 @@ def make_derivative(row, *, job_id: int, plan: str | None = None) -> dict:
         os.chmod(partial, 0o644)
         os.replace(partial, target)
         written = target.stat().st_size
+        # -- the copy is durable before anything is released -------------------
+        #
+        # Measured on this box on 3 November 2026: the playing copy was renamed
+        # into place and its row written, and only then was the upload removed.
+        # A rename is durable in the directory only once the directory is
+        # synced, and the row only once SQLite has written it — so a power cut in
+        # that window left records naming a copy the card did not have, with the
+        # original already gone.  The release waits for all three: the copy's own
+        # bytes, the folder that names it, and the record.
+        try:
+            _fsync_file(target)
+            ark_atomic.fsync_dir(ark_media.play_dir())
+        except OSError as exc:
+            _unlink(target)
+            return {"ok": False, "error": f"The playing copy could not be made safe ({exc})."}
         with ark_db.tx() as conn:
             changed = conn.execute(
                 "UPDATE media SET play_stored = ?, play_size = ? WHERE id = ?",
@@ -494,6 +649,13 @@ def make_derivative(row, *, job_id: int, plan: str | None = None) -> dict:
             # Deleted while it was being prepared: do not leave an orphan copy.
             _unlink(target)
             return {"ok": False, "error": "That film is no longer on the shelf."}
+        # The record has to be on the card too, not only in the kernel's cache,
+        # before the only other copy of these bytes is deleted.
+        try:
+            with ark_db.tx() as durable:
+                durable.execute("PRAGMA wal_checkpoint(FULL)")
+        except Exception as exc:                   # noqa: BLE001 — a busy checkpoint is not a failure
+            log(f"media {int(row['id'])}: the record could not be checkpointed ({exc})")
         # The copy is the film now.  The upload has done its job, and the card is
         # for watching, not for keeping two copies of everything.  A release
         # that cannot happen is logged, never a failed film: the copy is ready.
@@ -695,7 +857,16 @@ def idle_seconds() -> float:
 
 
 def work_once(pid: int = 0) -> bool:
-    """Claim and finish one job.  Returns ``False`` when the queue was empty."""
+    """Claim and finish one job.  Returns ``False`` when the queue was empty.
+
+    A pause is checked here, before a claim, so no new film starts while the
+    owner has asked for quiet.  A job that was **already claimed** keeps running:
+    the worker is inside ``run_job`` and an FFmpeg encode cannot resume from the
+    frame it reached, so the documented policy is to finish it.  Recovery at
+    startup still runs — integrity work is never paused.
+    """
+    if ark_pause.paused():
+        return False
     with ark_db.tx() as conn:
         job = ark_media.claim(conn, pid)
     if job is None:

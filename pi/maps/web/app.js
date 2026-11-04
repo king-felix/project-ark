@@ -1252,11 +1252,87 @@ async function checkCopy() {
 //  service worker and updates
 // ---------------------------------------------------------------------------
 
+function offerUpdate() {
+  // The prompt is built here rather than written into the page.  Two reasons: a
+  // reader who never sees an update pays nothing for it, and there is no second
+  // copy of this wording to drift out of step with the code that honours it.
+  //
+  // It is shown only when a worker is *already controlling this page*.  On a
+  // first visit the newly installed worker is not an update — it is the page
+  // arriving.
+  if (!navigator.serviceWorker.controller) return;
+  let note = document.getElementById("update-note");
+  if (!note) {
+    note = document.createElement("div");
+    note.id = "update-note";
+    note.className = "note update";
+    note.setAttribute("role", "status");
+    note.setAttribute("aria-live", "polite");
+    const label = document.createElement("span");
+    label.textContent = "A newer version of this page is ready.";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.id = "update-now";
+    button.textContent = "Use the new version";
+    button.addEventListener("click", takeUpdate);
+    note.append(label, button);
+    const main = document.getElementById("main");
+    if (main && main.parentNode) main.parentNode.insertBefore(note, main);
+    else document.body.appendChild(note);
+  }
+  note.hidden = false;
+}
+
+function takeUpdate() {
+  // The reload is arranged **first**, before anything that could fail.  A button
+  // that appears to work and changes nothing is the one outcome worth ruling
+  // out, so the reader's tap always ends in the new page: either at once when
+  // the waiting worker takes over (it asks the page to reload itself), or on
+  // this timer.
+  //
+  // Asking the waiting worker to skip its wait is still tried, because it makes
+  // the reload instant.  Where a browser declines, letting go of the old worker
+  // is the reliable path — and nothing a reader owns lives in it: the downloaded
+  // packs and the saved places are in this device's own storage, and only the
+  // page's own files (which are being replaced anyway) are cached there.
+  let going = false;
+  const leave = () => {
+    if (going) return;
+    going = true;
+    location.reload();
+  };
+  setTimeout(leave, 1500);
+  try {
+    navigator.serviceWorker.getRegistration().then((fresh) => {
+      const waiting = fresh && (fresh.waiting || fresh.installing);
+      if (waiting) waiting.postMessage({ type: "SKIP_WAITING" });
+    }).catch(() => {
+      // No registration to talk to: reloading still picks up the new files.
+    });
+  } catch (_) {
+    // The same.
+  }
+}
+
 function registerServiceWorker() {
   if (!("serviceWorker" in navigator)) return;
   navigator.serviceWorker.register("sw.js", { scope: "./" }).then((registration) => {
+    const wasControlled = Boolean(navigator.serviceWorker.controller);
     navigator.serviceWorker.addEventListener("controllerchange", () => {
       $("offline-badge").hidden = !offlineReady();
+      // The new worker took over.  If this page has been controlled all along,
+      // that is the moment the reader's click earns its reload — and the map,
+      // the packs and the saved places all survive it, because they live in
+      // storage, not in the page.
+      if (wasControlled) location.reload();
+    });
+    if (registration.waiting && wasControlled) offerUpdate();
+    registration.addEventListener("updatefound", () => {
+      const installing = registration.installing;
+      if (!installing) return;
+      installing.addEventListener("statechange", () => {
+        if (installing.state === "installed" && wasControlled) offerUpdate();
+      });
     });
     // Do not ask for an update in the same breath as registering.  On a first
     // install that races the install and can leave a second worker waiting,

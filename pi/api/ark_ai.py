@@ -25,6 +25,8 @@ import html
 import http.client
 import json
 import os
+
+import ark_pause
 import re
 import threading
 import time
@@ -197,12 +199,16 @@ def status() -> dict:
     model = model_facts()
     engine = engine_path().is_file()
     live = answering() if (engine and model["name"]) else False
+    paused = ark_pause.paused()
     return {
         "engine": engine,
         "model": model["name"],
         "model_bytes": model["bytes"],
         "answering": live,
-        "available": bool(engine and model["name"] and live),
+        "paused": paused,
+        # A paused helper is not an available helper: a page that offered the
+        # question box anyway would be inviting work the owner asked to stop.
+        "available": bool(engine and model["name"] and live and not paused),
         "address": base_url(),
         "max_question": MAX_QUESTION,
     }
@@ -211,6 +217,9 @@ def status() -> dict:
 # The sentence a reader sees when the helper cannot answer.  One entry per reason,
 # in the words of somebody who has never heard of a model or an engine.
 NOT_READY = {
+    "paused": ("Heavy background work is paused by the owner",
+               "Reading, films, games, maps and messages still work. The owner can "
+               "resume background work on the owner's page when they are ready."),
     "engine": ("The helper is not fitted on this box", 
                "Nothing else has changed: every library, book, guide and game is "
                "still here and still works."),
@@ -223,7 +232,9 @@ NOT_READY = {
 
 
 def not_ready_reason() -> str:
-    """Which of the three it is, or ``""`` when the helper can answer."""
+    """Which of the four it is, or ``""`` when the helper can answer."""
+    if ark_pause.paused():
+        return "paused"
     facts = status()
     if not facts["engine"]:
         return "engine"
@@ -245,6 +256,9 @@ def not_ready_sentence() -> tuple:
 def advice() -> str:
     """The owner's side of the same fact: what to do about it, in one sentence."""
     reason = not_ready_reason()
+    if reason == "paused":
+        return ("Open https://ark.local:8443/admin/background and choose "
+                "Resume background work.")
     if reason == "engine":
         return ("Run: sudo bash /srv/ark/src/install-ark.sh --only 58-ai  (it copies the "
                 "engine in from the folder it was built in)")

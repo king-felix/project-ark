@@ -232,13 +232,30 @@ def test_ready_answers_503_with_a_reason_for_every_part(public):
 
 
 def test_health_is_liveness_only_and_says_so(public):
-    response = public.client.get("/api/health")
-    assert response.status_code == 200
-    body = response.json()
+    """Liveness must not walk the shelves — and must not pretend it did.
+
+    Before the change this endpoint called the full readiness report on every
+    request, so a five-second monitor made the box scan every section twelve
+    times a minute.  It now answers from the process; the last measured verdict
+    is handed back with its age, and "not checked in this process yet" is
+    ``None`` rather than an invented ``False``.
+    """
+    first = public.client.get("/api/health")
+    assert first.status_code == 200
+    body = first.json()
     assert body["live"] is True
     assert body["scope"] == "backend-process"
     assert "/api/ready" in body["note"]
-    assert body["ready"] is False          # the real verdict rides along, not hidden
+    assert body["ready"] is None
+    assert body["readiness"] == "not checked"
+
+    # Ask the real question, then the cheap one remembers it.
+    assert public.client.get("/api/ready").status_code in (200, 503)
+    remembered = public.client.get("/api/health").json()
+    assert remembered["live"] is True
+    assert remembered["readiness"] == "measured"
+    assert isinstance(remembered["ready"], bool)
+    assert remembered["readiness_age_seconds"] is not None
 
 
 def test_status_carries_the_same_reasons_as_ready(public):

@@ -343,21 +343,14 @@ app.add_middleware(ark_admission.BodyAdmissionMiddleware)
 def health():
     """Is the backend alive?  Only that — and it says so out loud.
 
-    This used to answer ``{"ok": true}`` whatever the box was doing, which made
-    it useless as evidence.  It is still always 200 whenever this code runs (a
-    monitor needs a liveness check that does not page on a full card), but it no
-    longer pretends to be a verdict: the readiness summary rides along and the
-    honest answer lives at ``/api/ready``.
+    This used to call the whole readiness report: a monitor asking "are you
+    alive?" every five seconds made the box walk every shelf, and a slow optional
+    probe could make liveness itself slow.  It now answers from the process and
+    hands back the **last measured** verdict, labelled with its age; the honest
+    present-tense answer lives at ``/api/ready``.  It is always 200 whenever this
+    code runs, so a monitor does not page on a full card or a paused shelf.
     """
-    report = ark_health.report()
-    return {
-        "live": True,
-        "scope": "backend-process",
-        "note": "The backend answered. This is not a health verdict — see /api/ready.",
-        "ready": report["ok"],
-        "blocking": report["blocking"],
-        "time": now_iso(),
-    }
+    return ark_health.liveness()
 
 
 @app.get("/api/ready")

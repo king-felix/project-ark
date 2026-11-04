@@ -109,9 +109,27 @@ def temp_dir() -> Path:
     return media_root() / "tmp"
 
 
-def ensure_dirs() -> None:
+def ensure_dirs() -> list:
+    """Create the folders a film needs — and never fail the whole portal for one.
+
+    ``media/`` is the optional part of this box: a card whose thumbnails folder
+    was replaced by a stray file, or a read-only folder, must cost the poster or
+    the conversion and nothing else.  The library, the books, the board and the
+    games do not depend on any of these paths, so a failure here is collected and
+    returned instead of raised out of ``main.init_db()`` — which is how a broken
+    ``media/thumbs`` used to stop the shared API from starting at all.
+
+    The caller may ignore the answer; the health page measures the folders
+    themselves, so a condition that has since been repaired is not remembered as
+    a fault.
+    """
+    failed = []
     for folder in (media_root(), play_dir(), thumbs_dir(), subs_dir(), temp_dir()):
-        folder.mkdir(parents=True, exist_ok=True)
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            failed.append("%s: %s" % (folder, exc))
+    return failed
 
 
 def is_video_name(filename: str) -> bool:
@@ -1086,6 +1104,22 @@ def release_original(conn: sqlite3.Connection, media_id: int) -> dict:
         if copy is None or copy.stat().st_size <= 0:
             return {"removed": 0, "freed": 0, "reason": "no copy"}
     except OSError:
+        return {"removed": 0, "freed": 0, "reason": "no copy"}
+    # The copy must be the copy the record names, at the size it recorded, and
+    # its last byte must be readable.  Publishing syncs the file, its folder and
+    # the row before this runs (``make_derivative``), so a disagreement here is a
+    # copy a power cut left short — and the upload is then the only whole copy
+    # and must not be deleted to save room (log §56).
+    recorded = int(row["play_size"] or 0)
+    try:
+        size = copy.stat().st_size
+        with copy.open("rb") as handle:
+            handle.seek(max(0, size - 1))
+            if not handle.read(1):
+                return {"removed": 0, "freed": 0, "reason": "no copy"}
+    except OSError:
+        return {"removed": 0, "freed": 0, "reason": "no copy"}
+    if recorded and size != recorded:
         return {"removed": 0, "freed": 0, "reason": "no copy"}
     file_row = conn.execute("SELECT * FROM files WHERE stored = ?", (stored,)).fetchone()
     if file_row is not None and not int(file_row["hidden"] or 0):

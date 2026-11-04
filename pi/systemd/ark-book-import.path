@@ -5,6 +5,10 @@ Description=Project ARK — watch for new books (File Box and incoming folder)
 # Dropping a file into either folder is enough: the importer runs itself.
 PathChanged=/srv/ark/drop/files
 PathChanged=/srv/ark/calibre-incoming
+# A file dropped while background work was paused has already triggered this
+# unit once; a plain path trigger would not fire again on resume.  The owner's
+# resume writes this file, which wakes the same importer exactly once.
+PathChanged=/srv/ark/api/data/background-kick
 Unit=ark-book-import.service
 
 [Install]

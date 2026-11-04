@@ -13,7 +13,12 @@
  *     update cannot replace the code in the middle of a route.
  */
 
-const VERSION = "ark-maps-v2";
+// The Ark replaces this token with a fingerprint of every application file when
+// it serves this script, so any change to the page produces a byte-different
+// worker — which is what makes an already-installed phone update.  Opening this
+// file from disk (no server) leaves the literal, which is a safe fallback: the
+// cache name is then simply "the version in the file".
+const VERSION = "ark-maps-" + "__ARK_RELEASE__".replace(/^__.*__$/, "v3");
 const ASSETS = [
   "./",
   "index.html",
@@ -35,7 +40,9 @@ const ASSETS = [
 self.addEventListener("install", (event) => {
   event.waitUntil((async () => {
     const cache = await caches.open(VERSION);
-    await cache.addAll(ASSETS);
+    // Each entry is fetched with the cache bypassed: a "new" worker whose files
+    // came out of the old HTTP cache would install the old page under a new name.
+    await cache.addAll(ASSETS.map((url) => new Request(url, { cache: "reload" })));
     // First install: take over at once so "Ready offline" becomes true without
     // asking the reader to reload a page they just opened.  An *update* does
     // not do this; it waits for the page's message.
@@ -46,8 +53,10 @@ self.addEventListener("install", (event) => {
 self.addEventListener("activate", (event) => {
   event.waitUntil((async () => {
     const keys = await caches.keys();
+    // Every other release's cache goes.  One failure here must not stop the
+    // worker taking over: the leftovers are swept on the next activate.
     await Promise.all(keys.filter((key) => key.startsWith("ark-maps-") && key !== VERSION)
-      .map((key) => caches.delete(key)));
+      .map((key) => caches.delete(key).catch(() => {})));
     await self.clients.claim();
   })());
 });
@@ -79,11 +88,16 @@ async function networkFirst(request, fallback) {
 }
 
 async function cacheFirst(request) {
-  const cached = await caches.match(request, { ignoreSearch: true });
+  // Look in **this release's** cache and nowhere else.  `caches.match()` searches
+  // every cache the origin has, oldest first, so an update that had already been
+  // installed could still be handed the previous release's `app.js` — the reader
+  // pressed "use the new version" and got the old page, which is worse than no
+  // update at all.
+  const cache = await caches.open(VERSION);
+  const cached = await cache.match(request, { ignoreSearch: true });
   if (cached) return cached;
   const response = await fetch(request);
   if (response && response.ok) {
-    const cache = await caches.open(VERSION);
     cache.put(request, response.clone()).catch(() => {});
   }
   return response;

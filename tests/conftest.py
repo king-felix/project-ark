@@ -24,7 +24,7 @@ MODULES = ("main", "ark_admission", "ark_admin", "ark_security", "ark_db",
            "ark_arcade", "ark_arcade_web", "ark_arcade_install",
            "ark_romdb", "ark_romdb_build", "ark_rommeta",
            "ark_household", "ark_qr", "ark_cards", "ark_review", "ark_essentials",
-           "ark_network", "ark_ai", "ark_ingest", "ark_doors",
+           "ark_network", "ark_ai", "ark_ingest", "ark_doors", "ark_pause",
            "ark_maps", "ark_map_store", "ark_map_web", "ark_map_admin")
 
 
@@ -39,6 +39,9 @@ def ark(tmp_path, monkeypatch):
     monkeypatch.setenv("ARK_DB", str(root / "api/data/ark.db"))
     monkeypatch.setenv("ARK_MARKER", str(root / "api/data/ark.installed"))
     monkeypatch.setenv("ARK_TRUSTED_PROXIES", "testclient,127.0.0.1,::1")
+    # A readiness answer is cached for five seconds on the box; a test that
+    # changes the world and asks again must not read yesterday's sentence.
+    monkeypatch.setenv("ARK_HEALTH_REPORT_CACHE", "0")
     # A known first-run password keeps the older tests readable; the production
     # default is a random one written 0600, proved in tests/test_auth.py.
     monkeypatch.setenv("ARK_BOOTSTRAP_PASSWORD", "ChangeMe-ARK!")

@@ -85,9 +85,21 @@ def temp_dir(root: Path | None = None) -> Path:
     return (root or ark_root()) / "drop" / "tmp"
 
 
-def ensure_dirs(root: Path | None = None) -> None:
+def ensure_dirs(root: Path | None = None) -> list:
+    """Create the shared folders, for as many of them as the card allows.
+
+    A shared folder that cannot be made is a broken File Box, not a broken box:
+    the library, the books, the guides and the games are separate paths and must
+    still start.  The failures are returned so a caller may report them; the
+    health page measures the folders directly rather than trusting this pass.
+    """
+    failed = []
     for folder in (drop_dir(root), temp_dir(root)):
-        folder.mkdir(parents=True, exist_ok=True)
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            failed.append("%s: %s" % (folder, exc))
+    return failed
 
 
 def present_names(root: Path | None = None) -> set[str] | None:

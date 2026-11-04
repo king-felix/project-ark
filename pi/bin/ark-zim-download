@@ -19,6 +19,11 @@ QUEUE="${QUEUE:-/etc/ark/zim-queue.tsv}"
 STATE="$ZIM_DIR/state"
 STATUS="$STATE/status.json"
 PAUSE="${PAUSE:-/etc/ark/zim-pause}"
+# The owner's one pause for heavy background work (ark_pause).  This downloader
+# has its own long-standing pause file; both mean "do not fetch now", and the
+# global one is checked between resumable pieces so a 4 GB fetch is not thrown
+# away when the owner asks for quiet.
+GLOBAL_PAUSE="${ARK_PAUSE_MARKER:-${ARK_ROOT:-/srv/ark}/api/data/background-paused}"
 PROFILE_FILE="${PROFILE_FILE:-/etc/ark/zim-profile}"
 RESOLVE="${RESOLVE:-/usr/local/bin/ark-zim-resolve}"
 REBUILD="${REBUILD:-/usr/local/bin/ark-kiwix-library}"
@@ -133,7 +138,7 @@ write_status() {   # <current-label> <current-bytes-done> [<current-bytes-total>
   local current="${1:-}" done_b="${2:-0}" want_b="${3:-0}" rate="${4:-0}" total have todo
   total="$(queue_count todo)"; have="$(queue_count have)"
   cat >"$STATUS.tmp" <<JSON
-{"updated":"$(date -Is)","profile":"$(cat "$PROFILE_FILE" 2>/dev/null || echo core)","total":$(( total + have )),"present":$have,"pending":$total,"bytes_total":$(bytes_total),"bytes_on_disk":$(bytes_present),"current":"$current","current_bytes":$done_b,"current_total":$want_b,"current_rate_bps":${rate:-0},"free_gib":$(free_gib),"paused":$([[ -e "$PAUSE" ]] && echo true || echo false)}
+{"updated":"$(date -Is)","profile":"$(cat "$PROFILE_FILE" 2>/dev/null || echo core)","total":$(( total + have )),"present":$have,"pending":$total,"bytes_total":$(bytes_total),"bytes_on_disk":$(bytes_present),"current":"$current","current_bytes":$done_b,"current_total":$want_b,"current_rate_bps":${rate:-0},"free_gib":$(free_gib),"paused":$([[ -e "$PAUSE" || -e "$GLOBAL_PAUSE" ]] && echo true || echo false)}
 JSON
   mv -f "$STATUS.tmp" "$STATUS"
   chmod 644 "$STATUS"
@@ -253,6 +258,16 @@ fetch_one() {   # <url> <bytes> <filename> <label>
     while kill -0 "$fpid" 2>/dev/null; do
       sleep 5
       waited=$(( waited + 5 ))
+      # The global pause stops at a piece boundary, not mid-piece: the file is
+      # a resumable ``.part`` and the next run continues from these bytes.
+      if [[ -e "$GLOBAL_PAUSE" ]]; then
+        kill "$fpid" 2>/dev/null || true
+        wait "$fpid" 2>/dev/null || true
+        release_room "$ticket"
+        write_status "$label (paused)" 0
+        log "background work paused by the owner — kept $part for resuming"
+        return 2
+      fi
       if (( waited % PROGRESS_EVERY == 0 )); then
         now_b="$(part_bytes "$part")"; now_t="$(date +%s)"
         rate=0
@@ -366,6 +381,10 @@ while true; do
     mark_have "$name"
     fails=0
     refresh_library || true
+  elif [[ $? -eq 2 ]]; then
+    # A pause is not a failure and must not count toward the five-strike
+    # backoff; the outer loop sees the marker and waits.
+    write_status "paused" 0
   else
     fails=$(( fails + 1 ))
     log "$name will be retried later (failure $fails)"

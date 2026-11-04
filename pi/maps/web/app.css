@@ -89,6 +89,25 @@ a { color: var(--amber); }
 .note.warn { border-color: #6b4c00; color: #ffd27a; }
 .note.bad { border-color: #6b1d20; color: #ffb3b5; }
 
+/* An update waiting for a decision: quiet, and never in the way of the map. */
+.note.update {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.note.update button {
+  min-height: 44px;
+  padding: 0 16px;
+  border-radius: 10px;
+  border: 1px solid var(--accent, #8fe0b0);
+  background: transparent;
+  color: var(--accent, #8fe0b0);
+  font: inherit;
+  cursor: pointer;
+}
+
 .lede { color: #d6d6d6; max-width: 68ch; }
 .fine { color: var(--muted); font-size: 14px; }
 .status { min-height: 1.4em; margin: 10px 0; }

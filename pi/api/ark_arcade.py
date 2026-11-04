@@ -168,14 +168,25 @@ def seed_file() -> Path:
     return Path(os.environ.get("ARK_ARCADE_SEED", str(src_root() / "catalog" / "seed.json")))
 
 
-def ensure_dirs() -> None:
+def ensure_dirs() -> list:
+    """Create the game folders; a failure is the game shelf's, never the box's.
+
+    Games are optional beside the library.  A folder that cannot be made is
+    reported to the caller and measured again by the health page; it must not
+    stop ``main.init_db()`` from bringing the rest of the portal up.
+    """
+    failed = []
     for d in (games_dir(), saves_root(), temp_root()):
-        d.mkdir(parents=True, exist_ok=True)
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            failed.append("%s: %s" % (d, exc))
     try:
         os.chmod(saves_root(), 0o700)     # a save belongs to one name
         os.chmod(temp_root(), 0o700)
     except OSError:
         pass                              # a read-only card fails later, loudly, on write
+    return failed
 
 
 # ---------------------------------------------------------------------------

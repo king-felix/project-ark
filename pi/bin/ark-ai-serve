@@ -22,6 +22,7 @@ PORT="${ARK_AI_PORT:-8089}"
 THREADS="${ARK_AI_THREADS:-3}"
 CONTEXT="${ARK_AI_CONTEXT:-4096}"
 POLL="${ARK_AI_POLL:-60}"        # how often to look for a model that is not there yet
+PAUSE="${ARK_PAUSE_MARKER:-${ARK_ROOT:-/srv/ark}/api/data/background-paused}"
 
 say() { printf 'ark-ai: %s\n' "$*"; }
 
@@ -48,6 +49,15 @@ newest_model() {
   shopt -u nullglob
   printf '%s\n' "$best"
 }
+
+# The owner's pause is checked before the engine is started, so a boot during a
+# pause does not load a model into memory and then refuse every question.  The
+# loop also means the pause cannot fight Restart=always: the unit is up and
+# waiting, not failing and being retried.
+while [[ -e "$PAUSE" ]]; do
+  say "background work is paused by the owner — the helper will not start yet"
+  sleep "$POLL"
+done
 
 model="$(newest_model)"
 while [[ -z "$model" ]]; do
