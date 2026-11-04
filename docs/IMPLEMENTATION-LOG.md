@@ -7169,8 +7169,18 @@ decision is made with the measurement in hand rather than after it.
 
 ### 57.7 What is not deployed, and what is not proved
 
-* Everything in this pass **is** deployed at `c4944b4` (plus the three commits
-  after it: the module list, the import-graph test, and the ask row).
+* Everything in this pass **is** deployed at **`e4c045f`** (the module list, the
+  import-graph test, the ask row and the reader's wait note), and `/srv/ark` holds
+  a `REVISION` stamp so a measurement can name what it measured:
+
+  ```
+  e4c045f 2026-11-04T19:30Z deployed by the outage pass
+  ```
+
+  Every deployed file was compared byte for byte with the repo after the last
+  restart — `main.py`, `ark_health.py`, `ark_media_jobs.py`, `ark_pause.py`,
+  `ark-zim-download`, `ark-arcade`, `ark-import-books`, `ark-ai-serve`,
+  `ark-boot-guard`, `maps/web/app.js`, `maps/web/sw.js`: **all identical**.
 * **No phone has used any of it.** The light colours, the Today panel, the pause
   from the owner's page, a film on glass — all remain in
   `docs/HUMAN-TEST-LIST.md` §29.

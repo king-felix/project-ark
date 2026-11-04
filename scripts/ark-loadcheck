@@ -110,8 +110,17 @@ def revision() -> str:
         value = os.environ.get(env, "").strip()
         if value:
             return value
-    for folder in ("/srv/ark/src", os.path.dirname(os.path.dirname(
+    # The box's source tree has no `.git` — it is an rsync of `pi/`, not a clone —
+    # so a deploy writes the revision beside it.  Without this the tool would
+    # report "unknown" for every measurement taken where the numbers matter most.
+    for folder in ("/srv/ark", os.path.dirname(os.path.dirname(
             os.path.abspath(__file__)))):
+        try:
+            stamp = Path(folder, "REVISION").read_text(encoding="utf-8").strip()
+        except OSError:
+            stamp = ""
+        if stamp:
+            return stamp.split()[0]
         try:
             done = subprocess.run(["git", "-C", folder, "rev-parse", "--short", "HEAD"],
                                   capture_output=True, text=True, timeout=10)
