@@ -6577,6 +6577,9 @@ is where it started. Nothing else on the card was created.
 back and 0 B is promised to work already running — 88.2 GB may still be added."*
 `ark-space --status` reports `ledger: ok`, `committed 0 B`, `usable 94.8 GB`.
 
+**Final deployed revision: `5c73525`** (the busy-path fix; its `60-portal` run
+took 0m32s, every phase ok). The code in `/srv/ark/src` matches it byte for byte.
+
 **One more failure path, found while reading the middleware again.** An upload that
 arrives while the daily repair pass holds the records open would have raised a
 `Busy` out of the ledger and been answered with a 500: the old middleware caught
