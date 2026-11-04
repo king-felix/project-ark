@@ -181,7 +181,7 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 | Active branch | `feature/admin-hardening` (fast-forwarded to `main` at `acf5d29`) |
 | Schema version | `SCHEMA_VERSION = 7` (`pi/api/ark_db.py`) — migration 7 adds the film shelf and the space ledger |
 | Test suite | `870 collected`; `868 passed, 2 skipped` without 3 browser maps (35 files) |
-| Live Pi state | Deployed at `31c22fd` (log §51); `ready.ok: true`, `blocking: []`, `mode: home`; 27 collections (97.6 GiB), 1291 books, 67 games, 11 guides, AI active, FFmpeg fitted, 8 films; 3 map packs published; reserve 16.0 GB |
+| Live Pi state | Deployed at `3117886` (log §52); `ready.ok: true`, `blocking: []`, `mode: home`; 27 collections (97.6 GiB), 1291 books, 67 games, 11 guides, AI active, FFmpeg fitted, 8 films; 3 map packs published; reserve 16.0 GB |
 | Owner decisions pending | History rewrite + force-push for pre-`a926296` commits (log §37.6, §38.7) and for the home-LAN address in `1a3f41f` (log §44); rotate GitHub & Pi passwords; licence choice |
 
 ### 8.1 What exists, and what each piece owns

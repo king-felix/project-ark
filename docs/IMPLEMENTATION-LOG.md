@@ -6104,3 +6104,64 @@ are excluded by the project's usual command; they are unaffected).
 
 `docs/HUMAN-TEST-LIST.md` §25 is the FOR YOU rehearsal for the two remaining
 hardware-only cases.
+
+### 52.7 Deployed and proved on the live box — 4 Nov 2026
+
+**Before touching it:** `sudo ark-backup --to /srv/ark/backup --keep 3` wrote
+`ark-backup-20261104-005247` (347.2 kB; 0 messages, 0 shared files, 0 player
+names, 0 game saves, the import list). The deployed source tree was saved as
+`/srv/ark/tmp/rollback-src-20261104-005251.tar.gz` (20 MB). The previous deployed
+revision was `9ad16fb` (log §51.7).
+
+**The deploy** was the established one:
+
+```
+bash scripts/03-provision.sh ark.local --only 15-resilience,60-portal,95-backup,90-verify
+```
+
+All four phases reported **ok**, none failed, in 48 s. Phase 15 ran a self-heal
+pass at 00:53:16 (`0 repaired`, nothing left to look at); phase 60 restarted
+`ark-api`; phase 95 installed the backup tools and proof-planned a copy; phase 90
+printed the full gate — every line `✓` except the expected informational `·`
+(the next boot's forced card check, the first network-watch check, and the
+backup count). The self-heal receipt is `ok: true`, `healed: 0`,
+`problems: []`, `recovery: []`.
+
+**Hashes on the box matched the commit**, byte for byte:
+
+| File | sha256 (first 16) |
+|---|---|
+| `/srv/ark/api/ark_db_replace.py` | `c24ca201776625de` |
+| `/srv/ark/api/ark_self_heal.py` | `3737131582da8a96` |
+| `/srv/ark/api/ark_db.py` | `e09ea56fd7bda4ae` |
+| `/usr/local/sbin/ark-restore` | `a2b9ba970daaf622` |
+| `/usr/local/sbin/ark_bundle.py` | `481dcb200984d2ae` |
+
+**Readiness:** `http://127.0.0.1:8085/api/ready` → **200**, `ok: true`,
+`ready: 9/9`, `blocking: []`. There is no `ark.db.recovery*` folder beside the
+live records and `ark_db_replace.pending()` is `False`. `ark-api`,
+`ark-media-worker` and `ark-ai` are active; the API journal has no error,
+traceback or exception in its last 20 lines. `sudo ark-restore --list` still
+lists the three bundles.
+
+**The sequence, on the real card, on scratch databases** under `/srv/ark/tmp`
+(never the live records), using the deployed `/srv/ark/api` and venv:
+
+* a 4-row main file plus a 47-row journal replaced with a checked candidate:
+  `ok`, `safe: True`, evidence archived, target reads the new row, no recovery
+  folder left, `pending: False`;
+* the same shape killed with `os._exit(97)` at `sidecars-moved`: the child exited
+  97, `pending()` was **True**, `recover_pending()` answered **rolled-back**, and
+  the target read **51** rows again;
+* the scratch trees were removed afterwards.
+
+**Not done, on purpose:** no destructive live restore, no live replacement of
+`/srv/ark/api/data/ark.db`, and no physical power interruption. The sequence is
+proved on throwaway databases on the Mac and on the card's scratch tree; the
+remaining hardware-only rehearsal is `docs/HUMAN-TEST-LIST.md` §25.
+
+**Rollback:** the previous tree is the tarball above and commit `9ad16fb` on the
+Mac. To go back, `sudo tar -C /srv/ark -xzf
+/srv/ark/tmp/rollback-src-20261104-005251.tar.gz`, re-run `15-resilience`,
+`60-portal` and `95-backup`, then `sudo systemctl restart ark-api
+ark-media-worker ark-ai`. The pre-deploy bundle is the records' rollback.
