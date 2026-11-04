@@ -7169,13 +7169,16 @@ decision is made with the measurement in hand rather than after it.
 
 ### 57.7 What is not deployed, and what is not proved
 
-* Everything in this pass **is** deployed at **`e4c045f`** (the module list, the
-  import-graph test, the ask row and the reader's wait note), and `/srv/ark` holds
-  a `REVISION` stamp so a measurement can name what it measured:
+* Everything in this pass **is** deployed at **`d90dd33`** (the module list, the
+  import-graph test, the ask row, the reader's wait note, and the two pause tests
+  for the game timer and the game shelf), and `/srv/ark` holds a `REVISION` stamp
+  so a measurement can name what it measured:
 
   ```
-  e4c045f 2026-11-04T19:30Z deployed by the outage pass
+  d90dd33 2026-11-04T19:45Z
   ```
+
+  `90-verify` on that revision: **87 ✓, 0 ✗, `ARK_INSTALL_COMPLETE`**.
 
   Every deployed file was compared byte for byte with the repo after the last
   restart — `main.py`, `ark_health.py`, `ark_media_jobs.py`, `ark_pause.py`,
