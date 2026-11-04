@@ -35,7 +35,6 @@ REPO = Path(__file__).resolve().parents[1]
 API = REPO / "pi" / "api"
 
 import ark_db_replace as replacement
-import ark_maintenance
 import ark_self_heal as heal
 
 
