@@ -6307,7 +6307,7 @@ second copy of the bytes.
 * the repair pass restores a generation and reports no false problem.
 
 Full suite with the three browser maps excluded: **893 passed, 2 skipped** in
-199.82 s (`895 collected`).  The directly affected suites (db, durability,
+201.49 s (`895 collected`).  The directly affected suites (db, durability,
 arcade, import, board, media, backup, recovery, self-heal) re-ran together:
 **270 passed** in 64.28 s.
 
