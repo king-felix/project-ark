@@ -300,7 +300,7 @@ says why.
 
 ## 10. Tests — and what they do not prove
 
-`tests/test_admission.py` (28) and `tests/test_space.py` (15) cover:
+`tests/test_admission.py` (29) and `tests/test_space.py` (15) cover:
 
 * six real processes on one simulated card: exactly two of six 4 MiB promises
   succeed, and the ledger sums to 8 MiB;

@@ -71,6 +71,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import ark_db
+import ark_maintenance
 
 #: The owner's reserve, as a percentage of the filesystem's own capacity.
 DEFAULT_PERCENT = 7.0
@@ -788,9 +789,19 @@ class Receipt:
                 raise _refusal(total, room, self.path)
             self.reserved = total
             return self.reserved
-        value = self._write(lambda conn: grow(
-            conn, self.id, total, path=self.path, device=self.device,
-            essential=self.essential))
+        try:
+            value = self._write(lambda conn: grow(
+                conn, self.id, total, path=self.path, device=self.device,
+                essential=self.essential))
+        except Refused:
+            raise
+        except Exception as exc:             # noqa: BLE001 — a ledger is not the work
+            # A maintenance window ("the box is putting its records back") is a
+            # *busy* answer, not a broken ledger: let it through so the door can
+            # say so instead of showing a page that reports damage.
+            if isinstance(exc, ark_maintenance.Busy):
+                raise
+            raise _ledger_refusal(self.path) from exc
         self.reserved = int(value)
         return self.reserved
 
@@ -835,7 +846,12 @@ class Receipt:
                 " written = MAX(written, MIN(bytes, ?)) WHERE id = ?",
                 (time.time(), int(total), self.id))
 
-        self._write(_touch)
+        try:
+            self._write(_touch)
+        except Exception:                    # noqa: BLE001 — progress is telemetry
+            # A heartbeat that could not be written is repaired by reconcile();
+            # losing one must not stop a film that is otherwise fine.
+            pass
 
     # -- the end -----------------------------------------------------------
     def release(self) -> None:

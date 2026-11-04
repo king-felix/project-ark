@@ -725,3 +725,24 @@ def test_only_a_bounded_number_of_large_bodies_are_received_at_once(ark, monkeyp
     status_a, status_b = asyncio.run(scenario())
     assert status_a == 200
     assert status_b == 503, "a second large body should be told to come back"
+
+
+def test_an_upload_during_a_maintenance_window_is_busy_not_broken(public, monkeypatch):
+    """The records being put back is a 503 with a sentence, not a 500.
+
+    A page that reported damage because the daily repair pass held the gate would
+    be worse than the wait: nothing is wrong, and the box says so.
+    """
+    import ark_maintenance
+    import ark_space
+    fake_card(monkeypatch, usable=64 * 1024 ** 2)
+
+    def busy(*_args, **_kwargs):
+        raise ark_maintenance.Busy("the records are being replaced")
+
+    monkeypatch.setattr(ark_space, "open_receipt", busy)
+    answer = public.client.post("/files", files={"file": ("x.txt", b"hello")},
+                                follow_redirects=False)
+    assert answer.status_code == 503
+    assert "putting its records back" in answer.text.lower()
+    assert list((public.ark.root / "drop" / "files").iterdir()) == []

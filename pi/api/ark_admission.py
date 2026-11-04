@@ -43,6 +43,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+import ark_maintenance
 import ark_space
 
 #: The most any route may receive unless it says otherwise.  A form is small; a
@@ -175,7 +176,7 @@ def wants_json(scope) -> bool:
 
 def status_for(exc: Exception) -> int:
     """The honest status: too big, no room, or the records cannot be read."""
-    if isinstance(exc, (ark_space.LedgerUnreadable, Busy)):
+    if isinstance(exc, (ark_space.LedgerUnreadable, Busy, ark_maintenance.Busy)):
         return 503
     text = str(exc).lower()
     if ("not enough room" in text or "filled up" in text
@@ -385,7 +386,7 @@ class _Guard:
             if step > self.steps:
                 self.steps = step
                 self.admission.refresh()
-        except ark_space.Refused as exc:
+        except (ark_space.Refused, ark_maintenance.Busy) as exc:
             # Stop the parser now: the remaining bytes never reach the framework's
             # temp file, so a full card is not filled further.
             await self.stop(exc)
@@ -417,6 +418,9 @@ class _Guard:
         exc = exc or ark_space.Refused("That upload could not be accepted.")
         status = status_for(exc)
         text = str(exc)
+        if isinstance(exc, ark_maintenance.Busy):
+            text = ("The box is putting its records back just now. Nothing was "
+                    "stored — try again in a moment.")
         if status == 503:
             hint = "Nothing was stored. Try again in a moment."
         elif status == 507:
@@ -484,11 +488,11 @@ class BodyAdmissionMiddleware:
                 # touches the body at all.
                 try:
                     guard.admission.begin(declared)
-                except ark_space.Refused as exc:
+                except (ark_space.Refused, ark_maintenance.Busy) as exc:
                     return await guard.refuse(exc)
             try:
                 await self.app(scope, guard.read, guard.reply)
-            except ark_space.Refused as exc:
+            except (ark_space.Refused, ark_maintenance.Busy) as exc:
                 await guard.stop(exc)
             if guard.refused and not guard.sent_refusal:
                 await guard.refuse(guard.admission.refusal)

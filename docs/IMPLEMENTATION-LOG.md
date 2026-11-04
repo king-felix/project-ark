@@ -6466,11 +6466,11 @@ stops unpacking into the 256 MB tmpfs.
 
 ### 54.3 Tests
 
-`tests/test_admission.py` (28) and `tests/test_space.py` (13, one rewritten to the
+`tests/test_admission.py` (29) and `tests/test_space.py` (15, one rewritten to the
 new liveness rule), plus updates to `test_config.py`, `test_storage.py`,
 `test_media.py`, `tests/conftest.py`, `tests/helpers.py`.
 
-The suite: **923 passed, 2 skipped** in 210.47 s, with `tests/test_maps_browser.py`
+The suite: **924 passed, 2 skipped** in 209.75 s, with `tests/test_maps_browser.py`
 excluded (Playwright is not part of this run; those two pass unchanged when the
 browser stack is present).
 
@@ -6576,6 +6576,15 @@ is where it started. Nothing else on the card was created.
 **What the owner's pages say now:** *"104.3 GB free, of which 16.0 GB is kept
 back and 0 B is promised to work already running — 88.2 GB may still be added."*
 `ark-space --status` reports `ledger: ok`, `committed 0 B`, `usable 94.8 GB`.
+
+**One more failure path, found while reading the middleware again.** An upload that
+arrives while the daily repair pass holds the records open would have raised a
+`Busy` out of the ledger and been answered with a 500: the old middleware caught
+it, the new one did not. A ledger write now lets `Busy` through (a maintenance
+window is not a broken ledger) and the door answers **503, "The box is putting its
+records back just now. Nothing was stored."** One test covers it
+(`test_an_upload_during_a_maintenance_window_is_busy_not_broken`), and `60-portal`
+was redeployed for it.
 
 **Not done, on purpose:** no 2 GiB press, no genuinely full card, no power cut, no
 phone. Those are `docs/HUMAN-TEST-LIST.md` §27.
