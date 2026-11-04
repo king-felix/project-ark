@@ -491,6 +491,8 @@ def test_an_old_database_only_copy_is_adopted_and_its_missing_files_named(ark):
     assert adopted.manifest["complete"] is False
     assert adopted.missing and adopted.missing[0]["to"].startswith("arcade/saves/")
     assert "missing" in adopted.said
+    assert os.path.samefile(legacy, adopted.path / "ark.db"), \
+        "the database-only name should now point at the adopted copy"
 
     source = ark_recovery.restore_source(ark.db.DB_PATH)
     assert source is not None

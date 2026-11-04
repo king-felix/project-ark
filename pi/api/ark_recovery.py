@@ -1630,6 +1630,9 @@ def adopt_legacy(db_path: Any, *, root: Optional[Path] = None,
             os.replace(stage, final)
             fsync_dir(folder)
             _adopt_tree(final)
+            # The name beside the records now points at the adopted copy by a
+            # hard link, not at the old database-only file it was made from.
+            _refresh_good_bak(target, final)
         except BaseException:
             try:
                 if stage.exists():
