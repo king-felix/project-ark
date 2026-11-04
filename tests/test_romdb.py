@@ -359,3 +359,22 @@ def test_a_recognised_file_is_stored_with_what_the_catalogue_said(
     # questions, recorded separately so neither can be mistaken for the other.
     assert game["provenance"] == "owner-supplied:no idea what this is.nes"
 
+
+
+def test_the_self_test_writes_on_the_card_not_in_the_tiny_tmpfs(ark):
+    """``/tmp`` on the box is 256 MB, and the policy keeps all of it for the box.
+
+    A self-test that built its sample database there would be refused by the very
+    policy it is meant to exercise — on a card with a hundred gigabytes free.
+    """
+    import ark_romdb_build
+
+    where = ark_romdb_build._self_test_dir()
+    assert where == ark.root / "tmp", where
+
+
+def test_the_self_test_passes_when_it_can_write_beside_the_catalogue(ark):
+    import ark_romdb_build
+
+    ok, lines = ark_romdb_build.self_test()
+    assert ok, "\n".join(lines)

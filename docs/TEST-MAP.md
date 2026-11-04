@@ -3,7 +3,7 @@
 *The map that used to live in `AGENTS.md` §8.5, kept out of the standing-rules
 file so it can grow without pushing the rules past their size limit. Every count
 is the number of tests in that file at the last full run; the suite is
-**926 collected, 924 passed, 2 skipped** with the three browser-map tests
+**928 collected, 926 passed, 2 skipped** with the three browser-map tests
 excluded.*
 
 | Behaviour | Test file |

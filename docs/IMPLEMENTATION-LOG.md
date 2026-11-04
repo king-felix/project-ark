@@ -6466,11 +6466,11 @@ stops unpacking into the 256 MB tmpfs.
 
 ### 54.3 Tests
 
-`tests/test_admission.py` (29) and `tests/test_space.py` (15, one rewritten to the
-new liveness rule), plus updates to `test_config.py`, `test_storage.py`,
+`tests/test_admission.py` (29), `tests/test_space.py` (15, one rewritten to the
+new liveness rule) and `tests/test_romdb.py` (17), plus updates to `test_config.py`, `test_storage.py`,
 `test_media.py`, `tests/conftest.py`, `tests/helpers.py`.
 
-The suite: **924 passed, 2 skipped** in 209.75 s, with `tests/test_maps_browser.py`
+The suite: **926 passed, 2 skipped** in 208.67 s, with `tests/test_maps_browser.py`
 excluded (Playwright is not part of this run; those two pass unchanged when the
 browser stack is present).
 
@@ -6579,6 +6579,13 @@ back and 0 B is promised to work already running — 88.2 GB may still be added.
 
 **Final deployed revision: `5c73525`** (the busy-path fix; its `60-portal` run
 took 0m32s, every phase ok). The code in `/srv/ark/src` matches it byte for byte.
+
+**A second defect the verification found, in the catalogue builder.** The
+self-test built its sample database in `/tmp` — a 256 MB tmpfs on this box — and
+the policy keeps *all* of a filesystem smaller than its 2 GiB floor, so the
+self-test was refused on a card with 104 GB free. It now writes beside the real
+catalogue (`ARK_ROOT/tmp`) and falls back to the ordinary temp folder only on a
+workstation with no card. Two tests cover the location and the pass.
 
 **One more failure path, found while reading the middleware again.** An upload that
 arrives while the daily repair pass holds the records open would have raised a

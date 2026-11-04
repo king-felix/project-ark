@@ -440,6 +440,29 @@ def _sample_tree(base: Path, body: bytes) -> Path:
     return base
 
 
+def _self_test_dir() -> Optional[Path]:
+    """Where the self-test may write: beside the real catalogue, never ``/tmp``.
+
+    ``/tmp`` on the box is a 256 MB tmpfs, and the storage policy keeps the whole
+    of a filesystem smaller than its 2 GiB floor — correctly, because a filesystem
+    that small has no room to spare.  A self-test that needs a few kilobytes
+    therefore writes on the card, where the real catalogue lives, and falls back
+    to the ordinary temp folder only when that is not writable (a workstation
+    checkout with no ``/srv/ark``).
+    """
+    for candidate in (Path(os.environ.get("ARK_ROOT", "/srv/ark")) / "tmp",
+                      Path(tempfile.gettempdir())):
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            probe = candidate / ".ark-romdb-probe"
+            probe.write_bytes(b"x")
+            probe.unlink()
+            return candidate
+        except OSError:
+            continue
+    return None
+
+
 def self_test() -> Tuple[bool, List[str]]:
     """Build a one-game database in a temp folder and recognise a file with it.
 
@@ -453,7 +476,9 @@ def self_test() -> Tuple[bool, List[str]]:
     header = b"NES\x1a" + bytes(12)
     lines: List[str] = []
     ok = True
-    with tempfile.TemporaryDirectory(prefix="ark-romdb-selftest-") as tmp:
+    where = _self_test_dir()
+    with tempfile.TemporaryDirectory(prefix="ark-romdb-selftest-",
+                                     dir=str(where) if where else None) as tmp:
         base = _sample_tree(Path(tmp) / "src", body)
         db = Path(tmp) / "romdb.sqlite"
         rows, facts = collect(base)
