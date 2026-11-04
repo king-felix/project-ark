@@ -3,7 +3,7 @@
 *The map that used to live in `AGENTS.md` §8.5, kept out of the standing-rules
 file so it can grow without pushing the rules past their size limit. Every count
 is the number of tests in that file at the last full run; the suite is
-**928 collected, 926 passed, 2 skipped** with the three browser-map tests
+**1017 collected, 1015 passed, 2 skipped** with the three browser-map tests
 excluded.*
 
 | Behaviour | Test file |
@@ -28,6 +28,8 @@ excluded.*
 | power-cut repair, clock guard, `key=value` counters, `_repair_lock()`, `ark-fsck-once`, fstab/cmdline guards | `tests/test_self_heal.py` (83) |
 | stage/validate, preserve main+WAL/SHM, journal move, rename, verify, kill boundaries, ENOSPC/read-only, retention | `tests/test_db_replace.py` (29) |
 | the reserve policy, `f_bavail`, reservations across processes, `hold()` release, liveness by pid/boot, the `ark-space` shell door | `tests/test_space.py` (13) |
+| the SD-card guard: 128/256/512 capacity classes, every independent device fact, fail-closed metadata, ambiguous selection, identity + pre-write revalidation, the two-card cloning pair, and the call sites' ordering | `tests/test_disk_guard.py` (71) |
+| the read-only card report: physical/partition/filesystem/free/reserve kept apart, the unexpanded-clone verdict, the None rule, and no write path at all | `tests/test_card_report.py` (15) |
 | request-body admission: doors, chunked bodies, the 2× peak, adoption, disconnects, six real processes, an unreadable ledger | `tests/test_admission.py` (28) |
 | probe/plan (direct/remux/convert), a renamed archive refused, public film waits for the owner, 404 for unpublished, 206/416/HEAD ranges, repack releases the upload, conversion to H.264, poster + fallback, SRT→VTT, recover/cancel/delete/adopt, rename, picture-at, catalogue search/sort/paging | `tests/test_media.py` (55) |
 | `synchronous=FULL` on every connection, content-addressed save blobs, atomic save replacement | `tests/test_durability.py` (15) |

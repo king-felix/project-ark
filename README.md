@@ -76,6 +76,17 @@ bash scripts/02-wait-for-pi.sh
 bash scripts/03-provision.sh
 ```
 
+**A bigger card.** The guard accepts 128, 256 and 512 GB cards (a capacity
+*class* each, not one ceiling), and refuses anything outside those bands. If you
+are moving a working box onto a larger card rather than building a new one,
+`bash scripts/clone-card.sh` copies it card-to-card — same certificate, same
+accounts, same library — and keeps the original. After a clone the filesystem is
+still the old size until it is expanded once, and `ark-card-report` says so.
+Both paths, the expansion and what each one keeps are in
+[`docs/CARD-MIGRATION.md`](docs/CARD-MIGRATION.md); the one-page tick list for
+doing it with the cards on the desk is
+[`docs/FOR-YOU-CARD-MIGRATION.md`](docs/FOR-YOU-CARD-MIGRATION.md).
+
 `03-provision.sh` copies `pi/` to `/srv/ark/src`, starts `install-ark.sh` in
 the background on the Pi (a dropped Wi-Fi link cannot kill it), follows the
 log live, and pulls back `logs/ark_status.json` at the end.
@@ -381,7 +392,11 @@ The capacity is the filesystem **actually receiving the bytes** (asked with
 `statvfs` at the moment of use, never a nominal card size) and the free figure is
 `f_bavail` — the blocks an ordinary account may write, so the slice ext4 keeps
 for root is not counted as room the box can use. On the 256 GB card in this
-build that is about 16 GiB kept back.
+build that is about 16 GiB kept back; on a 512 GB card it is about 33 GiB. The
+reserve follows the filesystem, so a bigger card raises it without anything
+being configured — `ark-card-report` prints the figure the box is actually using,
+along with the card, partition and filesystem sizes it was derived from
+([`docs/CARD-MIGRATION.md`](docs/CARD-MIGRATION.md)).
 
 The policy is centralised in `pi/api/ark_space.py`; the shell scripts ask the
 same module through `/usr/local/sbin/ark-space`, so there is no second number

@@ -147,9 +147,14 @@ Therefore:
  5. IDEMPOTENT PHASES. Re-running any phase must not corrupt or duplicate.
     Every file write is content-compared first; every HTML injection is
     marker-guarded; every service start tolerates "already running".
- 6. NO GUESSING ABOUT DISKS. Never write to a device unless it is external and
-    physical, 100-270 GB, Internal=false, and appears in
-    `diskutil list external physical`. Zero matches = abort loudly.
+ 6. NO GUESSING ABOUT DISKS. Never write to a device unless it is external,
+    physical, a WHOLE disk, Internal=false, removable/ejectable, and inside a
+    supported capacity class (128 GB = 100-150, 256 GB = 200-300, 512 GB =
+    440-580 decimal GB), and appears in `diskutil list external physical`.
+    Zero or two matches = abort loudly; missing metadata = refuse. Re-check the
+    same card (name + size + UUID) in the process that writes, immediately
+    before the write. Capacity never decides on its own. Cloning, expansion and
+    the post-migration checks: docs/CARD-MIGRATION.md.
  7. NOTHING SECRET IN THE REPO. Wi-Fi PSKs live in chmod-600 files, are
     embedded into a chmod-700 first-boot script, and that script is deleted
     after first boot.
@@ -260,6 +265,9 @@ popup resolves to the portal instead of a "no internet" dead end.
                      one `id|ssid|password|priority` per line, priorities below
                      the home slots' 20/10/5 so home still wins at home
   01  flash          assert the SD card with lib-disk-guard, then flash
+                     (alternative to 01: scripts/clone-card.sh copies a working
+                     card onto a bigger one and keeps the original —
+                     docs/CARD-MIGRATION.md §5)
   02  wait-for-pi    poll SSH until the Pi is up on the home LAN
   03  provision      rsync the repo to /srv/ark/src, then run pi/install-ark.sh
                      with --only <phase> to re-run one phase safely
@@ -283,7 +291,9 @@ popup resolves to the portal instead of a "no internet" dead end.
                   would write and changes nothing, the timer is enabled+active,
                   and cmdline.txt has not gained a second line.
   20  storage     /srv/ark tree, ark.env, mode file, permissions, disk headroom
-                  warning. Proof: tree + free space.
+                  warning, and /usr/local/sbin/ark-card-report (read-only: is the
+                  whole card in use? docs/CARD-MIGRATION.md). Proof: tree + free
+                  space.
   30  calibre     calibre-web install, empty library created pi:pi 775, drop
                   folders, ark-book-import path unit, ark-import-books and
                   ark-import-calibre-library helpers. Proof: HTTP 200 on :8083
@@ -375,10 +385,14 @@ popup resolves to the portal instead of a "no internet" dead end.
     Cause: /dev/disk2 is not "the SD card", it is "whatever is second today".
     Fix: guard function in scripts/lib-disk-guard.sh. Requires ALL of:
     appears in `diskutil list external physical`; identifier is not disk0/disk1;
-    diskutil info -plist shows Internal=false and Ejectable/RemovableMedia=true;
-    size 100-270 GB; not a synthesized container; not a disk image. Zero
-    candidates → exit 2 with a loud message. Print the resolution to the human
-    and require the guard to pass before any write.
+    a WHOLE disk (WholeDisk=yes, not a partition); Internal=no; Ejectable or
+    RemovableMedia=yes; VirtualOrPhysical Physical or Unknown (never Virtual);
+    size inside a supported class (128/256/512 GB) — a band, not a ceiling.
+    Missing, contradictory or malformed metadata = refuse (the old guard read
+    Internal==yes, so a blank answer looked safe). Zero or two candidates →
+    exit non-zero with a loud message. Then RE-CHECK the same device (name,
+    exact size, UUID) in the process that writes, immediately before the write:
+    a device name is not a device. See docs/CARD-MIGRATION.md.
 
  2. sudo HANGS IN AN AUTOMATED SESSION
     Symptom: the flash step waits forever, or fails with "a terminal is
@@ -1008,6 +1022,7 @@ any failure. Categories:
     scripts/02-wait-for-pi.sh               poll SSH, report first contact
     scripts/03-provision.sh                 rsync repo, run phases, --only
     scripts/lib-disk-guard.sh               the SD-card safety net
+    scripts/clone-card.sh                   guarded card-to-card copy (2 cards, interactive)
     scripts/make-firstrun.sh                wifi.env → firstrun.sh (700)
     scripts/fix-pi-shell.sh                 small connectivity repairs
 

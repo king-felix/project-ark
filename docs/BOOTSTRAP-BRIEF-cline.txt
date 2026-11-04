@@ -103,6 +103,9 @@ Therefore:
  6. NO GUESSING ABOUT DISKS. Never write to a device unless it is external and
     physical, 100-270 GB, Internal=false, and appears in
     `diskutil list external physical`. Zero matches = abort loudly.
+    [SUPERSEDED — the 270 GB ceiling is gone. The living rule is AGENTS.md §2:
+    128/256/512 GB capacity classes, fail-closed metadata, and the identity
+    re-checked immediately before the write. See docs/CARD-MIGRATION.md.]
  7. NOTHING SECRET IN THE REPO. Wi-Fi PSKs live in chmod-600 files, are
     embedded into a chmod-700 first-boot script, and that script is deleted
     after first boot.
@@ -226,6 +229,9 @@ popup resolves to the portal instead of a "no internet" dead end.
     size 100-270 GB; not a synthesized container; not a disk image. Zero
     candidates → exit 2 with a loud message. Print the resolution to the human
     and require the guard to pass before any write.
+    [SUPERSEDED — see AGENTS.md §2 and docs/CARD-MIGRATION.md. Size is now a
+    capacity CLASS (128/256/512 GB), missing metadata is a refusal, and the
+    device is revalidated in the process that writes.]
 
  2. sudo HANGS IN AN AUTOMATED SESSION
     Symptom: the flash step waits forever, or fails with "a terminal is

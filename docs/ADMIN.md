@@ -1788,6 +1788,23 @@ own limit, **not a quota for one person**, and it cannot stop something outside
 the box from filling the card. Change the percentage with
 `ARK_RESERVE_PERCENT` in `/etc/ark/ark.env` (0–50; a typo falls back to 7).
 
+### A bigger card
+
+Replacing the card does not change any of the above. The reserve is a percentage
+of the filesystem, so it follows the bigger card by itself — about 16 GiB on a
+256 GB card, about 33 GiB on a 512 GB one — and nothing else in the box holds a
+card size.
+
+What does change is **which migration you choose**. Cloning the working card
+keeps the certificate (so the phones that trusted it keep trusting it), the
+owner's account, the saved Wi-Fi, the SSH host keys and every collection, book,
+game, film and map. A fresh install gives you all of that again from scratch,
+with a **new certificate fingerprint that every device must be taught**. A clone
+also boots with the *old* partition table and needs one deliberate expansion
+step. Both paths, that expansion, and the read-only `ark-card-report` check that
+separates the card's size from the partition's, the filesystem's, the free space
+and the reserve are in [`CARD-MIGRATION.md`](CARD-MIGRATION.md).
+
 ### Backups
 
 **Films are not in a backup.** A bundle holds the records, the shared files and

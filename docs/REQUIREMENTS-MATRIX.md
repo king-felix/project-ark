@@ -799,6 +799,35 @@ film whose bytes are gone is reported by `validate()`, never silently promised.
 
 ---
 
+## R17 — the box can move to a bigger card, and nothing writes without proof
+
+**Status: DONE (code + test on the Mac); NO PHYSICAL CARD YET.** The guard, the
+clone tool and the read-only report are complete and tested against a stand-in
+`diskutil` and a disposable sysfs tree. No 512 GB card has been cloned, expanded
+or booted, and `docs/HUMAN-TEST-LIST.md` §28 is the walk-through that would make
+this a hardware fact.
+
+| Acceptance sentence | Where | Test |
+|---|---|---|
+| 128, 256 and 512 GB cards are accepted; 64 GB, 640 GB, 1 TB and 2 TB devices are refused with the supported classes named | `ARK_CARD_BANDS` in `scripts/lib-disk-guard.sh` | `test_disk_guard.py::test_a_supported_card_class_is_accepted`; `::test_an_unsupported_size_is_refused_and_says_what_is_supported`; `::test_the_old_270_gb_ceiling_is_gone_but_a_ceiling_still_exists`; `::test_the_capacity_class_is_a_pure_function` |
+| Capacity never decides alone: external, physical, whole-disk, non-internal, ejectable, **removable media** and the forbidden identifiers are each checked independently | `ark_validate_sd_device()` | `::test_an_internal_disk_is_refused_even_when_listed_as_external`; `::test_the_internal_ssd_is_refused_by_name`; `::test_a_synthesized_container_is_refused`; `::test_a_partition_is_not_a_card`; `::test_a_usb_ssd_is_refused_however_big_it_is`; `::test_removable_media_that_is_not_ejectable_is_contradictory`; `::test_a_real_card_is_removable_media_and_ejectable` |
+| A refusal is never reported as success — through a function gate or from the standalone script | `ark_guard_or_exit()`, the `__main__` block | `::test_a_refusal_propagates_through_a_gate`; `::test_guard_or_exit_prints_the_device_on_success`; `::test_the_standalone_guard_exits_non_zero_when_it_refuses` |
+| A generated privileged helper expands nothing at generation time and is valid bash | the heredocs in `01-flash.sh` and `clone-card.sh` | `::test_the_generated_helper_is_valid_bash_and_expands_nothing_early` |
+| Missing, contradictory or malformed metadata fails closed | `ark_validate_sd_device()`, `ark_device_facts()` (sentinel, exit 3) | `::test_a_missing_required_field_fails_closed`; `::test_a_malformed_size_fails_closed`; `::test_a_numeric_but_absurd_size_is_refused_as_an_unsupported_class`; `::test_an_uninterpretable_virtualorphysical_is_refused`; `::test_an_unreadable_plist_fails_closed` |
+| Selection is unambiguous: zero candidates and two candidates both abort, and no device is chosen | `ark_assert_sd_card()` | `::test_no_card_at_all_aborts_loudly`; `::test_two_cards_are_ambiguous_and_neither_is_chosen` |
+| The device identity is re-checked in the writing process, immediately before the write, and a changed device aborts | `ark_card_identity()`, `ark_revalidate_sd_card()`; `01-flash.sh` helper, `fix-pi-shell.sh` | `::test_revalidation_passes_when_nothing_changed`; `::test_revalidation_refuses_a_card_swapped_for_a_different_size`; `::test_revalidation_catches_a_same_size_swap_by_uuid`; `::test_revalidation_refuses_a_device_that_is_no_longer_external`; `::test_the_flash_helper_revalidates_before_it_hands_the_card_to_the_imager`; `::test_fixing_a_shell_on_a_card_revalidates_before_it_writes` |
+| Cloning needs two cards in different classes, refuses to run unattended, refuses a card paired with a backup drive, and never writes to the source | `ark_assert_sd_card_pair()`, `scripts/clone-card.sh` | `::test_the_pair_resolver_picks_the_larger_card_as_destination`; `::test_two_cards_of_the_same_class_are_refused`; `::test_the_pair_resolver_needs_exactly_two`; `::test_the_pair_refuses_a_card_and_a_backup_drive`; `::test_the_clone_tool_refuses_to_run_without_a_person`; `::test_the_clone_tool_revalidates_both_cards_inside_the_helper` |
+| The post-migration check separates the physical card, the partition, the filesystem, the free space and the reserve, and says when a clone has not been expanded | `pi/bin/ark-card-report` | `test_card_report.py::test_a_cloned_512_gb_card_that_was_never_expanded_is_named_as_such`; `::test_the_filesystem_figure_is_measured_not_copied_from_the_partition`; `::test_json_carries_every_number_for_a_program` |
+| An unmeasured size is never rendered as 0 | `summarise()`, `_size()` | `::test_an_unmeasured_layer_is_not_rendered_as_zero`; `::test_an_unreadable_machine_exits_five_and_says_not_measured` |
+| The reserve is the one policy, not a second 7 % | `ark_space.reserve_for()` via `ark-card-report` | `::test_the_report_uses_the_one_reserve_policy`; `::test_the_reserve_is_subtracted_from_free_space_and_never_goes_negative` |
+| The check is read-only and never runs the expansion | `pi/bin/ark-card-report` | `::test_the_report_can_never_write_or_resize_anything` |
+
+**Not proved here:** any physical card; a real `diskutil` answer from a USB SD
+reader (the fixtures are realistic but synthetic); the clone tool end to end; and
+a boot from a cloned 512 GB card. See `docs/HUMAN-TEST-LIST.md` §28.
+
+---
+
 ## Keeping this page honest
 
 * Change a status **in the same commit** as the behaviour and its test.

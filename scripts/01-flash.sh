@@ -15,6 +15,7 @@ IMG="$ROOT/staging/raspios_lite_arm64.img.xz"
 FIRSTRUN="$ROOT/staging/firstrun.sh"
 IMAGER="/Applications/Raspberry Pi Imager.app/Contents/MacOS/rpi-imager"
 HELPER="$ROOT/scripts/_flash-helper.sh"
+GUARD="$ROOT/scripts/lib-disk-guard.sh"
 LOG="$ROOT/logs/flash.log"
 DONE="$ROOT/logs/.flash.done"
 
@@ -31,6 +32,11 @@ echo
 SD_DEV=$(ark_assert_sd_card)          # aborts hard if unsafe / absent
 RAW="/dev/r${SD_DEV}"
 PLAIN="/dev/${SD_DEV}"
+# The device name is not the device: /dev/disk4 is "whatever is fourth today".
+# Record name + exact size + UUID now, and prove it is still the same card
+# immediately before the write (inside the privileged helper, below).
+SD_ID=$(ark_card_identity "$SD_DEV") || ark_die "could not record the card's identity"
+ark_info "identity: $SD_ID"
 # NB: rpi-imager's Qt6 build matches drives by /dev/diskN, not /dev/rdiskN —
 # handing it the raw node makes it refuse with "not in list of removable
 # volumes". Keep RAW only for the messages.
@@ -51,7 +57,21 @@ NOW() { date -u +%Y-%m-%dT%H:%M:%SZ; }   # BSD date has no -I on macOS
 echo "===== ARK flash start \$(NOW) ====="
 echo "image : $IMG"
 echo "device: $PLAIN"
+echo "chosen: $SD_ID"
 rm -f "$DONE"
+
+# The write happens here, so the last check happens here too. This is the
+# process that holds the device open; a name resolved a minute ago in another
+# shell proves nothing about what /dev/$SD_DEV is now. The revalidation runs
+# in a subshell so its refusal is recorded as its own exit code instead of
+# taking the helper down before it can report.
+if ! ( source "$GUARD"; ark_revalidate_sd_card "$SD_ID" >/dev/null ); then
+  echo "===== ARK flash NOT STARTED: the device changed or failed the guard ====="
+  echo 4 > "$DONE"
+  exit 4
+fi
+echo "revalidated: /dev/$SD_DEV is still the same card"
+
 "$IMAGER" --cli --disable-eject --first-run-script "$FIRSTRUN" "$IMG" "$PLAIN"
 rc=\$?
 echo "===== ARK flash end rc=\$rc \$(NOW) ====="
@@ -72,7 +92,7 @@ ark_info "macOS will now ask for Touch ID / your password to write to $RAW."
 osascript -e "do shell script \"/bin/bash '$HELPER'\"" >"$AUTHLOG" 2>&1 &
 OSA_PID=$!
 
-ark_info "Flashing… (write + verify, typically 6–15 minutes for a 256 GB card)"
+ark_info "Flashing… (write + verify; typically 10–20 minutes for a 256 or 512 GB card)"
 trap 'echo; ark_warn "Interrupted — check $LOG. The card may be in a partial state."' INT TERM
 last=""
 while :; do
@@ -103,6 +123,13 @@ if [[ ! -f "$DONE" ]]; then
 fi
 
 RC=$(cat "$DONE" 2>/dev/null | tr -dc '0-9' || true)
+if [[ "${RC:-1}" == "4" ]]; then
+  echo >&2
+  ark_die "NOTHING WAS WRITTEN: the card changed between choosing it and writing to it.
+   The privileged helper re-checked the device and refused. See $LOG.
+   This is what it looks like when the reader was reseated, the card was swapped,
+   or macOS renumbered the disks. Unplug the reader, plug it back in, and re-run."
+fi
 if [[ "${RC:-1}" != "0" ]]; then
   tail -8 "$LOG" | tr '\r' '\n' | grep -v '^[[:space:]]*$' >&2
   if grep -q 'Error reading from storage' "$LOG" 2>/dev/null; then

@@ -1,0 +1,252 @@
+#!/usr/bin/env python3
+"""Project ARK — is the whole card actually being used?
+
+After a card is replaced, five different things can be called "the size of the
+card", and on a card that has been *cloned* they are usually not equal:
+
+    physical card     the block device the machine sees  (a 512 GB card)
+    main partition    the slice the root filesystem lives in (still 256 GB
+                      after a byte-for-byte clone, because the partition table
+                      was copied too)
+    filesystem        what ext4 thinks it has (still the old partition)
+    usable free       what an ordinary account may write right now
+    kept back         the reserve every write path asks ark_space for
+
+A clone that has not been expanded looks like a 512 GB card with a 256 GB
+filesystem.  This command says so in one sentence, and never writes anything:
+it reads sysfs and ``statvfs`` and prints.  It does **not** resize, mount, or
+repair — expanding a live filesystem is a deliberate act with a person present
+(docs/CARD-MIGRATION.md §5).
+
+    ark-card-report            # plain sentences
+    ark-card-report --json     # the same numbers for a program
+
+Exit 0 = the whole card is in use.  4 = it is not (the card, the partition and
+the filesystem are not the same size).  5 = something could not be measured.
+"Not measured yet" is said out loud and never rendered as 0.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+#: sysfs reports whole-disk and partition sizes in 512-byte sectors.
+SECTOR_BYTES = 512
+
+#: A layer that uses less than this fraction of the one beneath it has not been
+#: grown.  Partition alignment leaves a few MiB unallocated, which is ~0.001 %
+#: of a 512 GB card, so a genuinely "whole card" layout is always far above it.
+WHOLE_ENOUGH = 0.95
+
+EXPAND_PROCEDURE = """\
+  the supported way to use the rest of the card (a person runs this, on the box,
+  with the original card still intact in a drawer):
+
+      sudo growpart /dev/<card> 2
+      sudo resize2fs /dev/<card>p2
+      ark-card-report            # the same command again: it should say 0
+
+  do not run these two while anything is copying to the card, and do not run
+  them on a card you have not booted and proved first."""
+
+
+# ---------------------------------------------------------------------------
+#  reading: the smallest possible surface
+# ---------------------------------------------------------------------------
+def _run(argv):
+    """Run a tiny read-only command; '' when it is not there or says nothing."""
+    try:
+        done = subprocess.run(argv, capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return (done.stdout or "").strip() if done.returncode == 0 else ""
+
+
+def sysfs_bytes(name, root="/sys/block"):
+    """Bytes for a block device or partition, from sysfs, or None.
+
+    Whole disks live at ``<root>/<name>/size``; partitions at
+    ``<root>/<disk>/<name>/size``.  Both are readable without root.
+    """
+    if not name:
+        return None
+    candidate = Path(root) / name / "size"
+    if not candidate.is_file():
+        found = sorted(Path(root).glob("*/%s/size" % name))
+        candidate = found[0] if found else None
+    if candidate is None:
+        return None
+    try:
+        sectors = int(candidate.read_text(encoding="ascii").strip())
+    except (OSError, ValueError):
+        return None
+    return sectors * SECTOR_BYTES if sectors > 0 else None
+
+
+def parent_disk(source):
+    """``/dev/mmcblk0p2`` -> ``mmcblk0``; ``/dev/sda2`` -> ``sda``."""
+    name = os.path.basename(source or "")
+    if not name:
+        return ""
+    match = re.match(r"^(.*?)(?:p?\d+)$", name)
+    return match.group(1) if match else name
+
+
+def fs_facts(mount="/"):
+    """Total and writable-free bytes of the filesystem at ``mount``.
+
+    ``f_bavail`` — not ``f_bfree`` — is the figure the reserve policy uses: it
+    is what an ordinary account may write, so the slice ext4 keeps for root is
+    not counted as room the box can use.
+    """
+    try:
+        st = os.statvfs(mount)
+    except OSError:
+        return {"total_bytes": None, "free_bytes": None, "root_slice_bytes": None}
+    total = st.f_blocks * st.f_frsize
+    free = st.f_bavail * st.f_frsize
+    root_slice = max(0, (st.f_bfree - st.f_bavail) * st.f_frsize)
+    return {"total_bytes": total or None,
+            "free_bytes": free,
+            "root_slice_bytes": root_slice}
+
+
+def reserve_for(total):
+    """The one policy (``ark_space``), asked rather than re-implemented."""
+    try:
+        sys.path.insert(0, os.environ.get("ARK_API_DIR", "/srv/ark/api"))
+        import ark_space                      # noqa: WPS433 - deliberately lazy
+        return int(ark_space.reserve_for(total)), ark_space.reserve_percent()
+    except Exception:
+        return None, None
+
+
+# ---------------------------------------------------------------------------
+#  the arithmetic, with nothing to read
+# ---------------------------------------------------------------------------
+def summarise(card, part, fs_total, fs_free, reserve, fs_root_slice=0):
+    """The five numbers and a verdict.  Pure: every input is passed in.
+
+    ``None`` means "not measured", and stays ``None`` all the way to the page —
+    an unknown size rendered as 0 would read as a full card.
+    """
+    usable = None
+    if fs_free is not None and reserve is not None:
+        usable = max(0, fs_free - reserve)
+
+    verdict, detail = "not measured yet", ""
+    if card is None or part is None or fs_total is None or fs_total <= 0:
+        detail = ("the card, the partition or the filesystem could not be read on "
+                  "this machine — nothing here is a measurement of the card")
+    elif part < card * WHOLE_ENOUGH:
+        verdict = "the card is bigger than its main partition — it has not been expanded"
+        detail = ("the copy is complete, but the partition table still describes the "
+                  "old card; the extra room is not usable yet")
+    elif fs_total < part * WHOLE_ENOUGH:
+        verdict = "the partition is bigger than the filesystem — the filesystem has not been grown"
+        detail = ("the partition already covers the card, but ext4 still believes it is "
+                  "the old size")
+    else:
+        verdict = "the whole card is in use"
+        detail = "the card, the partition and the filesystem are the same size"
+
+    return {
+        "card_bytes": card,
+        "partition_bytes": part,
+        "filesystem_bytes": fs_total,
+        "free_bytes": fs_free,
+        "root_slice_bytes": fs_root_slice,
+        "reserve_bytes": reserve,
+        "usable_bytes": usable,
+        "verdict": verdict,
+        "detail": detail,
+        "whole_card": verdict == "the whole card is in use",
+    }
+
+
+def _size(n):
+    if n is None:
+        return "not measured yet"
+    step = float(n)
+    for unit in ("B", "kB", "MB", "GB", "TB"):
+        if step < 1000 or unit == "TB":
+            return f"{int(step)} {unit}" if unit == "B" else f"{step:.1f} {unit}"
+        step /= 1000
+    return f"{step:.1f} TB"
+
+
+def _gib(n):
+    return "not measured yet" if n is None else f"{n / 2**30:.1f} GiB"
+
+
+def _report(mount, root, source, device):
+    card = sysfs_bytes(device, root)
+    part = sysfs_bytes(os.path.basename(source or ""), root)
+    facts = fs_facts(mount)
+    reserve, percent = reserve_for(facts["total_bytes"]) if facts["total_bytes"] else (None, None)
+    return summarise(
+        card=card,
+        part=part,
+        fs_total=facts["total_bytes"],
+        fs_free=facts["free_bytes"],
+        reserve=reserve,
+        fs_root_slice=facts["root_slice_bytes"],
+    ), percent, device, os.path.basename(source or "")
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Read-only: is the whole card in use, and what is kept back?")
+    parser.add_argument("--json", action="store_true", help="the same numbers for a program")
+    parser.add_argument("--mount", default=os.environ.get("ARK_CARD_MOUNT", "/"),
+                        help="the filesystem to inspect (default /)")
+    args = parser.parse_args(argv)
+
+    root = os.environ.get("ARK_SYS_BLOCK", "/sys/block")
+    source = os.environ.get("ARK_CARD_SOURCE") or _run(["findmnt", "-no", "SOURCE", args.mount])
+    device = os.environ.get("ARK_CARD_DEVICE") or _run(
+        ["lsblk", "-no", "PKNAME", source]) or parent_disk(source)
+
+    result, percent, disk, part = _report(args.mount, root, source, device)
+    result.update({"card_device": disk, "partition_device": part,
+                   "mount": args.mount, "reserve_percent": percent})
+
+    if args.json:
+        print(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        def line(label, raw, device=""):
+            if raw is None:
+                print(f"  {label:<16}: not measured yet")
+                return
+            tail = f"   {device}" if device else ""
+            print(f"  {label:<16}: {_size(raw):>12}  ({_gib(raw)}){tail}")
+
+        print("the card, as this machine sees it")
+        line("physical card", result["card_bytes"], disk or "—")
+        line("main partition", result["partition_bytes"], part or "—")
+        line("filesystem", result["filesystem_bytes"])
+        line("free for files", result["free_bytes"])
+        label = "kept back" if percent is None else f"kept back ({percent:g} %)"
+        line(label, result["reserve_bytes"])
+        line("usable by Ark", result["usable_bytes"])
+        print()
+        print(f"  verdict        : {result['verdict']}")
+        if result["detail"]:
+            print(f"                   {result['detail']}")
+        if not result["whole_card"] and result["card_bytes"] and result["partition_bytes"]:
+            print()
+            print(EXPAND_PROCEDURE)
+
+    if result["verdict"] == "not measured yet":
+        return 5
+    return 0 if result["whole_card"] else 4
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

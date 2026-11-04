@@ -38,20 +38,40 @@ All paths written in this repo must be **absolute**. Never assume `$HOME` expans
 
 ## 2. SD CARD SAFETY RULE — NON-NEGOTIABLE, MACOS
 
-**STOP AND VERIFY before every destructive disk command.**
+**STOP AND VERIFY before every destructive disk command.** Both migration paths
+(fresh install and cloning), the expansion and the post-migration checks are in
+`docs/CARD-MIGRATION.md`.
 
 1. Run `diskutil list external physical` and show the full output to the user.
-2. The target MUST appear in that list (i.e. it is `external` **and** `physical`).
-3. Its size MUST be between **100 GB and 270 GB** (128 GB or 256 GB card).
-4. **`/dev/disk0` and `/dev/disk1` are the internal Apple SSD and/or synthesized APFS containers. NEVER write to them. NEVER write to any `synthesized` device.**
-5. Never write to a device whose `Internal` flag is `yes`, and never to a `disk image` device.
-6. Cross-check with **both**:
-   - `diskutil info -plist /dev/diskN` → `Internal = false`, `RemovableMedia = true`/`Ejectable = true`, `TotalSize` in range
-   - `diskutil list external physical` → identifier present
-7. If **zero** external physical devices are found, **abort loudly**. Do not guess, do not "try" disk2/disk3, do not retry with a broader pattern. Tell the user the card is not mounted.
-8. Echo the resolved device + size and require the guard function to pass before flash. Every flash script must call `ark_assert_sd_card` first and exit non-zero on failure.
+2. The target MUST appear in that list (external **and** physical), and it must be
+the ONLY candidate. Never choose between disks, whatever their sizes.
+3. Its size MUST fall inside a **supported card class**: **128 GB = 100–150 GB**,
+   **256 GB = 200–300 GB**, **512 GB = 440–580 GB** (decimal GB = `TotalSize`).
+   Outside every band ⇒ refuse and name the classes. **Never widen a ceiling** — add
+   a class to `ARK_CARD_BANDS` *and* to `tests/test_disk_guard.py`.
+4. **`/dev/disk0` and `/dev/disk1` are forbidden by name** (the internal Apple SSD
+   and/or synthesized APFS containers), and so is any `Virtual` device. Never write
+   to a `disk image`.
+5. Every other fact is checked **independently**; none may stand in for another —
+   `Internal=no`, `WholeDisk=yes`, `Ejectable=yes`, and **`RemovableMedia=yes`**.
+   `VirtualOrPhysical` must be `Physical` or `Unknown` (macOS says `Unknown` for some
+   physical disks: deny `Virtual`, never require `Physical`). `RemovableMedia` is the
+   only fact that separates a card from a **USB SSD**, which is also `Ejectable=yes` and
+   can be 500 GB — do not accept "either flag".
+6. **Fail closed.** Missing, contradictory or malformed metadata is a refusal. The
+   old guard read `Internal == yes`, so a reader that answered nothing looked safe.
+7. **Zero candidates ⇒ abort loudly.** Do not guess disk2/disk3 and do not broaden
+   the pattern. Tell the user the card is not mounted.
+8. **Revalidate immediately before the write.** Capture `ark_card_identity`
+   (device + exact size + any UUID), then call `ark_revalidate_sd_card` in the
+   process doing the write — the flash helper does it before rpi-imager, and
+   `fix-pi-shell.sh` before its first `cp`. A device *name* is not a device.
+9. Cloning needs **two** cards in **different** classes (`ark_assert_sd_card_pair`).
+   `scripts/clone-card.sh` is interactive-only, makes the human type the
+   destination, revalidates both cards in the privileged helper, and never writes
+   the source. The original is kept until the new card is proved.
 
-Reference implementation: `scripts/lib-disk-guard.sh` (sourced by all flash steps).
+Reference: `scripts/lib-disk-guard.sh` (sourced by all flash steps).
 
 ---
 
@@ -180,7 +200,7 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 | Released tag | `v1.0.5` = `dd3336c` (never move a tag, never force-push) |
 | Active branch | `feature/admin-hardening` (fast-forwarded to `main` at `acf5d29`) |
 | Schema version | `SCHEMA_VERSION = 8` (`pi/api/ark_db.py`) — migration 7 adds the film shelf and the space ledger; migration 8 gives a reservation its pid, boot id and kind |
-| Test suite | `928 collected`; `926 passed, 2 skipped` with 3 browser maps excluded (37 files) |
+| Test suite | `1017 collected`; `1015 passed, 2 skipped` with 3 browser maps excluded (39 files) |
 | Live Pi state | Deployed `cf5548a` (log §53.6); ready 200, blocking [], mode home; 27 collections (97.6 GiB), 1291 books, 67 games, 11 guides, AI, FFmpeg, 8 films, 3 maps; 2 complete recovery copies; reserve 16 GB |
 | Owner decisions pending | History rewrite + force-push (pre-`a926296`; home-LAN address in `1a3f41f`; log §37.6/§38.7/§44); rotate GitHub & Pi passwords; licence choice |
 
@@ -195,6 +215,7 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 | `pi/api/ark_media_web.py` | the public shelf: `build_router(page)`, `ranged()` (206/416/HEAD/`If-Range`), library + player pages, fallback poster SVG, browser-local resume |
 | `pi/bin/ark-media-worker` | the one background process (`--once`, `--status`): claims one job, does it, sleeps |
 | `pi/bin/ark-space` | the shell door to the policy: `--status [--json]`, `--check --need N` (exit 3 with a sentence) |
+| `pi/bin/ark-card-report` | **read-only post-migration check**: physical card, partition, filesystem, free, reserve, usable, and whether a cloned card has been expanded; `--json`; exit 0 whole card / 4 not expanded / 5 not measured. Writes nothing and never resizes |
 | `pi/api/main.py` | public app: status/ready/health, search, board, files, ask; mounts the admin/arcade/media/maps routers. Search keeps five report states (only `empty` may say "nothing matched") and `_spread()` across every collection |
 | `pi/api/ark_library.py` | the shelf page's model: `TOPICS` (10 plain-English shelves, one of them films), the catalogue's `topic` column, `name_of()`/`shelves()`; groups the card, never invents a book |
 | `pi/bin/ark-zim-checksum` | the published digest for one bundle (`--url`, `--file`): 0 match, 1 different bytes, 2 unreadable, 3 nothing published |
@@ -285,6 +306,8 @@ sudo ark-net-watch --dry-run
 sudo -u pi /usr/local/sbin/ark-media-worker --once   # do everything waiting, then exit
 /usr/local/sbin/ark-space --status               # free, kept back, promised, usable
 /usr/local/sbin/ark-space --check --need 3221225472 --path /srv/ark
+/usr/local/sbin/ark-card-report                  # read-only: is the whole card in use?
+                                                 # (after a card migration; docs/CARD-MIGRATION.md)
 sudo systemctl status ark-media-worker           # is the worker alive?
 
 # arcade, romdb, essentials, self-heal, AI helper
@@ -329,7 +352,7 @@ The full map — 37 files, every behaviour each one pins — is
 
 ### 8.6 Deliberate gaps — do not describe any of these as built
 
-Maps: address search, `via`-way/time-conditional restrictions, live traffic, elevation, background/voice navigation, push updates, automatic region deletion, packs in `ark-backup`; **no real iPhone/Android proof yet** (desktop Chromium only). Storage admission: **no real full card, no physical power cut** (bounded simulated card only); an unrelated OS/shell write can still fill the card (noticed, not prevented) — see `docs/STORAGE-ADMISSION.md` §10. Per-person quotas (including media); a film trash/undo; embedded bitmap subtitles; hardware-accelerated encoding; server-side watch history (resume is browser-local); films in a backup; quarantine/approval queue; trash; pagination on the Community page (it shows `LIMIT 50` and says so; the public board paginates at `BOARD_PAGE = 20`); pause/resume buttons on the owner page; a backup timer or button on the owner page; player password recovery, quota, save trash, owner reset/delete for a player name; a "Check now" button for games; SNES/Genesis online catalogue entries (hand-carried only). **Never invent a control that does not exist.**
+Maps: address search, `via`-way/time-conditional restrictions, live traffic, elevation, background/voice navigation, push updates, automatic region deletion, packs in `ark-backup`; **no real iPhone/Android proof yet** (desktop Chromium only). Storage admission: **no real full card, no physical power cut** (bounded simulated card only); an unrelated OS/shell write can still fill the card (noticed, not prevented) — see `docs/STORAGE-ADMISSION.md` §10. Per-person quotas (including media); a film trash/undo; embedded bitmap subtitles; hardware-accelerated encoding; server-side watch history (resume is browser-local); films in a backup; quarantine/approval queue; trash; pagination on the Community page (it shows `LIMIT 50` and says so; the public board paginates at `BOARD_PAGE = 20`); pause/resume buttons on the owner page; a backup timer or button on the owner page; player password recovery, quota, save trash, owner reset/delete for a player name; a "Check now" button for games; SNES/Genesis online catalogue entries (hand-carried only). Card migration: **no real 512 GB card has been inserted, cloned, expanded or booted** — the guard is proved against a mocked `diskutil`, `clone-card.sh` has never run on hardware, `ark-card-report` has only read a disposable sysfs tree. **Never invent a control that does not exist.**
 
 ### 8.7 Essential gotchas (distilled from §1–§41)
 
@@ -343,6 +366,7 @@ Maps: address search, `via`-way/time-conditional restrictions, live traffic, ele
 * **Admission:** a promise is a **peak** (`Receipt.peak`), never a sum of stages; `written` counts once. A spool adopts the request's promise via `cover()`; a ledger write joins the caller's transaction (`ark_db.current_transaction()`) or it deadlocks. `slack() is None` ≠ zero; keep `proxy_request_buffering off`; an upload peaks at **2×**.
 * **Media & space:** the reserve is `ark_space`'s alone; use `f_bavail`, never `f_bfree`. A film's original is its carrier row (`hidden=1`) until the play copy is published. Ranges stay 206/416; never buffer `/media/`. `ffmpeg` uses arrays + a deadline; derivatives are written in `media/tmp` and renamed. `PRAGMA journal_mode=WAL` is a write: ask first.
 * **Maps & service workers:** a certificate error is not a secure context even after a click-through; the device must trust the Ark certificate. Serve `sw.js` with `Service-Worker-Allowed: /maps/` and an `ETag`; a pack version is immutable; `/maps/api/` is never cached; `:8446` never proxies `/admin`.
+* **Disk guard & cards:** `diskutil info -plist` says `WholeDisk` (never `Whole`), `VirtualOrPhysical = Unknown` for some physical Apple disks and `Virtual` for APFS containers — deny `Virtual`, do **not** require `Physical`. Capacity is a band, never one of the other facts. A clone keeps the *old* partition table: boot it, then `growpart` + `resize2fs` (`docs/CARD-MIGRATION.md` §6); `ark-card-report` names that state, `10-base` expands it during provisioning.
 * **Maintenance:** `ark_db` connections hold `<db>.maintenance.lock` shared for life; repair/restore takes `<db>.repair.lock` then the gate. Never unlink either. A gate that cannot be had is `deferred`, not corruption; `ark-restore` stops `ark-media-worker.service`.
 * **Verifier counts:** `install-ark.sh --only 90-verify` printed **81** `✓` on 3 Nov 2026; quote the command, not gitignored logs.
 

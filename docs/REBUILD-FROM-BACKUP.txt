@@ -79,7 +79,8 @@ DELIBERATELY NOT IN HERE
   bash scripts/make-firstrun.sh
 
   # 1c. flash — raises a Touch ID/password dialog, and refuses to write
-  #     anything that is not an external 100-270 GB card (rule 2)
+  #     anything that is not an external card in a supported capacity class
+  #     (128 / 256 / 512 GB — AGENTS.md §2, docs/CARD-MIGRATION.md)
   bash scripts/01-flash.sh
 
   # 1d. card into the Pi, power on, wait for it to appear (3-5 min)

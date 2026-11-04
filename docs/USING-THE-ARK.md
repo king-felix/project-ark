@@ -700,7 +700,8 @@ tail -f /srv/ark/logs/zim-download.log
 
 **Rules it follows without being asked:**
 
-- It never fills the card: **12 GiB stays free**, always. Anything that would breach that is
+- It never fills the card: **7 % of the filesystem (or 2 GiB) stays free**, always — about 16 GiB
+  on a 256 GB card and about 33 GiB on a 512 GB one. Anything that would breach that is
   skipped, with a line in the log saying why.
 - It compares the file on disk against the catalogue, so a half-finished download is re-fetched,
   not counted as installed.
@@ -709,7 +710,8 @@ tail -f /srv/ark/logs/zim-download.log
 - One downloader at a time (a lock file), so two runs cannot corrupt each other.
 - Safe to unplug: the downloader continues where it stopped.
 - `full` also *lists* Wikipedia with photos (118.7 GiB). It needs about 131 GiB free, so the
-  reserve rule skips it and says so in the log — on a 256 GB card it can only live there alone.
+  reserve rule skips it and says so in the log — on a 256 GB card it can only live there alone;
+  on a 512 GB card it fits beside the rest of `core`.
 
 
 **How much is left?** `http://ark.lan/api/status` → `downloads`. The numbers there are measured
@@ -790,7 +792,7 @@ Re-provisioning is idempotent: re-running any phase repairs it rather than dupli
 | The hotspot is up but the home Wi-Fi is fine | it comes back on its own once nobody is using the hotspot | or `sudo ark-mode auto` to go back at once |
 | The hotspot never closes even though nobody is connected | the box could not read the station list, so it assumes somebody is reading | `sudo ark-mode status`, then `sudo ark-mode auto`; check `journalctl -u ark-net-watch` |
 | Cannot reach it from a phone at all | hotspot not up | `sudo ark-mode hotspot`, then join `The-Ark-Offline` |
-| Out of space | something large added by hand | **What is working** shows which folder holds what; `sudo du -sh /srv/ark/*` for the detail; the downloader keeps 12 GiB free on its own |
+| Out of space | something large added by hand | **What is working** shows which folder holds what; `sudo du -sh /srv/ark/*` for the detail; `ark-card-report` shows the card and what is kept back; the downloader keeps 7 % free on its own |
 | Forgot the address | — | `ark.lan`, `ark.local`, `10.42.0.1` — all the same box |
 | After a power cut the times look wrong (“3 hours ago” about something made yesterday) | the Pi has no clock battery, so it woke up in the past | nothing — the box sets the clock from the newest file on the card before any page opens. If it is still wrong, `sudo ark-self-heal --dry-run` says what it thinks |
 | A page mentions a repair, or a file was “set aside” | the box found a half-written file after a cut and kept it rather than using it | nothing; `cat /srv/ark/logs/self-heal.log` reads like a sentence. A *repair* is not a fault — only the line under `problems` needs a person |

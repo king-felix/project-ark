@@ -6605,3 +6605,167 @@ phone. Those are `docs/HUMAN-TEST-LIST.md` §27.
 re-run `20-storage,60-portal,65-admin`, then `sudo systemctl restart ark-api
 ark-media-worker`. The pre-deploy bundle is the records' rollback; schema 8 only
 adds columns, so an older build reads the table unchanged.
+
+---
+
+## 55. A bigger card — capacity classes, a second look, and a report that only reads
+
+### 55.1 What was wrong
+
+Five separate things, and only the first was the one the owner asked about.
+
+1. **The ceiling was a number, not a policy.** `ARK_MAX_BYTES = 270 GB` answered
+   "is this a 128 or 256 GB card?" and nothing else. A 512 GB card was refused by
+   the same rule that refuses a 1 TB backup drive, with the same sentence.
+2. **It failed open.** The checks read `[[ "$internal" == "yes" ]]`,
+   `[[ "$synth" == "Virtual" ]]`, `[[ -z "$size" || ... ]]`. A reader that answered
+   *nothing* — an empty plist, a renamed key, a `diskutil` that exited 1 — produced
+   empty strings, every comparison was false, and the guard printed
+   **"TARGET SD CARD — VERIFIED SAFE"** over a device whose identity it had never
+   read. This is the defect that mattered most and nobody had noticed it.
+3. **A name was treated as a device.** `01-flash.sh` resolved `/dev/diskN`, then
+   ran `osascript` and handed the same string to rpi-imager minutes later. If the
+   reader was reseated, the card swapped, or macOS renumbered the disks in that
+   gap, the write went wherever `disk4` pointed *then*.
+4. **No test existed.** `scripts/lib-disk-guard.sh` had never been run by the
+   suite. Its one previous defect (a `plistlib.load()` on a pipe that blanked every
+   field and refused a valid card) was found by hand.
+5. **Nothing could describe a half-finished migration.** After a clone, the card,
+   the partition and the filesystem are three different sizes and the box had no
+   way to say so.
+
+### 55.2 What was built
+
+**`scripts/lib-disk-guard.sh` rewritten around two ideas.**
+
+*Capacity is a class, and one of several facts.* `ARK_CARD_BANDS` names 128 GB
+(100–150), 256 GB (200–300) and 512 GB (440–580 decimal GB). Outside every band
+the guard refuses and prints the classes it would have accepted. Adding a class
+is an edit to that array *and* to the tests — never a wider ceiling.
+
+*Every fact is checked independently and all of them fail closed.* `Internal`
+must be exactly `no`, `WholeDisk` exactly `yes`, `Ejectable` exactly `yes` and
+**`RemovableMedia` exactly `yes`**, `VirtualOrPhysical` `Physical` or `Unknown`
+(never `Virtual`), `TotalSize` a number inside a band. A key the plist did not contain is a sentinel,
+not an empty string, and is a refusal. An unreadable plist is a refusal.
+
+Ground truth was taken from this Mac before the rule was written: `diskutil info
+-plist` reports **`WholeDisk`** (not `Whole`), **`Unknown`** for the internal
+Apple SSD's `VirtualOrPhysical`, and **`Virtual`** for the synthesized APFS
+container. Requiring `Physical` would have refused a real card on a reader that
+answers `Unknown`; denying `Virtual` is the honest signal.
+
+**A device name is not a device.** `ark_card_identity` records `dev`, exact
+`size` and any UUID the reader reports as one whitespace-free token.
+`ark_revalidate_sd_card` re-runs the *whole* guard and compares the token. It is
+called in the process that writes: inside the generated helper in `01-flash.sh`,
+immediately before rpi-imager gets the device, and in `fix-pi-shell.sh`
+immediately before its first `cp`.
+
+**`scripts/clone-card.sh`** — card-to-card copy that keeps the original. Two
+cards, both passing the full guard, in **different** capacity classes (capacity
+is the only fact that distinguishes them, and the guard will not guess between
+two equal cards). Refuses without a TTY, makes the human type the destination
+name, revalidates both cards inside the privileged helper, never writes the
+source, and compares the first and last 8 MiB afterwards.
+
+**`pi/bin/ark-card-report`** — read-only, no root, installed by `20-storage`.
+Separates the physical card, the partition, the filesystem, `f_bavail` free
+space, the reserve (asked from `ark_space`, not re-derived) and usable space, and
+names the two states a migration can be stuck in. Exit 0 whole card, 4 not
+expanded, 5 not measured. It prints the expansion procedure and never runs it.
+
+**`docs/CARD-MIGRATION.md`** — both paths end to end, what a clone keeps that a
+fresh install cannot (the certificate fingerprint above all), the expansion, and
+the five numbers.
+
+### 55.2b Three defects an independent review found, and what each cost
+
+The guard was reviewed against the question "can any path write a device that is
+not the intended card". Three answers, all real, all fixed here:
+
+1. **`Ejectable` was standing in for "removable media" (critical).** The rule was
+   `Ejectable=yes OR RemovableMedia=yes`. A portable USB SSD — the disk somebody
+   keeps a backup on — reports `Internal=no`, `WholeDisk=yes`,
+   `VirtualOrPhysical=Physical`, `RemovableMedia=no` and **`Ejectable=yes`**,
+   because ejecting is how the Finder removes it. The old rule therefore described
+   every external disk on the desk. With the 256 GB class that was already a
+   latent hazard; adding 440–580 GB put the most common Mac backup drive
+   squarely inside it, so a forgotten card plus a plugged-in backup SSD meant a
+   "VERIFIED SAFE" banner and a flashed backup. `RemovableMedia=yes` is now
+   required on its own, and the refusal names why. The test that pinned the old
+   behaviour (`test_ejectable_alone_is_enough`) is inverted, with a 256 GB and a
+   512 GB USB-SSD case and the cloning variant (card + backup drive as a "pair").
+2. **A refusal could report success (high).** `ark_guard_or_exit` did
+   `dev=$(ark_assert_sd_card); echo "$dev"` — `ark_die`'s `exit` ends only the
+   command-substitution subshell, so the function carried on and returned **0
+   with an empty string.** Measured: `if ark_guard_or_exit; then` printed a pass
+   with no card attached, and `bash scripts/lib-disk-guard.sh` — the command
+   `docs/CARD-MIGRATION.md` tells a human to run — exited **0** after printing
+   "ARK ABORT". Both now exit non-zero explicitly, with a test for each.
+3. **The copy's tail comparison missed the last bytes (medium).** The skip was
+   `(total - head) / 1 MiB`, which truncates the remainder: on a 256 GB card the
+   final 672,128 bytes were never compared — exactly the bytes a silently short
+   write loses. Now `tail -c 8388608` from the real end of the device.
+
+A fourth, found while fixing the third and caught by a new test rather than by
+reading: the comment explaining the tail check contained `` `tail -c` `` in
+backticks, and the clone helper is built with an **unquoted** heredoc — so the
+backticks were a live command substitution that ran `tail -c` with no argument
+while the script was being *generated*. Harmless here, and exactly the shape of
+bug that is not harmless. `test_the_generated_helper_is_valid_bash_and_expands_nothing_early`
+now generates both helpers from the real scripts and asserts that generation
+produced no stderr, that the helper's own `$VARS` survived, and that the result
+passes `bash -n`.
+
+Also corrected, because it was an overclaim rather than a defect: the docs said a
+same-size card swap "is caught by the UUID". Measured on this Mac, a whole disk
+publishes **none** of `DiskUUID`, `MediaUUID`, `VolumeUUID`. The re-check catches
+a renumbering, a size change and a UUID change *when the reader publishes one*;
+it cannot separate two identical cards, and the documentation now says so and
+points at the typed confirmation and the untouched original instead.
+
+### 55.3 Tests
+
+`tests/test_disk_guard.py` and `tests/test_card_report.py` drive the real scripts
+under **macOS `/bin/bash` 3.2.57** — the hardest shell these will ever run on.
+The stand-in `diskutil` emits genuine plist bytes from a JSON world, so the
+guard's own Python parsing is exercised, not bypassed.
+
+Covered: 128/256/512 accepted; 64 GB, 160 GB, 350 GB, 640 GB, 1 TB, 2 TB refused
+with the classes named; the band edges as a pure function; internal, synthesized,
+partition, fixed, forbidden-by-name (disk0/disk1) and uninterpretable
+`VirtualOrPhysical`; every required key missing one at a time; malformed and
+numeric-but-absurd sizes; an unreadable plist; zero and two candidates;
+identity capture with and without a UUID; revalidation after a size swap, a
+same-size UUID swap, a device that stopped being external, a fact that turned
+contradictory, and a malformed token; the two-card pair in both orders, refused
+when equal and when not two; the clone tool's refusal without a TTY and its dry
+run; and the ordering that makes the call sites meaningful. The report is tested
+for the unexpanded-clone verdict, each layer measured from a different source,
+the None rule, the one reserve policy, and the absence of any write path.
+
+**Suite: 1015 passed, 2 skipped** (`python -m pytest -o addopts='--strict-markers' -q`,
+3m55s on the Mac, throwaway databases) — 86 new tests over the previous 929. The two
+skips are the QR cross-checks that need `qrcode`/`opencv` on the machine, as before.
+
+### 55.4 What is not proved
+
+**No physical card.** No 512 GB card has been inserted, cloned, expanded or
+booted; the `diskutil` fixtures are realistic but synthetic; `clone-card.sh` has
+never copied a byte on hardware; `ark-card-report` has only read a disposable
+sysfs tree. `docs/HUMAN-TEST-LIST.md` §28 is the walk-through that turns these
+into facts, and `AGENTS.md` §8.6 records the gap so no later session describes
+it as built.
+
+### 55.5 Not deployed
+
+Nothing was deployed to the live box. `ark-card-report` is the only runtime piece
+here, it is useful only *after* a migration, and the migration has not happened —
+adding a file to a working Pi because a card was ordered is exactly what the
+brief said not to do. It reaches the new card by a fresh install, by
+`03-provision`, or by the one command below once the owner wants it:
+
+```bash
+sudo bash /srv/ark/src/install-ark.sh --only 20-storage
+```

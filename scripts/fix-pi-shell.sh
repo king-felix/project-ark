@@ -20,6 +20,9 @@ echo
 ark_show_disk_list >&2
 SD_DEV=$(ark_assert_sd_card)
 PLAIN="/dev/$SD_DEV"
+# Record who this card is now; prove it again immediately before the first
+# byte is written (below), because writing to the boot partition is a write.
+SD_ID=$(ark_card_identity "$SD_DEV") || ark_die "could not record the card's identity"
 
 # ---- locate the FAT32 boot partition ---------------------------------------
 BOOT_PART=$(diskutil list "$PLAIN" 2>/dev/null \
@@ -59,6 +62,10 @@ else
 fi
 
 # ---- drop the repair script ------------------------------------------------
+# The last look before the first write. A device name resolved a moment ago is
+# not the device: this re-runs every check and compares name, size and UUID.
+# It exits the script itself on a refusal, with the reason it found.
+ark_revalidate_sd_card "$SD_ID" >/dev/null
 cp -f "$PIFIX" "$BOOTDIR/pifix.sh"
 chmod 755 "$BOOTDIR/pifix.sh" 2>/dev/null || true
 # FAT32 cannot store CRLF-free-ness: force LF explicitly

@@ -94,6 +94,13 @@ fi
 ark_copy "$ARK_SRC/bin/ark-space" /usr/local/sbin/ark-space 755 root:root
 ark_ok "storage policy helper installed: /usr/local/sbin/ark-space"
 
+# ---- the read-only card report --------------------------------------------
+# After a card is replaced this is the one command that separates the physical
+# card's size from the partition's, the filesystem's, the free space and the
+# reserve above (docs/CARD-MIGRATION.md).  It writes nothing and needs no root.
+ark_copy "$ARK_SRC/bin/ark-card-report" /usr/local/sbin/ark-card-report 755 root:root
+ark_ok "card report installed: /usr/local/sbin/ark-card-report (read-only)"
+
 # ---- current network mode --------------------------------------------------
 if [[ ! -f "$ARK_ETC/mode" ]]; then
   printf 'home\n' > "$ARK_ETC/mode"

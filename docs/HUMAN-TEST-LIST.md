@@ -1331,3 +1331,96 @@ real disconnect (the tests use a socket).
 that a full card never takes away the action that makes room.
 **If it fails:** keep the card as it is and send the exact sentences plus
 `ark-space --status`. Do not delete the live box's backups to make space.
+
+---
+
+### 28. The bigger card (a 512 GB card and the working one, 2–3 hours)
+
+Everything in this section is code that has never seen a physical 512 GB card.
+The guard is proved against mocked `diskutil` output, `clone-card.sh` has never
+run on hardware, and `ark-card-report` has only read a disposable sysfs tree.
+This is the walk-through that turns those into facts.
+
+**Never do this on the only card you have.** Keep the working card exactly as it
+is until §28.5 has passed. `docs/CARD-MIGRATION.md` is the reference; this is the
+test script.
+
+#### 28.1 Before anything is plugged in
+
+1. On the box: `sudo ark-tls-cert --show` — write the fingerprint down. This is
+   the identity the clone must preserve.
+2. On the box: `curl -s http://ark.local/api/ready` — expect 200 and
+   `"blocking": []`.
+3. Take a backup from the owner's page and copy it off the card.
+
+#### 28.2 The guard, with a card present
+
+1. Plug **only** the 512 GB card (a blank one is fine) into the Mac.
+2. `bash scripts/lib-disk-guard.sh` — the banner must say **512 GB card**, the
+   size must be between 440 and 580 GB, and **`Removable   : yes`** and
+   **`Ejectable   : yes`** must both be printed. If a real card reader reports
+   `RemovableMedia = no`, the guard will refuse it — write that down, it is the
+   one fact this rule trades on.
+3. With **no** card in the reader, the same command must print "ARK ABORT" and
+   **exit non-zero** (`echo $?`). It is a gate as well as a look.
+4. `bash scripts/01-flash.sh` **as far as the identity line only** (Ctrl-C at the
+   Touch ID prompt writes nothing). It must print
+   `identity: dev=diskN size=… uuid=…`.
+5. Now unplug the reader while that prompt is up (or leave a second external
+   disk plugged in) and re-run: the guard must refuse, not choose.
+
+**What this proves:** the guard sees a real 512 GB card as a supported class, and
+refuses ambiguity on real metadata rather than mocked metadata.
+**What it does not prove:** that a card is written correctly — that is §28.3
+onwards, for a clone, or `01-flash.sh` in full on a card you are willing to erase.
+
+#### 28.3 Clone onto the new card
+
+1. Plug **both** cards into the Mac, nothing else external.
+2. `bash scripts/clone-card.sh --dry-run` — both devices named, the larger one
+   marked destination, the source marked *never written*.
+3. `bash scripts/clone-card.sh` — type the destination name at the prompt.
+4. The copy ends with `SAMPLE OK` and `Copy made. The original card is unchanged`.
+5. **Put the original card in a drawer.** Do not boot it and do not erase it.
+
+**What this proves:** two-card resolution on real hardware, the typed
+confirmation, the pre-write revalidation, and a copy that matches at both ends.
+**What it does not prove:** every byte in between; §28.5 is what proves the
+filesystem.
+
+#### 28.4 First boot of the new card, then expand
+
+1. New card into the Pi, power on. `http://ark.local/api/ready` must answer 200.
+2. `sudo ark-tls-cert --show` — **the same fingerprint as §28.1.1**. If it
+   differs, stop: the clone did not preserve the identity and every device will
+   have to be taught again.
+3. `ark-card-report` — expect exit 4 and
+   *"the card is bigger than its main partition"*, with the card at ~512 GB and
+   the partition at ~256 GB.
+4. Expand, deliberately:
+
+   ```bash
+   sudo growpart /dev/mmcblk0 2
+   sudo resize2fs /dev/mmcblk0p2
+   ```
+
+5. `ark-card-report` again — expect exit 0, *"the whole card is in use"*, the
+   filesystem at ~476 GiB, and **kept back ~33 GiB** (7 % of 476 GiB, not the
+   old 16 GiB).
+6. On a phone that already trusted the certificate: open the portal. It must
+   load with **no certificate warning**.
+
+**What this proves:** the identity survived, the sizes are what they say they
+are, and the reserve followed the bigger filesystem.
+**What it does not prove:** a fresh install on a 512 GB card — that path expands
+itself in phase 10 and needs its own run.
+
+#### 28.5 Write down
+
+- the two fingerprints from 28.1.1 and 28.4.2 (must be equal),
+- the four sizes from `ark-card-report` before and after the expansion,
+- whether the phone warned about the certificate,
+- anything the box said that this section did not predict.
+
+**If it fails:** stop, put the original card back, and record exactly which step
+disagreed. The original card is the rollback; do not spend it.

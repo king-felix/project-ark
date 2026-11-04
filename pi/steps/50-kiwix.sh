@@ -36,8 +36,10 @@ ark_copy "$ARK_SRC/kiwix/catalog.tsv" "$CATALOG" 644 root:root
 #         `mini` (or the owner's own trim of the catalogue).  A 256 GB card holds
 #         it with ~90 GiB to spare.
 # mini  = essentials only, ~9 GiB (slow links, small cards)
-# full  = core + photo Wikipedia + the electronics/technology extras, ~235 GiB
-#         (256 GB card, and nothing else on it)
+# full  = core + photo Wikipedia + the electronics/technology extras, ~235 GiB.
+#         On a 256 GB card it can only live there alone; a 512 GB card holds it
+#         *and* the books, films and games, with roughly 200 GiB to spare after
+#         the 7 % reserve (docs/CARD-MIGRATION.md).
 if [[ ! -s "$PROFILE_FILE" ]]; then
   printf '%s\n' "${ARK_ZIM_PROFILE:-core}" | ark_write "$PROFILE_FILE" 644 root:root
 fi
