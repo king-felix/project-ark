@@ -65,6 +65,11 @@ except ImportError as _missing:                # pragma: no cover - deploy fault
     ark_maintenance = None  # type: ignore[assignment]
     _MAINTENANCE_PROBLEM = str(_missing)
 
+try:                                          # optional during a deploy catch-up
+    import ark_db_replace
+except ImportError:                            # pragma: no cover - deploy fault
+    ark_db_replace = None  # type: ignore[assignment]
+
 FORMAT = 1
 CHUNK = 1024 * 1024
 STAMP = re.compile(r"^ark-backup-\d{8}-\d{6}(-\d+)?$")
@@ -186,6 +191,10 @@ def copy_database(source: Path, target: Path) -> None:
             "95-backup before trusting a backup" % _MAINTENANCE_PROBLEM)
     ticket = ark_maintenance.admit(source)
     try:
+        if ark_db_replace is not None and ark_db_replace.pending(source):
+            raise ark_maintenance.Busy(
+                "The box is finishing putting its records back. Try again in a "
+                "moment.")
         target.parent.mkdir(parents=True, exist_ok=True)
         tmp = target.with_name(target.name + ".tmp")
         source_conn = sqlite3.connect(f"file:{source}?mode=ro", uri=True, timeout=10)

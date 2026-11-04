@@ -28,6 +28,8 @@ from pathlib import Path
 
 import pytest
 
+import ark_db_replace
+
 REPO = Path(__file__).resolve().parents[1]
 BACKUP = REPO / "pi" / "bin" / "ark-backup"
 RESTORE = REPO / "pi" / "bin" / "ark-restore"
@@ -573,14 +575,13 @@ def test_a_backup_refuses_while_the_records_are_being_replaced(tmp_path):
     assert not dest.exists() or not bundles(dest), "a refused backup left a bundle behind"
 
 
-def test_a_database_put_back_beside_a_journal_that_will_not_go_is_unsafe_to_start(tmp_path):
-    """The one refusal that happens *after* a write says the box must stay dark.
+def test_put_database_rolls_back_a_failed_install_and_only_calls_an_unresolved_one_unsafe(tmp_path, monkeypatch):
+    """A replacement that fails after the rename is put back, not called "nothing changed".
 
-    ``put_database`` drains the old journal before and after the rename.  A failure
-    before the rename leaves the box exactly as it was (safe to start); a failure
-    after it leaves the new file beside rows the old one committed (not safe).  The
-    two outcomes must not be collapsed: starting a service on the second replays the
-    old rows into the new file.
+    The shared sequence stages and checks the candidate, preserves the original
+    main file and journal, moves the journal aside, installs by one rename, then
+    verifies.  A failure after the rename therefore has a coherent original to
+    restore; only a failure of that restoration leaves the box unsafe to start.
     """
     import importlib.machinery
     import importlib.util
@@ -590,35 +591,83 @@ def test_a_database_put_back_beside_a_journal_that_will_not_go_is_unsafe_to_star
     tool = importlib.util.module_from_spec(spec)
     loader.exec_module(tool)
 
+    def database(path, body):
+        conn = sqlite3.connect(str(path))
+        conn.execute("CREATE TABLE notes (body TEXT NOT NULL)")
+        conn.execute("INSERT INTO notes (body) VALUES (?)", (body,))
+        conn.commit()
+        conn.close()
+
+    def one(path):
+        conn = sqlite3.connect(str(path))
+        try:
+            return conn.execute("SELECT body FROM notes").fetchone()[0]
+        finally:
+            conn.close()
+
     source = tmp_path / "new.db"
-    source.write_bytes(b"a whole new database")
     target = tmp_path / "ark.db"
-    target.write_bytes(b"the old database")
+    database(source, "new")
+    database(target, "old")
 
-    calls = {"n": 0}
-    real = tool.drain_sidecars
+    def boom(*_args, **_kwargs):
+        raise OSError("injected replacement failure")
 
-    def fails_after_the_copy(path):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            return real(path)
-        raise OSError("the journal will not go")
+    replacement = tool.ark_db_replace
+    real_move = replacement._move_sidecars
+    real_verify = replacement._verify_installed
+    real_rollback = replacement._rollback
 
-    tool.drain_sidecars = fails_after_the_copy
-    state = {}
-    with pytest.raises(tool.RestoreRefused) as caught:
-        tool.put_database(source, target, False, state)
-    assert caught.value.safe_to_start is False
-    assert state == {"replaced": True, "safe": False}
-    assert target.read_bytes() == b"a whole new database"
-
-    tool.drain_sidecars = fails_after_the_copy
-    calls["n"] = -1                       # the next call is the *first* drain
+    # A failure before the install leaves the original untouched and safe.
+    monkeypatch.setattr(replacement, "_move_sidecars", boom)
     state = {}
     with pytest.raises(tool.RestoreRefused) as caught:
         tool.put_database(source, target, False, state)
     assert caught.value.safe_to_start is True
-    assert state == {"replaced": False, "safe": False}
+    assert one(target) == "old"
+
+    # A failure after the install is rolled back to the coherent original.
+    monkeypatch.setattr(replacement, "_move_sidecars", real_move)
+    monkeypatch.setattr(replacement, "_verify_installed", boom)
+    state = {}
+    with pytest.raises(tool.RestoreRefused) as caught:
+        tool.put_database(source, target, False, state)
+    assert caught.value.safe_to_start is True
+    assert one(target) == "old"
+    assert state["safe"] is True
+
+    # Only when the original cannot be put back is the box unsafe to start.
+    monkeypatch.setattr(replacement, "_verify_installed", boom)
+    monkeypatch.setattr(replacement, "_rollback", boom)
+    state = {}
+    with pytest.raises(tool.RestoreRefused) as caught:
+        tool.put_database(source, target, False, state)
+    assert caught.value.safe_to_start is False
+    assert state["safe"] is False
+    assert replacement.pending(target), "the recovery marker keeps services out"
+
+    monkeypatch.setattr(replacement, "_verify_installed", real_verify)
+    monkeypatch.setattr(replacement, "_rollback", real_rollback)
+    recovered = replacement.recover_pending(target)
+    assert recovered.pending is False
+    assert one(target) in ("old", "new")
+
+
+def test_a_backup_refuses_while_a_replacement_is_pending(tmp_path):
+    """A backup is a reader: it must not copy a file that is mid-replacement."""
+    root, dest = tmp_path / "ark", tmp_path / "backups"
+    make_box(root).close()
+    active = ark_db_replace.active_dir(root / "api/data/ark.db")
+    active.mkdir(parents=True)
+    ark_db_replace._set_block(active)
+    try:
+        done = backup(root, dest)
+    finally:
+        shutil.rmtree(str(active), ignore_errors=True)
+
+    assert done.returncode == 1
+    assert "finishing putting its records back" in (done.stdout + done.stderr)
+    assert not dest.exists() or not bundles(dest), "a refused backup left a bundle"
 
 
 def test_a_box_that_already_has_records_is_not_overwritten_without_force(tmp_path):

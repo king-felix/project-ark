@@ -30,6 +30,14 @@ from pathlib import Path
 
 import ark_maintenance
 
+try:
+    # Optional on purpose: a box caught mid-deploy may briefly have this file
+    # missing.  The gate still protects a known replacement; this extra marker
+    # protects the window after a crash, when the gate is already free.
+    import ark_db_replace
+except ImportError:  # pragma: no cover - a deployment catch-up, not a normal box
+    ark_db_replace = None  # type: ignore[assignment]
+
 ARK_ROOT = Path(os.environ.get("ARK_ROOT", "/srv/ark"))
 DB_PATH = Path(os.environ.get("ARK_DB", str(ARK_ROOT / "api" / "data" / "ark.db")))
 MARKER_PATH = Path(os.environ.get("ARK_MARKER", str(DB_PATH.parent / "ark.installed")))
@@ -503,6 +511,10 @@ def connect() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     ticket = ark_maintenance.admit(DB_PATH)
     try:
+        if ark_db_replace is not None and ark_db_replace.pending(DB_PATH):
+            raise ark_maintenance.Busy(
+                "The box is finishing putting its records back. Try again in a "
+                "moment.")
         conn = sqlite3.connect(str(DB_PATH), timeout=15, isolation_level=None,
                                factory=_GatedConnection)
     except BaseException:

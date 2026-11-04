@@ -67,6 +67,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 import ark_atomic
+import ark_db_replace
 import ark_maintenance as maintenance
 
 try:  # every machine that runs this is Linux or macOS; Windows is not a box
@@ -688,92 +689,36 @@ def lock_path(target: Any) -> Path:
 def _repair_lock(target: Path, *, wait: Optional[float] = None) -> Iterator[bool]:
     """Hold the repair turnstile for ``target`` for the length of the block.
 
-    Two passes can decide a file is damaged at the same moment — a boot pass and the
-    daily one are minutes apart, but a person running it by hand while the timer fires
-    is not — and two repairs of one database swapping in two different copies is how a
-    good file becomes a mixed one.  ``flock`` on a file beside it makes the decision and
-    the replacement one step.
-
-    Answers ``True`` while held, ``False`` if it could not be taken in ``LOCK_WAIT``
-    seconds or the folder will not let the lock file be created.  The caller then
-    changes **nothing**: a repair that cannot be finished is worse than one that never
-    started.  The kernel releases the lock if this process dies, which is the one thing
-    a lock file written by hand cannot promise.
-
-    This is only half the protocol: a repair must also take the **gate**
-    (``ark_maintenance.maintain``) before it changes a database, so every ordinary
-    connection — including one somebody kept open — has drained first.
+    Two passes can decide a file is damaged at the same moment, and two repairs of
+    one database swapping in two different copies is how a good file becomes a
+    mixed one.  ``flock`` on a file beside it makes the decision and the
+    replacement one step.  This is the repair half of ``ark_maintenance``; the
+    gate is taken separately by ``heal_sqlite`` before anything is changed.
     """
     with maintenance.repairing(target, wait=wait) as turn:
         yield turn.held
 
 
-def _drain_journal(target: Path) -> bool:
-    """Take the *old* database's ``-wal`` and ``-shm`` away from beside ``target``.
+def _copy_over_status(source: Path, target: Path,
+                     state: Optional[Dict[str, Any]] = None) -> str:
+    """Put a checked copy back through the one crash-safe replacement path.
 
-    A database file is not the whole database.  In WAL mode the committed pages can
-    live in ``<name>-wal`` beside it, and those frames belong to the database that was
-    there, not to the copy about to be put in its place: SQLite replays a journal it
-    finds into whatever main file it is opened with, so a good copy put back beside the
-    old journal is corrupted again by the first process that opens it.  Measured on a
-    card-shaped case, and held by a test: a 4-row file with 47 more rows living only in
-    its journal reads as **51 rows** the moment that journal is put beside a 4-row copy.
-
-    The ``-wal`` is **mandatory**: if it is there and will not go, the caller changes
-    nothing at all.  The ``-shm`` is only that journal's index — a leftover one is
-    harmless (measured: a junk ``-shm`` with no ``-wal`` still answers ``quick_check
-    ok``), so a card that refuses it is not a reason to abandon an otherwise good
-    repair.
+    Answers ``ok`` (the copy is in place and verified), ``refused`` (the original
+    was left coherent — either untouched or put back) or ``unsafe`` (the box must
+    stay stopped because the original could not be put back).  ``ark_db_replace``
+    owns the sequence: stage and check the copy, preserve the original main file
+    and journal as one set, move the journal aside, install by one rename, verify,
+    and record every step so the next boot can finish or undo an interruption.
     """
-    wal = _sidecar(target, "-wal")
-    try:
-        wal.unlink()
-    except FileNotFoundError:
-        pass
-    except OSError:                           # pragma: no cover - read-only folder
-        return False
-    try:
-        _sidecar(target, "-shm").unlink()
-    except FileNotFoundError:
-        pass
-    except OSError:                           # best effort, see the docstring
-        pass
-    return True
-
-
-def _copy_over_status(source: Path, target: Path, state: Optional[Dict[str, bool]] = None) -> str:
-    """Put a checked copy back, and say whether the box may now be started.
-
-    Answers ``ok`` (the copy is in place and no old journal survives), ``refused``
-    (nothing was changed) or ``unsafe`` (the copy is in place but a journal that
-    belongs to the old file could not be taken away — **do not start anything**).
-    The three are different because the caller's next action is different, and
-    collapsing ``unsafe`` into a plain failure is how a repair starts a service on
-    top of a journal full of rows the new file never held.
-
-    ``state`` records the two moments a caller cannot otherwise see: ``replaced``
-    once the new file is in place, and ``safe`` once no journal of the old one
-    survives.  An unexpected interruption between them must leave the services
-    stopped, so the caller asks this record rather than assuming success.
-    """
-    track = state if state is not None else {}
-    track.setdefault("replaced", False)
-    track.setdefault("safe", False)
-    try:
-        data = source.read_bytes()
-    except OSError:
-        return "refused"
-    if not _drain_journal(target):
-        return "refused"
-    try:
-        ark_atomic.save_bytes(target, data, keep_backup=False)
-    except OSError:                           # pragma: no cover - card full
-        return "refused"
-    track["replaced"] = True
-    if not _drain_journal(target):
+    result = ark_db_replace.replace(source, target, reason="self-heal", state=state)
+    if state is not None:
+        state["said"] = result.said
+        state["evidence"] = str(result.evidence or "")
+    if result.status == "ok":
+        return "ok"
+    if result.status in ("unsafe", "blocked"):
         return "unsafe"
-    track["safe"] = True
-    return "ok"
+    return "refused"
 
 
 def _copy_over(source: Path, target: Path) -> bool:
@@ -869,6 +814,11 @@ def heal_sqlite(path: Any, *, dry_run: bool = False,
     target = Path(path)
     if not target.is_file():
         return "absent", ""
+    if ark_db_replace.pending(target):
+        return ("blocked",
+                "%s is in the middle of being put back; its recovery record at %s "
+                "has to be resolved before any service opens it.  This pass changed "
+                "nothing." % (target.name, ark_db_replace.active_dir(target)))
     state, answer = quick_check_state(target)
     if state == "absent":
         return "absent", ""
@@ -930,8 +880,8 @@ def heal_sqlite(path: Any, *, dry_run: bool = False,
                 "being looked at, so nothing was changed — run the pass again when the "
                 "box is quiet." % (target.name, answer))
     # A copy that reads but could not be put back is a different sentence from "there is
-    # no copy": the older file is sitting right there, and the reason it stayed is
-    # worth saying (something still holds the old journal, or the card is full).
+    # no copy": the reason it stayed is worth saying, and the shared replacement path
+    # also says whether it had to put the original back after changing a file.
     #
     # The turnstile first, then the gate.  Two passes can find the same file damaged at
     # the same moment — a person running it by hand while the timer fires, the boot pass
@@ -990,7 +940,7 @@ def heal_sqlite(path: Any, *, dry_run: bool = False,
                             "nothing was changed — stop it by hand and run the pass "
                             "again." % (target.name, answer_again, owner_unit))
             safe_to_start = True
-            track: Dict[str, bool] = {"replaced": False, "safe": False}
+            track: Dict[str, Any] = {"replaced": False, "safe": False}
             refused = ""
             try:
                 for candidate in (Path(str(target) + ".good.bak"),
@@ -1007,19 +957,20 @@ def heal_sqlite(path: Any, *, dry_run: bool = False,
                                 "it was put back." % (target.name, answer_again))
                     if outcome == "unsafe":
                         safe_to_start = False
+                        detail = str(track.get("said") or "").strip()
                         return ("unsafe",
-                                "%s came back unreadable (%s) and its good copy (%s) was "
-                                "put in place, but the old journal could not be taken "
-                                "away — do not start the box until %s-wal is gone: it "
-                                "holds rows that are not in the file."
-                                % (target.name, answer_again, candidate.name, target.name))
+                                "%s came back unreadable (%s); %s"
+                                % (target.name, answer_again,
+                                   detail or "the original could not be put back.  Do "
+                                   "not start the box."))
                     refused = candidate.name
                 if refused:
+                    detail = str(track.get("said") or "").strip()
                     return ("left",
-                            "%s came back unreadable (%s) and its good copy (%s) could "
-                            "not be put back — something still holds the old journal, or "
-                            "the card is full.  %s was left exactly where it is."
-                            % (target.name, answer_again, refused, target.name))
+                            "%s came back unreadable (%s); %s"
+                            % (target.name, answer_again,
+                               detail or "the good copy could not be put back and the "
+                               "original was left where it is."))
                 return ("left",
                         "%s came back unreadable (%s) and there is no good copy of it on "
                         "the card — it was left where it is."
@@ -1192,9 +1143,10 @@ def run(root: Optional[Path] = None, *, dry_run: bool = False,
     """Do the whole repair pass and answer a report a page or a verifier can print.
 
     Order matters, and it is the order a power cut needs: the clock first (every age
-    below is judged by it), then the small files, then the databases, then the
-    catalogue, and the sweeping last — so nothing half-written is judged against a
-    clock that is still wrong.
+    below is judged by it), then **any interrupted database replacement is resolved
+    before a database is checked**, then the small files, then the databases, then
+    the catalogue, and the sweeping last — so nothing half-written is judged against
+    a clock that is still wrong and no service can open a half-swapped file.
     """
     base = Path(root or ark_root())
     when = now() if current is None else float(current)
@@ -1204,6 +1156,7 @@ def run(root: Optional[Path] = None, *, dry_run: bool = False,
         "clock": "",
         "json": [],
         "state": {"state": "absent", "said": ""},
+        "recovery": [],
         "databases": [],
         "catalogues": [],
         "library": {"state": "absent", "said": ""},
@@ -1224,6 +1177,34 @@ def run(root: Optional[Path] = None, *, dry_run: bool = False,
     if not dry_run and current is None:
         stamp = now()
 
+    #  An interrupted replacement must be resolved *before* anything reads or
+    #  repairs the database.  This is the startup half of ``ark_db_replace``: it
+    #  either finishes the install it had verified, puts the coherent original and
+    #  its journal back, or leaves a ``BLOCK`` marker that ``ark_db.connect()``
+    #  refuses to open.  It never guesses that a half-swapped file is safe.
+    interrupted: Dict[Path, Any] = {}
+    for path in sql_targets(base):
+        try:
+            outcome = ark_db_replace.recover_pending(path, dry_run=dry_run)
+        except Exception as exc:              # noqa: BLE001 — one file must not stop the pass
+            outcome = ark_db_replace.Recovery(
+                "blocked", True,
+                "the interrupted replacement of %s could not be checked (%s); "
+                "its evidence is left in place and the box must stay stopped."
+                % (path.name, exc), ark_db_replace.active_dir(path))
+        rel = str(path.relative_to(base))
+        if outcome.status != "none":
+            report["recovery"].append({"file": rel, "status": outcome.status,
+                                       "said": outcome.said})
+            if outcome.status in ("committed", "rolled-back", "resolved",
+                                  "abandoned"):
+                report["healed"] += 1
+            if outcome.status == "blocked" or (
+                    outcome.status == "deferred" and outcome.pending):
+                report["problems"].append(outcome.said)
+        if ark_db_replace.has_active(path):
+            interrupted[path] = outcome
+
     for path in json_targets(base):
         state, said = heal_json(path, dry_run=dry_run)
         if state in ("restored", "quarantined", "would"):
@@ -1243,24 +1224,32 @@ def run(root: Optional[Path] = None, *, dry_run: bool = False,
 
     for path in sql_targets(base):
         rel = str(path.relative_to(base))
+        if path in interrupted:
+            outcome = interrupted[path]
+            report["databases"].append({
+                "file": rel,
+                "state": "blocked" if outcome.pending else "deferred",
+                "said": outcome.said,
+            })
+            continue
         state, said = heal_sqlite(path, dry_run=dry_run, in_use=in_use,
                                   owner_unit=OWNER_UNITS.get(rel, ""),
                                   problems=report["problems"])
         if state in ("restored", "left", "busy", "deferred", "unsafe",
-                     "would", "in use") or said:
+                     "would", "in use", "blocked") or said:
             report["databases"].append({"file": str(path.relative_to(base)),
                                         "state": state, "said": said})
         if state == "restored":
             report["healed"] += 1
-        if state in ("left", "busy", "deferred", "unsafe"):
+        if state in ("left", "busy", "deferred", "unsafe", "blocked"):
             # A copy was put back, so that is a repair, not a problem to look at — its
             # sentence is still printed.  What needs a human is a database that is
             # *still* unreadable (only the owner may replace it), one that is broken
             # while the box is writing to it, one whose repair was **deferred** because
             # another program kept the records open (try again; not damage), or one
-            # whose copy went back beside a journal that would not go (do not start the
-            # box).  ``locked`` is none of these: another repair pass owns that database
-            # this second, and its own receipt says what it found.
+            # whose replacement could not be resolved and left the box blocked (do not
+            # start it).  ``locked`` is none of these: another repair pass owns that
+            # database this second, and its own receipt says what it found.
             report["problems"].append(said)
 
     for path in catalogue_targets(base):
@@ -1304,6 +1293,8 @@ def summary(report: Dict[str, Any]) -> List[str]:
 
     if report.get("clock"):
         add(report["clock"])
+    for item in report.get("recovery") or []:
+        add(item.get("said"))
     for item in report.get("json") or []:
         add(item.get("said"))
     add((report.get("state") or {}).get("said"))

@@ -1054,3 +1054,100 @@ stand-in service manager, and it would need a second card to prove destructively
 **If it fails:** keep the output. The interesting lines are the one naming the
 program that still holds the records, and whether the file's mtime changed. Do not
 "fix" it by deleting a `.maintenance.lock` file — the file is not the lock.
+
+---
+
+## 25. A replacement interrupted at the worst moment (30 minutes, rehearsal root only)
+
+This is the FOR YOU half of the crash-safe replacement that `ark_db_replace` now
+implements. **Do not point it at `/srv/ark/api/data/ark.db`.** Every command uses
+a throwaway database under `/srv/ark/tmp`, on the card but outside the live
+records. The Mac tests kill a subprocess at each recorded boundary; this rehearsal
+uses the real card, the real `pi` account, and a real `SIGKILL`.
+
+1. Build a rehearsal box and put real committed rows in its journal:
+
+```bash
+sudo mkdir -p /srv/ark/tmp/replacement/api/data
+sudo -u pi /srv/ark/venv/bin/python - <<'PY'
+import sqlite3
+db = "/srv/ark/tmp/replacement/api/data/ark.db"
+c = sqlite3.connect(db)
+c.execute("PRAGMA journal_mode=WAL")
+c.execute("CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT)")
+for n in range(4):
+    c.execute("INSERT INTO notes (body) VALUES (?)", ("note %d" % n,))
+c.commit()
+for n in range(47):
+    c.execute("INSERT INTO notes (body) VALUES (?)", ("wal %d" % n,))
+c.commit()
+print("rows while the writer is open:", c.execute("SELECT COUNT(*) FROM notes").fetchone()[0])
+c.close()
+PY
+```
+
+2. Ask the real module to replace it with a checked copy, and have the process
+kill itself **after the old journal has moved** (the risky middle of the sequence):
+
+```bash
+sudo -u pi env PYTHONPATH=/srv/ark/api /srv/ark/venv/bin/python - <<'PY'
+import os, sqlite3
+import ark_db_replace as r
+target = "/srv/ark/tmp/replacement/api/data/ark.db"
+source = "/srv/ark/tmp/replacement/api/data/new.db"
+c = sqlite3.connect(source); c.execute("CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT)")
+c.execute("INSERT INTO notes (body) VALUES ('the new record')"); c.commit(); c.close()
+def hook(point):
+    if point == "sidecars-moved":
+        os._exit(97)
+r.fault_hook = hook
+r.replace(source, target, reason="human rehearsal")
+PY
+echo "exit=$?  (97 is the deliberate kill)"
+ls -la /srv/ark/tmp/replacement/api/data/ark.db*
+```
+
+3. You should see `ark.db` **without** its `-wal`, an `ark.db.recovery/` folder
+holding the original main file and the moved `-wal`, and a `BLOCK` marker. Confirm
+`ark_db` refuses it:
+
+```bash
+sudo -u pi env ARK_ROOT=/srv/ark/tmp/replacement \
+  ARK_DB=/srv/ark/tmp/replacement/api/data/ark.db \
+  /srv/ark/venv/bin/python -c \
+  'import sys; sys.path.insert(0,"/srv/ark/api"); import ark_db; ark_db.connect()' \
+  2>&1 | tail -2
+```
+
+It must say **"finishing putting its records back"**, not return a connection.
+
+4. Run the startup half against the rehearsal box, as the boot pass would:
+
+```bash
+sudo -u pi env PYTHONPATH=/srv/ark/api /srv/ark/venv/bin/python - <<'PY'
+import ark_db_replace as r
+target = "/srv/ark/tmp/replacement/api/data/ark.db"
+print(r.recover_pending(target))
+PY
+sqlite3 /srv/ark/tmp/replacement/api/data/ark.db 'select count(*), min(body), max(body) from notes;'
+```
+
+It must report **rolled-back**, the count must be **51**, and the recovered file
+must be readable. The `ark.db.recovery-…-rolled-back-…` folder must still hold the
+original main file and journal.
+
+5. Do the same again with `"before-install"`, `"after-install"` and
+`"after-verify"` substituted for `"sidecars-moved"` (rebuild the rehearsal DB each
+time). `before-install` must roll back to 51 rows; `after-install` and
+`after-verify` must finish the checked copy and read **1** row; every run must
+leave no `ark.db.recovery/` folder and no `BLOCK` marker.
+
+**What this proves:** the real card's filesystem, the real `pi` account, a real
+process death, and the next startup's decision. It does **not** prove a torn page
+or a card that loses power between `fsync` and the next write — only a physical
+interruption can do that, and it is deliberately not part of this rehearsal.
+
+**If it fails:** keep the whole `replacement/` folder and the command output. Do
+not delete `BLOCK` or `ark.db.recovery/`; they are the evidence. The interesting
+line is the one naming the phase, and whether `ark.db` is the original or the
+candidate. Bring it back to the next session.

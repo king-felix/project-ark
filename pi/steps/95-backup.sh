@@ -59,6 +59,10 @@ done
 # cannot start.
 ark_ensure_dir "$ARK_ROOT/api" 775 "$ARK_PI_USER:$ARK_PI_GROUP"
 ark_copy "$ARK_SRC/api/ark_maintenance.py" "$ARK_ROOT/api/ark_maintenance.py" 644 "$ARK_PI_USER:$ARK_PI_GROUP"
+# The one crash-safe replacement sequence.  Both tools import it, and it must
+# ship beside the protocol because a restore is exactly the operation that needs
+# it; copying only the protocol would leave a restore that cannot start.
+ark_copy "$ARK_SRC/api/ark_db_replace.py" "$ARK_ROOT/api/ark_db_replace.py" 644 "$ARK_PI_USER:$ARK_PI_GROUP"
 ark_ok "installed ark-backup and ark-restore in /usr/local/sbin"
 
 # ---- the page that works when the box does not ------------------------------

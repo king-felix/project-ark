@@ -727,7 +727,12 @@ SQLite's own backup call, never a file copy (the live file is WAL). A restore
 proves every byte first, refuses to overwrite an occupied box without `--force`,
 never replaces a shared file that is already there (and keeps a game save already
 on the box rather than replacing it), and refuses a manifest that
-points outside the box. The offline library, the book shelf, the game files and the map regions
+points outside the box. The database itself is replaced as a **recorded
+sequence**, not one atomic step: the candidate is staged and checked on the card,
+the original main file and its `-wal`/`-shm` are preserved together, the old
+journal is moved aside (never deleted), the new file is installed by one rename,
+and the installed bytes are verified. Every step is durable, so a cut during the
+replacement is either finished or undone before the portal opens again. The offline library, the book shelf, the game files and the map regions
 themselves stay out of a copy on purpose — they are content, fetched, imported or
 built again; named players' saves are state and do travel. A restored card with
 no map packs says so, rather than claiming a region whose bytes are absent.
@@ -773,8 +778,12 @@ is; **half-built uploads and bundles** are swept after 6–12 hours; **a library
 catalogue listing books that are gone** is rebuilt. It never deletes a database,
 never starts a service it did not stop, and takes no copy — a copy is still your
 deliberate act (see above). A damaged database is replaced only under the
-maintenance gate: if a reader still has it open the pass says **deferred** and
-changes nothing, because a busy lock is not damage. Anything repaired counts as repaired; only what is left **for a
+maintenance gate, and the replacement is a recorded sequence: the original main
+file and its `-wal`/`-shm` are preserved, the old journal is moved aside rather
+than deleted, the new file is verified, and a crash is resolved at the next start.
+If a reader still has it open the pass says **deferred** and changes nothing,
+because a busy lock is not damage; if a replacement cannot be resolved it leaves a
+marker that keeps the database closed and says so. Anything repaired counts as repaired; only what is left **for a
 person** exits non-zero, and `90-verify` fails on exactly that and nothing else.
 
 The settings, which is the half that prevents the damage instead of repairing it:

@@ -422,6 +422,8 @@ def test_the_installer_copies_the_protocol_with_every_module_that_imports_it():
     for phase in ("15-resilience.sh", "60-portal.sh", "95-backup.sh"):
         text = (REPO / "pi" / "steps" / phase).read_text(encoding="utf-8")
         assert "ark_maintenance.py" in text, f"{phase} never installs the protocol"
+        assert "ark_db_replace.py" in text, (
+            f"{phase} installs the protocol but not the replacement sequence")
 
 
 # ---------------------------------------------------------------------------

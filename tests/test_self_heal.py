@@ -643,25 +643,38 @@ def test_the_repair_lock_is_never_swept(tmp_path):
     assert lock.exists(), "a lock the sweep could delete is not a lock"
 
 
-def test_only_the_journal_is_mandatory_and_the_index_is_not(tmp_path):
+def test_a_junk_index_is_cleared_but_a_stuck_journal_stops_the_repair(tmp_path):
     """``-wal`` is the rest of the database; ``-shm`` is only that journal's index.
 
-    Measured: a junk ``-shm`` with no ``-wal`` still answers ``quick_check ok``, so an
-    index the card will not give up is not a reason to abandon a whole repair — but an
-    obstruction where the **journal** would be stops it and changes nothing.
+    A junk index is moved out of the way and the repair proceeds — it describes
+    nothing.  An obstruction where the **journal** would be is a different thing:
+    the main file is left exactly as it was and the repair refuses, because a
+    replacement put beside that name could replay rows it never held.
     """
     root = make_box(tmp_path)
     db = root / "api/data/ark.db"
-    make_database(db)
+    make_database(db, rows=4)
+    good = root / "api/data/good.db"
+    shutil.copyfile(str(db), str(good))
     for suffix in ("-wal", "-shm"):
         sidecar = Path(str(db) + suffix)
         if sidecar.exists():
             sidecar.unlink()
 
     Path(str(db) + "-shm").mkdir()
-    assert heal._drain_journal(db) is True, "the index is best effort"
+    assert heal._copy_over(good, db) is True, "the index is not the journal"
+    assert not Path(str(db) + "-shm").exists(), "the junk index left with the old file"
+    assert bodies_in(db) == ["note %d" % n for n in range(4)]
+
+    for suffix in ("-wal", "-shm"):
+        sidecar = Path(str(db) + suffix)
+        if sidecar.exists():
+            sidecar.unlink()
     Path(str(db) + "-wal").mkdir()
-    assert heal._drain_journal(db) is False, "the journal is mandatory"
+    was = db.read_bytes()
+    assert heal._copy_over(good, db) is False, "the journal is mandatory"
+    assert db.read_bytes() == was, "nothing half-done"
+    assert Path(str(db) + "-wal").is_dir(), "nothing was forced through"
 
 
 def test_a_platform_without_flock_still_repairs(tmp_path, monkeypatch):

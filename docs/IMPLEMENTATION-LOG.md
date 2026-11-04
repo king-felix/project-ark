@@ -5924,3 +5924,183 @@ To go back, `sudo tar -C /srv/ark -xzf /srv/ark/tmp/rollback-src-20261103-235238
 re-run `15-resilience`, `60-portal` and `95-backup`, then
 `sudo systemctl restart ark-api ark-media-worker ark-ai`. The pre-deploy bundle is the
 records' rollback.
+
+---
+
+## 52. A replacement that can be interrupted: the journal is preserved, not drained — 3 Nov 2026
+
+### 52.1 The finding, confirmed against the shipped code
+
+The predecessor (§51) made every ordinary connection hold the maintenance gate and
+made repairs take the turnstile first. It did not make the file sequence itself
+crash-safe. `ark_self_heal._copy_over()` did this:
+
+1. `_drain_journal()` — **unlink** `ark.db-wal` and `ark.db-shm`;
+2. `ark_atomic.save_bytes()` — write the candidate over the main file.
+
+An injected write failure at step 2 therefore left the original main file exactly
+where it was, with its committed journal already gone. Reproduced on a disposable
+database: the main file held four rows, the journal held forty-seven more, and a
+failing `save_bytes` left a main file that opened with **no table at all** — every
+row committed after the last checkpoint was lost, while the function answered
+"refused" and the sentence said nothing had changed. `ark-restore.put_database()`
+had the same order (`drain_sidecars()` before the copy, and again after it).
+
+The preceding maintenance work is the prerequisite and is kept: no replacement may
+start without the turnstile and the exclusive gate. This section builds the file
+sequence on top of it.
+
+### 52.2 One implementation: `pi/api/ark_db_replace.py`
+
+`replace(source, target)` is now the only replacement path used by both
+`heal_sqlite()` and `ark-restore.put_database()`. It takes the turnstile and the
+gate **before it reads the original**, then runs a recorded sequence:
+
+| Step | What is written | Why it is safe to interrupt here |
+|---|---|---|
+| `preparing` | recovery folder + `state.json` | target untouched |
+| `staged` | one standalone candidate in `staging/`, `fsync`ed, `quick_check`ed | target untouched; a bad candidate is refused before preservation |
+| `original-preserved` | copy of the original main file, fingerprints of both sidecars | target and journal still in place; a startup sets the attempt aside |
+| `moving-sidecars` + `BLOCK` | marker that keeps `ark_db` out; `-shm` moves, then `-wal` | every intermediate state is readable: main+journal, main+no index, or main alone |
+| `sidecars-moved` | state says the journal is in `original/` | a startup puts the journal back and re-checks the original |
+| `installing` | state, then `os.replace(candidate, target)` | one rename is atomic for that one name; a startup sees which bytes won |
+| `installed` | state | a startup verifies the candidate and rolls forward, or restores the original |
+| `verified` | state, then `BLOCK` is removed | target is the checked copy; services may open it |
+| `committed` | state, then the folder is archived | the evidence is complete |
+
+**It is not one atomic transaction.** The docstrings and the admin page say so.
+`os.replace()` is atomic for one path; the main file and its journal cannot be
+changed together. What makes the sequence safe is the durable record and the
+explicit roll-forward/roll-back decision at the next startup, not a claim that
+several renames happen at once.
+
+The candidate is copied to `staging/input.db` on the **destination** filesystem,
+resolved by SQLite (including any journal it arrived with), and written back out
+through `backup()` as one standalone `candidate.db`. The input copy is then
+removed, so the peak use is bounded and the installed file can never be paired
+with a journal that belonged to the old database. The candidate is checked with
+`quick_check` (via `immutable=1`, so the check itself creates no sidecars), and the
+original main copy is made **before** either sidecar moves. Validation of the
+candidate and preservation of the original are separate steps with separate
+failure outcomes.
+
+The original main file's mode and owner are carried into the staged copy. A
+root-run self-heal must not leave `0640 root:root` records that the `pi` pages
+cannot read; rollback copies and SQLite-created sidecars are adopted the same way.
+
+### 52.3 The startup half
+
+`recover_pending(target)` is called for every SQL target at the start of
+`ark_self_heal.run()`, **before** `quick_check_state()` or any repair. It takes the
+same turnstile and gate and resolves the recorded phase:
+
+| Recorded phase | Decision |
+|---|---|
+| `preparing`, `staged`, `original-preserved` | target untouched; archive the attempt as abandoned (unless the target is already the candidate, in which case finish the commit) |
+| `moving-sidecars`, `sidecars-moved`, `installing` | if the target is the verified candidate with no sidecar, commit; otherwise put the preserved main+journal back and verify it |
+| `installed` | the fingerprint must still be the checked candidate, and `quick_check` must pass; otherwise roll back |
+| `verified`, `committed` | these are already-checked steps: ask SQLite, **not** the old fingerprint (a service may legitimately have written or checkpointed since). Commit/archive if it opens; otherwise roll back |
+| `rolling-back`, `blocked` | retry the rollback; if it still cannot be done, keep `BLOCK` and report blocked. A blocked record with **no saved original** is left where it is rather than run a rollback that would empty the live name |
+| unreadable record | use `state.json.bak`; if both are unreadable, a saved `-wal`/`-shm` proves the journal was moved, so put the original set back; otherwise archive a target that opens cleanly, and block if nothing can be proved |
+
+`ark_db.connect()` now checks a `BLOCK` marker inside the recovery folder before it
+opens the database. The marker is written before the first destructive step and
+removed only after verification or a coherent rollback, so a service that starts
+before the boot repair cannot read a half-swapped file. `ark-self-heal.service` is
+already ordered before `ark-api.service`; the marker is the belt for the case where
+the repair itself was killed. `ark_bundle.copy_database()` checks the same marker,
+so a backup cannot copy a mid-swap file.
+
+A failed replacement is reported honestly:
+
+* before any destructive step: "the records were left exactly as they were";
+* after a change and a successful rollback: "the replacement failed … the original
+  records were put back and are safe to open" (with the evidence path);
+* when the original cannot be put back: **blocked**, `safe=False`, a `BLOCK` marker,
+  and a sentence saying the box must stay stopped. `ark-restore` refuses to resume
+  services in that state.
+
+### 52.4 Evidence and retention
+
+A successful replacement archives the whole recovery folder beside the database as
+`ark.db.recovery-<stamp>-committed-<id>/`. It contains the checked candidate's
+record, the original main file, the original `-wal`/`-shm` (moved, never copied
+over or deleted), and the complete `state.json` history (with `.bak`). A rollback
+archives as `-rolled-back-`; an abandoned attempt as `-abandoned-`; a refused
+attempt before preservation as `-failed-`.
+
+`prune()` keeps the newest **2** committed sets and the newest **2** other sets,
+then removes the oldest non-newest sets while the total exceeds **2 GiB**, and
+again if the retained evidence would push the card past the one `ark_space`
+reserve. It never deletes the newest set (it is the only evidence of the operation
+that just happened), never deletes a pending folder, and keeps an archive whose
+record cannot be read. `docs/ADMIN.md` documents this for the owner. The sweep rules cannot match
+a recovery folder.
+
+Storage admission uses the one policy in `ark_space`: the worst case is
+`2 × candidate + 2 × original + sidecars + 4 MiB`, because the candidate is copied
+twice while it is made standalone and a rollback copies the original back once
+while keeping the evidence. If the usable bytes are below that, the replacement is
+refused **before the recovery folder exists**. There is no second free-space
+constant.
+
+### 52.5 Integration
+
+* `pi/api/ark_db_replace.py` — new; the sequence, the record, recovery, and
+  retention above.
+* `pi/api/ark_self_heal.py` — resolves pending replacements first; `heal_sqlite()`
+  reports `blocked` if one is still live; `_copy_over_status()` is now a thin
+  translation of `ark_db_replace.replace()`.
+* `pi/bin/ark-restore` — `put_database()` calls the shared sequence; `restore()`
+  resolves an earlier attempt before it decides anything; the old
+  `drain_sidecars()` is gone.
+* `pi/api/ark_db.py` — checks the `BLOCK` marker before opening a connection
+  (optional import, so a mid-deploy box without the new module still serves).
+* `pi/bin/ark_bundle.py` — a backup refuses while the marker is present.
+* Phases `15-resilience`, `60-portal` and `95-backup` install the new module.
+* `AGENTS.md`, `README.md`, `docs/ADMIN.md`, `docs/REQUIREMENTS-MATRIX.md`,
+  `docs/HUMAN-TEST-LIST.md` updated in the same change.
+
+### 52.6 Tests
+
+`tests/test_db_replace.py` (29) uses disposable databases with real committed rows
+in a WAL:
+
+* a successful replacement of a 4-row main file plus a 47-row journal leaves one
+  row at the target and proves all 51 rows in the recovery set;
+* a real subprocess is killed at `original-preserved`, `sidecars-moved`,
+  `after-install`, `after-verify` and `committed`; the next `recover_pending()`
+  either abandons, rolls back with all 51 rows, or commits the candidate;
+* a torn `state.json` falls back to `.bak` and still rolls back;
+* a pending marker makes `ark_db.connect()` raise `Busy`;
+* a real second process holding the gate makes `replace()` answer `busy` and leave
+  every byte unchanged;
+* injected failures during staging, `fsync`, sidecar movement, the install rename,
+  post-install verification, and rollback prove untouched / rolled-back / blocked;
+* a candidate that is not a database is refused before `original/` exists;
+* insufficient space and a read-only destination are refused without touching the
+  target;
+* retention keeps the newest sets, never a pending one, and never deletes the
+  newest even over the byte cap; the sweep never matches the evidence.
+
+Updated existing tests: `tests/test_self_heal.py` (the old `-shm`-is-best-effort
+case now proves a junk index is moved aside while a stuck journal refuses),
+`tests/test_backup.py` (the old post-copy drain case now proves rollback and the
+one unresolved outcome), `tests/test_maintenance.py` (all three installer phases
+must ship the new module).
+
+Full suite: **870 collected, 868 passed, 2 skipped** (the three Chromium map tests
+are excluded by the project's usual command; they are unaffected).
+
+### 52.7 What is not proved
+
+* No destructive live restore was performed. The sequence is proved on throwaway
+  databases on the Mac and on scratch databases under `/srv/ark/tmp`; the live
+  records were never replaced.
+* No physical power interruption was performed. Subprocess kills exercise the
+  process-death boundary; they do not exercise a torn page or a card that loses
+  power between `fsync` and the next write.
+* A real phone/reader was not used to watch the blocked state.
+
+`docs/HUMAN-TEST-LIST.md` §25 is the FOR YOU rehearsal for the two remaining
+hardware-only cases.

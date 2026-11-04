@@ -406,11 +406,16 @@ and its own queue — so it is stopped by name. The restore then takes the
 exclusive **maintenance gate**, which waits for every ordinary connection to
 close and holds new ones at the door until the files are in place. A gate that
 cannot be had in the time allowed refuses the restore and says the records were
-busy; that is not a fault, and nothing is changed. Afterwards it starts again
-**only the units that were running**, and only when the outcome left the records
-safe to open: a database put back beside a journal that would not go leaves the
-box dark on purpose, because starting a service would replay the old rows into
-the new file. `--no-service` is for a card mounted in another computer's reader,
+busy; that is not a fault, and nothing is changed. The files themselves are put
+back by `ark_db_replace`, as a **recorded sequence** rather than one atomic step:
+the candidate is staged and checked on the card, the original main file and its
+`-wal`/`-shm` are preserved together, the old journal is moved aside (never
+deleted), the new file is installed by one rename, and the installed bytes are
+verified. Every step is written to a recovery record, so a cut can be finished or
+undone at the next start. Afterwards the restore starts again **only the units
+that were running**, and only when the outcome left the records safe to open. If
+the original could not be put back, the box is left dark on purpose and a marker
+keeps every later connection out until a person resolves it. `--no-service` is for a card mounted in another computer's reader,
 where there is nothing to pause — the gate still applies, so a local program
 holding the records makes the restore refuse. It refuses an occupied box (messages, shared files, accounts,
 player names or game saves already there) unless you add `--force`, and says so.
@@ -428,6 +433,28 @@ that card dies with it. Copy `/srv/ark/backup/ark-backup-*` to a USB stick or a
 computer — the printable sheet at `/srv/ark/RECOVERY-SHEET.txt` (also readable at
 `http://ark.lan/recovery.txt` while the box still runs) is written for exactly
 that day: a phone, a card reader and a working card.
+
+
+
+**If a replacement is interrupted.** `ark-restore` and the boot repair leave a
+folder beside the database named `<database>.recovery/` while they are putting
+records back. The folder holds the saved original main file, its `-wal`/`-shm`,
+the checked candidate, and a `state.json` that names the step reached. The boot
+repair resolves it before the portal opens: an attempt that had not touched the
+original is set aside; one that had moved the journal gets the original and its
+journal put back; one that had installed a checked copy is finished. If neither
+can be proved safe, a `BLOCK` file stays in that folder, `ark_db` refuses to open
+the database, and the pass says the box must stay stopped. **Do not delete the
+folder or the `BLOCK` file** — they are the evidence and the safety marker. Read
+the sentence in `sudo /usr/local/sbin/ark-self-heal --json` (`recovery`, then
+`problems`) and keep the folder; the `HUMAN-TEST-LIST.md` §25 rehearsal is the
+safe place to practise. A finished replacement archives the folder as
+`<database>.recovery-<stamp>-committed-<id>/`; a rollback archives it as
+`…-rolled-back-…`. The newest **2** committed and **2** other sets are kept, and
+old sets are removed only while the total is above **2 GiB**, and the oldest are
+also removed if the evidence would push the card past the box's one free-space
+reserve; the newest set, a pending one, and one whose record cannot be read are
+never deleted.
 
 There is **no timer**, on purpose: a nightly backup that quietly fills the card
 the box reads from is a defect, not a feature. Take one when something happened —
@@ -918,7 +945,7 @@ runs **before the portal opens**, plus the settings that make the next cut cheap
 | **The clock is in the past** — a Pi has no battery-backed clock, so it wakes up believing it is the day the card was written. Every "3 hours ago" is wrong and a copy looks like it came from the future | The newest file on the card is the best evidence of the real time: if anything is newer than the clock, the clock is set from it (two minutes of slack). `fake-hwclock` also remembers the last known time across a cold boot |
 | **A small file is half written** — `ark_status.json`, the import ledger | The file is checked; if it will not read, it is set aside as `…corrupt-<stamp>` (the last three are kept) and the `.bak` beside it is put back **only if it reads**. A repair is never invented |
 | **The network watchdog's counters are damaged** | They are not JSON — three numbers as `key=value` lines — so they are checked by their own rule. Damaged ⇒ set aside, and the watchdog starts from zero, which can only make a rescue *slower*, never wrong |
-| **The database will not open** | Checked with SQLite's own `quick_check`. Damaged ⇒ the pass takes the repair turn and the exclusive maintenance gate, checks again with the box quiet, and puts the newest copy that passes the same check in its place; a good copy is kept beside it. If another program still has the records open it reports **deferred** and changes nothing — an unavailable lock is not damage. **It never deletes a database** |
+| **The database will not open** | Checked with SQLite's own `quick_check`. Damaged ⇒ the pass first resolves any interrupted replacement, then takes the repair turn and the exclusive maintenance gate, checks again with the box quiet, and puts the newest copy that passes the same check in its place through `ark_db_replace`: the original main file and its `-wal`/`-shm` are preserved, the old journal is moved aside (never deleted), the new file is verified, and every step is recorded. If another program still has the records open it reports **deferred** and changes nothing — an unavailable lock is not damage. A replacement that cannot be resolved leaves a `BLOCK` marker and keeps the box stopped. **It never deletes a database** |
 | **Half-built uploads, bundles and catalogue temp files** | Swept after 6–12 hours, **by pattern and age**, never by guessing. A published file is never touched |
 | **A library catalogue that lists books which are not there** | Rebuilt from the ZIMs the card really has |
 

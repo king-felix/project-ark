@@ -17,6 +17,7 @@ if str(API_DIR) not in sys.path:
     sys.path.insert(0, str(API_DIR))
 
 MODULES = ("main", "ark_admin", "ark_security", "ark_db", "ark_maintenance",
+           "ark_db_replace",
            "ark_storage", "ark_health",
            "ark_space", "ark_media", "ark_media_jobs", "ark_media_web",
            "ark_arcade", "ark_arcade_web", "ark_arcade_install",
