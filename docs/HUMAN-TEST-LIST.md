@@ -1156,6 +1156,11 @@ candidate. Bring it back to the next session.
 
 ## 26. FOR YOU — a save that an older recovery copy still needs (20 minutes, **rehearsal root only**)
 
+**Agent rehearsal, 4 Nov 2026:** the sequence below was run on the live card in
+`/srv/ark/tmp/recovery-rehearsal` and returned the exact original bytes.  The
+live box has **0 player names and 0 saves**, so no live save was touched; a
+person should still walk it through, especially the parts a phone sees.
+
 **Do not do this against the live records or the live saves.** The point is to prove
 the real card and the real `pi` account keep a save blob alive for an older recovery
 copy, and that restoring that copy reads the exact bytes. A copy that holds the
