@@ -328,7 +328,9 @@ def test_every_page_the_backend_builds_is_named_by_the_proxy():
     """
     routes = {r for r in re.findall(r'@app\.get\("([^"]+)"', MAIN_APP)}
     named = set(re.findall(r"location\s+(?:=|\^~|~)\s+(\S+)", NGINX))
-    alt = re.search(r"location ~ \^/\(([^)]*)\)\$", NGINX)
+    # The alternation may end in `$` (exact addresses) or `(/|$)` (an address and
+    # anything under it — `/theme` needs both its own name and a choice after it).
+    alt = re.search(r"location ~ \^/\(([^)]*)\)(?:\(/\|\$\)|\$)", NGINX)
     alternation = {"/" + p.replace("\\", "") for p in alt.group(1).split("|")} if alt else set()
 
     for route in sorted(routes):
@@ -341,7 +343,7 @@ def test_every_page_the_backend_builds_is_named_by_the_proxy():
 
 
 def test_the_library_page_is_not_reachable_without_the_proxy_naming_it():
-    assert re.search(r"location ~ \^/\([^)]*\blibrary\b[^)]*\)\$", NGINX), (
+    assert re.search(r"location ~ \^/\([^)]*\blibrary\b[^)]*\)(?:\(/\|\$\)|\$)", NGINX), (
         "/library must be named in the on-the-fly page location")
 
 

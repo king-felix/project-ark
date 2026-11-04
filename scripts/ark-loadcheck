@@ -1,0 +1,326 @@
+#!/usr/bin/env python3
+"""Project ARK — measure what the box feels like while people use it.
+
+This is a finite, repeatable workload, not a benchmark suite: a few readers asking
+for pages, a film being seeked, and the cheapest door in the box.
+
+    ark-loadcheck                        # against http://127.0.0.1 (on the Pi)
+    ark-loadcheck --base http://ark.local
+    ark-loadcheck --readers 6 --rounds 5 --json
+
+The targets are **fixed in `docs/IMPLEMENTATION-LOG.md` §56 before any of this was
+run**, and this script refuses to move them:
+
+    search                p95 < 1500 ms
+    /api/status           p95 <  800 ms
+    /api/health           p95 <  150 ms   (liveness must not scan the shelves)
+    board page            p95 <  800 ms
+    every response        < 500, and 206 for a range request with the exact bytes
+
+What it reports besides the latency: the device it ran on, the revision it
+measured, the workload, and — when `/proc` is readable — the box's own CPU,
+memory and I/O before and after.  A number without those four facts is a number
+nobody can act on.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import platform
+import statistics
+import subprocess
+import sys
+import threading
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+TARGETS = {
+    "/search?q=water": 1500.0,
+    "/api/status": 800.0,
+    "/api/health": 150.0,
+    "/board": 800.0,
+    "/library": 800.0,
+}
+
+
+def percentile(values, fraction):
+    if not values:
+        return None
+    ordered = sorted(values)
+    index = min(len(ordered) - 1, int(round(fraction * (len(ordered) - 1))))
+    return ordered[index]
+
+
+def fetch(base, path, timeout=30.0, headers=None):
+    url = base.rstrip("/") + path
+    request = urllib.request.Request(url, headers=headers or {})
+    started = time.monotonic()
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = response.read()
+            return {
+                "path": path,
+                "status": response.status,
+                "ms": (time.monotonic() - started) * 1000.0,
+                "bytes": len(payload),
+                "headers": dict(response.headers),
+                "body": payload,
+                "error": "",
+            }
+    except urllib.error.HTTPError as exc:                 # a 503 is an answer
+        return {"path": path, "status": exc.code,
+                "ms": (time.monotonic() - started) * 1000.0,
+                "bytes": 0, "headers": dict(exc.headers or {}), "body": b"",
+                "error": ""}
+    except Exception as exc:                              # noqa: BLE001
+        return {"path": path, "status": 0,
+                "ms": (time.monotonic() - started) * 1000.0,
+                "bytes": 0, "headers": {}, "body": b"", "error": str(exc)}
+
+
+# ---------------------------------------------------------------------------
+#  what the machine itself was doing
+# ---------------------------------------------------------------------------
+def machine() -> dict:
+    facts = {
+        "host": platform.node() or "unknown",
+        "system": platform.platform(),
+        "machine": platform.machine(),
+        "python": platform.python_version(),
+    }
+    try:
+        facts["model"] = (Path("/proc/device-tree/model").read_text(
+            encoding="utf-8", errors="replace").strip("\x00\n ").strip())
+    except OSError:
+        facts["model"] = ""
+    try:
+        facts["cores"] = os.cpu_count()
+    except Exception:                                     # noqa: BLE001
+        facts["cores"] = None
+    return facts
+
+
+def revision() -> str:
+    """The commit this box is running, if it can say so without guessing."""
+    for env in ("ARK_REVISION", "GIT_COMMIT"):
+        value = os.environ.get(env, "").strip()
+        if value:
+            return value
+    for folder in ("/srv/ark/src", os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__)))):
+        try:
+            done = subprocess.run(["git", "-C", folder, "rev-parse", "--short", "HEAD"],
+                                  capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if done.returncode == 0 and done.stdout.strip():
+            return done.stdout.strip()
+    return "unknown"
+
+
+def _read(path, default=""):
+    try:
+        return Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return default
+
+
+def load_and_memory() -> dict:
+    """Load average and memory, from /proc on Linux.  ``None`` where it is absent."""
+    one, five, fifteen = os.getloadavg() if hasattr(os, "getloadavg") else (None, None, None)
+    mem = {"total_kb": None, "available_kb": None}
+    for line in _read("/proc/meminfo").splitlines():
+        if line.startswith("MemTotal:"):
+            mem["total_kb"] = int(line.split()[1])
+        elif line.startswith("MemAvailable:"):
+            mem["available_kb"] = int(line.split()[1])
+    return {"load1": one, "load5": five, "load15": fifteen, **mem}
+
+
+def disk_io() -> dict:
+    """Bytes read and written by the whole block layer, so a run has a cost."""
+    total = {"read_bytes": 0, "write_bytes": 0}
+    try:
+        for line in _read("/proc/diskstats").splitlines():
+            parts = line.split()
+            device = parts[2] if len(parts) > 2 else ""
+            if not device or device.startswith(("loop", "ram", "zram", "dm-", "sr")):
+                continue
+            if len(parts) >= 10:
+                total["read_bytes"] += int(parts[5]) * 512
+                total["write_bytes"] += int(parts[9]) * 512
+    except (ValueError, IndexError):
+        return {"read_bytes": None, "write_bytes": None}
+    return total
+
+
+# ---------------------------------------------------------------------------
+#  the workload
+# ---------------------------------------------------------------------------
+def run(base: str, readers: int, rounds: int) -> dict:
+    results = {path: [] for path in TARGETS}
+    errors = []
+    lock = threading.Lock()
+
+    paths = [path for path in TARGETS for _ in range(rounds)]
+    # Health first and always, so it is measured beside the heaviest readers
+    # rather than in a quiet corner of the run.
+    plan = []
+    for path in paths:
+        plan.append(path)
+        plan.append("/api/health")
+
+    def one(path):
+        row = fetch(base, path)
+        with lock:
+            results.setdefault(path, []).append(row["ms"])
+            if row["error"] or (row["status"] and row["status"] >= 500):
+                errors.append({"path": path, "status": row["status"],
+                               "error": row["error"]})
+
+    started = time.monotonic()
+    # A counting semaphore, not arithmetic on a growing list of finished threads:
+    # the first version compared "threads started" with "threads alive", which
+    # grows without bound once anything finishes, and the run waited for ever.
+    slots = threading.Semaphore(readers)
+
+    def bounded(path):
+        with slots:
+            one(path)
+
+    threads = [threading.Thread(target=bounded, args=(path,), daemon=True)
+               for path in plan]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=120)
+    elapsed = time.monotonic() - started
+
+    summary = {}
+    for path, values in results.items():
+        summary[path] = {
+            "requests": len(values),
+            "p50_ms": round(statistics.median(values), 1) if values else None,
+            "p95_ms": round(percentile(values, 0.95), 1) if values else None,
+            "max_ms": round(max(values), 1) if values else None,
+            "target_ms": TARGETS.get(path),
+            "met": (percentile(values, 0.95) is not None
+                    and percentile(values, 0.95) <= TARGETS.get(path, 1e9)),
+        }
+    return {"elapsed_s": round(elapsed, 2), "readers": readers,
+            "requests": len(plan), "paths": summary, "errors": errors}
+
+
+def range_check(base: str) -> dict:
+    """A film seek: the exact bytes, or a sentence saying there is no film."""
+    listing = fetch(base, "/api/status")
+    try:
+        body = json.loads(listing["body"] or b"{}")
+    except ValueError:
+        body = {}
+    films = (body.get("sections") or [])
+    film_row = next((s for s in films if s.get("key") == "films"), {})
+    if not (film_row.get("facts") or {}).get("playable"):
+        return {"skipped": "no playable film on this box"}
+    media_id = None
+    for section in body.get("sections") or []:
+        if section.get("key") == "films":
+            media_id = section.get("facts", {}).get("first_id")
+    if not media_id:
+        # The endpoint does not publish an id; ask the shelf page instead.
+        shelf = fetch(base, "/media/")
+        text = (shelf["body"] or b"").decode("utf-8", "replace")
+        import re
+        found = re.search(r'href="/media/(\d+)"', text)
+        media_id = int(found.group(1)) if found else None
+    if not media_id:
+        return {"skipped": "no film id on the shelf page"}
+    row = fetch(base, "/media/%d/stream" % media_id,
+                headers={"Range": "bytes=0-1023"})
+    ok = row["status"] == 206 and len(row["body"]) == 1024
+    return {"film": media_id, "status": row["status"], "bytes": len(row["body"]),
+            "ok": ok, "ms": round(row["ms"], 1)}
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description="Measure the Ark under a finite load.")
+    parser.add_argument("--base", default="http://127.0.0.1",
+                        help="where the portal answers (default: this machine)")
+    parser.add_argument("--readers", type=int, default=4)
+    parser.add_argument("--rounds", type=int, default=4)
+    parser.add_argument("--json", action="store_true", help="one JSON object, no prose")
+    args = parser.parse_args(argv)
+
+    before = {"machine": machine(), "revision": revision(),
+              "load": load_and_memory(), "io": disk_io()}
+    # Warm the routes so a first-request import is not counted as latency.
+    for path in ("/api/health", "/api/status", "/board", "/search?q=water"):
+        fetch(args.base, path, timeout=60)
+
+    measured = run(args.base, max(1, args.readers), max(1, args.rounds))
+    film = range_check(args.base)
+    after = {"load": load_and_memory(), "io": disk_io()}
+
+    report = {"device": before["machine"], "revision": before["revision"],
+              "base": args.base, "workload": measured, "film_range": film,
+              "before": {"load": before["load"], "io": before["io"]},
+              "after": after}
+
+    if args.json:
+        print(json.dumps(report, indent=2, default=str))
+        return 0 if not measured["errors"] else 1
+
+    print("ARK load check")
+    print("  device    : %s  (%s)" % (before["machine"]["model"] or before["machine"]["host"],
+                                      before["machine"]["system"]))
+    print("  revision  : %s" % before["revision"])
+    print("  workload  : %d readers, %d requests, %.2fs"
+          % (measured["readers"], measured["requests"], measured["elapsed_s"]))
+    print("  path                      p50      p95      max   target  verdict")
+    for path, row in measured["paths"].items():
+        print("  %-22s %7.1f %8.1f %8.1f %7.0f  %s"
+              % (path, row["p50_ms"] or 0, row["p95_ms"] or 0, row["max_ms"] or 0,
+                 row["target_ms"] or 0,
+                 "met" if row["met"] else "MISSED"))
+    if measured["errors"]:
+        print("  errors    : %d" % len(measured["errors"]))
+        for error in measured["errors"][:5]:
+            print("    %s %s %s" % (error["path"], error["status"], error["error"]))
+    else:
+        print("  errors    : none")
+    if film.get("skipped"):
+        print("  film range: skipped (%s)" % film["skipped"])
+    else:
+        print("  film range: /media/%s/stream -> %s, %d bytes, %.1f ms  %s"
+              % (film.get("film"), film.get("status"), film.get("bytes", 0),
+                 film.get("ms", 0), "exact" if film.get("ok") else "NOT the bytes asked for"))
+    for label in ("before", "after"):
+        load = report[label]["load"]
+        io = report[label]["io"]
+
+        def shown(value, scale=1, unit="", places=0):
+            # The `None` rule: a figure nobody measured is words, never a zero.
+            if value is None:
+                return "not measured"
+            if scale > 1:
+                return "%d%s" % (value // scale, unit)
+            return ("%.2f" % value) if places else ("%d" % value)
+
+        mem = load.get("available_kb")
+        print("  %-9s : load %s/%s/%s, mem available %s, io read %s, written %s"
+              % (label,
+                 shown(load.get("load1"), places=2), shown(load.get("load5"), places=2),
+                 shown(load.get("load15"), places=2),
+                 ("%d MB" % (mem // 1024)) if mem is not None else "not measured",
+                 shown(io.get("read_bytes"), 1024, " KiB"),
+                 shown(io.get("write_bytes"), 1024, " KiB")))
+    missed = [path for path, row in measured["paths"].items() if not row["met"]]
+    return 0 if not missed and not measured["errors"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

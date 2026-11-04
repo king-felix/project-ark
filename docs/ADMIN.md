@@ -45,9 +45,9 @@ answers.
 
 Under the figures, **Put something on the box** carries the two ways a person actually
 uses — **Add books and games** (a pile in one press, §15) and **Add one game** (the owner's
-Games page, §10). The navigation names all eleven pages — Overview, What is working, Add
-files, Network, Household, Games, Community, Administrators, My password, History,
-Addresses — and marks the page you are reading for a screen reader
+Games page, §10). The navigation names all twelve pages — Overview, What is working,
+Background work, Add files, Network, Household, Games, Community, Administrators, My
+password, History, Addresses — and marks the page you are reading for a screen reader
 (`aria-current="page"`), so a phone announces where you are.
 
 **Sign out** sits at the end of that navigation on every page, and it is a **form rather
@@ -294,16 +294,40 @@ says **why not** in a sentence you can act on.
 
 | Part | Ready means |
 |---|---|
-| Offline Library | collections are on the card **and** the reader answered on the box itself |
-| Books | the shelf has a real catalogue **and** the shelf page answered |
-| Manuals & Guides | the manual pages are installed (plain files — nothing to serve) |
-| Message Board | the board can be read (whether or not posting is switched on) |
-| File Box | the shared folder exists, can be opened, and holds at least one file a reader can actually open (whether or not uploads are on) |
-| Space on the card | at least 512 MiB is still free |
+| **Offline Library** | collections are on the card **and** the reader answered on the box itself |
+| **Books** | the shelf has a real catalogue **and** the shelf page answered |
+| **Manuals & Guides** | the manual pages are installed (plain files — nothing to serve) |
+| **Message Board** | the board can be read (whether or not posting is switched on) |
+| **File Box** | the shared folder exists, can be opened, and holds at least one file a reader can actually open (whether or not uploads are on) |
+| **Space on the card** | the card is outside the space the box keeps back |
 | Latest copy | a finished copy of the records exists, can be opened by the box's own pages, and is less than a week old |
 | Incoming collections | work in progress — reported, but never counted as a fault |
+| Ask the Ark | a helper is fitted, has words on the card, and answered |
+| **Films** *(feature)* | at least one published film has bytes a viewer can be served; preparation is reported separately |
+| **Games** *(feature)* | the shelf has games, the player files are installed, every core a game needs is present, and every ROM named on the shelf is on the card |
+| **Maps** *(feature)* | at least one published region is complete enough to download |
 
-Two distinctions the page is careful about, because they are the whole point:
+**The first six — in bold in the code, not on the page — are requirements.** One of
+them failing answers **503** at `/api/ready`. **Films, Games and Maps are
+features**: they are reported by the same answer, they are held to a different
+bar, and one of them failing **never** turns a working library into a failure.
+`90-verify` marks them *optional* for the same reason. A shelf waiting to be
+filled is not a broken box, and treating it as one is how a gate stops being read.
+
+Each part also carries **one word for its state**, because "Not ready" covers four
+different mornings:
+
+| Word | What it means |
+|---|---|
+| **Ready** | it answered, and a reader could use it just now |
+| **Nothing yet** | nothing has been put on the card for it — waiting, not broken |
+| **Preparing** | there is work in hand and nothing to use yet |
+| **Paused by you** | you asked for background work to stop; what is already prepared still works |
+| **Partly working** | some of it works and some of it cannot — the sentence says which |
+| **Not ready** | something that should work does not |
+| **Not measured** | the box could not look, and will not guess |
+
+Three distinctions the page is careful about, because they are the whole point:
 
 * **Content versus working.** A section with nothing on the card yet is
   *Not ready* but not broken ("No collection has arrived yet"); a section whose
@@ -312,6 +336,13 @@ Two distinctions the page is careful about, because they are the whole point:
 * **Downloading is not a fault.** A queue that is working, paused, or empty
   never makes the box un-ready. Only a queue that has gone silent for over two
   minutes is reported, and even then it does not block reading.
+* **Watching is not converting.** A film shelf whose worker is paused, whose
+  FFmpeg is missing or whose poster folder is damaged still reports **Ready**
+  while films that already have their bytes can be watched — the reason says
+  exactly which part is unavailable. The same split applies to Maps: this page
+  can say the *box* has a region to hand out; whether *this phone* kept a usable
+  copy is a question only that phone can answer, and it is answered on the Maps
+  page on the phone.
 
 Two more things the page will not pretend about, both found on the live box:
 
@@ -401,6 +432,83 @@ The route works by asking the loopback addresses (`127.0.0.1:8081/kiwix`,
 running server with a moved page, which is a different problem from a refused
 connection. The public pages are unaffected by all of this: nothing here is on
 the reader's path.
+
+---
+
+## 8a. Background work — one switch for the heavy jobs
+
+`https://ark.lan:8443/admin/background`, or **Background work** in the navigation.
+
+The box has four things that work hard on their own: preparing films for the shelf,
+importing dropped books, looking for openly licensed games once a week, and
+fetching collections into the offline library. They are all deliberately polite —
+one at a time, `Nice=10`, capped CPU and memory — but sometimes the people in the
+room want the machine quiet: a hot afternoon, a phone being charged from the box's
+battery, a long film being watched without an encoder taking the processor.
+
+**Pause background work** is that switch. It is one file on the card:
+
+```
+/srv/ark/api/data/background-paused      # present = paused; absent = running
+```
+
+Because the state is a file, it survives a restart, a reboot and an API crash; a
+shell script or a systemd condition can read it with a `test -e`; and nothing in
+the web application can invent a second copy of the answer. The page shows the
+**requested** state (the file) and the **effective** state (what the records say is
+actually happening), and it says which is which.
+
+### What a pause stops
+
+| Job | What happens |
+|---|---|
+| Preparing a new film | **not started.** Queued work stays queued — deferred, never cancelled |
+| A film already being converted | **allowed to finish.** An FFmpeg encode cannot resume from the frame it reached, so stopping it would throw the work away. The page says so, and names the film |
+| The book importer | **does not run.** A dropped book stays in the File Box or in `calibre-incoming`; the importer looks again when you resume |
+| The weekly game check | **does not run.** Every game already on the shelf still plays |
+| A collection download | **stops at a resumable piece** and keeps its `.part`. The next run continues from those bytes; nothing is thrown away |
+| Ask the Ark | **refused with a sentence.** A helper that has not started will not start; one that is already loaded sits idle. `Restart=always` cannot fight the pause because the launcher waits for the file rather than failing |
+
+### What a pause never stops
+
+Reading, watching anything already prepared, playing games, opening Maps and any
+region already downloaded, the message board, the File Box, the household page,
+the printed cards — and every piece of safety work: integrity checks, the power-cut
+repair, recovery, backups and deleting something you no longer want.
+
+**Absent internet is not a pause.** The box is offline by design most of the time;
+this switch is yours alone and is never set by a timer, a watchdog or a lack of
+signal.
+
+### Stop, which is not the same thing
+
+Under the switch the page offers **Stop this film now** while a film is being
+prepared. It is deliberately different from pausing, and the page says so:
+
+* the **upload is kept** — nothing you supplied is deleted;
+* the **half-written playing copy is thrown away** — it was never a film;
+* **preparing it again starts from the beginning**, because that is what an encode
+  does.
+
+The route can only stop the job the records say is **running right now**, and only
+when the form names the same film, so a page left open for an hour cannot cancel
+something else. Every pause, resume and stop is in **History**.
+
+### Resuming
+
+Resume removes the file and does three small things that matter:
+
+1. It **touches `/srv/ark/api/data/background-kick`**, which `ark-book-import.path`
+   watches. A book dropped during the pause already fired that unit once; a plain
+   path trigger would never fire again for the same file, so the pause would have
+   silently eaten a trigger. Resume wakes the importer exactly once.
+2. It lets the media worker claim its next job on the following loop.
+3. It does **not** switch anything back on that you had separately turned off — a
+   game source you refused, a helper switched off in Community, and a collection
+   queue with nothing in it all stay as they were.
+
+There is no measurement of battery saving here, and the page makes no claim about
+one.
 
 ---
 

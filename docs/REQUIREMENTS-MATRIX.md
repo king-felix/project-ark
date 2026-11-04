@@ -477,7 +477,8 @@ household member has opened `/household` on a phone.
 | A | PARTIAL | accounts/community/games/health yes; players/services/backup UI no |
 | B | PARTIAL (early) | guest play + named saves + preferences yes; history/metadata/visuals no |
 | C | PARTIAL | stage 3–6 fixes yes; thermal/jobs/search cancellation no |
-| D | PARTIAL (code + test) | review, cards, pack and household page yes; library accessibility, translation and one-page print no |
+| D | PARTIAL (code + test) | review, cards, pack and household page yes; translation and one-page print no; light colours and the reading order added 4 Nov |
+| R18 | DONE (code + test) | containment, feature states, one pause, durable film publish, Maps app update, reading order, light colours; **no phone, no Pi deploy yet** |
 
 **What "DONE (code + test)" deliberately does not mean:** deployed, seen on a phone, or
 measured on the card. Every DONE row above still needs its line in the §8.9 walk-through
@@ -825,6 +826,59 @@ this a hardware fact.
 **Not proved here:** any physical card; a real `diskutil` answer from a USB SD
 reader (the fixtures are realistic but synthetic); the clone tool end to end; and
 a boot from a cloned 512 GB card. See `docs/HUMAN-TEST-LIST.md` §28.
+
+---
+
+## R18 — living through an outage: contained failures, honest features, one pause
+
+**Status: DONE (code + test on the Mac).** No Pi deploy at the time of writing;
+the deploy evidence is in `docs/IMPLEMENTATION-LOG.md` §57.
+
+The reviewed failures, each with the test that now holds it shut:
+
+| Acceptance sentence | Where | Test |
+|---|---|---|
+| A damaged optional media folder does not stop the shared API starting | `ark_media.ensure_dirs()` / `ark_storage.ensure_dirs()` / `ark_arcade.ensure_dirs()` return their failures instead of raising; `main.init_db()` ignores them | `test_containment.py::test_the_api_starts_with_a_damaged_media_folder`; `::test_the_api_starts_with_a_damaged_shared_folder` |
+| A missing video tool and an absent helper cost their own feature and nothing else | `ark_media.tools_present()`, `ark_ai.status()` | `::test_a_missing_video_tool_does_not_stop_the_portal`; `::test_an_unavailable_helper_does_not_stop_the_portal` |
+| A malformed offline catalogue is a sentence, not a crash | `ark_health.games_section()` | `::test_a_broken_optional_catalogue_is_a_sentence_not_a_crash` |
+| Direct playback survives a broken poster folder | `ark_media.playable()` / `ark_media_web` | `::test_direct_playback_survives_a_broken_poster_folder` |
+| A silent child is stopped at its deadline (the reviewed 0.4 s / 0.05 s defect) | `ark_media_jobs._run()` — `select` loop | `test_subprocess_bounds.py::test_a_silent_child_is_stopped_at_its_deadline` |
+| A partial line cannot hide the deadline | same | `::test_a_partial_line_does_not_hide_the_deadline` |
+| Continuous output cannot outrun the deadline, and progress still arrives | same | `::test_continuous_output_cannot_outrun_the_deadline`; `::test_progress_lines_are_still_streamed` |
+| A tool that floods stderr grows nothing without bound and still names the fault | `_Tail`, `STDERR_TAIL_BYTES` | `::test_stderr_growth_is_bounded_and_still_names_the_fault` |
+| Cancellation is independent of output, and the child is reaped | `CANCEL_CHECK_SECONDS`, `finally` kill+wait | `::test_a_cancelled_job_stops_a_silent_child` |
+| Films, Games and Maps are reported, and none of them can make the core box unready | `ark_health.FEATURE_SECTIONS`, `report()` | `test_pause.py::test_pausing_never_makes_the_core_box_unready`; `test_health.py` (existing sections) |
+| Seven states, not one boolean | `ark_health.STATES`, `_section(state=…)` | `test_pause.py::test_a_paused_worker_is_a_paused_shelf_not_a_broken_one`; `test_homepage.py` |
+| Film playback is separated from conversion availability | `films_section()` | `test_pause.py::test_a_paused_worker_is_a_paused_shelf_not_a_broken_one` |
+| The map shelf is separated from whether a phone kept a copy | `maps_section()` (`device_copy` fact) | `test_containment.py`; `test_pause.py` |
+| Game assets are checked for player files, cores and ROMs | `games_section()` | `test_containment.py::test_a_broken_optional_catalogue_is_a_sentence_not_a_crash` |
+| Liveness is cheap and never invokes readiness | `ark_health.liveness()`, `/api/health` | `test_health.py::test_health_is_liveness_only_and_says_so`; `test_concurrency.py::test_liveness_stays_cheap_while_other_readers_work` |
+| A probe that raises costs one red row, not the page | `_build()` isolation | `test_health.py`; `test_pause.py` |
+| The front page never claims "Ready" before anything checked, and says what still works when the API is gone | `pi/portal/index.html` | `test_homepage.py::test_the_static_page_never_claims_to_be_ready_by_itself`; `::test_the_static_page_says_what_still_works_when_the_backend_is_gone` |
+| The boot guard's restart decision follows the backend's liveness door, not the static page, and writes the readiness verdict down without acting on it | `pi/bin/ark-boot-guard` | read in review; no automated test (shell). `90-verify` reports features as optional |
+| The existing readiness contract is unchanged for existing readers, and says what it now scopes | `report()` — `ok`/`blocking`/`ready`/`total` + `scope`/`unavailable_features` | `test_health.py::test_ready_answers_503_with_a_reason_for_every_part` |
+| One pause, in one file, that survives a restart and can be read without Python | `ark_pause` | `test_pause.py::test_the_pause_survives_a_restart`; `::test_the_pause_file_can_be_read_without_python`; `::test_an_unreadable_marker_path_fails_closed` |
+| A pause defers work rather than cancelling it, and an encode already running is allowed to finish | `ark_media_jobs.work_once()`, `make_derivative()` | `::test_the_worker_claims_nothing_while_paused`; `::test_a_job_already_running_is_allowed_to_finish` |
+| Integrity and recovery keep running while paused | `ark_media_jobs.startup()` | `::test_the_intact_recovery_pass_still_runs_at_startup` |
+| Pause and resume are authenticated, CSRF-checked, audited and idempotent | `/admin/background/{pause,resume,stop}` | `::test_the_owner_can_pause_and_resume_through_the_page`; `::test_pausing_needs_the_form_token_and_a_session`; `::test_a_pause_is_recorded_in_the_history`; `::test_pausing_twice_is_idempotent` |
+| Stop is bounded to the job the records say is running, and keeps the upload | `background_stop()`, `ark_media.cancel()` | `::test_stopping_the_running_film_names_it_and_keeps_the_upload`; `::test_stop_cannot_name_a_film_that_is_not_running` |
+| A dropped book is not silently eaten by the pause | `ark_pause.kick_path()`, `ark-book-import.path` | `::test_resuming_leaves_a_trigger_for_a_book_dropped_while_paused` |
+| A paused helper refuses a question and says the rest still works | `ark_ai.NOT_READY["paused"]` | `::test_a_paused_helper_says_so_and_still_leaves_the_box_whole` |
+| Every reader page keeps working while paused | `main` | `::test_the_public_pages_keep_working_while_paused` |
+| A film's upload leaves only after the copy, its folder and the record are durable | `ark_media_jobs.make_derivative()` | `test_film_durability.py::test_the_publication_order_syncs_before_it_releases` |
+| A short or mismatched copy never releases the upload | `ark_media.release_original()` | `::test_an_original_is_kept_when_the_copy_is_short`; `::test_an_original_is_kept_when_the_record_and_the_file_disagree`; `::test_the_sweep_uses_the_same_rule` |
+| An installed Maps page takes a newer application, keeps its pack and its saved places, and still routes with nothing reachable | `ark_map_web.app_release()`, `sw.js`, `app.js` | `test_maps_browser.py::test_an_installed_page_takes_a_newer_application_and_keeps_its_pack` |
+| No personal attribution in the record; regional-map facts kept | `docs/IMPLEMENTATION-LOG.md` §50.1 | reviewed text |
+| Search is labelled by its real coverage, with links to the films and games lists | `main.search()`, `pi/portal/index.html` | `test_search.py::test_the_public_search_page_answers_with_nothing_installed`; `test_homepage.py::test_the_search_button_names_what_it_actually_searches` |
+| Where progress is kept is explained, and no cross-device history is implied | `pi/portal/index.html`, `ark_media_web`, `ark_arcade_web` | `test_homepage.py::test_the_page_explains_where_progress_is_kept` |
+| A pinned note is the front page's plan; hidden and sorted ones are not; an old one says its age | `main.today()`, `pi/portal/index.html` | `test_homepage.py` (six `today` tests) |
+| A light, high-contrast presentation exists and works without JavaScript | `/theme/{light,dark}`, `ark.css`, `pi/portal/index.html` | `::test_the_theme_route_sets_a_cookie_and_returns_the_reader`; `::test_the_theme_route_refuses_to_send_anybody_off_the_box`; `::test_a_page_renders_in_the_chosen_colours` |
+| Many readers, seeking, search and a background job: no 5xx, targets met | `main`, `ark_media_jobs` | `test_concurrency.py` (seven tests) |
+| A game's page says JavaScript is required and names what does not need it | `ark_arcade_web.game_page()` | read in review |
+
+**Not proved here:** a real phone at all (see `docs/HUMAN-TEST-LIST.md` §29); a
+real full card; a physical power cut; the Pi's absolute numbers (the targets are
+in §56 of the log and the Pi measurement is there too).
 
 ---
 

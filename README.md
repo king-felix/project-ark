@@ -20,8 +20,9 @@ down, and the portal address does not serve it at all.
 
 | Door | What it is |
 |---|---|
-| `/` | the portal: one search box, big plain-English cards |
-| `/search?q=…` | one search that covers the encyclopedias, the manuals and the books |
+| `/` | the portal: what to do when something is wrong, what there is to read and watch, and who to talk to |
+| `/search?q=…` | one search that covers the encyclopedias, the manuals and the books — **not** the films or the games, which have their own lists |
+| `/theme/light` · `/theme/dark` | the same pages in a light, high-contrast presentation for daylight; the choice is a cookie and works without JavaScript |
 | `/library` | the shelves: every collection filed by what it is for — repairs, vehicles, food, health, water and power, getting prepared, outdoors, radio, learning |
 | `/kiwix/` | the offline library, A–Z, with every cover (the full browser behind `/library`) |
 | `/books/` | the book shelf (EPUB/PDF, read in the browser or download) |
@@ -231,11 +232,22 @@ pages, the player origin and the two monitoring answers — with who may open it
 what it is for, written with the name your browser is using and each one a tap
 rather than a port number to copy. The
 player's sign-in is a separate HTTPS origin (`https://ark.lan:8445/arcade/`) and
-is not an administrator account. **What is working** is the page
+is not an administrator account. **Background work** is one switch for the heavy
+jobs. Pausing it stops new films being prepared, holds the book importer and the
+weekly game check, lets a collection download stop at a resumable piece, and
+refuses a question to the helper. It never touches reading, watching, games,
+maps, messages, deleting or recovery; a film already being converted is allowed
+to finish, because an encode cannot resume from the frame it reached. The page
+says which of those is happening now, and offers one deliberate *Stop this film
+now* that keeps the upload and explains what starting again costs. The choice is
+a file on the card (`/srv/ark/api/data/background-paused`), so it survives a
+restart, and a resume touches the book watcher's kick file so a book dropped
+during the pause is imported rather than forgotten. **What is working** is the page
 to open when something feels off: every part of the box, whether it answered
-just now, the plain reason it did not, and the one next thing to try. It only
-looks — it never starts, stops or deletes anything. Losing every password is
-recoverable from the console only:
+just now, its state in one word (`Ready`, `Nothing yet`, `Preparing`,
+`Paused by you`, `Partly working`, `Not ready`), the plain reason, and the one
+next thing to try. It only looks — it never starts, stops or deletes anything.
+Losing every password is recoverable from the console only:
 
 ```bash
 sudo ark-admin-recover --list
@@ -248,7 +260,7 @@ SHA-256 fingerprint). The same certificate serves the player's secure origin
 with the browser before you trust it — see `docs/ADMIN.md` for the exact steps,
 the session rules and what is deliberately *not* in this release yet.
 
-Tests (no Pi needed, throwaway databases only; the current suite is 567 tests):
+Tests (no Pi needed, throwaway databases only; the current suite is 1075 tests):
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r tests/requirements.txt
@@ -354,7 +366,13 @@ three different facts apart:
 | **Needs converting** | a codec browsers cannot decode (HEVC, MPEG-4 Part 2, MPEG-2, WMV…) | queues a background conversion to H.264/AAC MP4, one film at a time |
 
 A conversion is a **background job** with a wall-clock ceiling, an output-size
-budget, a space reservation and a cancel button. A playing copy is never larger
+budget, a space reservation and a cancel button. Deadlines and cancellation are
+enforced by the worker's own loop, not by the tool printing a progress line: a
+silent decoder is stopped exactly like a chatty one, and every owned child is
+killed and reaped. Publication is durable before anything is deleted — the
+playing copy's bytes, the folder that names it and the record are all on the
+card before the upload goes, and the owner's pause can hold new work without
+throwing away an encode that is already running. A playing copy is never larger
 than 720p — the shelf is for phones — and once it is published and verified the
 larger upload is **released**, so a converted film costs about what the copy
 costs. A film that plays as it is keeps its only copy. Measured on the Pi 4B
@@ -723,14 +741,30 @@ The receipt is machine-readable so the Mac never has to guess.
 
 * `http://ark.lan/api/ready` — **200** only when every part a reader came for
   works, **503** otherwise. The body is the whole picture either way: one entry
-  per part (`library`, `books`, `manuals`, `messages`, `files`, `storage`,
-  `backup`, `downloads`, `ask`) with `ready`, `content` (is there anything on the card yet?),
+  per part with `ready`, `state`, `content` (is there anything on the card yet?),
   `reason` in plain words and `action` (empty when nothing is wrong).
   `downloads` never blocks: work in progress is not a fault.
+  * **Requirements** — `library`, `books`, `manuals`, `messages`, `files`,
+    `storage`. One of these failing is a 503, and it is the only thing that is.
+  * **Features** — `films`, `games`, `maps`. Reported by the same answer and
+    never able to turn a working library into a failure. A film shelf with
+    nothing on it is a shelf waiting, not a broken box.
+  * **Notes** — `backup`, `downloads`, `ask`. Worth reading, never blocking.
+  * `state` is the sentence a person needs: `available`, `empty`, `preparing`,
+    `paused`, `degraded`, `unavailable` or `unmeasured`. "Not ready" covers all
+    of those, and they are seven different mornings.
+  * The contract for existing readers is unchanged: `ok`, `blocking`, `ready`
+    and `total` still mean what they meant. `scope` says `"core"`, and
+    `unavailable_features` names any optional part that is not available.
 * `https://ark.lan:8443/admin/health` — the same answer as a page for the owner,
-  with the reason and the next step under every part that is not ready.
-* `http://ark.lan/api/health` is only *"the backend answered"* and says so in
-  its own body. It is not a verdict; `/api/ready` is.
+  with the state word, the reason and the next step under every part.
+* `http://ark.lan/api/health` is only *"the backend answered"*. It no longer
+  walks the shelves: it answers from the process and hands back the **last
+  measured** verdict with its age, so a monitor polling it every five seconds
+  costs one dictionary and not a library scan. It never says a verdict it has
+  not got — before the first `/api/ready` in a process, `ready` is `null`.
+* `http://ark.lan/api/today` — the newest pinned, unresolved note on the board,
+  with its age, for the front page's *Today / Together* panel.
 
 `/api/status` still carries the counts, and now carries the same per-section
 `ready`/`reason` pair plus real download bytes: `bytes_on_disk`,

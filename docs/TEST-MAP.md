@@ -3,11 +3,17 @@
 *The map that used to live in `AGENTS.md` §8.5, kept out of the standing-rules
 file so it can grow without pushing the rules past their size limit. Every count
 is the number of tests in that file at the last full run; the suite is
-**1017 collected, 1015 passed, 2 skipped** with the three browser-map tests
-excluded.*
+**1075 passed, 2 skipped** (48 files) with the browser-map tests included when
+Chromium is present.*
 
 | Behaviour | Test file |
 |---|---|
+| an optional folder that is a file does not stop the API; missing FFmpeg; absent helper; broken catalogue; direct playback with a broken poster folder | `tests/test_containment.py` (6) |
+| a silent child at its deadline, a partial line, continuous output, stderr growth, cancellation, reaping | `tests/test_subprocess_bounds.py` (7) |
+| the owner's pause: the file, restart survival, fail-closed, the worker deferring, recovery still running, the page, CSRF, audit, stop, the kick file, reader pages | `tests/test_pause.py` (18) |
+| durable film publication: fsync order, a short copy keeping the upload, the sweep using the same rule | `tests/test_film_durability.py` (6) |
+| eight readers, liveness beside load, search/status/board targets, range requests under load, a background job beside readers, a paused box, the cached report | `tests/test_concurrency.py` (7) |
+| the front page's claims, the honest fallback, the reading order, search labelling, where progress is kept, light colours, the theme route, Today / Together | `tests/test_homepage.py` (15) |
 | `tests/test_recovery.py` | recovery generations: exact-byte restore, replace/delete, concurrency, GC, interrupted publish, no space, retention, migration, validation, explicit-backup race (28) |
 | unique stored names, no overwrite, empty refusal, cap, reserve, temp sweep, missing file row | `tests/test_storage.py` (16) |
 | pin / sorted out / hide / restore, both switches, re-auth delete, CSRF, allowlist | `tests/test_board.py` (16) |
@@ -15,11 +21,11 @@ excluded.*
 | search deadline, pool reuse, 5 report states, `shorten()`, Atom namespaces, `_spread()` across all collections | `tests/test_search.py` (44) |
 | nginx caps, book door route inventory, player box height, library index beside bundles, offline unit ordering, on-card body temp paths | `tests/test_config.py` (30) |
 | schema version, migration/upgrade path, Pi scrypt vector | `tests/test_db.py` (7) |
-| per-section readiness, progress, `/api/ready` 503, liveness-only `/api/health`, storage breakdown, backup copies | `tests/test_health.py` (26) |
+| per-section readiness, progress, `/api/ready` 503, liveness-only `/api/health`, storage breakdown, backup copies | `tests/test_health.py` (28) |
 | 16-case watchdog decision table, fake `nmcli`/`iw`, pins, counters written temp-then-`mv`, `home-network.sh` | `tests/test_network.py` (47) |
 | owner's Network page end to end, stdin password, one-boot `lan-request`, kept-request banner, non-root `status` | `tests/test_network_page.py` (43) |
 | batch upload door (`/admin/upload`), book `.part` spooling, game gate, ledger polling, `ark_doors` completeness | `tests/test_admin_upload.py` (29) |
-| owner overview 4 live figures, 11-page `ADMIN_NAV`, `POST /admin/logout` CSRF + idempotence, public footer | `tests/test_admin_dashboard.py` (19) |
+| owner overview 4 live figures, 12-page `ADMIN_NAV`, `POST /admin/logout` CSRF + idempotence, public footer | `tests/test_admin_dashboard.py` (19) |
 | backup/restore round trip, damaged copy refused, `.partial` swept, `--force`, ownership adoption, plain recovery sheet | `tests/test_backup.py` (28) |
 | arcade shelf, guest vs named saves, `:8445` origin header, export/import, owner Games page, upload door, tap-to-start | `tests/test_arcade.py` (34) |
 | licence as provenance, language table, per-console repos, seed/discover, owner import dedup by sha256 | `tests/test_arcade_install.py` (36) |

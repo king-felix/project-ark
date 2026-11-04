@@ -5659,9 +5659,15 @@ real phone remains the test in `docs/HUMAN-TEST-LIST.md` §22.
 
 ### 50.1 What was asked
 
-The owner lives in El Paso and asked for "a more detailed map of El Paso in
-particular". The two state packs carry the numbered network only; this one is
-the opposite: every street, cropped out of the Texas extract.
+A pack at street level for one city — El Paso, Texas — was asked for, because the
+two state packs carry the numbered network only and a route inside a town needs
+the streets. This one is the opposite of the state packs: every street, cropped
+out of the Texas extract.
+
+Nothing here records who asked, or where anybody lives. A region on this shelf
+is a regional fact, and the pack's own manifest carries its bounds and its data
+date; neither is a statement about a person. The demo pack removed in §49.2 was
+chosen by its owner and is not evidence of where the box is either.
 
 ### 50.2 A box, and what it keeps
 
@@ -6769,3 +6775,223 @@ brief said not to do. It reaches the new card by a fresh install, by
 ```bash
 sudo bash /srv/ark/src/install-ark.sh --only 20-storage
 ```
+
+---
+
+## 56. Living through an outage — five contained faults, three honest features, one pause — 4 Nov 2026
+
+### 56.1 What was asked, and what was actually wrong
+
+A reliability and usability pass with one theme: **the Ark should help people live
+through disruption, not merely survive it.** Films, books, games, learning and
+shared enjoyment are product capabilities, not decoration. Failures must be
+contained, and the people already in the room come before expensive work nobody
+is waiting for.
+
+Four things were measured before anything was changed:
+
+1. **`main.init_db()` called `ark_media.ensure_dirs()` before startup finished.**
+   Replacing `media/thumbs` with a *file* raised `FileExistsError` out of the
+   import, so the shared API never started — no library, no books, no board, no
+   games, no films. A folder that is wrong took the whole box.
+2. **`ark_media_jobs._run()` checked cancellation and the deadline inside
+   `for line in proc.stdout`.** Reproduced with a real subprocess: a child that
+   slept **0.4 s** returned **success** against a **0.05 s** deadline, because a
+   silent child never enters the loop body.
+3. **`ark_health.SECTIONS` had no Films, Games or Maps.** The owner's page could
+   not say whether a film would play, a game would load or a region could be
+   downloaded. `/api/health` also called the full readiness report on every
+   request, so a five-second monitor made the box walk every shelf.
+4. **The front page said "Ready." in plain HTML.** With the backend dead, a phone
+   read a green dot and a promise nothing had checked. Its button said **"Search
+   everything"** on a box that does not search films or games.
+
+### 56.2 Containment: four folders, one loop
+
+`ark_media.ensure_dirs()`, `ark_storage.ensure_dirs()` and
+`ark_arcade.ensure_dirs()` now **return** their failures instead of raising, and
+`main.init_db()` ignores the answer — a folder the card will not give us costs its
+own feature, and the health page measures the folders themselves so a repaired one
+is not remembered as a fault. The maintenance gates are untouched: a `BLOCK`
+marker, a broken migration or a failed recovery still stops the box, because those
+are the things that would silently replace somebody's records.
+
+`_run()` was rewritten around `select`:
+
+* the loop wakes at least ten times a second, so **silence is observed exactly like
+  output**;
+* stdout is read in bytes and split into lines here, so a **partial line left in
+  the pipe** cannot hide the deadline either;
+* stderr is drained by one thread into a **bounded tail** (64 KiB), so a tool
+  flooding stderr cannot block on a full pipe or grow this process without limit;
+* every exit path **kills and reaps** the child, with a five-second grace and a
+  second kill;
+* cancellation is polled `CANCEL_CHECK_SECONDS = 1.0`, and the deadline on every
+  turn.
+
+The audit of the other subprocess paths found nothing of this shape:
+`ark_media.probe()` and the thumbnail call use `subprocess.run(timeout=…)`;
+`ark_self_heal`, `ark_romdb_build`, `ark_network` and `ark_atomic` all pass a
+timeout. The single worker and its `CPUQuota=150%` / `MemoryMax=1G` /
+`IOSchedulingClass=idle` limits are unchanged.
+
+### 56.3 Readiness: seven states, three features, one cheap door
+
+`ark_health` now reports **twelve** sections. Six are **requirements** — library,
+books, manuals, messages, files, storage — and one of those failing is a 503.
+Three are **features** — films, games, maps — reported by the same answer and
+**never** able to turn a working library into a failure. Three are notes — ask,
+downloads, backup — that never block.
+
+Every row carries `state`, one of `available`, `empty`, `preparing`, `paused`,
+`degraded`, `unavailable`, `unmeasured`, derived when a caller does not name one.
+The three features answer the questions that were missing:
+
+* **Films** separates *playback* from *preparation*: a paused worker, a missing
+  FFmpeg or a broken poster folder still reports Ready while films with bytes can
+  be watched, and the reason names the part that is not available.
+* **Games** checks the player files (`loader.js`, `emulator.min.js`, the page
+  template), the core each game needs (`cores/<core>-wasm.data`) and that every
+  ROM named on the shelf is on the card — and says out loud that *present* is not
+  *proved on a phone*.
+* **Maps** reports the shelf, never whether a phone kept a copy: that question is
+  answered on the phone, by the phone.
+
+Each probe is isolated in `_build()`: a probe that raises produces its own red row
+and the sections beside it still answer. The whole report is cached for five
+seconds (`ARK_HEALTH_REPORT_CACHE`), and `liveness()` — which `/api/health` now
+calls — never builds one. `ready` is `None` there until something has measured it,
+because inventing a `False` would be the same lie in the other direction.
+
+The boot guard used to ask the **static front page** whether the box worked; a 200
+from `/` proves nginx is up and says nothing about the API behind it, which is why
+a boot with a dead backend logged "portal answering". It now asks
+`/api/health` before deciding to restart the web stack, checks the front page
+separately, and **writes the readiness verdict down without acting on it** — an
+empty film shelf must never restart a box that is serving the library. `90-verify`
+reports Films, Games and Maps as *optional* and names the two new doors.
+
+### 56.4 One pause, read by six processes
+
+`pi/api/ark_pause.py` is the whole policy. The state is **one file**,
+`/srv/ark/api/data/background-paused`; present means paused, and a `stat` that
+fails means paused too (fail closed — not being able to look is not permission to
+start heavy work). Because it is a file it survives a restart, a shell script can
+read it with `test -e`, and the web application cannot invent a second answer.
+
+| Reader | What it does |
+|---|---|
+| `ark_media_jobs.work_once()` | returns before a claim; a job already running finishes |
+| `ark-media-worker` | says so once, then sleeps |
+| `ark-import-books` | does nothing but `--status`/`--list` |
+| `ark-arcade --seed` / `--discover` | does nothing; an explicit `--import` is a console decision and still runs |
+| `ark-zim-download` | stops at a resumable piece, keeps the `.part`, releases the promise; a pause is **not** counted as a failure |
+| `ark-ai-serve` | waits before loading the engine, so `Restart=always` cannot fight the pause |
+| `ark_ai` | a question is refused with a sentence that says everything else still works |
+
+The owner's page is `/admin/background`, with an Overview panel. Pause and resume
+are `POST`s with the page token, audited (`background-pause`, `background-resume`,
+`background-stop`), and idempotent. **Stop this film now** is bounded: it can only
+cancel the job the records say is running *right now*, and only when the form
+names the same film. It keeps the upload, discards the half-written copy, and the
+page says that preparing again starts from the beginning — because an FFmpeg
+encode cannot resume from a frame.
+
+Resume removes the marker and **touches `/srv/ark/api/data/background-kick`**,
+which `ark-book-import.path` watches. Without it a book dropped during the pause
+would have fired the path unit once and never again: the pause would have silently
+eaten a trigger. Integrity, recovery, deletion, backups and every essential write
+keep running throughout.
+
+### 56.5 The front page, and two other lies
+
+The static page no longer claims anything it has not checked. The strip starts at
+**"Checking what is on the box…"**; when `/api/status` cannot be reached it says
+so and names what still works, because the manuals, the household page, the cards
+and the Maps page are plain pages. Films, games and maps are called *optional* in
+the strip's own wording — an empty film shelf never makes the reading side look
+broken.
+
+The reading order follows the purpose: **If something is wrong** first (household,
+pocket cards, repair guides, Ask), then **Read, watch, play**, then **For everybody
+here**. The page says out loud that a long evening with no internet is what the box
+is for as much as a burst pipe is. "Where your place is kept" sets out the four
+promises — a film's resume point and a downloaded map are in this browser; a game
+save and a message are on the Ark — and states that there is no cross-device watch
+history, because there is none.
+
+**Today / Together** reuses the board: the newest pinned, unresolved note is the
+front page's plan, with its age. Hidden and sorted-out notes never appear. A plan
+written more than 36 hours ago says when it was written and that it may already
+have happened. Nothing from the household page is revealed — the note is already
+public.
+
+**Light colours** is a route (`/theme/light`, `/theme/dark`) rather than a script,
+so it works with JavaScript off; the static page applies the class before the
+first paint; every API-rendered page carries the link. The rules live in `ark.css`
+under `html.light` — the same layout, targets and focus ring. A game's page now
+says JavaScript is required and names the things that are not.
+
+The search button says **"Search the library, guides and books"** and the note
+under it says films and games have their own lists. A person who typed a film's
+name is no longer told it does not exist.
+
+### 56.6 Two corrections carried in from earlier reviews
+
+**A film's upload left before the copy was safe.** `make_derivative()` renamed the
+playing copy into place and wrote its row, and only then deleted the upload. A
+rename is durable in its folder only after that folder is synced, and a row only
+once SQLite has written it, so a cut in that window left records naming a copy the
+card did not have with the original already gone. Publication now syncs **the
+copy's bytes, the folder that names it, and the record** (a WAL checkpoint) before
+`release_original` runs. `release_original` also refuses a copy whose size
+disagrees with the recorded `play_size`, or whose last byte cannot be read — a
+truncated copy is not a copy, and the upload is then the only whole one. The
+startup sweep uses the same function, so it cannot be a looser second path.
+
+**A Maps update never reached an installed phone.** `sw.js` named its cache with a
+hand-edited constant (`ark-maps-v2`), so a phone that had kept the page saw a
+byte-identical worker for ever and never installed a new one. The Ark now computes
+a **release fingerprint of every application file** (`ark_map_web.app_release()`)
+and substitutes it into `sw.js` when serving it, so any change to any application
+file produces a byte-different worker. `cacheFirst` looks **only in this release's
+cache** — `caches.match()` searches every cache oldest-first, so an update could
+otherwise be handed the previous release's `app.js` — and `install` fetches with
+`cache: "reload"`. The page shows a *"Use the new version"* prompt only when a
+worker is already controlling it, and the tap **always** ends in the new page:
+the reload is arranged before anything that could fail. The pack and the saved
+places survive because they live in the device's own storage, which the test
+proves by reopening the upgraded page with the Ark and the internet both gone and
+calculating a new route.
+
+**Personal attribution.** §50.1 said where the owner lives. A region on the shelf
+is a regional fact; a person's address is not, and this tree is public. The
+paragraph now records the request and the pack, and says plainly that nothing here
+records who asked or where anybody lives. History was not rewritten.
+
+### 56.7 Evidence
+
+* **Full suite: `1073 passed, 2 skipped`** at the point the new files landed;
+  `1075 passed, 2 skipped` after the proxy-naming tests were taught the `(/|$)`
+  alternation the theme route needs. The two skips are the QR cross-checks that
+  need `qrcode`/`opencv-python-headless`.
+* New files: `tests/test_containment.py` (6), `tests/test_subprocess_bounds.py`
+  (7), `tests/test_pause.py` (18), `tests/test_film_durability.py` (6),
+  `tests/test_concurrency.py` (7), `tests/test_homepage.py` (15), and one upgrade
+  test through a real Chromium profile in `tests/test_maps_browser.py`.
+* `scripts/ark-loadcheck` is the Pi measurement tool; its targets are fixed above
+  and in the test file **before** any run.
+* `scripts/ark-secrets-check.sh`: clean.
+
+### 56.8 The Pi, and the numbers
+
+Measured after the deploy in §57. The device, revision and workload are named
+there, with the reserve and the free space as the box reported them.
+
+### 56.9 What this does not do
+
+No phone has seen any of it (§29 of the human list). No real full card, no physical
+power cut. The pause cannot hibernate a running encode, and it does not claim to:
+the encode finishes, or you stop it and lose the work. There is no measurement of
+battery saving and the page claims none. Search still does not look inside a film
+or a game, and now says so rather than pretending.

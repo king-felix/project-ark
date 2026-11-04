@@ -1424,3 +1424,75 @@ itself in phase 10 and needs its own run.
 
 **If it fails:** stop, put the original card back, and record exactly which step
 disagreed. The original card is the rollback; do not spend it.
+
+---
+
+## 29. Living with it: daylight, a plan, and a pause (25 minutes, needs a phone)
+
+Everything in this section is working code with automated proof. What it has never
+had is a person holding the phone — in the sun, with the box on a shelf.
+
+### 29.1 The front page in daylight (5 minutes)
+
+1. On a phone, open `http://ark.local`. Read the top line. It must say
+   **"Checking what is on the box…"** for a moment before anything else.
+2. Scroll to the bottom and tap **Light colours**. The page comes back white with
+   dark text.
+3. Take the phone outside. Read three cards without squinting. The tap targets
+   must still be thumb-sized and the focus ring must still be visible when you
+   tab with a keyboard (or hold-and-drag on the phone).
+4. Tap **Dark colours** to come back.
+
+**What this proves:** the light variant is readable in real daylight, and the
+choice survives a revisit.
+**What it does not prove:** that *every* page is comfortable in bright sun — read
+the film page and the board too, and write down which page was hardest.
+
+### 29.2 The plan for today (5 minutes)
+
+1. On the owner's pages, open **Community**, and pin a message that reads
+   like a plan — *"Film at eight in the front room"*.
+2. Reload `http://ark.local` on the phone. A **Today / Together** panel must
+   appear above the sections, with the words and "Added just now".
+3. On the owner's page, mark that message **Sorted out**. Reload the front page:
+   the panel must be **gone**, not empty.
+4. Pin a second message, then hide it. The panel must be gone again.
+
+**What this proves:** the panel reuses the board's own records and moderation,
+and an empty or hidden plan leaves nothing behind.
+**What it does not prove:** what a plan written *two days ago* looks like on a
+phone at the moment you read it — the box cannot know whether the evening
+happened, so the panel says when it was written. Check that sentence reads
+honestly when you see it.
+
+### 29.3 The pause, with a film that can still be watched (10 minutes)
+
+1. Note which films say **Ready to play** on `/media/`.
+2. On the owner's pages, open **Background work** and press
+   **Pause background work**.
+3. On the phone: open `/media/` and play a ready film. It must play, seek, and
+   keep its resume point. Open `/board`, `/files`, `/library` and `/household`;
+   all must work. Open `/arcade/` and play a game for a moment.
+4. Open `/ask`. It must say heavy background work is paused **and** that
+   everything else still works.
+5. Reboot the box (`sudo reboot`). After it comes back, `/admin/background` must
+   still say **paused**, and no film must have started preparing.
+6. Press **Resume background work**. Within a minute or two, a waiting film must
+   begin preparing again, and `/ask` must answer once the helper wakes.
+
+**What this proves:** the pause is real, it survives a restart, it never touches
+reading or playing, and resume does not switch on anything you had turned off.
+**What it does not prove:** the *Stop this film now* path, which costs a
+half-finished encode — do that one only when you are willing to lose the work.
+
+### 29.4 Write down
+
+- which page was hardest to read in daylight,
+- the four pages you opened while paused and whether any of them said anything
+  about the pause that was confusing,
+- whether the box restarted with the pause still in force,
+- how long resume took to start the first waiting film.
+
+**If it fails:** the pause file is `/srv/ark/api/data/background-paused`; the
+presence of that file is the state. `sudo rm` it only as a deliberate resume, and
+write down what you saw first.

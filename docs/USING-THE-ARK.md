@@ -16,7 +16,10 @@ below still works.
 
 | I want to… | Open this | Then |
 |---|---|---|
-| look something up quickly | `http://ark.lan` | type 1–2 words, tap **Search everything** |
+| look something up quickly | `http://ark.lan` | type 1–2 words, tap **Search the library, guides and books** |
+| find a film to watch | `http://ark.lan/media/` | the films have their own list — the search box does not cover them |
+| read this in daylight | `http://ark.lan` | **Light colours** at the bottom of the page |
+| make the box quiet for a while | `https://ark.lan:8443/admin/background` | **Pause background work** (owner only) |
 | read an encyclopedia offline | `http://ark.lan/kiwix/` | pick a collection, use the search box inside it |
 | read a book | `http://ark.lan/books/` | browse or search, then **Read in browser** |
 | fix something today | `http://ark.lan/vault/` | open a manual; print the PDF if you want paper |
@@ -33,6 +36,49 @@ below still works.
 | keep the household's notes and files safe | `ssh pi@ark.local` | `sudo ark-backup --to /srv/ark/backup`, then copy that folder to a stick |
 
 Same box, three addresses. Use whichever your device can resolve.
+
+---
+
+## 0. The front page, and what it is telling you
+
+The line under the heading is the box answering a question nobody asked out loud:
+*is any of this working?* It starts by saying **"Checking what is on the box…"** and
+then either gives you the figures or says plainly that it could not check.
+
+**If it says the box is not answering its own status check,** the manuals, the
+household page, the cards and the Maps page are plain pages and should still open.
+The library, the books, the board and the films need the part that is not
+answering, so one of those may not. The line links to the honest answer.
+
+**The order of the page is on purpose.** *If something is wrong* comes first,
+because when something is wrong you should not have to scroll past the
+entertainment to find the first-aid card. *Read, watch, play* is next and is a
+real section rather than a footnote: a long evening with no internet is what the
+box is for as much as a burst pipe is. *For everybody here* is the board and the
+File Box.
+
+**Today / Together.** If the owner pins a message that reads like a plan — *"Film
+at eight in the front room"* — it appears near the top of the front page. It is
+the same message that is on the board, with the same pin and the same
+**Sorted out** button, so there is no second list to keep. When there is no plan,
+there is no panel at all. When a plan is more than a day and a half old the panel
+says when it was written, because the box cannot know whether the evening
+happened.
+
+**Light colours.** At the bottom of every page. Tap it and the same pages come
+back white with dark text — for reading in a garden, or on a phone whose screen
+turns into a mirror in the sun. Your choice is remembered on that device, and it
+works with JavaScript turned off.
+
+**Where your place is kept**, which is four different promises:
+
+| What you did | Where it is kept | What that means |
+|---|---|---|
+| Watched half a film | **this browser, on this device** | close the tab and it is still there; another phone starts from the beginning |
+| Played a game as a guest | nowhere | guest play does not save |
+| Played a game under a name | **on the Ark**, under that name | any device that uses the same name sees the save |
+| Downloaded a map region | **this browser, on this device** | another phone needs its own copy |
+| Wrote a message or shared a file | **on the Ark** | everyone on this Wi-Fi sees it |
 
 ---
 
@@ -136,7 +182,7 @@ who needs this most will not be the person who set it up.
 
 ## 3. The features, one at a time
 
-### 3.1 Search everything — `http://ark.lan/search`
+### 3.1 Search, and what it covers — `http://ark.lan/search`
 
 **What it is for:** the moment where you do not know *which* library has the answer.
 
@@ -147,6 +193,11 @@ blocks:
 - **From the library** — actual encyclopedia articles
 - **From the manuals** — your own pages
 - **From the bookshelf** — books by title or author
+
+**What it does _not_ cover:** films and games. Each of those has its own list
+(`/media/` and `/arcade/`), and the button under the box says so rather than
+pretending to search everything. There is no full-text index of a film or a game to
+search — a name or a picture is how you find those.
 
 **How to use it:** one or two words. `bleach water`, `burn`, `radiator leak`. Short and
 specific beats a sentence. Tap any result to read it right there.
@@ -470,6 +521,10 @@ Two extras are on the page:
 
 - **Speed** — 0.75× to 2×.
 - **Small window** — picture-in-picture, where the browser allows it.
+
+**If the owner has paused background work,** every film that is already prepared
+still plays; only a film that is still being prepared waits. The shelf says which
+is which. Nothing about watching changes.
 
 **It remembers where you stopped, on this device.** Close the tab, come back, and
 the film offers *Start over (resume at 12:34)*. That position lives in **this
