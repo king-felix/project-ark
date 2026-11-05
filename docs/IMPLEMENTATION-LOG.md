@@ -7370,6 +7370,13 @@ first phase; the migration to schema **9** ran at the `ark-api` restart.
 * **The live clock was not set, and no live session was disturbed.** The only
   write to the clock path was `--dry-run`, which validates and stops before
   `date`.
+* Re-deployed after the review (§58.10): **`dac7770`**, `60-portal,65-admin,90-verify`,
+  38 s, **91 ✓ and no ✗** again, receipt `ok: true`, `problems:` empty. The
+  changed files were compared byte for byte with the repo again — `ark_admin.py`,
+  `ark_clock.py`, `ark_security.py`, `ark_db.py`, `ark-set-clock` and
+  `90-verify.sh` — all identical. On the box, as `pi` and **without** root:
+  `--show` prints the reading and `--unix …` is refused with **rc 3** — the
+  privilege boundary, re-proved on the real machine rather than in a test.
 
 ### 58.9 What is not proved
 
