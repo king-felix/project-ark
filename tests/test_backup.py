@@ -869,3 +869,60 @@ def test_the_verifier_asks_whether_the_pages_can_open_the_copy():
     # ...and it is a soft line: a copy the pages cannot open must not turn a
     # serving box into a failure.
     assert 'say_soft "copy readable"' in text
+
+
+# ---------------------------------------------------------------------------
+#  a clock that was put back must not delete the copy that was just taken
+# ---------------------------------------------------------------------------
+def _load_backup_tool():
+    import importlib.machinery
+    import importlib.util
+    loader = importlib.machinery.SourceFileLoader("ark_backup_tool", str(BACKUP))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def _pretend_bundle(folder: Path, name: str) -> Path:
+    made = folder / name
+    (made / "database").mkdir(parents=True)
+    (made / "manifest.json").write_text("{}", encoding="utf-8")
+    return made
+
+
+def test_a_backward_clock_change_never_prunes_the_copy_it_just_took(tmp_path):
+    """A bundle is named with the wall clock, and the clock can be corrected.
+
+    Put *back*, a fresh bundle is named earlier than every bundle already on the
+    card, so "keep the newest N by name" would delete the copy this run had just
+    made — the one copy that has never been read back.  The copy being taken is
+    never the one pruned.
+    """
+    tool = _load_backup_tool()
+    dest = tmp_path / "backups"
+    dest.mkdir()
+    _pretend_bundle(dest, "ark-backup-20261001-090000")
+    _pretend_bundle(dest, "ark-backup-20261002-090000")
+    fresh = "ark-backup-20230101-090000"
+    _pretend_bundle(dest, fresh)
+
+    kept, removed = tool.prune(dest, 2, protect=fresh)
+
+    assert (dest / fresh).exists(), "the bundle this run made was pruned"
+    assert kept == 2 and removed == 1
+    assert sorted(p.name for p in dest.iterdir()) == [
+        fresh, "ark-backup-20261002-090000"]
+
+
+def test_the_newest_backups_are_still_the_ones_kept_when_nothing_is_protected(tmp_path):
+    tool = _load_backup_tool()
+    dest = tmp_path / "backups"
+    dest.mkdir()
+    for name in ("ark-backup-20261001-090000", "ark-backup-20261002-090000",
+                 "ark-backup-20261003-090000"):
+        _pretend_bundle(dest, name)
+    kept, removed = tool.prune(dest, 2)
+    assert (kept, removed) == (2, 1)
+    assert sorted(p.name for p in dest.iterdir()) == [
+        "ark-backup-20261002-090000", "ark-backup-20261003-090000"]

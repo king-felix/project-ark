@@ -41,7 +41,8 @@ for f in main.py ark_db.py ark_atomic.py ark_maintenance.py ark_db_replace.py ar
          ark_library.py ark_arcade.py ark_arcade_install.py ark_arcade_web.py \
          ark_romdb.py ark_romdb_build.py ark_rommeta.py \
          ark_review.py ark_household.py ark_cards.py ark_qr.py ark_essentials.py \
-         ark_network.py ark_ai.py ark_ingest.py ark_doors.py ark_pause.py \
+         ark_network.py ark_clock.py ark_ai.py ark_ingest.py ark_doors.py \
+         ark_pause.py \
          ark_space.py ark_media.py ark_media_jobs.py ark_media_web.py \
          ark_maps.py ark_map_store.py ark_map_web.py ark_map_admin.py; do
   ark_copy "$ARK_SRC/api/$f" "$API_DIR/$f" 644 "$ARK_PI_USER:$ARK_PI_GROUP"

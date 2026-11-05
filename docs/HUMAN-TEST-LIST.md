@@ -1500,3 +1500,59 @@ half-finished encode — do that one only when you are willing to lose the work.
 **If it fails:** the pause file is `/srv/ark/api/data/background-paused`; the
 presence of that file is the state. `sudo rm` it only as a deliberate resume, and
 write down what you saw first.
+
+---
+
+## 30. The Clock page — set the time from a phone (10 minutes, safe on the live box)
+
+This one is deliberately *not* disruptive. Every step sets the clock to the time
+it already is (within a minute), so nothing on the box is falsified and no
+timestamp jumps. The disruptive cases — a correction years forward, a correction
+backwards, a clock before the certificate — are proved in `tests/test_clock.py`
+against a simulated clock, and must **not** be tried on a box somebody is using.
+
+1. On a phone on the box's Wi-Fi, open `https://ark.local:8443/admin/clock`.
+   Compare **The date**, **The time** and the timezone with the phone's own clock
+   and with where you are. They must agree to the minute.
+2. **Leave the page open for ten minutes.** Do not touch it.
+3. Come back and press **Check this time before using it** with the field empty.
+   The proposal must show a time **within a minute of now** — not the time the
+   page was opened. (This is the whole point of step 2.)
+4. Press **Set the box's clock to this time**. The banner must name the time the
+   box now shows, and **Last corrections** must have one new line naming both
+   instants and a delta of a minute or less.
+5. Reload the page. The date and time must still be right, and your sign-in must
+   still work — a correction must not end the session you made it with.
+6. **Now do it without scripts.** Turn JavaScript off for the site (or use a
+   browser that has it off) and reload. The page must still show the time, and the
+   form must still work: type the box's own time as UTC (the page prints it —
+   “The same moment in UTC”), choose **UTC**, and press the check button. Then go
+   back without applying.
+7. Reboot (`sudo reboot`), then read the page again. The time must be right, not
+   the day the card was written — that is `fake-hwclock` doing its job.
+8. Open **History** and look at the line. It must name the two instants and the
+   jump, and must not contain a password or a token.
+
+**What this proves:** the page reads the box's clock; the device's time is taken
+at the press; the proposal comes first; the form works with no script; a
+correction keeps the session and is remembered across a cold boot.
+**What it does not prove:** the certificate-not-yet-valid recovery (below), and
+the effect of a *large* jump — both are test-only, on purpose.
+
+**FOR YOU — the one case that needs a box nobody is using.** If a box's clock is
+ever set *before* the date on its own certificate, the browser refuses the
+management address, so the Clock page cannot be opened. To prove the documented
+recovery, use a spare card, not this box:
+
+```bash
+sudo ark-set-clock --show                 # note the clock, timezone, certificate date
+sudo date -u -s "@$(date -u -d '2024-01-01' +%s)"   # only on a spare card
+#   → open https://ark.local:8443/admin/clock in a browser: it must refuse (TLS)
+sudo ark-set-clock --utc "<the real time>"           # the documented recovery
+#   → the page must open again, no certificate change, nothing weakened
+```
+
+**If it fails:** `sudo ark-set-clock --show` reads the clock without any
+privilege; `tail -n 20 /srv/ark/logs/clock.log` shows every change; the history
+line is in **History** and in `ark.db` (`action='clock-set'`).
+

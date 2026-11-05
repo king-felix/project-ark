@@ -287,16 +287,25 @@ class IssuedSession:
 
 def create_session(conn: sqlite3.Connection, *, admin_id: int | None, kind: str,
                    epoch: int, ip: str = "", lifetime: int | None = None) -> IssuedSession:
-    """Mint an opaque token; only its digest is written down."""
+    """Mint an opaque token; only its digest is written down.
+
+    Both clocks are recorded: the wall clock for the history and every page that
+    says "3 minutes ago", and the *monotonic* clock for the two timeouts, which
+    are elapsed-time questions and must not be answerable by a person correcting
+    the date on the box.
+    """
     token = new_token()
     csrf = new_csrf()
     now = time.time()
+    mono = time.monotonic()
     ttl = lifetime if lifetime is not None else (ABSOLUTE_TIMEOUT if kind == "admin"
                                                  else PREAUTH_LIFETIME)
     cur = conn.execute(
         "INSERT INTO admin_sessions (admin_id, token_sha, csrf, kind, created, last_seen,"
-        " abs_expires, epoch, ip) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (admin_id, token_digest(token), csrf, kind, now, now, now + ttl, epoch, ip[:64]),
+        " abs_expires, epoch, ip, mono_created, mono_seen)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (admin_id, token_digest(token), csrf, kind, now, now, now + ttl, epoch, ip[:64],
+         mono, mono),
     )
     return IssuedSession(token=token, csrf=csrf, sid=int(cur.lastrowid))
 
@@ -306,6 +315,14 @@ def load_session(conn: sqlite3.Connection, token: str, epoch: int) -> sqlite3.Ro
 
     Runs on a writable connection: expiry is enforced by deleting, so a token
     that is past its life never lingers as a usable key.
+
+    **The two timeouts are judged by elapsed time.**  ``time.monotonic()`` cannot
+    be changed by anything a person does to the box, so correcting the clock
+    neither ends a live session (forward) nor leaves one usable for hours of
+    somebody else's time (backward).  The wall clock is still checked, but only
+    for the two things it is actually good for: a row written in another boot,
+    and a row with no monotonic reading at all (written before migration 9),
+    which is judged exactly as it was before.
     """
     if not token or len(token) > 200:
         return None
@@ -314,23 +331,51 @@ def load_session(conn: sqlite3.Connection, token: str, epoch: int) -> sqlite3.Ro
     if row is None:
         return None
     now = time.time()
-    stale = (
-        int(row["epoch"]) != int(epoch)                  # issued before this boot
-        or now < float(row["created"]) - CLOCK_SLACK      # clock moved backwards
-        or now > float(row["abs_expires"])                # 8-hour ceiling
-        or now > float(row["last_seen"]) + IDLE_TIMEOUT   # 30-minute idle
-    )
+    mono = time.monotonic()
+    # A records file put back from an older bundle has no such columns until the
+    # next migration runs; that is a supported state, judged by the wall clock.
+    columns = row.keys()
+    created_mono = float(row["mono_created"]) if "mono_created" in columns else 0.0
+    seen_mono = float(row["mono_seen"]) if "mono_seen" in columns else 0.0
+    if created_mono != 0 and seen_mono != 0:
+        waited = mono - seen_mono
+        lived = mono - created_mono
+        stale = (
+            int(row["epoch"]) != int(epoch)      # issued before this boot
+            or lived < 0 or waited < 0           # monotonic went backwards: fail closed
+            or lived > ABSOLUTE_TIMEOUT          # 8 hours of elapsed time
+            or waited > IDLE_TIMEOUT             # 30 minutes of elapsed time
+        )
+    else:
+        stale = (
+            int(row["epoch"]) != int(epoch)                  # issued before this boot
+            or now < float(row["created"]) - CLOCK_SLACK      # clock moved backwards
+            or now > float(row["abs_expires"])                # 8-hour ceiling
+            or now > float(row["last_seen"]) + IDLE_TIMEOUT   # 30-minute idle
+        )
     if stale:
         conn.execute("DELETE FROM admin_sessions WHERE id = ?", (row["id"],))
         return None
     return row
 
 
-def touch_session(conn: sqlite3.Connection, sid: int, last_seen: float) -> None:
+def touch_session(conn: sqlite3.Connection, sid: int, last_seen: float,
+                  mono_seen: float = 0.0) -> None:
+    """Record that the session is still in use — at most once a minute.
+
+    The interval is measured with the monotonic clock when there is one, so a
+    quiet session is not written to the card on every request just because the
+    wall clock was corrected between two of them.
+    """
     now = time.time()
-    if now - float(last_seen) < 60:      # do not write on every single request
+    mono = time.monotonic()
+    if mono_seen:
+        if mono - float(mono_seen) < 60:
+            return
+    elif now - float(last_seen) < 60:      # do not write on every single request
         return
-    conn.execute("UPDATE admin_sessions SET last_seen = ? WHERE id = ?", (now, sid))
+    conn.execute("UPDATE admin_sessions SET last_seen = ?, mono_seen = ? WHERE id = ?",
+                 (now, mono, sid))
 
 
 def drop_session(conn: sqlite3.Connection, sid: int) -> None:
@@ -356,6 +401,13 @@ def login_backoff(conn: sqlite3.Connection, username: str, source: str,
     Counted per account *and* per source, so neither one noisy client nor one
     targeted account can be hammered — and a successful sign-in clears the
     count, so nobody stays locked out for long.
+
+    **An attempt stamped in the future is not counted.**  A box whose clock lost
+    time records its failures with a time that is still ahead of the corrected
+    clock; counting those would lock the owner out of the very page that fixes
+    the clock — for as long as the jump was.  They are noise from a wrong clock,
+    not evidence about this sign-in.  The wait is also capped, so nothing on the
+    card can become a lockout longer than ``BACKOFF_MAX``.
     """
     now = time.time() if now is None else now
     name = normalise_username(username)
@@ -363,6 +415,7 @@ def login_backoff(conn: sqlite3.Connection, username: str, source: str,
         "SELECT ts, username, source FROM login_attempts WHERE ok = 0 AND ts >= ?",
         (now - FAIL_WINDOW,),
     ).fetchall()
+    rows = [r for r in rows if float(r["ts"]) <= now + CLOCK_SLACK]
     per_user = [r for r in rows if r["username"] == name]
     per_src = [r for r in rows if r["source"] == source]
     worst = max(len(per_user), len(per_src))
@@ -370,7 +423,7 @@ def login_backoff(conn: sqlite3.Connection, username: str, source: str,
         return 0
     delay = min(BACKOFF_MAX, BACKOFF_BASE * (2 ** (worst - FREE_ATTEMPTS)))
     newest = max((float(r["ts"]) for r in (per_user or per_src)), default=0.0)
-    return max(0, int(round(newest + delay - now)))
+    return max(0, min(BACKOFF_MAX, int(round(newest + delay - now))))
 
 
 def record_login(conn: sqlite3.Connection, username: str, source: str, ok: bool,
@@ -381,7 +434,11 @@ def record_login(conn: sqlite3.Connection, username: str, source: str, ok: bool,
     if ok:
         conn.execute("DELETE FROM login_attempts WHERE ok = 0 AND username = ?",
                      (normalise_username(username),))
-    conn.execute("DELETE FROM login_attempts WHERE ts < ?", (now - 7 * 86400,))
+    # Old rows go, and so do rows stamped far in the future: those were written
+    # while the clock was wrong, can never fall inside a window, and would
+    # otherwise accumulate for ever on a box whose clock is put back.
+    conn.execute("DELETE FROM login_attempts WHERE ts < ? OR ts > ?",
+                 (now - 7 * 86400, now + 7 * 86400))
 
 
 def peer_is_trusted(host: str) -> bool:

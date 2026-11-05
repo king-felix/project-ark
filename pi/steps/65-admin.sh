@@ -22,7 +22,7 @@ PLAYER_SITE=/etc/nginx/sites-available/ark-players
 # page (the Wi-Fi a person saves, and the one-time restart on their own).  A
 # phase that installs the router without its modules leaves an ark-api that
 # cannot import at all, so `--only 65-admin` on its own has to bring it too.
-for f in ark_db.py ark_security.py ark_admin.py ark_network.py ark_recover.py; do
+for f in ark_db.py ark_security.py ark_admin.py ark_network.py ark_clock.py ark_recover.py ark_atomic.py; do
   ark_copy "$ARK_SRC/api/$f" "$API_DIR/$f" 644 "$ARK_PI_USER:$ARK_PI_GROUP"
 done
 ark_copy "$ARK_SRC/portal/assets/ark-admin.css" \
@@ -32,6 +32,29 @@ ark_copy "$ARK_SRC/portal/assets/ark-admin.css" \
 ark_copy "$ARK_SRC/bin/ark-tls-cert" /usr/local/sbin/ark-tls-cert 755 root:root
 ark_copy "$ARK_SRC/bin/ark-admin-recover" /usr/local/sbin/ark-admin-recover 700 root:root
 ark_ok "installed /usr/local/sbin/ark-tls-cert and ark-admin-recover (root only)"
+
+# The one program that sets the time.  Its --show/--check/--dry-run modes need no
+# privileges, so the page, the verifier and a person on the console can all ask
+# what the box believes without being root; only --unix needs the privilege.
+ark_copy "$ARK_SRC/bin/ark-set-clock" /usr/local/sbin/ark-set-clock 755 root:root
+ark_ok "installed /usr/local/sbin/ark-set-clock — clock reading is open, setting is root"
+
+if clock_check="$(runuser -u "$ARK_PI_USER" -- env ARK_ROOT="$ARK_ROOT" \
+      /usr/local/sbin/ark-set-clock --check 2>&1)"; then
+  if grep -qx 'clock=ok' <<<"$clock_check"; then
+    ark_ok "the Clock page can read the box's time as $ARK_PI_USER (sudo -n ark-set-clock --check)"
+  else
+    ark_warn "ark-set-clock answered, but not with clock=ok: ${clock_check:-no output}"
+  fi
+else
+  ark_warn "the Clock page cannot read the box's time as $ARK_PI_USER: ${clock_check:-no output}"
+fi
+
+if sudo -n -u root /usr/local/sbin/ark-set-clock --unix 1793000000 --dry-run >/dev/null 2>&1; then
+  ark_ok "the root path validates and would set a time (a dry run — the clock was NOT touched)"
+else
+  ark_warn "the Clock page cannot reach the root helper for a dry run — setting the time will fail"
+fi
 
 # ---- certificate ------------------------------------------------------------
 # Idempotent: it keeps an existing certificate until 30 days before expiry.

@@ -1,8 +1,8 @@
 # Project ARK — requirements matrix
 
-**Date:** 3 November 2026
+**Date:** 4 November 2026
 **Branch:** `feature/admin-hardening`
-**Suite:** `893 passed, 2 skipped` (`895 collected`, 36 files; `python -m pytest tests --ignore=tests/test_maps_browser.py -o addopts='--strict-markers' -q`, Mac, throwaway databases) — the two skips are QR cross-checks that need `qrcode` / `opencv-python-headless` on the machine; the three Chromium maps tests are excluded by the project's usual command
+**Suite:** `1146 passed, 2 skipped` (49 files; `python -m pytest -o addopts='--strict-markers' -q`, Mac, throwaway databases; the two skips are the QR cross-checks that need `qrcode`/`opencv-python-headless`); the three Chromium maps tests are excluded by the project's usual command
 **Hardware:** **deployed 25 Oct 2026** — `90-verify` green, `/api/ready` 200, the doors, the book
 route rules, a bundle and the arcade origin all answered on the Pi (`docs/IMPLEMENTATION-LOG.md`
 §15), `ark-arcade --import` answered honestly three times on the box (§18.4), and the name-from-the-
@@ -479,6 +479,7 @@ household member has opened `/household` on a phone.
 | C | PARTIAL | stage 3–6 fixes yes; thermal/jobs/search cancellation no |
 | D | PARTIAL (code + test) | review, cards, pack and household page yes; translation and one-page print no; light colours and the reading order added 4 Nov |
 | R18 | DONE (code + test) | containment, feature states, one pause, durable film publish, Maps app update, reading order, light colours; **no phone, no Pi deploy yet** |
+| R19 | DONE (code + test) | page, proposal, bounds, helper, audit, elapsed-time sessions, backup retention; real phone and a certificate-not-yet-valid box are human work |
 
 **What "DONE (code + test)" deliberately does not mean:** deployed, seen on a phone, or
 measured on the card. Every DONE row above still needs its line in the §8.9 walk-through
@@ -887,6 +888,46 @@ the kick file was consumed by a real importer run; `/maps/api/app` returns
 real full card; a physical power cut; and **the search target, which the Pi
 missed** — 4–8 s against 1500 ms, measured three ways in log §56.8, with the
 decision left to the owner in §57.6.
+
+---
+
+## R19 — the box's clock, and the person who can correct it
+
+**Status: DONE (code + test) for everything a machine can prove; PARTIAL for a
+real phone and for the one recovery case that needs a box whose certificate is
+not yet valid.** The box repairs its own clock after a cut
+(`ark_self_heal.fix_clock`, R3); this is the case that rule deliberately leaves
+alone — a clock **ahead** of the truth, or so far behind that the card is no
+evidence at all.
+
+| Acceptance sentence | Where | Test |
+|---|---|---|
+| The owner's page shows the date, the time, the **timezone name and the offset in force**, the same moment in UTC, whether the network is keeping time, and what is remembered for the next cold boot (or that nothing is) | `ark_clock.reading()`, `/admin/clock` | `test_clock.py::test_the_page_shows_the_date_the_time_and_the_timezone` |
+| Setting the clock needs a signed-in owner, the secure address, and the form's token; every refusal changes nothing | `_gate_tls`, `_committed`, `/admin/clock/apply` | `::test_the_clock_page_needs_the_secure_address`; `::test_the_clock_page_needs_a_sign_in`; `::test_applying_needs_the_form_token` |
+| The proposed time is shown — before and after, the size of the jump in words — before anything is applied | `clock_propose()`, `_proposal_page()` | `::test_the_proposal_shows_both_times_before_anything_is_applied` |
+| The device's time is **read when the button is pressed**, never a value drawn when the page loaded | the form's submit handler | `::test_the_device_time_is_read_at_the_press_not_at_the_page` |
+| A typed time works with no JavaScript at all, and its timezone is never guessed: an offset typed in the field wins, otherwise UTC or box-local as chosen | `ark_clock.parse_text()`, `epoch_of()` | `::test_the_form_works_with_no_script_at_all`; `::test_a_typed_offset_wins_over_everything`; `::test_utc_is_the_default_and_local_uses_the_offset_shown` |
+| A local time in the other daylight-saving period is flagged rather than silently moved | `proposal()` warning | `::test_a_local_time_in_the_other_daylight_period_is_flagged_not_silently_moved` |
+| Impossible calendar dates are refused by real date arithmetic, not by a pattern | `parse_text()` | `::test_an_impossible_calendar_date_is_refused_by_arithmetic_not_a_pattern` (nine cases) |
+| The accepted window is absolute (2020…2100), so a **correct** date is never refused because the box's own clock is wrong | `EARLIEST`/`LATEST`, `bounds_problem()` | `::test_a_correct_date_is_accepted_even_when_the_box_believes_it_is_2016`; `::test_a_date_outside_the_window_is_refused_and_says_why` |
+| One narrow root helper: validated arguments, argv arrays (no shell), and check-only modes that need no privilege | `pi/bin/ark-set-clock`, `ark_clock.apply()` | `::test_the_helper_reads_the_clock_without_any_privilege`; `::test_the_helper_refuses_to_set_the_clock_without_root`; `::test_the_helper_refuses_bad_arguments_before_running_anything`; `::test_neither_the_page_nor_the_helper_can_reach_a_shell` |
+| A change is persisted through the box's existing mechanism (`fake-hwclock`), and a tool that is missing is reported rather than raised | `pi/bin/ark-set-clock` → `ark_atomic.save_clock()` | `::test_the_root_path_sets_and_persists_with_an_argv_array` |
+| A helper that answered but left the clock where it was is a failure, not a success | `ark_clock.apply()`, `set_clock()` | `::test_a_change_that_did_not_stick_is_a_failure_not_a_success`; `::test_a_helper_that_refuses_is_not_described_as_having_changed_nothing` |
+| Every correction is audited with both instants, the jump and the device's claim, and nothing about it is public | `ark_clock.audit_detail()`, `audit_log` | `::test_applying_runs_the_helper_once_with_validated_arguments`; `::test_a_backward_correction_is_recorded_with_both_instants`; `::test_nothing_about_the_clock_is_public`; `::test_the_history_is_not_readable_without_signing_in` |
+| A correction does not end a live session (forward) and does not extend one (back) — timeouts are elapsed time | `ark_security.load_session()` (migration 9) | `::test_a_session_survives_the_clock_being_put_forward`; `::test_a_session_survives_the_clock_being_put_back`; `::test_a_session_still_ends_after_thirty_quiet_minutes`; `::test_a_monotonic_reading_that_went_backwards_fails_closed` |
+| Failures recorded by a wrong clock cannot lock the owner out of the page that fixes it | `ark_security.login_backoff()` | `::test_failures_recorded_by_a_wrong_clock_do_not_lock_the_owner_out`; `::test_a_real_run_of_failures_still_backs_off_and_is_capped` |
+| A backwards correction never deletes the backup just taken | `pi/bin/ark-backup` `prune(protect=…)` | `test_backup.py::test_a_backward_clock_change_never_prunes_the_copy_it_just_took` |
+| A clock too wrong for the HTTPS door (certificate not yet valid) has a documented console recovery, without weakening TLS | `docs/ADMIN.md` §13.3; `ark-set-clock --show/--utc` | console commands read in review; `90-verify` proves the reading and a dry run as the unprivileged user on the box |
+
+**What is still missing (PARTIAL):**
+* **A real phone has not used this page** — `docs/HUMAN-TEST-LIST.md` §30.
+* **The certificate-not-yet-valid recovery is reasoned, not observed**: producing it
+  means putting the live box's clock *before* its certificate, which this pass
+  deliberately did not do. The recovery command is proved; the browser's refusal is
+  not.
+* No hardware real-time clock exists on a Pi 4, so "persisted" means `fake-hwclock`
+  — correct across a cold boot, and explicitly not across a card moved to another
+  box.
 
 ---
 

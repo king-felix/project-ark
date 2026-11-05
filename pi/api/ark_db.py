@@ -43,7 +43,7 @@ ARK_ROOT = Path(os.environ.get("ARK_ROOT", "/srv/ark"))
 DB_PATH = Path(os.environ.get("ARK_DB", str(ARK_ROOT / "api" / "data" / "ark.db")))
 MARKER_PATH = Path(os.environ.get("ARK_MARKER", str(DB_PATH.parent / "ark.installed")))
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 # ---------------------------------------------------------------------------
 #  migrations — append, never edit an entry that has already shipped
@@ -479,6 +479,25 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             "ALTER TABLE space_reservations ADD COLUMN pid INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE space_reservations ADD COLUMN boot TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE space_reservations ADD COLUMN kind TEXT NOT NULL DEFAULT ''",
+        ],
+    ),
+    (
+        9,
+        [
+            # -- a session's life is elapsed time, not wall time -------------
+            # A session was expired by comparing two readings of the wall clock, so
+            # a clock correction did two wrong things at once: put forward, it
+            # ended every live session (including the one being used to make the
+            # correction); put back, it made an eight-hour session last until the
+            # clock caught up again.  Both columns record what `time.monotonic()`
+            # said when the session was made and last used, which cannot be moved
+            # by a person, by NTP or by a dead battery.  The rows that predate the
+            # columns keep working: a zero there means "written before this column
+            # existed", and those are judged by the wall clock exactly as before —
+            # and they are all gone anyway, because a session does not outlive the
+            # boot it was issued in.
+            "ALTER TABLE admin_sessions ADD COLUMN mono_created REAL NOT NULL DEFAULT 0",
+            "ALTER TABLE admin_sessions ADD COLUMN mono_seen REAL NOT NULL DEFAULT 0",
         ],
     ),
 ]

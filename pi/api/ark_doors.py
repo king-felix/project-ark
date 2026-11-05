@@ -164,6 +164,11 @@ DOORS: Tuple[Dict[str, str], ...] = (
      "who": "the owner",
      "what": "Where the box is now, a Wi-Fi saved for later, and one restart on "
              "your own network."},
+    {"group": "Behind the sign-in", "address": "https://{host}:8443/admin/clock",
+     "name": "Clock",
+     "who": "the owner",
+     "what": "What date and time the box believes it is, and setting it by hand from "
+             "a phone or a computer — after checking the change first."},
     {"group": "Behind the sign-in", "address": "https://{host}:8443/admin/health",
      "name": "What is working",
      "who": "the owner",

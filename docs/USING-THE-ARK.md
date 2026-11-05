@@ -20,6 +20,7 @@ below still works.
 | find a film to watch | `http://ark.lan/media/` | the films have their own list — the search box does not cover them |
 | read this in daylight | `http://ark.lan` | **Light colours** at the bottom of the page |
 | make the box quiet for a while | `https://ark.lan:8443/admin/background` | **Pause background work** (owner only) |
+| put the date and time right | `https://ark.lan:8443/admin/clock` | check the suggested time, then **Set the box's clock to this time** (owner only) |
 | read an encyclopedia offline | `http://ark.lan/kiwix/` | pick a collection, use the search box inside it |
 | read a book | `http://ark.lan/books/` | browse or search, then **Read in browser** |
 | fix something today | `http://ark.lan/vault/` | open a manual; print the PDF if you want paper |
@@ -849,7 +850,7 @@ Re-provisioning is idempotent: re-running any phase repairs it rather than dupli
 | Cannot reach it from a phone at all | hotspot not up | `sudo ark-mode hotspot`, then join `The-Ark-Offline` |
 | Out of space | something large added by hand | **What is working** shows which folder holds what; `sudo du -sh /srv/ark/*` for the detail; `ark-card-report` shows the card and what is kept back; the downloader keeps 7 % free on its own |
 | Forgot the address | — | `ark.lan`, `ark.local`, `10.42.0.1` — all the same box |
-| After a power cut the times look wrong (“3 hours ago” about something made yesterday) | the Pi has no clock battery, so it woke up in the past | nothing — the box sets the clock from the newest file on the card before any page opens. If it is still wrong, `sudo ark-self-heal --dry-run` says what it thinks |
+| The date or time is wrong (“3 hours ago” about something made yesterday, or a date in the future) | the Pi has no clock battery, so after a power cut it woke up in the past — or a wrong date was written once and every file since agrees with it | nothing, usually: the box sets the clock from the newest file on the card before any page opens. If it is still wrong, open `https://ark.lan:8443/admin/clock` and set it from your phone (it shows the change first). A console can do the same: `sudo ark-set-clock --show`, then `sudo ark-set-clock --utc "2026-11-04 10:00"` |
 | A page mentions a repair, or a file was “set aside” | the box found a half-written file after a cut and kept it rather than using it | nothing; `cat /srv/ark/logs/self-heal.log` reads like a sentence. A *repair* is not a fault — only the line under `problems` needs a person |
 | The box ran on after a cut with an empty shelf, or a page said the records could not be opened | the database would not open | it keeps the damaged file and puts back the newest recovery copy whose database and files agree; if none does, **What is working** names it. A bundle is still the cure for a lost card: `sudo ark-backup --to /srv/ark/backup` |
 
@@ -877,6 +878,9 @@ sudo ark-zim-resolve --profile full    # queue more offline content
 /usr/local/sbin/ark-arcade --import F --slug S --title T --system gb  # a game of your own
 /usr/local/sbin/ark-arcade --discover --auto  # what the weekly check runs
 /usr/local/sbin/ark-arcade --list      # suggestions waiting, and why refused
+sudo ark-set-clock --show              # what time the box believes, and in which timezone (no root needed)
+sudo ark-set-clock --utc "2026-11-04 10:00"   # set it from a console; --dry-run checks without changing
+sudo ark-set-clock --unix 1793786400   # or one instant, in seconds since 1970
 sudo ark-tls-cert --show               # the owner's-door certificate fingerprint
 sudo ark-admin-recover --list          # locked out? console only, never the web
 

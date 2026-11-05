@@ -1264,6 +1264,162 @@ would fail at the *end*, after the whole file had already crossed the network.
 
 ---
 
+### 13.3 When the box's clock is wrong — the **Clock** page
+
+**Where it is:** `https://ark.local:8443/admin/clock` — the **Clock** link in the
+owner's bar, behind the same sign-in as every other owner page, over HTTPS only.
+
+#### Why a page is needed at all
+
+After a power cut the box already repairs its own clock: the newest file on the
+card is the best evidence of the real time, and if anything on the card is stamped
+later than the clock the box is put forward to it (two minutes of slack). That
+rule is deliberately one-way and deliberately cautious, so two cases are left for a
+person:
+
+* **the clock is ahead of the truth** — a wrong date was written once, and every
+  file made since agrees with it, so the card cannot tell anyone otherwise;
+* **the clock is far enough behind that the card is no evidence** — a cloned card,
+  or a card whose newest file is years later than the clock, which
+  `ark_self_heal.CLOCK_MAX_AHEAD` refuses to follow on purpose.
+
+#### What the page shows
+
+The date, the time, the **timezone the box displays times in** (its name and the
+offset in force right now), the same moment in UTC, whether the box is currently
+keeping time from the network, and what `fake-hwclock` has written down for the
+next cold boot. A box with no `fake-hwclock` says so: it is right until it is
+switched off at the wall, and then it starts from the day the card was written.
+
+#### Setting it — check first, then apply
+
+The form offers the clock on the device you are holding as a **suggestion**, never
+as an authority:
+
+1. **The device's reading is taken when you press the button**, not when the page
+   was drawn. A page left open all afternoon offers the time it is now. (With
+   scripts off, the field is simply empty and you type the time yourself — the
+   whole page works without JavaScript.)
+2. Pressing **Check this time before using it** changes nothing. It shows the box's
+   time *now*, the time it *would* become, the size of the jump in words
+   ("forward by 3 days 4 hours"), and where the number came from.
+3. Only **Set the box's clock to this time** calls the helper. That second press is
+   a form POST with the session's token, so a page left open for half an hour is
+   refused ("that form expired") rather than silently applied.
+
+#### Reading a time unambiguously
+
+A typed time is read in one of three ways, and the page says which:
+
+* **with its own offset** — `2026-11-04T09:30:00+01:00` or `...09:30:00Z`. This
+  wins over everything else and is the least ambiguous thing you can type;
+* **as UTC** — the default, and the same time everywhere in the world;
+* **as the box's own local time** — using the offset printed beside the choice
+  ("Europe/London, right now +01:00"). The offset is the one in force *now*, so a
+  date in the other daylight-saving period would be off by that shift; the
+  proposal says so in words rather than silently reinterpreting it.
+
+A bare local time is never guessed at, and a time that does not parse is refused
+with the shape expected.
+
+#### The dates it accepts, and why the rule is not relative
+
+Accepted: **1 January 2020 … 1 January 2100**, and only real calendar dates.
+
+The obvious rule — "refuse anything more than a day from what the box says" — is
+circular: it is exactly the box's wrong clock that is being corrected, so a
+*correct* date would be refused by the broken thing being corrected. The window is
+absolute instead, and every refusal says so: *"This limit is about the calendar,
+not about what this box currently believes, so a correct date is never refused
+because the box's own clock is wrong."* `tests/test_clock.py` pins that rule by
+putting the box in 2016 and asking for a date in 2026.
+
+Impossible dates (30 February, 31 April, hour 24, minute 60, a leap day in a
+common year) are refused by constructing a real date, not by pattern-matching one.
+
+#### What a correction does to everything else
+
+* **Signed-in sessions keep working.** Session idle and lifetime are measured with
+  an *elapsed-time* clock (`time.monotonic`, migration 9), which no clock change
+  can move. Before that, putting the clock forward ended every session — including
+  the one being used to make the correction — and putting it back left a session
+  usable until the clock caught up.
+* **Every timestamp written from now on follows the new time.** Nothing already
+  written is rewritten, so an older line can appear to come from after a newer one.
+  The history row (`clock-set`) records **both instants, the size of the jump and
+  the device's claim**, which is what explains the discontinuity to anyone reading
+  the log later. The same fact is written by the helper as one plain line in
+  `/srv/ark/logs/clock.log`.
+* **Scheduled work uses the same clock.** The daily repair at 04:17 and the weekly
+  checks fire against the corrected time; a jump over a scheduled moment may run it
+  once more (a daily pass is idempotent). The heaviest jobs measure their own
+  deadlines by elapsed time already.
+* **A sweep follows the clock.** `ark-self-heal` removes half-written temp files by
+  pattern **and age**; after a large forward jump, every old temp file qualifies and
+  is swept. Published files, libraries, films and the File Box are never in that
+  pattern.
+* **A backup keeps the copy it just took.** Bundles are named with the wall clock,
+  so a correction *backwards* names a fresh bundle earlier than the ones already on
+  the card. Pruning now always protects the bundle the run has just made; without
+  that, "keep the newest two" would delete the newest copy — the one never read
+  back — every time the clock was put back.
+* **Failed sign-ins recorded by a wrong clock do not lock you out.** A box three
+  days fast recorded its failures *in the future*; counting those would lock the
+  owner out of the very page that fixes the clock, for three days. Attempts stamped
+  ahead of the corrected clock are ignored, and the wait is capped.
+
+#### When a wrong clock blocks this page
+
+The management listener is HTTPS with the box's own certificate, and that
+certificate is only valid from the moment it was made. **A box whose clock is set
+before its certificate is refused by the browser** (a "not yet valid" error), so
+the Clock page cannot be reached — the one case where the cure needs the door it
+cannot open. There is no second, weaker door for it: the public listener answers
+404 for `/admin`, and that does not change.
+
+The recovery path is a console or an SSH session, which needs no certificate:
+
+```bash
+sudo ark-set-clock --show                     # what the box believes, and why it may be wrong
+sudo ark-set-clock --utc "2026-11-04 10:00"   # UTC; --local reads it as the box's own time
+sudo ark-set-clock --unix 1793786400          # or one instant, in seconds since 1970
+sudo ark-set-clock --utc "…" --dry-run        # what would change, changing nothing
+```
+
+`--show`, `--check` and `--dry-run` need **no** privilege, so a person can always
+ask the box the time. Only setting it needs root. Then open the page again; if the
+browser still complains, its own cached copy of the certificate can be cleared, and
+`sudo ark-tls-cert --force` replaces the certificate (the fingerprint changes, so
+every device must trust the new one — `sudo ark-tls-cert --show` prints it).
+
+The same commands are the recovery path for a box whose page is unreachable for any
+other reason, and they are the only ones that write the clock.
+
+#### Where it is kept
+
+| What | Where |
+|---|---|
+| The reading, and the last corrections | `ark.db` → `audit_log`, action `clock-set` (shown on the page; not public) |
+| A plain log line per change | `/srv/ark/logs/clock.log` |
+| What the next cold boot starts from | `/etc/fake-hwclock.data`, written by `fake-hwclock save` |
+| The only program that sets the clock | `/usr/local/sbin/ark-set-clock` (`0755 root:root`) |
+| The only page that asks it to | `/admin/clock` (`pi/api/ark_clock.py`) |
+
+#### What it deliberately does not do
+
+* **It does not trust the device's clock.** It is offered, shown, recorded as a
+  suggestion, and validated like anything else a stranger can type.
+* **It does not change the timezone.** Setting the zone would change how every
+  existing timestamp is *displayed*; this page sets the moment, which is the only
+  thing that can be wrong on a Pi with no battery.
+* **It does not fight the network.** If the box is online and keeping time from
+  the network, a hand-set time may be put back within a minute — the proposal says
+  so before you press the button.
+* **It does not let anyone but the owner do it, and it is never public.** The page
+  is behind the sign-in; the audit row is on the owner's page only.
+
+---
+
 ## 14. The network — one Wi-Fi saved, and one restart on it
 
 **Where it is:** `https://ark.local:8443/admin/network` — the **Network** link in the

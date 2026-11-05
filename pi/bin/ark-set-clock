@@ -1,0 +1,252 @@
+#!/usr/bin/env python3
+# =============================================================================
+#  PROJECT ARK — the only program that sets this box's clock
+#
+#  Usage:  ark-set-clock --show                # what the box says, in words
+#          ark-set-clock --check               # the same, as key=value (a monitor)
+#          ark-set-clock --unix 1793000000     # set it to one instant (root)
+#          ark-set-clock --utc "2026-11-04 09:30"   # set it from a reading (root)
+#          ark-set-clock --utc "..." --dry-run # say what would change, change nothing
+#
+#  Why a separate program and not "just let the web program call date":
+#
+#  * **One writer.**  The administrator's page never sets the clock itself; it
+#    asks this program, exactly as the Network page asks `ark-wifi-add`.  One
+#    program to read, one behaviour to test, one thing to audit.
+#  * **Validated arguments, never a shell.**  An instant is an integer inside a
+#    calendar window, checked here *and* in `ark_clock` before any command runs,
+#    and every command is an argv array — there is no string for a shell to
+#    re-read, so there is nothing to interpolate into.
+#  * **A check-only mode for anyone.**  `--show`, `--check` and `--dry-run` need
+#    no privileges at all, so the page, the verifier and a person on the console
+#    can all ask "what does the box think the time is?" without being root.
+#  * **Remembered across a cold boot.**  A Pi has no battery-backed clock, so
+#    after setting the time this calls `fake-hwclock save` (through
+#    `ark_atomic.save_clock`, the same helper `ark_self_heal` uses).  A box whose
+#    tool is missing still keeps correct time until it is powered off — and says so.
+# =============================================================================
+
+import os
+import subprocess
+import sys
+import time
+
+ARK_ROOT = os.environ.get("ARK_ROOT", "/srv/ark")
+sys.path.insert(0, os.path.join(ARK_ROOT, "api"))
+
+import ark_atomic                      # noqa: E402
+import ark_clock                       # noqa: E402
+
+USAGE = ("usage: ark-set-clock --show | --check | --unix SECONDS | "
+         "--utc \"YYYY-MM-DD HH:MM[:SS]\" [--local] [--dry-run]")
+
+EXIT_OK = 0
+EXIT_USAGE = 2
+EXIT_NOT_PERMITTED = 3
+EXIT_FAILED = 5
+EXIT_DID_NOT_STICK = 6
+
+
+def say(*parts):
+    print(*parts)
+
+
+def fail(code, words):
+    print("ark-set-clock: %s" % words, file=sys.stderr)
+    return code
+
+
+def require_root():
+    if os.geteuid() != 0:
+        return fail(EXIT_NOT_PERMITTED,
+                    "setting the clock needs root: sudo ark-set-clock "
+                    "--utc \"YYYY-MM-DD HH:MM\"  (--show, --check and --dry-run "
+                    "need no privileges)")
+    return None
+
+
+def show():
+    seen = ark_clock.reading()
+    say("This box says: %s  (%s, %s)"
+        % (seen["local"], seen["timezone"], seen["offset_words"]))
+    say("             %s" % seen["utc_words"])
+    if seen["synced"] is True:
+        say("Its time comes from the network right now.")
+    elif seen["synced"] is False:
+        say("Its time does not come from the network right now.")
+    else:
+        say("Whether the network keeps its time: not measured on this box.")
+    if seen["stored"]:
+        say("Remembered for the next cold boot: %s" % seen["stored_utc"])
+    else:
+        say("Nothing is remembered for the next cold boot (fake-hwclock is not "
+            "keeping a time here).")
+    say("Helper installed at %s: %s" % (ark_clock.helper_path(),
+                                        "yes" if seen["helper"] else "no"))
+    return EXIT_OK
+
+
+def check():
+    """The machine's view: ``key=value`` lines and nothing that needs reading."""
+    seen = ark_clock.reading()
+    fields = [
+        ("now", str(int(seen["now"]))),
+        ("utc", seen["utc"]),
+        ("timezone", seen["timezone"]),
+        ("offset", seen["offset_words"]),
+        ("stored", seen["stored_utc"] or ""),
+        ("ntp", _word(seen["ntp"])),
+        ("synced", _word(seen["synced"])),
+        ("helper", ark_clock.helper_path()),
+        ("root", "yes" if os.geteuid() == 0 else "no"),
+        ("clock", "ok"),
+    ]
+    for key, value in fields:
+        print("%s=%s" % (key, value))
+    return EXIT_OK
+
+
+def _word(value):
+    if value is True:
+        return "yes"
+    if value is False:
+        return "no"
+    return "unknown"
+
+
+def resolve(argv):
+    """The instant the arguments name, or ``(None, exit code)``.
+
+    Parsing happens here rather than in the page so that a person at a console and
+    the administrator's phone are held to exactly the same rules.
+    """
+    text = None
+    unix = None
+    basis = "utc"
+    dry = False
+    rest = list(argv)
+    while rest:
+        item = rest.pop(0)
+        if item == "--unix":
+            if not rest:
+                return None, fail(EXIT_USAGE, "--unix needs a number of seconds")
+            unix = rest.pop(0)
+        elif item == "--utc":
+            if not rest:
+                return None, fail(EXIT_USAGE, "--utc needs a date and time")
+            text = rest.pop(0)
+        elif item == "--local":
+            basis = "local"
+        elif item == "--dry-run":
+            dry = True
+        else:
+            return None, fail(EXIT_USAGE, "unexpected argument '%s' — %s" % (item, USAGE))
+    if unix is not None and text is not None:
+        return None, fail(EXIT_USAGE, "give --unix or --utc, not both")
+    if unix is None and text is None:
+        return None, fail(EXIT_USAGE, USAGE)
+    if unix is not None:
+        raw = unix.strip()
+        if not raw.isdigit():
+            return None, fail(EXIT_USAGE,
+                              "--unix takes whole seconds since 1970, like 1793000000")
+        stamp = float(int(raw))
+    else:
+        seen = ark_clock.reading()
+        try:
+            naive, typed_tz = ark_clock.parse_text(text)
+            stamp = ark_clock.epoch_of(naive, typed_tz, basis=basis,
+                                       box_offset=seen["offset_seconds"])
+        except ark_clock.ClockRefused as exc:
+            return None, fail(EXIT_USAGE, str(exc))
+    problem = ark_clock.bounds_problem(stamp)
+    if problem:
+        return None, fail(EXIT_USAGE, problem)
+    return {"epoch": int(round(stamp)), "dry": dry}, EXIT_OK
+
+
+def set_clock(stamp, dry):
+    """Set it, read it back, remember it.  Every failure is a sentence."""
+    if dry:
+        seen = ark_clock.reading()
+        say("Would set the clock to %s (from %s)."
+            % (ark_clock.iso_utc(stamp), seen["utc"]))
+        return EXIT_OK
+    blocked = require_root()
+    if blocked is not None:
+        return blocked
+
+    before = ark_clock.reading()
+    date_bin = os.environ.get("ARK_DATE_BIN", "/bin/date")
+    try:
+        done = subprocess.run([date_bin, "-u", "-s", "@%d" % stamp],
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              timeout=10)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return fail(EXIT_FAILED, "could not run %s: %s" % (date_bin, exc))
+    if done.returncode != 0:
+        reason = (done.stderr or b"").decode("utf-8", "replace").strip()
+        return fail(EXIT_FAILED, "the system refused the change: %s"
+                    % (reason or "code %d" % done.returncode))
+
+    after = time.time()
+    if abs(after - float(stamp)) > ark_clock.SET_TOLERANCE:
+        return fail(EXIT_DID_NOT_STICK,
+                    "the clock was asked for %s and now reads %s — something else "
+                    "on this box is setting it"
+                    % (ark_clock.iso_utc(stamp), ark_clock.iso_utc(after)))
+
+    # fake-hwclock writes the time to the card so the next cold boot starts near
+    # the truth.  Without it the box is still right until it loses power; that is
+    # reported, never raised, because it is a missing convenience, not a fault.
+    kept = ark_atomic.save_clock()
+    _journal(before["utc"], ark_clock.iso_utc(after), stamp)
+    say("The clock was %s and is now %s (%s).%s"
+        % (before["utc"], ark_clock.iso_utc(after),
+           ark_clock.local_render(after),
+           " Remembered for the next cold boot." if kept else
+           " This box cannot remember it for the next cold boot "
+           "(fake-hwclock is not installed)."))
+    return EXIT_OK
+
+
+def _journal(before_utc, after_utc, stamp):
+    """One plain line in the log, so a wrong timestamp elsewhere can be explained.
+
+    A log is a courtesy beside the database's audit row, written by hand and never
+    fatal: failing to write it must not fail the correction a person asked for.
+    """
+    path = os.path.join(ARK_ROOT, "logs", "clock.log")
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if os.path.exists(path) and os.path.getsize(path) > 256 * 1024:
+            os.replace(path, path + ".1")
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write("%s  set uid=%d asked=%s before=%s after=%s\n"
+                         % (after_utc, os.geteuid(), ark_clock.iso_utc(stamp),
+                            before_utc, after_utc))
+            handle.flush()
+            os.fsync(handle.fileno())
+    except OSError:
+        return
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help"):
+        say(USAGE)
+        return EXIT_OK if argv else EXIT_USAGE
+    head = argv[0]
+    if head == "--show":
+        return show()
+    if head == "--check":
+        return check()
+    if head in ("--unix", "--utc"):
+        asked, code = resolve(argv)
+        if asked is None:
+            return code
+        return set_clock(asked["epoch"], asked["dry"])
+    return fail(EXIT_USAGE, USAGE)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

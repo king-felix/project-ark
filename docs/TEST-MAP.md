@@ -26,7 +26,8 @@ Chromium is present.*
 | owner's Network page end to end, stdin password, one-boot `lan-request`, kept-request banner, non-root `status` | `tests/test_network_page.py` (43) |
 | batch upload door (`/admin/upload`), book `.part` spooling, game gate, ledger polling, `ark_doors` completeness | `tests/test_admin_upload.py` (29) |
 | owner overview 4 live figures, 12-page `ADMIN_NAV`, `POST /admin/logout` CSRF + idempotence, public footer | `tests/test_admin_dashboard.py` (19) |
-| backup/restore round trip, damaged copy refused, `.partial` swept, `--force`, ownership adoption, plain recovery sheet | `tests/test_backup.py` (28) |
+| the clock an owner can correct: the absolute calendar window (2020…2100, not a distance from the box's own clock), impossible dates refused by arithmetic, a typed offset beating every default, the device's reading taken at the press, the proposal shown before anything changes, sign-in/TLS/CSRF, a stale page, a helper that refuses or is missing, the audit line with both instants, elapsed-time sessions across forward and backward jumps, future-dated throttling, the helper's unprivileged `--check` and its argv-only root path, and no shell anywhere on the path | `tests/test_clock.py` (63) |
+| backup/restore round trip, damaged copy refused, `.partial` swept, `--force`, ownership adoption, plain recovery sheet, the copy just taken never pruned after a backward clock change | `tests/test_backup.py` (30) |
 | arcade shelf, guest vs named saves, `:8445` origin header, export/import, owner Games page, upload door, tap-to-start | `tests/test_arcade.py` (34) |
 | licence as provenance, language table, per-console repos, seed/discover, owner import dedup by sha256 | `tests/test_arcade_install.py` (36) |
 | public `/arcade/add` door: visitor adds but never replaces, typed name decides, switch | `tests/test_arcade_add.py` (10) |
@@ -44,7 +45,7 @@ Chromium is present.*
 | **Defining offline journey** in real Chromium: download, disconnect, reload, pan, new search, NEW route, directions, route sheet, GPX, no network; pause/resume/cancel | `tests/test_maps_browser.py` (2) |
 | Library shelves from the catalogue's topic column; every book on one shelf; a film shelf says it is films, not that it is unsearchable; `/library` named by the proxy; every imported module copied; published sha-256 checked before publish | `tests/test_library.py` (29) |
 | Stage 7 household answers, 8 emergency topics, inline SVG QR cards, essentials pack builder | `tests/test_household.py` (13), `test_household_page.py` (34), `test_qr.py` (11), `test_essentials.py` (24) |
-| claim door, forced password change, throttling, sessions, TLS probe verdicts, secrets guard | `tests/test_auth.py` (19), `test_accounts.py` (14), `test_tls_probe.py` (16), `test_secrets.py` (12), `test_public.py` |
+| claim door, forced password change, throttling, sessions, TLS probe verdicts, secrets guard | `tests/test_auth.py` (19), `test_accounts.py` (15), `test_tls_probe.py` (16), `test_secrets.py` (12), `test_public.py` |
 
 ---
 

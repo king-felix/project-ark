@@ -198,12 +198,18 @@ def test_wrong_passwords_are_generic_throttled_and_audited(ark, client):
 
 
 def test_sessions_expire_on_idle_and_on_restart(ark, client):
+    """Idle and lifetime are *elapsed* time (migration 9), so they are aged here.
+
+    The wall-clock columns still exist for the history; the timeout is decided by
+    ``time.monotonic()``, which no clock correction can move — see
+    ``tests/test_clock.py`` for the forward/backward cases.
+    """
     owner = claim_box(client)
     assert get(client, "/admin", cookie=f"ark_admin={owner}").status_code == 200
 
     with ark.db.tx() as conn:
-        conn.execute("UPDATE admin_sessions SET last_seen = ?",
-                     (time.time() - ark.sec.IDLE_TIMEOUT - 30,))
+        conn.execute("UPDATE admin_sessions SET mono_seen = mono_seen - ?",
+                     (ark.sec.IDLE_TIMEOUT + 30,))
     assert get(client, "/admin", cookie=f"ark_admin={owner}").status_code == 303
 
     again = sign_in(client, "admin", BIG_PASSWORD)      # signing in again is always possible
@@ -218,14 +224,31 @@ def test_sessions_expire_on_idle_and_on_restart(ark, client):
 def test_absolute_lifetime_wins_over_activity(ark, client):
     owner = claim_box(client)
     with ark.db.tx() as conn:
-        conn.execute("UPDATE admin_sessions SET abs_expires = ?", (time.time() - 1,))
+        conn.execute("UPDATE admin_sessions SET mono_created = mono_created - ?",
+                     (ark.sec.ABSOLUTE_TIMEOUT + 30,))
     assert get(client, "/admin", cookie=f"ark_admin={owner}").status_code == 303
 
 
 def test_a_clock_that_jumps_backwards_does_not_extend_a_session(ark, client):
+    """The eight-hour ceiling is elapsed time, so moving the wall clock cannot lift it."""
     owner = claim_box(client)
     with ark.db.tx() as conn:
-        conn.execute("UPDATE admin_sessions SET created = ?, abs_expires = ?",
+        conn.execute("UPDATE admin_sessions SET mono_created = mono_created - ?",
+                     (ark.sec.ABSOLUTE_TIMEOUT + 30,))
+    assert get(client, "/admin", cookie=f"ark_admin={owner}").status_code == 303
+
+
+def test_a_session_first_seen_before_a_backward_jump_still_ends(ark, client):
+    """A row written before migration 9 has no elapsed-time reading.
+
+    Those are judged by the wall clock exactly as they were, so an old session row
+    whose ``created`` is still in the future (the clock was put back) is refused
+    rather than kept alive until the clock catches up.
+    """
+    owner = claim_box(client)
+    with ark.db.tx() as conn:
+        conn.execute("UPDATE admin_sessions SET mono_created = 0, mono_seen = 0,"
+                     " created = ?, abs_expires = ?",
                      (time.time() + 7200, time.time() + 7200))
     assert get(client, "/admin", cookie=f"ark_admin={owner}").status_code == 303
 

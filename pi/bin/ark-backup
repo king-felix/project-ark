@@ -393,7 +393,7 @@ def take(dest: Path, keep: int, no_files: bool, quiet: bool, dry: bool) -> int:
             if ticket is not None:
                 ticket.release()
 
-    kept, removed = prune(dest, keep)
+    kept, removed = prune(dest, keep, protect=name)
     if not quiet:
         counts = data["counts"]
         bits = []
@@ -419,18 +419,29 @@ def take(dest: Path, keep: int, no_files: bool, quiet: bool, dry: bool) -> int:
     return 0
 
 
-def prune(dest: Path, keep: int) -> tuple:
-    """Keep the newest ``keep`` finished bundles; remove the rest."""
+def prune(dest: Path, keep: int, protect: str = "") -> tuple:
+    """Keep the newest ``keep`` finished bundles; remove the rest.
+
+    ``protect`` names the bundle this run has *just taken*.  A bundle is named
+    with the wall clock, so a correction that puts the clock **back** names the
+    new bundle earlier than every bundle already on the card — and a plain "keep
+    the newest N by name" then deletes the backup that was just taken and has
+    never been proved.  The bundle this run made is never the one pruned; the
+    others keep the same newest-first rule as before.
+    """
     if keep <= 0:
         return 0, 0
     finished = bundle_tools.existing_bundles(dest)
-    doomed = finished[:-keep] if len(finished) > keep else []
+    fresh = dest / protect if protect else None
+    others = [p for p in finished if p != fresh]
+    room = max(0, int(keep) - (1 if fresh is not None and fresh in finished else 0))
+    doomed = others[:max(0, len(others) - room)]
     removed = 0
     for old in doomed:
         if (old / "manifest.json").is_file():       # never remove anything else
             shutil.rmtree(old, ignore_errors=True)
             removed += 1
-    return min(keep, len(finished)), removed
+    return len(finished) - removed, removed
 
 
 # ---------------------------------------------------------------------------

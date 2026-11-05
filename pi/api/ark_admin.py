@@ -51,6 +51,7 @@ import ark_storage
 import ark_arcade
 import ark_arcade_install
 import ark_network
+import ark_clock
 import ark_romdb
 import ark_rommeta
 
@@ -208,7 +209,7 @@ def _load_ctx(conn: sqlite3.Connection, request: Request, epoch: int,
             ctx.session = ctx.admin = None
             ctx.csrf = ""
         else:
-            sec.touch_session(conn, row["id"], row["last_seen"])
+            sec.touch_session(conn, row["id"], row["last_seen"], row["mono_seen"])
     return ctx
 
 
@@ -248,6 +249,7 @@ ADMIN_NAV = (
     ("/admin/media", "Media"),
     ("/admin/maps", "Maps"),
     ("/admin/network", "Network"),
+    ("/admin/clock", "Clock"),
     ("/admin/household", "Household"),
     ("/admin/arcade", "Games"),
     ("/admin/community", "Community"),
@@ -2419,6 +2421,299 @@ def network_cancel(request: Request, csrf: str = Form("")):
     words = ark_network.last_words(said) or "Nothing is waiting any more."
     return _redirect("/admin/network?ok=" + urllib.parse.quote(words, safe=""))
 
+
+# ---------------------------------------------------------------------------
+#  the clock — what the box thinks the time is, and the person who can fix it
+# ---------------------------------------------------------------------------
+def human_delta(seconds: int) -> str:
+    """A jump the way a person would say it: "forward 3 days 4 hours"."""
+    if not seconds:
+        return "no change at all"
+    word = "forward" if seconds > 0 else "backward"
+    left = abs(int(seconds))
+    parts = []
+    for size, name in ((86400, "day"), (3600, "hour"), (60, "minute")):
+        count, left = divmod(left, size)
+        if count:
+            parts.append(f"{count} {name}{'' if count == 1 else 's'}")
+    if left or not parts:
+        parts.append(f"{left} second{'' if left == 1 else 's'}")
+    return f"{word} by " + " ".join(parts)
+
+
+def _clock_facts(seen) -> str:
+    """What the box says about itself, in the order a person would ask."""
+    if seen["synced"] is True:
+        source = "Kept right by the network right now."
+    elif seen["synced"] is False:
+        source = "Not being corrected by the network right now."
+    else:
+        source = "Whether the network keeps it: not measured on this box."
+    if seen["stored"]:
+        kept = (f"{seen['stored_utc']} — this is what the next cold boot will "
+                "start from.")
+    else:
+        kept = ("Nothing is remembered for the next cold boot, so a box switched "
+                "off at the wall will start from the day the card was written.")
+    rows = [
+        ("The date", seen["date"]),
+        ("The time", f"{seen['local']} ({seen['timezone']}, {seen['offset_words']})"),
+        ("The same moment in UTC", seen["utc_words"]),
+        ("Corrected by the network", source),
+        ("Remembered for the next cold boot", kept),
+    ]
+    items = "".join(f"<li>{esc(label)}<span class=\"sub\">{esc(value)}</span></li>"
+                    for label, value in rows)
+    return f'<ul class="clean">{items}</ul>'
+
+
+def _clock_form(ctx, seen, *, typed: str = "", basis: str = "", error: str = "") -> str:
+    """One form, two ways to fill it: the device's clock, or a typed reading.
+
+    With JavaScript the field is filled **when the button is pressed** — the page
+    is never drawn with a value that was true minutes ago — and a person who types
+    their own time keeps it.  Without JavaScript the same field is a normal one:
+    type the time, say which timezone you typed it in, and press the button.  The
+    server treats both exactly the same way.
+    """
+    chosen = "local" if basis == "local" else "utc"
+    local_option = (f'the box&rsquo;s own time &mdash; {esc(seen["timezone"])}, right '
+                    f'now {esc(seen["offset_words"])}')
+    banner = _notice("bad", f"<b>Nothing was changed.</b> {esc(error)}") if error else ""
+    can_set = "" if seen["helper"] else (
+        '<p class="note"><b>This box cannot set its own clock from here:</b> the small '
+        'helper that does it is not installed. The time above is still true. A '
+        'console or SSH session can set it with <code>sudo ark-set-clock --show</code> '
+        'and then <code>sudo ark-set-clock --utc &quot;YYYY-MM-DD HH:MM&quot;</code>.</p>')
+    return f"""{banner}
+  {can_set}
+  <form id="clock-form" method="post" action="/admin/clock/propose" autocomplete="off">
+    {_csrf_field(ctx.csrf)}
+    <label for="utc">The date and time to set</label>
+    <input id="utc" name="utc" type="text" inputmode="numeric" maxlength="40"
+           value="{esc(typed)}" placeholder="2026-11-04 09:30"
+           autocomplete="off" spellcheck="false">
+    <p class="note" id="device-line">Leave this empty to use this device&rsquo;s clock:
+       its time is read when you press the button, never when this page was opened.
+       <noscript>With scripts turned off, type the date and time yourself, as
+       2026-11-04 09:30.</noscript></p>
+    <label for="basis">The time I typed is&hellip;</label>
+    <select id="basis" name="basis">
+      <option value="utc"{' selected' if chosen == 'utc' else ''}>UTC &mdash; the same
+        time everywhere (use this if you are not sure)</option>
+      <option value="local"{' selected' if chosen == 'local' else ''}>{local_option}</option>
+    </select>
+    <p class="note">Only used when you type a time. A time with its own offset
+       (like 2026-11-04T09:30:00+01:00) is read as written, whatever this says.</p>
+    <input type="hidden" id="device" name="device" value="">
+    <button class="go-btn" type="submit">Check this time before using it</button>
+  </form>
+  <script>
+  (function () {{
+    var form = document.getElementById('clock-form');
+    var field = document.getElementById('utc');
+    var basis = document.getElementById('basis');
+    var device = document.getElementById('device');
+    var line = document.getElementById('device-line');
+    if (!form || !field || !basis || !device) {{ return; }}
+    var typed = false;
+    var pad = function (n) {{ return (n < 10 ? '0' : '') + n; }};
+    var utcText = function (d) {{
+      return d.getUTCFullYear() + '-' + pad(d.getUTCMonth() + 1) + '-' + pad(d.getUTCDate()) +
+             ' ' + pad(d.getUTCHours()) + ':' + pad(d.getUTCMinutes()) + ':' + pad(d.getUTCSeconds());
+    }};
+    field.addEventListener('input', function () {{ typed = true; }});
+    if (line) {{
+      var shown = document.createElement('b');
+      shown.id = 'device-now';
+      line.textContent = 'This device says ';
+      line.appendChild(shown);
+      line.appendChild(document.createTextNode(
+        ' UTC. Leave the field empty to use it: it is read when you press the button, ' +
+        'never when this page was opened.'));
+      var tick = function () {{ shown.textContent = utcText(new Date()); }};
+      tick();
+      setInterval(tick, 1000);
+    }}
+    form.addEventListener('submit', function () {{
+      var at = new Date();
+      device.value = at.toISOString();          /* the device's claim, made now */
+      if (!typed) {{
+        basis.value = 'utc';
+        field.value = utcText(at);              /* and what will be checked */
+      }}
+    }});
+  }})();
+  </script>"""
+
+
+def _clock_history(rows) -> str:
+    if not rows:
+        return ('<p class="note">The clock has not been set by hand on this box. '
+                'After a power cut it corrects itself from the newest thing on the '
+                'card; this page is for when that is not enough.</p>')
+    items = "".join(
+        f'<li>{esc(r["ts"].replace("T", " ").replace("+00:00", " UTC"))}'
+        f'<span class="sub">{esc(r["detail"])}</span></li>' for r in rows)
+    return f'<ul class="clean">{items}</ul>'
+
+
+def _clock_body(ctx, seen, rows, *, typed: str = "", basis: str = "", error: str = "",
+                flash: str = "") -> str:
+    return f"""
+  {flash}
+  <h2>What this box thinks the time is</h2>
+  {_clock_facts(seen)}
+  <h2>Set it by hand</h2>
+  <p class="note">The box has no clock of its own that survives a power cut. It
+     usually corrects itself from the newest file on the card, and it is kept right
+     while it can reach the network. Use this when it is still wrong: a date in the
+     future after a wrong time was written once, or a card that came from another box.</p>
+  <p class="note">Your phone&rsquo;s clock is offered as a <b>suggestion</b>, not as
+     the truth: it is checked and shown to you before anything changes, and it is
+     the time you will see on this page afterwards.</p>
+  {_clock_form(ctx, seen, typed=typed, basis=basis, error=error)}
+  <h2>Last corrections</h2>
+  {_clock_history(rows)}
+"""
+
+
+def _proposal_page(ctx, row) -> str:
+    """The proposal: before, after, the size of the jump — and only then a button."""
+    before = row["before"]
+    warns = "".join(_notice("wait", esc(w)) for w in row["warns"])
+    came_from = row["source"]
+    if row["device"]:
+        came_from += f' (its own reading was {row["device"]})'
+    items = [
+        ("The box says now", f'{before["utc_words"]} — {before["local"]} in '
+                              f'{before["timezone"]}'),
+        ("It would be set to", f'{row["utc_words"]} — {row["local"]} in '
+                               f'{before["timezone"]}'),
+        ("That is", human_delta(row["delta"])),
+        ("Where the time came from", came_from),
+    ]
+    listing = "".join(f"<li>{esc(label)}<span class=\"sub\">{esc(value)}</span></li>"
+                      for label, value in items)
+    return f"""
+  <h2>Check this before it is used</h2>
+  {warns}
+  <ul class="clean">{listing}</ul>
+  <p class="note">Setting the clock changes the time on everything the box writes
+     from now on — new messages, new files, the history. Nothing already written is
+     changed, so an older line can appear to come from after a newer one; the
+     correction above is recorded in the history with both instants, which is what
+     explains it.</p>
+  <form method="post" action="/admin/clock/apply">
+    {_csrf_field(ctx.csrf)}
+    <input type="hidden" name="unix" value="{int(row["epoch"])}">
+    <input type="hidden" name="device" value="{esc(row["device"])}">
+    <input type="hidden" name="basis" value="{esc(row["basis"])}">
+    <input type="hidden" name="source" value="{esc(row["source"])}">
+    <button class="go-btn" type="submit">Set the box&rsquo;s clock to this time</button>
+  </form>
+  <p class="nav"><a href="/admin/clock">Go back without changing anything</a></p>
+"""
+
+
+def _clock_state(conn):
+    seen = ark_clock.reading()
+    rows = ark_clock.history(conn)
+    return seen, rows
+
+
+@router.get("/clock", response_class=HTMLResponse)
+def clock_page(request: Request):
+    """What time the box thinks it is, and one way to put it right."""
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.tx() as conn:
+        ctx = _load_ctx(conn, request, ark_db.session_epoch(conn))
+        if (blocked := _need_session(ctx, request)) is not None:
+            return blocked
+        seen, rows = _clock_state(conn)
+    flash = ""
+    if request.query_params.get("ok"):
+        flash = _notice("good", esc(request.query_params["ok"][:300]))
+    elif request.query_params.get("err"):
+        flash = _notice("bad", esc(request.query_params["err"][:300]))
+    return shell("Clock", _clock_body(ctx, seen, rows, flash=flash), ctx=ctx,
+                 tagline="What time this box believes it is — and how to correct "
+                         "it from here.")
+
+
+@router.post("/clock/propose", response_class=HTMLResponse)
+def clock_propose(request: Request, utc: str = Form(""), basis: str = Form(""),
+                  device: str = Form(""), csrf: str = Form("")):
+    """Work out what would change, show it, and change nothing.
+
+    A proposal is a *reading*, not a reservation: the clock is read again when the
+    button on the next page is pressed, and the history records the jump that
+    really happened — never the one this page predicted.
+    """
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.tx() as conn:
+        ctx, blocked = _committed(request, conn, csrf)
+        if blocked is not None:
+            return blocked
+        seen, rows = _clock_state(conn)
+    try:
+        row = ark_clock.proposal(utc, basis=basis, device=device, current=seen)
+    except ark_clock.ClockRefused as exc:
+        return shell("Clock", _clock_body(ctx, seen, rows, typed=utc, basis=basis,
+                                          error=str(exc)), ctx=ctx, status=400)
+    return shell("Check the time", _proposal_page(ctx, row), ctx=ctx,
+                 tagline="Nothing has changed yet. Check it, then decide.")
+
+
+@router.post("/clock/apply", response_class=HTMLResponse)
+def clock_apply(request: Request, unix: str = Form(""), device: str = Form(""),
+                basis: str = Form(""), source: str = Form(""), csrf: str = Form("")):
+    """Set the clock — the one action on this page that changes the box."""
+    if (blocked := _gate_tls(request)) is not None:
+        return blocked
+    with ark_db.tx() as conn:
+        ctx, blocked = _committed(request, conn, csrf)
+        if blocked is not None:
+            return blocked
+        actor_id, who = ctx.admin["id"], ctx.admin["username"]
+        seen, rows = _clock_state(conn)
+    text = (unix or "").strip()
+    asked = {"source": (source or "typed")[:20], "device": "",
+             "basis": "local" if basis == "local" else "utc"}
+    hint = ark_clock.device_hint(device)
+    if hint is not None:
+        asked["device"] = ark_clock.iso_utc(hint)
+    if not text.lstrip("-").isdigit():
+        return shell("Clock", _clock_body(ctx, seen, rows, error=(
+            "That did not arrive as a time. Nothing was changed — check the time "
+            "again.")), ctx=ctx, status=400)
+    try:
+        result = ark_clock.apply(int(text))
+    except ark_clock.ClockRefused as exc:
+        # `ran` is the honest half of the sentence: a refusal made here (an
+        # impossible date, a missing helper) cannot have moved the clock, while a
+        # helper that answered and left the clock where it was must not be
+        # described as having changed nothing.
+        kept = "The clock may have changed" if getattr(exc, "ran", False) else \
+               "Nothing was changed"
+        after = ark_clock.reading()
+        with ark_db.tx() as conn:
+            ark_db.audit(conn, action="clock-set", actor_id=actor_id, actor_name=who,
+                         result="failed", detail=str(exc)[:300])
+            rows = ark_clock.history(conn)
+        return shell("Clock", _clock_body(ctx, after, rows, error=f"{kept}. {exc}"),
+                     ctx=ctx, status=400)
+    detail = ark_clock.audit_detail(result, asked)
+    with ark_db.tx() as conn:
+        ark_db.audit(conn, action="clock-set", actor_id=actor_id, actor_name=who,
+                     result="ok", detail=detail)
+    after = result["after"]
+    words = (f"The clock is now {after['utc_words']} ({after['local']} in "
+             f"{after['timezone']}). It was {result['before']['utc_words']} — "
+             f"{human_delta(result['delta'])}.")
+    return _redirect("/admin/clock?ok=" + urllib.parse.quote(words, safe=""))
 
 @router.get("/arcade", response_class=HTMLResponse)
 def arcade_page(request: Request):

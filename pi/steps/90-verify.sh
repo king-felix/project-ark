@@ -420,6 +420,52 @@ case "$net_page" in
                  "HTTP ${net_page:-none} (expected 303; run phase 60-portal and 65-admin)" ;;
 esac
 
+# ---- the owner's Clock page: reading is open, setting is root, the page is a door
+# The three modes that need no privilege (--show, --check, --dry-run) are proved as
+# the unprivileged portal user, because that is who will use them: the page reads the
+# time, and a person on the console can look without becoming root.  Nothing here
+# changes the clock — the dry run validates and stops before `date`.  A verifier that
+# set the time would be a verifier that moved every timestamp on the card.
+if [[ -x /usr/local/sbin/ark-set-clock ]]; then
+  clock_words="$(runuser -u "$ARK_PI_USER" -- env ARK_ROOT="$ARK_ROOT" \
+                   /usr/local/sbin/ark-set-clock --check 2>&1 || true)"
+  if grep -qx 'clock=ok' <<<"$clock_words"; then
+    say_ok "read the box's clock" \
+      "$(grep -m1 '^utc=' <<<"$clock_words" | cut -d= -f2) ($(grep -m1 '^timezone=' <<<"$clock_words" | cut -d= -f2), $(grep -m1 '^offset=' <<<"$clock_words" | cut -d= -f2)) — no root needed"
+  else
+    say_bad "read the box's clock" \
+      "ark-set-clock --check did not answer (run phase 65-admin): ${clock_words:-no output}"
+  fi
+  if runuser -u "$ARK_PI_USER" -- env ARK_ROOT="$ARK_ROOT" \
+       /usr/local/sbin/ark-set-clock --unix 1793000000 --dry-run >/dev/null 2>&1; then
+    say_ok "the clock's dry run" "a valid instant is accepted and NOT applied — the clock was not touched"
+  else
+    say_bad "the clock's dry run" "the helper refused a valid instant (run phase 65-admin)"
+  fi
+else
+  say_bad "read the box's clock" \
+    "ark-set-clock is missing — run phase 65-admin, or the Clock page cannot set the time"
+fi
+clock_page="$(ark_tls_code ark.lan:8443 /admin/clock)"
+case "$clock_page" in
+  303|302) say_ok "Clock page behind the sign-in" "https://ark.lan:8443/admin/clock asks to sign in" ;;
+  *)       say_bad "Clock page behind the sign-in" \
+                 "HTTP ${clock_page:-none} (expected 303; run phase 65-admin)" ;;
+esac
+# A session is expired by elapsed time now, not by the wall clock (migration 9):
+# without the columns, a clock correction would end every live session and leave
+# the owner signing in again — or, put back, leave a session usable far too long.
+if ! command -v sqlite3 >/dev/null 2>&1; then
+  say_soft "sessions survive a clock change" "no sqlite3 command on this box to ask with — not measured"
+elif sqlite3 "$ARK_ROOT/api/data/ark.db" \
+     "SELECT name FROM pragma_table_info('admin_sessions') WHERE name='mono_seen'" \
+     2>/dev/null | grep -qx 'mono_seen'; then
+  say_ok "sessions survive a clock change" "admin_sessions has the elapsed-time columns (schema 9)"
+else
+  say_bad "sessions survive a clock change" \
+    "admin_sessions has no mono_seen column — the database did not migrate (run phase 60-portal)"
+fi
+
 # ---- the owner's newest two pages: books and games in one go, and the addresses
 # Neither is a visitor's door, but both are doors: a stranger must be sent to the
 # sign-in.  A 200 here would mean the batch form or the map of the box is readable
