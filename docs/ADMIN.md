@@ -1354,6 +1354,11 @@ common year) are refused by constructing a real date, not by pattern-matching on
   checks fire against the corrected time; a jump over a scheduled moment may run it
   once more (a daily pass is idempotent). The heaviest jobs measure their own
   deadlines by elapsed time already.
+* **Two short windows count wall-clock minutes**: a player's name stays signed in
+  for a quarter of an hour, and a waiting *one-time* network request has a deadline
+  in minutes. A large jump can end either early, or — going back — keep the network
+  request waiting longer than asked. Neither is a safety property: a player signs in
+  again, and an expired request only means the box broadcasts as usual.
 * **A sweep follows the clock.** `ark-self-heal` removes half-written temp files by
   pattern **and age**; after a large forward jump, every old temp file qualifies and
   is swept. Published files, libraries, films and the File Box are never in that
