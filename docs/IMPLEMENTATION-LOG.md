@@ -7520,3 +7520,61 @@ restart, and restarting one would have been a needless disturbance of a working 
 **What this does not do.** It reclaims card space; it changes no answer, no speed
 and no code. The `-t 3` → `-t 4` question from §58.11 stays where it was left: a
 measurement with a thermal caveat, and the owner's decision.
+
+### 59.1 The working branch merged into `main`
+
+`main` was at `acf5d29` and `feature/admin-hardening` was **67 commits ahead, 0
+behind**, so this was a fast-forward, not a merge commit — the history stays linear
+and no commit is rewritten:
+
+```
+main  acf5d29  ->  5adb1b7   (fast-forward)
+```
+
+**What proves the merge is safe:** `main` and `feature/admin-hardening` have the
+**same tree** (`6572d09d48cfe2e4cda7a11204350940e5a22469`), which is the tree that
+passed `1162 passed, 2 skipped` a few minutes earlier — so the merged branch is the
+tested branch, byte for byte, and re-running the suite would only re-prove it. No tag
+was moved or deleted (`v1.0.5` = `dd3336c` still, and nothing points at `acf5d29`),
+and the merge itself rewrote no commit: it was a fast-forward and nothing else.
+
+**`main` is three commits ahead of the box, all documentation.** The Pi runs
+`dac7770`; `git diff --name-only dac7770 HEAD` names `AGENTS.md`,
+`docs/HUMAN-TEST-LIST.md` and this file, and **no file under `pi/`** — so the
+deployed code is what `main` describes, and no redeploy is needed to make them
+agree. The baseline row in `AGENTS.md` says which branch is live, which revision is
+deployed, and that the gap is paperwork.
+
+The branch itself is left in place at `5adb1b7` — the commit at which it was merged
+into `main`, which has since moved on by the documentation commit that recorded this.
+Deleting a branch is not the owner's instruction, and a branch that costs nothing is
+a cheaper mistake than a deleted one.
+
+### 59.2 Two damaged commit messages repaired, by rewriting only messages
+
+The first two documentation commits in §59.1 were made with their message passed as
+a **double-quoted shell string**, and the message contained backticks around a
+command. The shell ran it: `git diff dac7770 5adb1b7` executed and its whole output
+— a few hundred lines of diff — was substituted into the message, which grew to
+**13,927 characters**. The second commit existed only to correct one sentence the
+first had got wrong. This is the hazard `AGENTS.md` §8.7 records for apostrophes;
+backticks are the same class, and `git commit -F <file>` is the rule for both.
+
+**What was done.** The two commits were squashed into one with the message they
+should have had (`git reset --soft 5adb1b7`, then `commit -F`), and pushed with
+`--force-with-lease` **on the owner's explicit instruction in that turn** — history
+rewriting is on the owner's pending-decisions list, and this is that decision, taken
+by the owner, for these two commits only. The larger rewrite still pending (pre-
+`a926296`, and the home-LAN address in `1a3f41f`) is **untouched** by this.
+
+| | |
+|---|---|
+| Before | `main` = `105e278`, tree `2b48e320fdd9dfa59935282c89d0722afc5f0941`, two commits, one message 13,927 characters |
+| After | the commit that carries this record, tree `2b48e320fdd9dfa59935282c89d0722afc5f0941`, one commit, message 1,285 characters |
+| The proof it moved no file | **the tree hash is identical before and after** — a message-only rewrite, verified rather than asserted |
+| Tags | unchanged: `v1.0.1`–`v1.0.5` all where they were (`v1.0.5` = `dd3336c`) |
+| `feature/admin-hardening` | unchanged at `5adb1b7`, an ancestor of `main`, so the rewrite cannot strand it |
+
+Nothing private was in the damaged message: it was checked before the rewrite, and
+the only hit for "password" was the phrase *"rotate passwords"* from the owner's own
+pending-decisions row.

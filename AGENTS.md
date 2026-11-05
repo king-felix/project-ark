@@ -198,7 +198,7 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 | Baseline Fact | State (5 Nov 2026) |
 |---|---|
 | Released tag | `v1.0.5` = `dd3336c` (never move a tag, never force-push) |
-| Active branch | `feature/admin-hardening` (fast-forwarded to `main` at `acf5d29`) |
+| Active branch | `main` (`feature/admin-hardening` ff-merged at `5adb1b7`; box runs `dac7770`, docs-only ahead — log §59.1) |
 | Schema version | `SCHEMA_VERSION = 9` (`pi/api/ark_db.py`) — 7 the film shelf and space ledger; 8 a reservation's pid + boot + kind; 9 a session's elapsed-time readings (`mono_created`/`mono_seen`, log §58) |
 | Test suite | `1162 passed, 2 skipped` (49 files) |
 | Live Pi state | Deployed `dac7770` (log §58); `90-verify` **91 ✓, no ✗**; ready 200, blocking []; Films 8, Games 67, Maps 3 — all **Ready**; reserve 16 GB. **Search misses its 1500 ms target: 4–8 s (log §56.8/§57.6)** |
