@@ -567,6 +567,7 @@ def test_the_helper_refuses_to_set_the_clock_without_root(tmp_path):
 
 @pytest.mark.parametrize("argv", [
     ["--unix", "12abc"], ["--unix", "-5"], ["--unix", "0"], ["--unix", "9999999999"],
+    ["--unix", "²"], ["--unix", "١٢٣"], ["--unix", "1e9"],
     ["--utc", "2026-02-30 10:00"], ["--utc", ""], ["--nonsense"],
 ])
 def test_the_helper_refuses_bad_arguments_before_running_anything(tmp_path, argv):
@@ -679,3 +680,85 @@ def test_neither_the_page_nor_the_helper_can_reach_a_shell():
         assert "os.system(" not in text
         assert "subprocess.call(" not in text
         assert "eval(" not in text
+
+
+# ---------------------------------------------------------------------------
+#  a field a stranger can craft is a sentence, never a traceback
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("crafted", [
+    "--5", "-", " ", "", "1793786400.5", "۱٧۹۳۷۸۶۴۰۰",
+    "²", "1e9", "0x10", "1_000", "9" * 400,
+])
+def test_a_crafted_instant_field_is_refused_in_words(client, ark, clock, crafted):
+    """`int()` and ``str.isdigit()`` disagree about several of these.
+
+    A signed-in page is not a licence to 500: each of these must come back as a
+    refusal that changes nothing, and the helper must never be reached.
+    """
+    cookie, page = _signed_in(client, ark)
+    token = csrf_of(page.text)
+    refused = post(client, "/admin/clock/apply", {"unix": crafted, "csrf": token},
+                   cookie=f"ark_admin={cookie}")
+    assert refused.status_code == 400, (crafted, refused.status_code)
+    assert "did not arrive as a time" in refused.text
+    assert "Nothing was changed" in refused.text
+    assert _called(clock.calls) == []
+    assert _box_clock(clock) == NOW
+
+
+def test_surrounding_whitespace_on_the_instant_is_trimmed_not_refused(client, ark, clock):
+    """A field with a space round it is still a number — the shape is what matters."""
+    cookie, page = _signed_in(client, ark)
+    token = csrf_of(page.text)
+    done = post(client, "/admin/clock/apply", {"unix": " 1793786400\n", "csrf": token},
+                cookie=f"ark_admin={cookie}")
+    assert done.status_code == 303
+    assert _called(clock.calls) == ["--unix 1793786400"]
+
+
+def test_the_clock_is_not_read_while_the_records_are_held_for_writing(client, ark, clock,
+                                                                     monkeypatch):
+    """Reading the clock can spend seconds in systemd; that must not block writers.
+
+    Every other writer on the box waits for the records' write lock, so a page view
+    that held it across `timedatectl` would make a posted message wait too.
+    """
+    import ark_db
+    real_tx = ark_db.tx
+    held = []
+
+    class Watch:
+        def __init__(self, inner):
+            self.inner = inner
+
+        def __enter__(self):
+            conn = self.inner.__enter__()
+            held.append(True)
+            return conn
+
+        def __exit__(self, *exc):
+            held.pop()
+            return self.inner.__exit__(*exc)
+
+    def watching():
+        return Watch(real_tx())
+
+    monkeypatch.setattr(ark_db, "tx", watching)
+    module = clock.module
+    real_reading = module.reading
+
+    def reading_says_who(now=None):
+        assert not held, "the clock was read while the write lock was held"
+        return real_reading(now)
+
+    monkeypatch.setattr(module, "reading", reading_says_who)
+    cookie, page = _signed_in(client, ark)
+    assert page.status_code == 200
+    token = csrf_of(page.text)
+    shown = post(client, "/admin/clock/propose",
+                 {"utc": "2026-11-04 10:00", "basis": "utc", "csrf": token},
+                 cookie=f"ark_admin={cookie}")
+    assert shown.status_code == 200
+    done = post(client, "/admin/clock/apply", {"unix": "1793786400", "csrf": token},
+                cookie=f"ark_admin={cookie}")
+    assert done.status_code == 303

@@ -457,7 +457,11 @@ esac
 # the owner signing in again — or, put back, leave a session usable far too long.
 if ! command -v sqlite3 >/dev/null 2>&1; then
   say_soft "sessions survive a clock change" "no sqlite3 command on this box to ask with — not measured"
-elif sqlite3 "$ARK_ROOT/api/data/ark.db" \
+# `-readonly`: this script promises it only looks.  Without it SQLite opens the
+# records read-write, creates a `-wal`/`-shm` owned by root when the portal happens
+# to be idle, and can leave the portal unable to write its own records after an
+# interrupted run — a read-only check that breaks the thing it was checking.
+elif sqlite3 -readonly "$ARK_ROOT/api/data/ark.db" \
      "SELECT name FROM pragma_table_info('admin_sessions') WHERE name='mono_seen'" \
      2>/dev/null | grep -qx 'mono_seen'; then
   say_ok "sessions survive a clock change" "admin_sessions has the elapsed-time columns (schema 9)"

@@ -29,7 +29,7 @@
 | **Project root (Mac)** | `/Users/<ACCOUNT>/Survival-Pi` |
 | **Portal URL** | `http://ark.lan` (phones on the hotspot — the box answers every name), `http://ark.local` (**the name that resolves on a home LAN**: mDNS, macOS/iOS/Android 12+/Windows 10+), `http://10.42.0.1` (always, on the hotspot). `.lan` is not a special-use name: a Mac on a home router cannot look it up; `https://<lan-ip>:8443` is refused on purpose (no SNI) |
 | **This box, on the house Wi-Fi (since 1 Nov 2026)** | `<HOME-IP>` on `<HOUSEHOLD-SSID>-5G-1` via the profile `home-wifi` (`eth0` keeps `<CABLE-IP>` while the cable is in), `BOOT_MODE="auto"` — a cold boot tries home first and falls back to broadcasting, nothing pinned. Prove it **over `wlan0`**: `ping -c2 -I wlan0 192.168.1.1`, `curl -s -o /dev/null -w '%{http_code}' http://<HOME-IP>/`, and for the management door `curl -sk --resolve ark.local:8443:<HOME-IP> https://ark.local:8443/admin` (303) — bare `ark.local` with the cable in proves nothing (§8.7) |
-| **Maps** | `http://<host>/maps` redirects to **`https://ark.local:8446/maps/`** — a separate TLS origin, same certificate, serving only `/maps/` (404 for `/admin`). The public certificate is at `http://<host>/certificate.crt`. A device must trust it once — a click-through warning does **not** enable the service worker |
+| **Maps** | `http://<host>/maps` redirects to **`https://ark.local:8446/maps/`** — a separate TLS origin, same certificate, serving only `/maps/` (404 for `/admin`); the certificate is also at `http://<host>/certificate.crt`. A device must trust it once — a click-through warning does **not** enable the service worker |
 | **Hotspot SSID** | `The-Ark-Offline` (open, 2.4 GHz, ch 6, static `10.42.0.1/24`) |
 
 All paths written in this repo must be **absolute**. Never assume `$HOME` expansion inside scripts that run on the Pi as `pi`.
@@ -195,12 +195,12 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 | `docs/HUMAN-TEST-LIST.md` | **Outstanding human/thumb tests (§1–§23):** working in code, unproven by a person on a phone or hardware. |
 | `logs/ark_status.json` & `logs/install.done` | **The box's last measured receipt** from `90-verify`. |
 
-| Baseline Fact | State (4 Nov 2026) |
+| Baseline Fact | State (5 Nov 2026) |
 |---|---|
 | Released tag | `v1.0.5` = `dd3336c` (never move a tag, never force-push) |
 | Active branch | `feature/admin-hardening` (fast-forwarded to `main` at `acf5d29`) |
-| Schema version | `SCHEMA_VERSION = 8` (`pi/api/ark_db.py`) — migration 7 adds the film shelf and the space ledger; migration 8 gives a reservation its pid, boot id and kind. **No migration was added in the 4 Nov pass**: the pause is a file, and the new health/UX work changes no table |
-| Test suite | `1146 passed, 2 skipped` (49 files) |
+| Schema version | `SCHEMA_VERSION = 9` (`pi/api/ark_db.py`) — 7 the film shelf and space ledger; 8 a reservation's pid + boot + kind; 9 a session's elapsed-time readings (`mono_created`/`mono_seen`, log §58) |
+| Test suite | `1162 passed, 2 skipped` (49 files) |
 | Live Pi state | Deployed `0e24ce5` (log §58); `90-verify` **91 ✓, no ✗**; ready 200, blocking []; Films 8, Games 67, Maps 3 — all **Ready**; reserve 16 GB. **Search misses its 1500 ms target: 4–8 s (log §56.8/§57.6)** |
 | Owner decisions pending | History rewrite + force-push (pre-`a926296`; home-LAN address in `1a3f41f`; log §37.6/§38.7/§44); rotate passwords; licence |
 
@@ -231,7 +231,7 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 | `pi/api/ark_maintenance.py` | **the one maintenance protocol**: `<db>.maintenance.lock` (shared by every connection, exclusive for repair/restore) and `<db>.repair.lock` (repairs take turns; taken first). Bounded waits; `deferred` ≠ damage |
 | `pi/api/ark_recovery.py` | **the recovery-generation authority**: `capture()` (locked, staged, manifest last), `validate()` (reads the files, not just `quick_check`), `restore_source()`, `protects()`/`discard()`, `gc()`, `adopt_legacy()`; `KEEP=2`, pins saves in place |
 | `pi/api/ark_db_replace.py` | **the one crash-safe replacement**: stage+check on the destination fs, preserve main+WAL/SHM, move the journal aside, install by one rename, verify, `state.json`+`BLOCK`, `recover_pending()` |
-| `pi/api/ark_clock.py` + `pi/bin/ark-set-clock` | **the clock the owner can correct** (`docs/ADMIN.md` §13.3): `reading()`, `parse_text()` (a real calendar), absolute bounds `EARLIEST`/`LATEST`, `proposal()` (the device's time is a suggestion, taken at the press), `apply()`; the helper is the only writer — root for `--unix`/`--utc`, unprivileged `--show`/`--check`/`--dry-run`, argv only, one line in `logs/clock.log` |
+| `pi/api/ark_clock.py` + `pi/bin/ark-set-clock` | **the clock the owner can correct** (`docs/ADMIN.md` §13.3): `reading()`, `parse_text()` (a real calendar), absolute bounds `EARLIEST`/`LATEST`, `proposal()` (the device's time is a suggestion, taken at the press), `apply()`; the helper is the only writer of a chosen time (the repair pass alone may still move it forward from the card) — root for `--unix`/`--utc`, unprivileged `--show`/`--check`/`--dry-run`, argv only, one line in `logs/clock.log` |
 | `pi/api/ark_security.py` | scrypt (12…1024, reject never truncate), opaque sessions, CSRF, per-account/IP throttling, `DUMMY_HASH` constant-work unknown user |
 | `pi/api/ark_admin.py` | `/admin`: login/setup/password/accounts/audit/logout, overview, **15-page `ADMIN_NAV`**, Community, Games, Media, **Maps**, Add files, Addresses, Health, Network |
 | `pi/api/ark_ingest.py` | **the batch door's model, and the only creator of a file in `calibre-incoming`**: `classify()`, `BOOK_EXT`/`GAME_EXT`, `spool_book()` (`.part` → `fsync` → `os.link`), `wait_for_library()` |
@@ -361,7 +361,7 @@ The full map — 37 files, every behaviour each one pins — is
 
 ### 8.6 Deliberate gaps — do not describe any of these as built
 
-Maps: address search, `via`-way/time-conditional restrictions, live traffic, elevation, background/voice navigation, push updates, automatic region deletion, packs in `ark-backup`; **no real iPhone/Android proof yet** (desktop Chromium only). Storage admission: **no real full card, no physical power cut**, and an unrelated OS write can still fill the card — see `docs/STORAGE-ADMISSION.md` §10. Per-person quotas; a film trash/undo; embedded bitmap subtitles; hardware-accelerated encoding; server-side watch history (resume is browser-local); films in a backup; quarantine/approval queue; trash; pagination on the Community page (the page says `LIMIT 50`; the board paginates at 20); pause/resume buttons on the owner page; a backup timer or button on the owner page; player password recovery, quota, save trash, owner reset/delete for a player name; a "Check now" button for games; SNES/Genesis online catalogue entries (hand-carried only). Card migration: **no real 512 GB card has been inserted, cloned, expanded or booted** — the guard is proved against a mocked `diskutil`, `clone-card.sh` has never run on hardware, `ark-card-report` has only read a disposable sysfs tree. Clock: **a real phone has not used the page**, and the certificate-not-yet-valid recovery is reasoned, not observed. **Never invent a control that does not exist.**
+Maps: address search, `via`-way/time-conditional restrictions, live traffic, elevation, background/voice navigation, push updates, automatic region deletion, packs in `ark-backup`; **no real iPhone/Android proof yet**. Storage admission: **no real full card, no physical power cut**, and an unrelated OS write can still fill the card — see `docs/STORAGE-ADMISSION.md` §10. Per-person quotas; a film trash/undo; embedded bitmap subtitles; hardware-accelerated encoding; server-side watch history (resume is browser-local); films in a backup; quarantine/approval queue; trash; pagination on the Community page (the page says `LIMIT 50`; the board paginates at 20); pause/resume buttons on the owner page; a backup timer or button on the owner page; player password recovery, quota, save trash, owner reset/delete for a player name; a "Check now" button for games; SNES/Genesis online catalogue entries (hand-carried only). Card migration: **no real 512 GB card has been inserted, cloned, expanded or booted** — the guard is proved against a mocked `diskutil`, `clone-card.sh` has never run on hardware, `ark-card-report` has only read a disposable sysfs tree. Clock: **a real phone has not used the page**, and the certificate-not-yet-valid recovery is reasoned, not observed. **Never invent a control that does not exist.**
 
 ### 8.7 Essential gotchas (distilled from §1–§41)
 
@@ -377,7 +377,7 @@ Maps: address search, `via`-way/time-conditional restrictions, live traffic, ele
 * **Maps & service workers:** the device must trust the Ark certificate — a click-through is not a secure context. `sw.js` carries a fingerprint of every app file (`__ARK_RELEASE__`) so an installed phone updates, is served with `Service-Worker-Allowed: /maps/` and an `ETag`; `cacheFirst` reads **this release's cache only**; a pack version is immutable; `/maps/api/` is never cached; `:8446` never proxies `/admin`.
 * **Disk guard & cards:** `diskutil info -plist` says `WholeDisk` (never `Whole`); `VirtualOrPhysical = Unknown` on some physical Apple disks, `Virtual` for APFS containers — deny `Virtual`, never require `Physical`. Capacity is a band, never one of the other facts. A clone keeps the *old* partition table: boot it, then `growpart` + `resize2fs` (`docs/CARD-MIGRATION.md` §6).
 * **Maintenance:** `ark_db` connections hold `<db>.maintenance.lock` for life; repair/restore takes `<db>.repair.lock` then the gate. Never unlink either; an unavailable gate is `deferred`, not corruption.
-* **Verifier counts:** `90-verify` printed **91** `✓` on 5 Nov 2026 (87 on 4 Nov); quote the command, not gitignored logs.
+* **Verifier counts:** `90-verify` printed **91** `✓` on 5 Nov 2026; quote the command, not gitignored logs.
 
 ### 8.8 Standing rules for every stage
 

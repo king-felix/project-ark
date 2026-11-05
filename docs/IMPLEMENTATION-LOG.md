@@ -7337,7 +7337,8 @@ across both directions, future-dated throttling, the helper's unprivileged modes
 and its argv-only root path, and the absence of any shell on the path.
 `tests/test_backup.py` gained two (pruning with and without a protected bundle);
 `tests/test_accounts.py` was updated to age sessions by elapsed time and gained
-one for the pre-migration fallback. Suite: **1146 passed, 2 skipped**.
+one for the pre-migration fallback. Suite: **1162 passed, 2 skipped**
+(63 in `test_clock.py` at the first run, 79 after the review — §58.10).
 
 Nothing here touches the machine's clock: the "box clock" is a file, the helper
 is a stub that writes it, and `ark_clock.reading` is pointed at that file. That
@@ -7384,3 +7385,27 @@ first phase; the migration to schema **9** ran at the `ark-api` restart.
 * **A card moved from one box to another** carries timestamps from the first box;
   the page can correct the clock, but nothing here tries to reconcile three years
   of file ages.
+
+### 58.10 The independent review, and the five things it found
+
+The change was read by a reviewer with one instruction: refute it. It could not
+break the door, the shell boundary, the session model, the bounds rule or the
+retention fix — and it found five smaller things, four of which were real. All
+four are fixed, each with a test that fails without the fix, and the fifth is
+recorded as settled by evidence rather than by argument.
+
+| Finding | Verdict | What was done |
+|---|---|---|
+| **`AGENTS.md` said schema 8 and "no migration was added", in the same commit that added migration 9** | **Real, and the worst of them** — the file agents read *first* is the project's statement of state, and a next session trusting it would append a second `(9, …)` entry that `_migrate()` skips silently (`version <= current`), so its columns would never appear | the baseline row now reads `SCHEMA_VERSION = 9`, names all three recent migrations, and the "no migration" sentence is gone |
+| **`90-verify.sh` opened the records read-write**, in a script whose header promises it only looks (every other `sqlite3` call in the file uses `-readonly`) | **Real.** Run as root while the portal is idle, SQLite creates a root-owned `-wal`/`-shm`, and an interrupted run can leave the portal unable to write its own records — a read-only check that breaks the thing it checked | `-readonly` added; the reasoning is now a comment at the call |
+| **A crafted `unix` field was a 500, not a refusal.** `"--5".lstrip("-").isdigit()` is `True`, and several Unicode digits are `isdigit()` but not `int()` | **Real.** No state change (the helper is never reached), so it was robustness, not security — but the page owes a sentence, never a traceback | `_unix_seconds()` insists on ASCII digits and at most one leading minus; **fourteen crafted values** (including `--5`, `²`, `۱٧۹۳۷۸۶۴۰۰`, `1e9`, `0x10`, `1_000`, 400 nines) now each have a test asserting 400, "Nothing was changed", and no helper call. The helper's own `--unix` got the same check |
+| **The clock was read while the records' write lock was held.** `_clock_state()` ran inside `ark_db.tx()`, and `reading()` can spend up to three seconds in `timedatectl` | **Real** in mechanism. Every other writer on the box waits for that lock, so a page view could make a posted message wait | `_clock_state()` now takes no connection and reads the history in its own short `ark_db.read()`; a test wraps `ark_db.tx` and asserts `reading()` is never called while the lock is held |
+| **A root program imports modules from a `pi`-writable folder** (`/srv/ark/api/ark_atomic.py`, `644 pi:pi`) | **Not an escalation on this box, and recorded.** `pi` already has `NOPASSWD:ALL` by design (§1), so anything able to write that folder can already do anything as root; the same shape is used by `ark-backup` and `ark-restore`, which are existing shipped tools. Narrowing it would mean bundling `ark_atomic` into the helper — a second copy of the one small-file writer, which is exactly the duplicate-writer defect this project forbids | documented in `docs/ADMIN.md` §13.3 under *what it deliberately does not do*, and here: **the helper adds no privilege that the account running it did not already have** |
+| **`/etc/fake-hwclock.data` might be local time, not UTC** — `stored_time()` parses it as UTC, which would be an hour out in summer | **Settled by evidence, not argument.** The box's own `/usr/sbin/fake-hwclock` writes it with `date -u '+%Y-%m-%d %H:%M:%S'` and reads it with `date -u -d`, so UTC is right; the file on the box agrees (`2026-11-05 00:00:01` while the box was at `00:13 UTC`) | nothing to change; the fact is now written down in `docs/ADMIN.md` §13.3 |
+
+The reviewer could not run the suite (its role denies `.venv/bin/python`, and its
+sandbox had no temporary directory), so its verdict was static-evidence only. The
+suite was run here after each fix: **1162 passed, 2 skipped**. The deployment
+receipts in §58.8 are its own remaining caveat, and they were re-checked by hand
+on the box after the first deploy — byte-for-byte hashes and the verifier's four
+new lines.

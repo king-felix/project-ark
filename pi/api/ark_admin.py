@@ -2616,10 +2616,34 @@ def _proposal_page(ctx, row) -> str:
 """
 
 
-def _clock_state(conn):
+def _clock_state():
+    """What the box says, and its last corrections.
+
+    Deliberately **not** given a connection: ``reading()`` may ask systemd for the
+    network-sync state, which can take up to three seconds, and holding the
+    records' write lock across a subprocess would make every other writer wait for
+    a page view.  The history gets its own short read.
+    """
     seen = ark_clock.reading()
-    rows = ark_clock.history(conn)
+    with ark_db.read() as conn:
+        rows = ark_clock.history(conn)
     return seen, rows
+
+
+def _unix_seconds(text: str):
+    """The instant a form field names, or ``None``.
+
+    Strictly ASCII digits with at most one leading minus.  ``int()`` accepts some
+    Unicode digits and ``"--5".lstrip("-")`` *looks* like a number, so the shape is
+    settled here — before anything is converted, and before any sentence is shown.
+    """
+    raw = (text or "").strip()
+    if not raw or len(raw) > 20:
+        return None
+    digits = raw[1:] if raw.startswith("-") else raw
+    if not digits or not (digits.isascii() and digits.isdigit()):
+        return None
+    return int(raw)
 
 
 @router.get("/clock", response_class=HTMLResponse)
@@ -2631,7 +2655,7 @@ def clock_page(request: Request):
         ctx = _load_ctx(conn, request, ark_db.session_epoch(conn))
         if (blocked := _need_session(ctx, request)) is not None:
             return blocked
-        seen, rows = _clock_state(conn)
+    seen, rows = _clock_state()
     flash = ""
     if request.query_params.get("ok"):
         flash = _notice("good", esc(request.query_params["ok"][:300]))
@@ -2657,7 +2681,7 @@ def clock_propose(request: Request, utc: str = Form(""), basis: str = Form(""),
         ctx, blocked = _committed(request, conn, csrf)
         if blocked is not None:
             return blocked
-        seen, rows = _clock_state(conn)
+    seen, rows = _clock_state()
     try:
         row = ark_clock.proposal(utc, basis=basis, device=device, current=seen)
     except ark_clock.ClockRefused as exc:
@@ -2678,19 +2702,20 @@ def clock_apply(request: Request, unix: str = Form(""), device: str = Form(""),
         if blocked is not None:
             return blocked
         actor_id, who = ctx.admin["id"], ctx.admin["username"]
-        seen, rows = _clock_state(conn)
     text = (unix or "").strip()
     asked = {"source": (source or "typed")[:20], "device": "",
              "basis": "local" if basis == "local" else "utc"}
     hint = ark_clock.device_hint(device)
     if hint is not None:
         asked["device"] = ark_clock.iso_utc(hint)
-    if not text.lstrip("-").isdigit():
+    seconds = _unix_seconds(text)
+    if seconds is None:
+        seen, rows = _clock_state()
         return shell("Clock", _clock_body(ctx, seen, rows, error=(
             "That did not arrive as a time. Nothing was changed — check the time "
             "again.")), ctx=ctx, status=400)
     try:
-        result = ark_clock.apply(int(text))
+        result = ark_clock.apply(seconds)
     except ark_clock.ClockRefused as exc:
         # `ran` is the honest half of the sentence: a refusal made here (an
         # impossible date, a missing helper) cannot have moved the clock, while a
@@ -2714,6 +2739,7 @@ def clock_apply(request: Request, unix: str = Form(""), device: str = Form(""),
              f"{after['timezone']}). It was {result['before']['utc_words']} — "
              f"{human_delta(result['delta'])}.")
     return _redirect("/admin/clock?ok=" + urllib.parse.quote(words, safe=""))
+
 
 @router.get("/arcade", response_class=HTMLResponse)
 def arcade_page(request: Request):

@@ -147,7 +147,9 @@ def resolve(argv):
         return None, fail(EXIT_USAGE, USAGE)
     if unix is not None:
         raw = unix.strip()
-        if not raw.isdigit():
+        # `str.isdigit()` is true for digits `int()` refuses (a superscript two,
+        # for one), so the shape is checked here rather than trusted to a raise.
+        if not (raw.isascii() and raw.isdigit()) or len(raw) > 12:
             return None, fail(EXIT_USAGE,
                               "--unix takes whole seconds since 1970, like 1793000000")
         stamp = float(int(raw))

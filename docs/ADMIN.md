@@ -1398,7 +1398,9 @@ browser still complains, its own cached copy of the certificate can be cleared, 
 every device must trust the new one — `sudo ark-tls-cert --show` prints it).
 
 The same commands are the recovery path for a box whose page is unreachable for any
-other reason, and they are the only ones that write the clock.
+other reason. They are the only commands a person needs: the repair pass may also
+move the clock **forward** from the card by itself, but it never moves it back and
+never to a time you chose.
 
 #### Where it is kept
 
@@ -1422,6 +1424,13 @@ other reason, and they are the only ones that write the clock.
   so before you press the button.
 * **It does not let anyone but the owner do it, and it is never public.** The page
   is behind the sign-in; the audit row is on the owner's page only.
+* **It does not add a privilege the account did not have.** The helper loads two
+  small modules from `/srv/ark/api`, which the portal's own user can write — and
+  that user already has passwordless `sudo` on this box by design, so the helper
+  grants nothing new. It is written down here rather than fixed by copying the
+  time-keeping code into a second place.
+* **It does not write the time itself.** `fake-hwclock` does, in UTC (`date -u`),
+  which is why the page can say what the next cold boot will start from.
 
 ---
 

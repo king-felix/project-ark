@@ -2,7 +2,7 @@
 
 **Date:** 4 November 2026
 **Branch:** `feature/admin-hardening`
-**Suite:** `1146 passed, 2 skipped` (49 files; `python -m pytest -o addopts='--strict-markers' -q`, Mac, throwaway databases; the two skips are the QR cross-checks that need `qrcode`/`opencv-python-headless`); the three Chromium maps tests are excluded by the project's usual command
+**Suite:** `1162 passed, 2 skipped` (49 files; `python -m pytest -o addopts='--strict-markers' -q`, Mac, throwaway databases; the two skips are the QR cross-checks that need `qrcode`/`opencv-python-headless`); the three Chromium maps tests are excluded by the project's usual command
 **Hardware:** **deployed 25 Oct 2026** — `90-verify` green, `/api/ready` 200, the doors, the book
 route rules, a bundle and the arcade origin all answered on the Pi (`docs/IMPLEMENTATION-LOG.md`
 §15), `ark-arcade --import` answered honestly three times on the box (§18.4), and the name-from-the-
