@@ -201,7 +201,7 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 | Active branch | `feature/admin-hardening` (fast-forwarded to `main` at `acf5d29`) |
 | Schema version | `SCHEMA_VERSION = 8` (`pi/api/ark_db.py`) — migration 7 adds the film shelf and the space ledger; migration 8 gives a reservation its pid, boot id and kind. **No migration was added in the 4 Nov pass**: the pause is a file, and the new health/UX work changes no table |
 | Test suite | `1146 passed, 2 skipped` (49 files) |
-| Live Pi state | Deployed `d90dd33` (log §57); `90-verify` **87 ✓, no ✗**; ready 200, blocking []; Films 8, Games 67, Maps 3 — all **Ready**; reserve 16 GB. **Search misses its 1500 ms target: 4–8 s (log §56.8/§57.6)** |
+| Live Pi state | Deployed `0e24ce5` (log §58); `90-verify` **91 ✓, no ✗**; ready 200, blocking []; Films 8, Games 67, Maps 3 — all **Ready**; reserve 16 GB. **Search misses its 1500 ms target: 4–8 s (log §56.8/§57.6)** |
 | Owner decisions pending | History rewrite + force-push (pre-`a926296`; home-LAN address in `1a3f41f`; log §37.6/§38.7/§44); rotate passwords; licence |
 
 ### 8.1 What exists, and what each piece owns
@@ -377,7 +377,7 @@ Maps: address search, `via`-way/time-conditional restrictions, live traffic, ele
 * **Maps & service workers:** the device must trust the Ark certificate — a click-through is not a secure context. `sw.js` carries a fingerprint of every app file (`__ARK_RELEASE__`) so an installed phone updates, is served with `Service-Worker-Allowed: /maps/` and an `ETag`; `cacheFirst` reads **this release's cache only**; a pack version is immutable; `/maps/api/` is never cached; `:8446` never proxies `/admin`.
 * **Disk guard & cards:** `diskutil info -plist` says `WholeDisk` (never `Whole`); `VirtualOrPhysical = Unknown` on some physical Apple disks, `Virtual` for APFS containers — deny `Virtual`, never require `Physical`. Capacity is a band, never one of the other facts. A clone keeps the *old* partition table: boot it, then `growpart` + `resize2fs` (`docs/CARD-MIGRATION.md` §6).
 * **Maintenance:** `ark_db` connections hold `<db>.maintenance.lock` for life; repair/restore takes `<db>.repair.lock` then the gate. Never unlink either; an unavailable gate is `deferred`, not corruption.
-* **Verifier counts:** `90-verify` printed **87** `✓` on 4 Nov 2026; quote the command, not gitignored logs.
+* **Verifier counts:** `90-verify` printed **91** `✓` on 5 Nov 2026 (87 on 4 Nov); quote the command, not gitignored logs.
 
 ### 8.8 Standing rules for every stage
 

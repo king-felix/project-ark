@@ -7191,3 +7191,196 @@ decision is made with the measurement in hand rather than after it.
   ordering and by a short-copy refusal, not by pulling the plug.
 * The **Maps upgrade** is proved in Chromium with a real profile; a real iPhone or
   Android device is unproved, as it was before this pass.
+
+---
+
+## 58. The clock an owner can correct, and the four things a correction used to break — 4/5 Nov 2026
+
+### 58.1 The rule that already existed, and the two cases it leaves
+
+`ark_self_heal.fix_clock` (log §26) repairs the clock after a power cut from the
+newest thing on the card, and it is right to be cautious: it only ever moves the
+clock **forward**, only when something on the card is stamped *later* than the
+clock, and never further than `CLOCK_MAX_AHEAD` (400 days) past its own reading.
+Two cases are therefore left to a person, and until this pass there was nobody:
+
+* a clock **ahead** of the truth — a wrong date written once, after which every
+  file agrees with it, so the card cannot contradict it;
+* a clock so far behind that the card is no evidence at all — a cloned card, or
+  one whose newest file is years later than the clock (the case `fix_clock`
+  reports under *problems* and refuses to follow).
+
+The owner's Clock page is the door for both. `docs/ADMIN.md` §13.3 is the
+walk-through; this section is the record of what was decided and measured.
+
+### 58.2 What was built
+
+| Piece | What it owns |
+|---|---|
+| `pi/api/ark_clock.py` | the model: `reading()`, `parse_text()`, `epoch_of()`, `bounds_problem()`, `proposal()`, `apply()`, `audit_detail()`, `history()` |
+| `pi/bin/ark-set-clock` | **the only program that sets the time.** Python; root for `--unix`/`--utc`; `--show`/`--check`/`--dry-run` need no privilege; argv arrays only; `ark_atomic.save_clock()` persists; one line in `logs/clock.log` |
+| `/admin/clock` (`ark_admin`) | three routes — a page, a **proposal** (POST, renders, changes nothing) and an **apply** (POST, session + token, the only one that runs the helper) |
+| migration 9 (`ark_db`) | `admin_sessions.mono_created` / `mono_seen` |
+
+The Apply step is deliberately a second POST with the session's token: "show me
+the change" and "make the change" cannot be the same request, and a page left
+open for half an hour is refused by the existing token check rather than
+silently applied.
+
+### 58.3 The bounds, and the circular rule that was avoided
+
+The obvious validation — *refuse a date more than a day from what the box says* —
+is circular. The box's own clock is the thing being corrected, so a **correct**
+date would be refused by the broken reading it is meant to replace. That is not a
+hypothetical: it is exactly the state a box is in when the page is needed.
+
+So the window is the calendar's: **2020-01-01T00:00Z … 2100-01-01T00:00Z**, with
+every refusal saying why, in the same words the owner sees:
+
+> This limit is about the calendar, not about what this box currently believes, so
+> a correct date is never refused because the box's own clock is wrong.
+
+`tests/test_clock.py::test_a_correct_date_is_accepted_even_when_the_box_believes_it_is_2016`
+puts the box's clock in 2016 and asks for 2026-11-04: the delta is over 300 days
+and the date is accepted. The lower bound catches the `2016`-for-`2026` typo; the
+upper bound catches the century typo, and is where TLS validity, SQLite dates and
+every "how long ago" on every page stop being able to describe themselves.
+
+Impossible dates are refused by `datetime()` — 30 February, 31 April, a 29
+February in a common year, hour 24, minute 60 — not by the shape regex. The regex
+only says "these are four digits, a dash, two…", which is what a person needs to
+read in the refusal.
+
+A timezone is never inferred. A typed `+01:00`/`Z` wins outright; otherwise the
+form says whether the typed reading is **UTC** (the default) or **the box's own
+time at the offset printed beside the field**. A local time that falls in the
+other daylight-saving period is flagged in the proposal ("the box will show…")
+rather than quietly reinterpreted — the one honest limit of a fixed-offset
+interpretation, made visible instead of hidden.
+
+### 58.4 The device's clock is a suggestion, taken at the press
+
+The field starts **empty**. A single `submit` listener fills it from `new Date()`
+*when the button is pressed* — never at load — and records the device's own ISO
+instant in a hidden field, which the server treats as a claim: validated,
+recorded in the audit line, shown in the proposal, and never preferred over the
+typed value. A person who types their own time keeps it (`typed` flag). With
+scripts off the same form works: type the time, choose the timezone, press.
+
+### 58.5 What a correction used to break — and does not now
+
+Four defects were found *by designing this*, none of them reported by anyone,
+each proved by a test that fails without the fix:
+
+1. **Sessions died — or became immortal.** Idle and lifetime timeouts compared two
+   readings of the wall clock. Put forward, a correction ended every live session,
+   *including the one being used to make it*. Put back, an "eight-hour" session
+   stayed usable until the clock caught up again. Both timeouts are now elapsed
+   time (`time.monotonic`, migration 9). Rows written before the columns are
+   judged exactly as before (and never outlive their boot, because `epoch` is
+   unchanged).
+2. **Login throttling could lock the owner out for as long as the jump.**
+   `login_backoff` counted failures inside a window; a box that was three days
+   fast had recorded its failures *in the future*, so the wait computed as
+   `newest + delay - now` — three days. Attempts stamped ahead of the corrected
+   clock are now ignored, and the wait is capped at `BACKOFF_MAX`.
+3. **A backward correction could delete the backup it had just taken.** A bundle
+   is named with the wall clock (`ark-backup-YYYYmmdd-HHMMSS`), and `prune()` kept
+   "the newest N by name". Put back, the fresh bundle sorts *first*, so the one
+   copy that had never been read back was the one removed. `prune(dest, keep,
+   protect=name)` now never prunes the bundle the run just made.
+4. **A clock change is a discontinuity in every timestamp.** The audit row
+   (`clock-set`) carries both instants, the exact delta and the device's claim,
+   and the helper writes one plain line to `logs/clock.log` even if the database
+   write failed. Nothing is rewritten: an older line may look newer, and the
+   record is what explains it.
+
+Sweeping was considered and left as it is: `ark-self-heal` removes half-written
+temp files by pattern **and age**, so a large forward jump makes every old temp
+file eligible. Nothing published is in that pattern, and the alternative (a sweep
+that ignores age after a clock change) is a worse rule. It is written down in
+`docs/ADMIN.md` §13.3 instead of being fixed by weakening the sweep.
+
+### 58.6 Can a wrong clock lock the owner out of the page that fixes it?
+
+Four ways were examined; three are benign and one is real:
+
+| Route | Verdict |
+|---|---|
+| Session expiry | **Fixed** — elapsed time (§58.5.1). Before the fix a forward jump signed the owner out mid-correction |
+| Sign-in throttling | **Fixed** — future-dated failures ignored, cap applied (§58.5.2) |
+| The browser's own clock | irrelevant: nothing here compares the device's clock with the box's except our own suggestion |
+| **The certificate** | **Real, and documented rather than papered over.** The management listener's certificate is valid from the moment it was made; a box whose clock is *before* that date makes every browser refuse `https://…:8443` with a "not yet valid" error, so the page cannot be opened |
+
+The recovery path for the last one is a console or SSH session, which needs no
+certificate at all:
+
+```bash
+sudo ark-set-clock --show                     # what it believes (no root needed at all)
+sudo ark-set-clock --utc "2026-11-04 10:00"   # or --unix <seconds since 1970>, or --local
+```
+
+`--show`, `--check` and `--dry-run` need no privilege, so the reading is always
+available to a person. Nothing about TLS or the sign-in was weakened to make the
+page easier to reach: `:80` still answers 404 for `/admin`, `:8444` is still
+loopback-only, and the certificate is still the device's to trust. What was added
+is a way *around* the door that a person with physical or SSH access already had.
+
+### 58.7 Tests — 63 new, and what they are for
+
+`tests/test_clock.py` (63) covers the calendar (nine impossible dates), the
+absolute window with the box in 2016, typed offsets, the local-basis warning, a
+disagreeing device, the page behind TLS and the sign-in, CSRF, a stale page, a
+helper that refuses, a helper that is missing, a change that does not stick, the
+audit line for forward **and** backward jumps, the elapsed-time session rules
+across both directions, future-dated throttling, the helper's unprivileged modes
+and its argv-only root path, and the absence of any shell on the path.
+`tests/test_backup.py` gained two (pruning with and without a protected bundle);
+`tests/test_accounts.py` was updated to age sessions by elapsed time and gained
+one for the pre-migration fallback. Suite: **1146 passed, 2 skipped**.
+
+Nothing here touches the machine's clock: the "box clock" is a file, the helper
+is a stub that writes it, and `ark_clock.reading` is pointed at that file. That
+is the isolated environment the disruptive cases need — a correction years
+forward, a correction backwards, and a clock before the certificate are proved
+without falsifying the live Pi.
+
+### 58.8 Deployed, and measured on the box
+
+Deployed **`0e24ce5`** through the established process: `--only 60-portal,65-admin`
+(28 s), then `--only 95-backup`, then `--only 90-verify`. The database was copied
+with `sqlite3 .backup` to `ark.db.pre-clock-20261105-000259.bak` **before** the
+first phase; the migration to schema **9** ran at the `ark-api` restart.
+
+* `90-verify`: **91 ✓, 0 ✗**, `ARK_INSTALL_COMPLETE`, receipt `ok: true`,
+  `ready.ok: true`, `blocking: []`, `problems:` empty.
+* Four new lines in it: *read the box's clock* (`2026-11-05T00:04:10Z`,
+  `Europe/London`, `+00:00` — **no root needed**), *the clock's dry run*
+  ("a valid instant is accepted and NOT applied — the clock was not touched"),
+  *Clock page behind the sign-in* (HTTP 303 / the public listener 404), and
+  *sessions survive a clock change* (`admin_sessions` has the elapsed-time
+  columns, schema 9).
+* Every deployed file was compared byte for byte with the repo afterwards —
+  `ark_clock.py`, `ark_admin.py`, `ark_security.py`, `ark_db.py`, `ark_doors.py`,
+  `ark-set-clock`, `ark-backup`, `ark-admin.css`: **all identical**.
+* The box's own reading and the Mac's agreed to the second
+  (`1793837106` on both) — a small, pleasant confirmation that the reading path
+  describes the box truthfully.
+* **The live clock was not set, and no live session was disturbed.** The only
+  write to the clock path was `--dry-run`, which validates and stops before
+  `date`.
+
+### 58.9 What is not proved
+
+* **No phone has used the page.** `docs/HUMAN-TEST-LIST.md` §30 is the
+  walk-through, and it is written to be safe on the live box: it sets the clock to
+  the time it already is.
+* **The certificate-not-yet-valid recovery is reasoned, not observed.** Producing
+  it means putting the live box's clock before its certificate, which this pass
+  refused to do. The recovery command is proved; the browser's refusal is not.
+* **No hardware clock exists** on a Pi 4, so "remembered" means `fake-hwclock` —
+  correct across a cold boot, and explicitly not across a card moved to another
+  box.
+* **A card moved from one box to another** carries timestamps from the first box;
+  the page can correct the clock, but nothing here tries to reconcile three years
+  of file ages.

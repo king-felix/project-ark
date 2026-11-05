@@ -884,7 +884,9 @@ the pause was set and cleared on the box and every reader page kept answering;
 the kick file was consumed by a real importer run; `/maps/api/app` returns
 `release 725f2603cd66` and `sw.js` carries it.
 
-**Not proved here:** a real phone at all (see `docs/HUMAN-TEST-LIST.md` §29); a
+**The Clock page, deployed 5 Nov 2026 (log §58):** `0e24ce5`; `90-verify` **91 ✓, 0 ✗** (four new lines: the reading without root, the dry run that changes nothing, the page behind the sign-in, and schema 9's elapsed-time session columns); every deployed file compared byte for byte; the live clock was not set.
+
+**Not proved here:** a real phone at all (see `docs/HUMAN-TEST-LIST.md` §29 and §30); a
 real full card; a physical power cut; and **the search target, which the Pi
 missed** — 4–8 s against 1500 ms, measured three ways in log §56.8, with the
 decision left to the owner in §57.6.
