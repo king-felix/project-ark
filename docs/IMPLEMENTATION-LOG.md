@@ -7556,8 +7556,9 @@ The first two documentation commits in §59.1 were made with their message passe
 a **double-quoted shell string**, and the message contained backticks around a
 command. The shell ran it: `git diff dac7770 5adb1b7` executed and its whole output
 — a few hundred lines of diff — was substituted into the message, which grew to
-**13,927 characters**. The second commit existed only to correct one sentence the
-first had got wrong. This is the hazard `AGENTS.md` §8.7 records for apostrophes;
+**13,927 characters**. A second commit existed only to correct one sentence the
+first had got wrong; both are now gone. This is the hazard `AGENTS.md` §8.7 records
+for apostrophes;
 backticks are the same class, and `git commit -F <file>` is the rule for both.
 
 **What was done.** The two commits were squashed into one with the message they
@@ -7569,9 +7570,10 @@ by the owner, for these two commits only. The larger rewrite still pending (pre-
 
 | | |
 |---|---|
-| Before | `main` = `105e278`, tree `2b48e320fdd9dfa59935282c89d0722afc5f0941`, two commits, one message 13,927 characters |
-| After | the commit that carries this record, tree `2b48e320fdd9dfa59935282c89d0722afc5f0941`, one commit, message 1,285 characters |
-| The proof it moved no file | **the tree hash is identical before and after** — a message-only rewrite, verified rather than asserted |
+| Before | `main` = `105e278`; **two** commits; one message **13,927** characters; tree `2b48e320fdd9dfa59935282c89d0722afc5f0941` |
+| At the rewrite | tree `2b48e320fdd9dfa59935282c89d0722afc5f0941` — **identical before and after**, which is the proof that no file moved |
+| After | **one** commit; its message is **1,702** characters. Its tree is *not* `2b48e32`, and the only reason is that this section was then added to it — writing the record of a rewrite necessarily changes the tree the record describes |
+| The push | `--force-with-lease`, base `105e278`, accepted: `105e278...b7ce891 main -> main (forced update)` |
 | Tags | unchanged: `v1.0.1`–`v1.0.5` all where they were (`v1.0.5` = `dd3336c`) |
 | `feature/admin-hardening` | unchanged at `5adb1b7`, an ancestor of `main`, so the rewrite cannot strand it |
 
