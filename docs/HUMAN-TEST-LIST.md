@@ -364,10 +364,11 @@ the seconds.
    then `sudo ss -tnp | grep :8089` **at once** — the connection must be **gone** (before the fix it
    stayed `ESTABLISHED` for the whole answer) — and `curl "http://127.0.0.1/ask?q=hello"` must begin
    answering instead of returning the *somebody else* sentence.
-9. **Optional, and it will be slow:** Gemma 4 E2B (3.3 GB) is still in `/srv/ark/ai/models/` and the
-   **newest** `*.gguf` is the one used — Gemma is older, so the 1.5B answers. At 2.3 tokens/s Gemma
-   cannot answer a page in under five minutes and it thinks before it writes, so it is not the model
-   a page can wait for (log §31.2). Leave it, or delete it to free 3.3 GB.
+9. **No longer applicable (5 Nov 2026):** the second model (Gemma 4 E2B, 3.3 GB) has been removed
+   from `/srv/ark/ai/models/` at the owner's request, so there is nothing to swap in and 3.3 GB more
+   room on the card (log §59). What is still worth knowing: the helper runs the **newest** `*.gguf`
+   on the card, so a second model dropped in later would only be used once it is newer than
+   `Qwen2.5-1.5B-Instruct-Q4_K_M.gguf`.
 
 **You should see:** one plain answer, made on the box, in about a minute or two, with the guides as
 the authority and the household's own words never leaving the page they were typed on.

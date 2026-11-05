@@ -2666,8 +2666,9 @@ Gemma 4 E2B at 3.3 GB answered, and its numbers were the reason it could never a
 It is a **reasoning** model: it thinks first and was cut off before it wrote a word of answer. On
 top of that, at its speed a full answer is **5 minutes plus** — not a page anybody waits for. So
 the documented default (1.5B, 940 MB) was fitted through the same door
-(`1adf0b11065d8ad2e8123ea110d1ec956dab4ab038eab665614adba04b6c3370`) and **the Gemma file is still on
-the card** for the owner to keep or remove; newest `*.gguf` wins, so the smaller one answers.
+(`1adf0b11065d8ad2e8123ea110d1ec956dab4ab038eab665614adba04b6c3370`) and **the Gemma file was left
+on the card** for the owner to keep or remove; newest `*.gguf` wins, so the smaller one answered.
+(The owner had it removed on 5 Nov 2026 — §59.)
 
 ### 31.3 Six defects, none of which a 200 from `curl` would have found
 
@@ -2718,8 +2719,8 @@ ask row `ready: true`, and the brief rebuilt without its instruction (1241 chars
 **Still unproven, and no amount of `curl` can change it:** no browser or phone has drawn `/ask`; the
 page's script path (`/api/ask/stream`) has been read by `curl` on the box but never by JavaScript in
 a phone; nobody has asked two questions at once, closed `public_ask`, or read an answer aloud;
-**Gemma itself has never produced a full answer** (it is on the card, and at 2.3 tokens/s it is not
-the model a page can wait for); and an answer takes **one to two minutes**, which is the honest
+**Gemma itself has never produced a full answer** (it was on the card until 5 Nov 2026, §59, and at
+2.3 tokens/s it is not the model a page can wait for); and an answer takes **one to two minutes**, which is the honest
 speed of a Pi 4 with a 1.5B model and should be read as such in `docs/USING-THE-ARK.md`.
 
 **Tests:** **516 passed, 2 skipped, 24 files** (8 new: the proxy's patience, the prompt budget, the
@@ -7416,3 +7417,106 @@ suite was run here after each fix: **1162 passed, 2 skipped**. The deployment
 receipts in §58.8 are its own remaining caveat, and they were re-checked by hand
 on the box after the first deploy — byte-for-byte hashes and the verifier's four
 new lines.
+
+### 58.11 Which model answers, and what could make it faster — measured on the box
+
+The owner asked what the helper actually runs and whether more could be squeezed out
+of it. Everything below was measured on the live Pi, not inferred.
+
+**What answers a question.** `Qwen2.5-1.5B-Instruct-Q4_K_M.gguf` (986 MB, four-bit
+medium) through `llama-server` 0.7.0-dev (`d854d98`), started by `ark-ai-serve` with
+`-c 4096 -t 3 --parallel 1`, under `Nice=10 CPUWeight=40 MemoryMax=5500M`. The card
+also held `google_gemma-4-E2B-it-Q4_K_M.gguf` (3.3 GB), unused because it is older
+by mtime and §31.2 showed it cannot answer a page — removed in §59.
+
+**What it does, from the engine's own journal** (a real question, 19:59):
+
+| | |
+|---|---|
+| reading the prompt | 634 tokens in 92.3 s — **6.87 tokens/s** |
+| writing the answer | 54 tokens in 15.8 s — **3.35 tokens/s** |
+| the whole answer | **108 s** |
+
+**What was tested for more speed.** A second engine on port 8090, same model, same
+384-token prompt, three runs each; the live service was never restarted or touched.
+
+| Configuration | prompt reading | writing |
+|---|---|---|
+| as shipped, `-t 3` | 6.93–7.00 tok/s | 3.40–3.52 tok/s |
+| **`-t 4`** | **8.11–9.05 tok/s** | 3.31–3.51 tok/s |
+| `-t 4 -tb 4` | 8.73 | 3.36 |
+| `-t 4 -fa on` (flash attention) | 8.58 | 3.11 |
+| `-t 4 -fa on -ctk q8_0 -ctv q8_0` | 8.38 | 3.32 |
+| `-t 4 --spec-type ngram-simple` | 8.48 | **2.98** |
+
+One knob works: **`-t 4` gives +17 to +30 % on reading.** Writing does not move,
+because generation is bound by memory bandwidth, not core count. Flash attention,
+quantised KV cache and speculative decoding are all **slower on this CPU** — worth
+knowing, because each sounds like an optimisation.
+
+**The prompt cache is already the big win, and it was working.** Two *different*
+questions on the same engine: the first evaluated **344 tokens in 49.7 s**, the
+second **11 tokens in 1.8 s**. The system prompt and the brief are reused, so the
+slow case is the first question after a restart, not every question.
+
+**The catch — heat.** `-t 3` peaked at **75.9 °C**; `-t 4` at **80.8 °C**, the default
+soft limit (no `temp_soft_limit` is set in `config.txt`). Neither was clock-capped
+during a single answer — both held 1.8 GHz — but `throttled` now reads `0xe0000`,
+which is **this benchmark's** doing: the box was 44.8 °C before it began, and six
+minutes of back-to-back load is not what a household does. So `-t 4` is a real gain
+*if* the case can hold it, and a gamble on a warm evening if it cannot. The thread
+count was **not** changed: that is the owner's decision, and a cooling case is the
+prerequisite. No config, unit or service was changed by this pass.
+
+**Two knobs deliberately not turned.** `MAX_TOKENS = 160` (up to ~45 s of writing)
+could be cut for shorter answers, but that truncates some of them — a quality trade,
+not a free win. And the fix for "the first answer after a restart is slow" is to stop
+restarting, not to shrink the prompt.
+
+---
+
+## 59. The second model removed, and 3.3 GB back — 5 Nov 2026
+
+The owner asked for `google_gemma-4-E2B*.gguf` to be deleted and the space reclaimed,
+after §58.11 confirmed what §31.2 had found: it was not the model answering anything,
+and at 2.3 tokens/s with a reasoning preamble it could never answer a page.
+
+**What was removed, and what was kept**
+
+| | |
+|---|---|
+| Deleted | `/srv/ark/ai/models/google_gemma-4-E2B-it-Q4_K_M.gguf` — 3,462,680,032 B (3.3 GiB), a real GGUF (`GGUF` magic), written 26 Oct 2026 14:02 |
+| Kept | `/srv/ark/ai/models/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf` — 986,048,768 B, sha256 `1adf0b11…b6c3370`, **the same value log §31.2 recorded** before the file was ever touched |
+| Nothing held it open | `lsof` on the Gemma file: no process. The engine's argv names the Qwen file, and it is the **newest** `*.gguf`, which is the rule `ark-ai-serve` uses |
+
+**The space, measured on the box**
+
+```
+before  111,929,925,632 B available   229G card, 116G used, 105G free (53%)
+after   115,392,610,304 B available   229G card, 113G used, 108G free (52%)
+delta    +3,462,684,672 B             — the file's 3,462,680,032 B plus block rounding
+```
+
+**Nothing else changed.** `ark-ai.service` was not restarted and stayed `enabled` +
+`active`; the engine kept its process and its model; `/health` answers `ok`;
+`/api/ready` answers **200** with `ready: 12 / total: 12`, `blocking: []`, and the
+helper's own row still reads *"Questions are answered on this box — 940.4 MB of
+words, no internet needed."* A deletion is a filesystem act; it needs no service
+restart, and restarting one would have been a needless disturbance of a working box.
+
+**The paperwork that had to move with it** (three present-tense claims, now false):
+
+* `docs/IMPLEMENTATION-LOG.md` §31.2 — "the Gemma file is still on the card" is now
+  "was left on the card … (The owner had it removed on 5 Nov 2026 — §59)". The
+  measurements beside it are untouched: they are what was measured, and rewriting
+  them would be inventing history.
+* `docs/IMPLEMENTATION-LOG.md` §31.2's closing note — "(it is on the card, and at
+  2.3 tokens/s …)" → "it was on the card until 5 Nov 2026".
+* `docs/HUMAN-TEST-LIST.md` §27 item 9 — the optional "swap the model and watch it
+  be slow" walk-through is marked **no longer applicable**, and keeps the one fact
+  that still matters: the helper uses the **newest** `*.gguf`, so a model dropped in
+  later is only used once it is newer than the Qwen file.
+
+**What this does not do.** It reclaims card space; it changes no answer, no speed
+and no code. The `-t 3` → `-t 4` question from §58.11 stays where it was left: a
+measurement with a thermal caveat, and the owner's decision.
