@@ -7900,10 +7900,13 @@ nothing is re-fetched and a future profile change cannot bring it back. `/kiwix/
 the photo edition, the 1291 books, 41 films, 67 games, 3 maps, the guides and the
 carry-away pack are all as they were; every public door answers 200.
 
-One reporting lag, found and left alone: `kiwix/state/status.json` is written by the
-downloader at the end of each idle loop, so for up to fifteen minutes after a
-hand removal it still carries the previous `bytes_on_disk`. It is recomputed from
-the disk on every write, so it corrects itself with no action; the percentages the
-pages show cannot be pushed past 100 % by it (`remaining_bytes` is clamped at 0).
-Worth knowing when reading that file straight after a delete, not worth a code path
-that touches the card twice.
+One reporting lag, observed and left alone: `kiwix/state/status.json` is written by
+the downloader at the end of each idle loop, so after a hand removal it still carries
+the previous `bytes_on_disk` (232,200,022,848) and `free_gib` (203) until that loop
+comes round. It did exactly that: `17:13:32`, fifteen minutes after the delete, it
+wrote `bytes_on_disk` 179,509,316,293 — equal to `bytes_total` for the first time
+since either Wikipedia arrived — and `free_gib` 252, with nothing touched but a
+sleep. The figures are recomputed from the disk on every write, so no code is
+needed; and the percentages a page shows could not be pushed past 100 % by the lag
+anyway (`remaining_bytes` is clamped at 0). Worth knowing when reading that file
+straight after a delete, not worth a code path that touches the card twice.
