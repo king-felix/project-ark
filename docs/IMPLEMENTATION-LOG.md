@@ -7580,3 +7580,86 @@ by the owner, for these two commits only. The larger rewrite still pending (pre-
 Nothing private was in the damaged message: it was checked before the rewrite, and
 the only hit for "password" was the phrase *"rotate passwords"* from the owner's own
 pending-decisions row.
+
+---
+
+## 60. The card migration, done on hardware — 256 GB → 512 GB, and the guard that cannot reach the card — 11 Nov 2026
+
+This is the first time the card-migration path has run on a real card. It
+worked, and it also found the reason `clone-card.sh` has never worked on
+hardware: **macOS Full Disk Access denies the raw device to a process the agent
+spawns, whatever its privilege**, so the script's own `osascript` elevation
+cannot open `/dev/rdiskN`. The clone was completed by a person pasting one
+command into Terminal, which is the boundary the project already claimed —
+now measured rather than assumed.
+
+### 60.1 What was done
+
+| Stage | Detail |
+|---|---|
+| Source card | 256 GB class, **250,215,399,424 bytes**, `dos` table id `0xff620289`, p2 start 1,064,960 / 487,636,992 sectors, ext4 `rootfs`, 232.5 GiB, UUID `02f61d5e-92cb-4f9c-a781-099d97795020` |
+| Image | full-device read to the 1 TB external drive: **59656+0 records in/out**, 4.60 h at 15.1 MB/s, sha256 `3e71d67df28b956c23a5bf8525da2c05b880e4879d8afa2ab71106d9bd496934` |
+| Write | **one pass** — the same stream written to the card and fed through SHA-256; 250,215,399,424 bytes in 101.9 min at 40.9 MB/s; recorded and written digests **identical** |
+| New card | SPCC 463 GiB SDXC, UHS-I DDR50, **971,866,112 sectors = 497,595,449,344 bytes**, agreeing with what macOS reported |
+| Expansion | `growpart` 232.5 G → 462.9 G (size 970,801,119 sectors); `resize2fs` online to **121,350,139 blocks = 455.6 GiB**; `ark-card-report` **exit 0**, "the whole card is in use" |
+
+### 60.2 The identity survived, measured
+
+| Fact | Before | After |
+|---|---|---|
+| Certificate fingerprint | `B6C13B62…87422` | **identical** |
+| Filesystem UUID | `02f61d5e-92cb-4f9c-a781-099d97795020` | **identical** (`resize2fs` preserved it) |
+| Partition table id | `0xff620289` | **identical** |
+| `api/ready` | 200 | **200**, `ok:true`, blocking `[]`, 11/12 sections |
+| Collections | 27 collections, 1291 books, 41 films, 67 games, 3 maps | **identical** |
+| Schema | v9 | **v9**; `quick_check` → `ok` |
+| Wi-Fi profiles | 7 | **7** (`home-wifi`, `rodclan`, `ark-hotspot`, …) |
+| Reserve | 16.0 GB | **34.2 GB** (7 % of the bigger filesystem, as designed); usable 311.5 GB |
+
+### 60.3 The new card is not counterfeit
+
+A cheap card reports a large size and corrupts data past its real capacity, so
+the far end was tested rather than assumed: 64 MiB written at **440 GiB** into
+the filesystem, `sync`, `drop_caches`, then read back with `iflag=direct` —
+digest `da82e6afd27821e13f8d454f6853f3e2284e4666` **before and after**, zero I/O
+errors in `dmesg`. `resize2fs` had already written block-group metadata across
+the whole range, which a short card could not have accepted.
+
+### 60.4 Why `clone-card.sh` cannot run as written, and what to change
+
+Measured on this Mac (MacBook Air M3, macOS 26): `osascript … with administrator
+privileges` **does** elevate (`id -u` → `0`), and root can write to the external
+volume — but opening `/dev/rdisk4` returns **`EPERM`**, for reading and writing
+alike, because the process tree the agent runs in has no Full Disk Access. The
+same is true of a helper script executed from the external volume
+(`Operation not permitted`), for a different reason worth knowing: a script run
+by root from a `noowners` exFAT volume is refused by the volume's own policy, so
+helpers must live on the internal disk.
+
+Consequences for the tool, none of them urgent because the documented procedure
+already says a person runs it:
+
+* `clone-card.sh` should detect `EPERM` on the raw device and say **"this
+  Terminal needs Full Disk Access (System Settings → Privacy & Security → Full
+  Disk Access → add Terminal), or run this command yourself"** rather than
+  reporting a generic failure.
+* The person-run shape is the one that worked and is worth keeping. What is
+  worth adding is the `tee` to a log, so the run can be verified afterwards.
+* `resize2fs` is at `/sbin/resize2fs` and is **not on the non-login SSH `PATH`**
+  (`/usr/local/bin:/usr/bin:/bin:/usr/games`); the documented command should use
+  the absolute path or go through `raspi-config nonint do_expand_rootfs`.
+* `ark-card-report` is deployed at `/srv/ark/src/bin/ark-card-report` and is
+  likewise not on `PATH`; documents that say `ark-card-report` bare will not
+  run on the box as currently deployed.
+
+### 60.5 State afterwards, and what is left
+
+The box runs the 512 GB card: `BOOT_MODE="auto"`, revision `dac7770`, ready 200,
+`ark-card-report` exit 0. The **original 256 GB card is untouched** and is the
+cold spare; the **full image and its digest** are on the external drive in
+`ARK-CARD-MIGRATION-2026-11-11/` with a restore procedure. Nothing in the
+software changed — not one file under `pi/` — so no redeploy is implied.
+
+Left undone, deliberately: the newest `ark-backup` is **7 days old** (the
+readiness note says so); a fresh backup after this migration is the owner's call.
+`clone-card.sh` still carries the unreachable-elevation path described above.
