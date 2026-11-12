@@ -142,7 +142,7 @@ def test_a_pack_that_would_hold_two_files_of_one_name_is_refused(tmp_path, vault
         pack.build(out, vault=vault, when=WHEN)
     assert "two files called manuals/water.html" in str(refused.value)
     assert not pack.pack_path(out).exists()
-    assert not (out / (pack.PACK_NAME + ".partial")).exists()
+    assert not list(out.glob("*.partial")), "a refused build must leave no half-written file"
 
 
 # ---------------------------------------------------------------------------
@@ -436,3 +436,26 @@ def test_the_tool_refuses_a_damaged_pack_with_a_sentence(tmp_path, vault):
     assert "manuals/water.html" in answer.stdout
     assert "Not whole" in answer.stdout
 
+
+
+def test_two_builds_at_once_do_not_write_into_one_file(tmp_path, vault):
+    """A build can now start by itself (phase 8 rebuilds the pack) as well as from the
+    owner's button, so two can be in flight at the same moment.  Two processes sharing
+    one half-written name wrote into the same file and published whichever finished
+    last; a per-process name means the surviving file is one whole build or the other.
+    """
+    out = tmp_path / "out"
+    script = (f"import sys; sys.path.insert(0, {str(API)!r});"
+              "import ark_essentials as p;"
+              f"p.build({str(out)!r}, vault={str(vault)!r})")
+    runs = [subprocess.Popen([sys.executable, "-c", script],
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            for _ in range(3)]
+    for run in runs:
+        run.wait(timeout=120)
+        assert run.returncode == 0, run.stderr.read()
+
+    whole, problems = pack.verify(pack.pack_path(out))
+    assert whole, problems
+    # Every builder cleaned up after itself: no half-written file is left behind.
+    assert not list(out.glob("*.partial")), [p.name for p in out.glob("*.partial")]

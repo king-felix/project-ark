@@ -287,6 +287,70 @@ def test_the_installer_enables_it_and_the_verifier_checks_it():
     assert "ark-net-watch.timer" in verify
 
 
+def _verifier_watchdog_block() -> str:
+    """The verifier's watchdog paragraph, lifted out of the shipped script.
+
+    Taken from the source rather than retyped, so the test runs the code that will
+    run on the box.  ``set -Eeuo pipefail`` is how that script starts.  The block
+    is one outer ``if`` wrapping an inner one, so it is cut by counting ``if`` and
+    ``fi`` rather than by searching for the first ``fi``.
+    """
+    text = (REPO / "pi" / "steps" / "90-verify.sh").read_text(encoding="utf-8")
+    start = text.index('if [[ -s "$ARK_ROOT/logs/net-watch.log" ]]')
+    depth = 0
+    lines = text[start:].splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        word = line.strip().split(" ", 1)[0]
+        if word == "if":
+            depth += 1
+        elif word == "fi":
+            depth -= 1
+            if depth == 0:
+                return "".join(lines[:i + 1])
+    raise AssertionError("the watchdog paragraph is not closed")
+
+
+def test_the_watchdog_line_cannot_kill_the_gate_on_a_box_that_has_not_checked_yet(tmp_path):
+    """A missing counter file is the *normal* state for the first three minutes.
+
+    The timer waits ``OnBootSec`` before its first check, so a box that has just
+    booted has no ``net-watch.state``.  An unguarded ``$(sed … | head -1)`` under
+    ``set -Eeuo pipefail`` exits 1 there, and because this block sits above the
+    receipt the whole gate would stop before printing anything at all — the one
+    moment the owner most wants it to speak.  Reproduced here by running the
+    shipped paragraph with no state file, with no log file, and with both.
+    """
+    block = _verifier_watchdog_block()
+    (tmp_path / "logs").mkdir()
+
+    def run() -> subprocess.CompletedProcess:
+        script = (
+            "set -Eeuo pipefail\n"
+            'say_soft() { printf " %s | %s\\n" "$1" "$2"; }\n'
+            f'ARK_ROOT="{tmp_path}"\n'
+            f"{block}\n"
+            'echo "REACHED"\n')
+        return subprocess.run(["bash", "-c", script], capture_output=True,
+                              text=True, timeout=60)
+
+    bare = run()
+    assert bare.returncode == 0, bare.stderr
+    assert "REACHED" in bare.stdout, "a box with no counters must not stop the gate"
+    assert "no counters yet" in bare.stdout
+
+    (tmp_path / "logs" / "net-watch.state").write_text(
+        "lost_streak=0\nhome_streak=0\nupdated=2026-11-12T16:25:27+00:00\n", encoding="utf-8")
+    counted = run()
+    assert counted.returncode == 0, counted.stderr
+    assert "watching since 2026-11-12T16:25:27+00:00" in counted.stdout
+
+    (tmp_path / "logs" / "net-watch.log").write_text(
+        "2026-11-12T16:26:00+00:00  stayed on the home network\n", encoding="utf-8")
+    decided = run()
+    assert decided.returncode == 0, decided.stderr
+    assert "last: stayed on the home network" in decided.stdout
+
+
 def test_the_watchdog_keeps_its_own_record_of_decisions():
     text = WATCH.read_text(encoding="utf-8")
     assert "net-watch.log" in text

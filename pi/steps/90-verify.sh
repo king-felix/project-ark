@@ -392,7 +392,11 @@ if [[ -s "$ARK_ROOT/logs/net-watch.log" ]]; then
   last_word="${last_word#*  }"
   say_soft "network watchdog" "last: ${last_word:0:80}"
 else
-  watched="$(sed -n 's/^updated=//p' "$ARK_ROOT/logs/net-watch.state" 2>/dev/null | head -n 1)"
+  #  ``|| true`` because a box that has not yet run its first check (the timer waits
+  #  three minutes after boot) has no counter file at all, and under
+  #  ``set -Eeuo pipefail`` a failed substitution here aborts the whole gate before
+  #  the summary — turning "nothing to report yet" into a verifier that says nothing.
+  watched="$(sed -n 's/^updated=//p' "$ARK_ROOT/logs/net-watch.state" 2>/dev/null | head -n 1 || true)"
   if [[ -n "$watched" ]]; then
     say_soft "network watchdog" "watching since $watched and nothing has needed a decision"
   else

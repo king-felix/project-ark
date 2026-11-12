@@ -16,8 +16,9 @@ What it is, in three rules:
   meaningless on a stick, so every such link is made relative (:func:`_rewrite`) and
   the pack carries its own ``index.html``.
 
-Nothing here writes into the box's live folders: a build writes one ``.partial`` file
-and then renames it, so a pack is either the previous one or the new one.
+Nothing here writes into the box's live folders: a build writes one ``.<pid>.partial``
+file and then renames it, so a pack is either the previous one or the new one, even
+when a build started by itself overlaps one the owner pressed.
 """
 
 from __future__ import annotations
@@ -390,7 +391,12 @@ def build(out_dir, *, vault, sheet=None, when=None) -> dict:
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    part = out / (PACK_NAME + ".partial")
+    #  The half-written name carries this process's id.  A build can now start by
+    #  itself (phase 95-backup rebuilds the pack after installing the sheet) as well
+    #  as from the owner's button, and one fixed ``.partial`` name let two builders
+    #  interleave writes into one file and publish whichever finished last.  Two
+    #  names, two files, and the rename that publishes is atomic either way.
+    part = out / (PACK_NAME + f".{os.getpid()}.partial")
     rows = [(name, len(data), _sha256(data)) for name, data in payload]
     # The pack is a second copy of pages that are already on the card, so its
     # room is promised before the first member is written.  It is small (the

@@ -355,6 +355,13 @@ def _books_read_location() -> str:
 
 #: Management and account routes a visitor could reach with GET alone.  Each one
 #: must answer 404 at the proxy, because a method rule cannot stop a GET.
+#:
+#: ``/books/me`` is deliberately **not** here.  The shelf draws a person glyph for a
+#: guest pointing at it, so an exact-match door answers a GET with the shelf and 404
+#: for everything else (``test_a_reader_who_taps_the_account_glyph_is_sent_back_to_the
+#: _shelf``).  Leaving it in this list kept the 404 assertion green against a regex
+#: that an exact-match location now overrides — a test agreeing with itself about a
+#: guarantee the shipped config no longer makes.
 MANAGEMENT_GET = [
     "/books/admin", "/books/admin/view", "/books/admin/config", "/books/admin/dbconfig",
     "/books/admin/usertable", "/books/admin/user/new", "/books/admin/user/3",
@@ -364,7 +371,7 @@ MANAGEMENT_GET = [
     "/books/ajax/listusers", "/books/ajax/domainlist/1", "/books/ajax/log/1",
     "/books/ajax/pathchooser/", "/books/ajax/getlocale",
     "/books/reconnect", "/books/stats", "/books/tasks", "/books/register",
-    "/books/login", "/books/logout", "/books/me", "/books/generate_auth_token/3",
+    "/books/login", "/books/logout", "/books/generate_auth_token/3",
     "/books/deleteauthtoken/3", "/books/import_ldap_users", "/books/link/github",
     "/books/unlink/github", "/books/link/google", "/books/unlink/google",
     "/books/watch/subscribe", "/books/watch/revoke", "/books/watch/callback",

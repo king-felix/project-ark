@@ -1497,7 +1497,7 @@ def ask_page(q: str = ""):
            placeholder="For example: how do I store water?">
     <button class="go-btn" type="submit">Ask the helper</button>
   </form>
-  <p id="ask-thinking" class="note" hidden>Thinking — this can take a minute on a
+  <p id="ask-thinking" class="note" hidden>Thinking — this can take a minute or two on a
   small box.</p>
   <h2>Questions other people ask</h2>
   <ul class="clean">{examples}</ul>

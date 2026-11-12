@@ -1958,12 +1958,20 @@ def _review_rows(ctx, rows) -> str:
 
 
 def _pack_owner_block(pack, csrf: str) -> str:
-    """What is on the card, and the one button that makes a new copy."""
+    """What is on the card, and the one button that makes a new copy.
+
+    ``stale`` is the reason this page exists: a pack is a photograph of the shelf and
+    only someone standing here can make a new one.  It says nothing when the answer is
+    unknown, because that is not the same as "fresh".
+    """
     if pack.get("present") and pack.get("readable"):
         made = str(pack.get("built") or "").strip()
         state = (f'A copy is on the box: {esc(ark_health.human_size(pack.get("bytes")))} · '
                  f'{int(pack.get("members") or 0)} pages'
                  + (f' · made {esc(made)}' if made else "") + '.')
+        if pack.get("stale"):
+            state += (' <b>The pages on this box have changed since then, so this copy is '
+                      'out of date.</b> Make a new one before you rely on it off the box.')
         link = ('<p><a class="go-link" href="/essentials.zip">Download this copy</a></p>')
     elif pack.get("present"):
         state = ("A copy is on the box but it cannot be read back, so it is not offered. "
@@ -1994,7 +2002,9 @@ def household(request: Request):
     updated = ark_household.updated()
     answered, total = ark_household.progress(values)
     rows = ark_review.summary(ark_health.vault_dir())
-    pack = ark_essentials.status(ark_essentials.pack_dir())
+    pack = ark_essentials.status(ark_essentials.pack_dir(),
+                                 vault=ark_health.vault_dir(),
+                                 sheet=ark_health.ark_root() / "RECOVERY-SHEET.txt")
     switch = _switch(
         page_open, "household", "Anyone nearby can read the household page",
         "Leave this on. It is the page somebody opens when something has gone wrong, "

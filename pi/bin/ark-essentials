@@ -13,7 +13,7 @@ pack can be shown whole before anybody trusts it.
   --out DIR  where the pack lives (default /srv/ark/essentials)
 
 It reads ``/srv/ark/vault`` and never writes there; a failure leaves the previous pack
-exactly as it was, because the new one is written as ``.partial`` and renamed.
+exactly as it was, because the new one is written as a ``.partial`` file and renamed.
 """
 
 from __future__ import annotations

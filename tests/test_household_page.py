@@ -469,3 +469,35 @@ def test_none_of_this_needs_a_password_from_a_reader(public):
         answer = public.client.get(path)
         assert answer.status_code == 200, path
         assert "sign in" not in answer.text.lower(), path
+
+
+def test_the_owner_is_told_when_the_copy_is_older_than_the_pages(public, client, owner, ark):
+    """The button that fixes an out-of-date copy is on this page, so this page says it.
+
+    The public page and the console both grew the sentence first; the owner — the one
+    person who can press *make a new copy* — was the only reader left who could not
+    see the copy had gone out of date.
+    """
+    import os
+
+    from helpers import csrf_of, get, post
+    import ark_essentials
+
+    root = _vault(ark)
+    _page(root, "manuals/water.html", "Water")
+    page = get(client, "/admin/household", cookie=f"ark_admin={owner}")
+    post(client, "/admin/household/pack", {"csrf": csrf_of(page.text)},
+         cookie=f"ark_admin={owner}")
+    fresh = get(client, "/admin/household", cookie=f"ark_admin={owner}")
+    assert "out of date" not in fresh.text
+
+    later = ark_essentials.pack_path(ark_essentials.pack_dir()).stat().st_mtime + 60
+    _page(root, "manuals/first-aid.html", "First aid")
+    os.utime(root / "manuals" / "first-aid.html", (later, later))
+
+    stale = get(client, "/admin/household", cookie=f"ark_admin={owner}")
+    assert "out of date" in stale.text
+    assert "Make a new one before you rely on it off the box." in stale.text
+    # The copy is still whole and still offered — it is old, not broken.
+    assert 'href="/essentials.zip"' in stale.text
+    assert public.client.get("/essentials.zip").status_code == 200
