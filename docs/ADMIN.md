@@ -2332,6 +2332,22 @@ it cannot corrupt the queue.
 collection that is still in the queue but missing from the card is fetched again;
 there is no "delete" button and nothing is ever deleted on its own.
 
+**The restart is not tidying-up, it is the delete.** The reader has every bundle open
+while it runs, so `rm` removes the name and leaves the bytes on the card — measured on
+this box on 12 November 2026: a 49 GiB bundle was deleted and `df` moved by **4 kB**,
+because two descriptors to the unlinked file were still held. The rebuild stops the
+index naming a bundle that is gone, and the restart is what lets the kernel take the
+blocks back (the same command then reported **49 GiB**). Deleting without restarting
+reclaims nothing *and* keeps serving the collection from the held file, so it is the
+one way to do this job that quietly does nothing at all:
+
+```bash
+sudo rm -f /srv/ark/kiwix/<bundle>.zim /srv/ark/kiwix/state/<bundle>.zim.{done,sha256}
+sudo /usr/local/bin/ark-kiwix-library        # the index must stop naming it
+sudo systemctl restart ark-kiwix.service     # and this is what frees the space
+df -h /srv/ark                               # prove it moved before you believe it
+```
+
 If the row you are deleting belongs to your **profile** rather than to the
 extra tier, deleting the `.zim` is only half of it: the next resolve rebuilds the
 queue from the catalogue and fetches it straight back. Add a `-` line to

@@ -233,7 +233,7 @@ internet.
 it is *for*, in plain words, and says how big each one is. `/kiwix/` is the full browser behind
 it — every cover, every collection, an alphabetical list and a language filter.
 
-**The shelves** (27 collections, 3 Nov 2026):
+**The shelves** (27 collections, 12 Nov 2026):
 
 * **Fix it** — iFixit repair guides, home-improvement Q&A, woodworking Q&A, electronics Q&A.
 * **Vehicles** — motor-vehicle maintenance and repair Q&A (cars, trucks, motorcycles).

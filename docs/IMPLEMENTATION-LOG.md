@@ -7843,3 +7843,67 @@ Deployed `5e4f665`; the box's `pi/` tree diffs clean against that commit
 **12 / 12**, blocking `[]`. Every public door 200; `:8443` 303 to the sign-in,
 `:8445` and `:8446` 200 over TLS. Mac suite **1185 passed, 2 skipped**.
 `/srv/ark/REVISION` now reads `5e4f665`.
+
+---
+
+## 62. The photo-less Wikipedia is off the card, and the 49 GiB came back — 12 Nov 2026
+
+The card carried both Wikipedia editions at once: `wikipedia_en_all_maxi_2026-08`
+(118.7 GiB, the one the owner chose) and `wikipedia_en_all_nopic_2026-06`
+(49.1 GiB, the one `/etc/ark/zim-prefs` excludes with `- wikipedia_en_all nopic`).
+The preference stops a bundle being *fetched*; it never removes bytes already on
+the card (§61.2, `docs/ADMIN.md`). The owner asked for the second edition gone, and
+it is.
+
+### 62.1 What was measured, before and after
+
+| | Before | After |
+|---|---|---|
+| Bundles `.zim` on the card | 28 | **27** |
+| `du -sh` of `kiwix/*.zim` | 216.3 GiB | **167.2 GiB** |
+| Free on `/` | 218,365,132,800 B (204 G, 54 % used) | **271,055,851,520 B (253 G, 43 % used)** |
+| `ark-space --status` — may be added | 184.1 GB | **236.8 GB** |
+| `/library` | "28 collections — 216.3 GB" | **"27 collections — 167.2 GB"** |
+| `library.xml` entries | 28 | **27** |
+| `wikipedia_en_all_nopic` in the index | 1 | **0** |
+| `A/Water` in the photo edition | 69 images | **69 images** (unchanged) |
+| `A/Water` in the removed edition | 200 | **404** |
+| `/api/ready` | 12 / 12 | **12 / 12**, blocking `[]` |
+| `90-verify` | 89 ✓ | **89 ✓, no ✗** |
+
+The reclaimed figure is 52,690,718,720 bytes against the bundle's own
+52,690,706,555 — the 12,165-byte difference is the state files deleted beside it and
+filesystem metadata, not a second copy going.
+
+### 62.2 The part worth writing down: `rm` alone reclaimed 4 kB
+
+The first `rm` moved `df` by **4096 bytes**. The reader holds every bundle open for
+as long as it runs, so `/proc/<kiwix-serve>/fd` still listed
+`wikipedia_en_all_nopic_2026-06.zim (deleted)` twice: the name was gone, the blocks
+were not, and the collection was **still being served**. Only the restart released
+them, and `df` then moved by the full 49 GiB.
+
+`docs/ADMIN.md` already said "then `ark-kiwix-library && systemctl restart ark-kiwix`"
+in one line, which is correct and easy to read as tidying-up after the delete. It now
+says plainly that the restart *is* the delete, with the 4 kB measurement as the
+evidence and `df -h` as the step that proves it moved. Same shape as §61's lesson:
+a command that returns 0 is not a command that worked.
+
+Also removed: `/srv/ark/kiwix/state/wikipedia_en_all_nopic_2026-06.zim.done`, so
+nothing on the card still records that bundle as fetched.
+
+### 62.3 What was not touched
+
+Nothing in `pi/` changed for this — it is a card operation, not a code change. The
+queue was already 27 rows with the photo-less row left out by `zim-prefs`, so
+nothing is re-fetched and a future profile change cannot bring it back. `/kiwix/`,
+the photo edition, the 1291 books, 41 films, 67 games, 3 maps, the guides and the
+carry-away pack are all as they were; every public door answers 200.
+
+One reporting lag, found and left alone: `kiwix/state/status.json` is written by the
+downloader at the end of each idle loop, so for up to fifteen minutes after a
+hand removal it still carries the previous `bytes_on_disk`. It is recomputed from
+the disk on every write, so it corrects itself with no action; the percentages the
+pages show cannot be pushed past 100 % by it (`remaining_bytes` is clamped at 0).
+Worth knowing when reading that file straight after a delete, not worth a code path
+that touches the card twice.

@@ -201,7 +201,7 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 | Active branch | `main` (`feature/admin-hardening` ff-merged at `5adb1b7`; box runs `dac7770`, docs-only ahead — log §59.1) |
 | Schema version | `SCHEMA_VERSION = 9` (`pi/api/ark_db.py`) — 7 the film shelf and space ledger; 8 a reservation's pid + boot + kind; 9 a session's elapsed-time readings (`mono_created`/`mono_seen`, log §58) |
 | Test suite | `1182 passed, 2 skipped` (49 files) |
-| Live Pi state | Deployed `ad2786d` + the fixes in §61; `90-verify` **89 ✓, no ✗**; ready **12 / 12**, blocking []; 28 collections / 216.3 GiB, 41 Films, 67 Games, 3 Maps — all **Ready**; reserve 34 GB; backup 12 Nov, proved whole (§60) |
+| Live Pi state | Deployed `ad2786d` + the fixes in §61; `90-verify` **90 ✓, no ✗**; ready **12 / 12**, blocking []; 27 collections / 167.2 GB (photo Wikipedia only, §62), 41 Films, 67 Games, 3 Maps — all **Ready**; reserve 34 GB, **253 GB free**; backup 12 Nov, proved whole (§60) |
 | Owner decisions pending | History rewrite + force-push (pre-`a926296`; home-LAN address in `1a3f41f`; log §37.6/§38.7/§44); rotate passwords; licence |
 
 ### 8.1 What exists, and what each piece owns
