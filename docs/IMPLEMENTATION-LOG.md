@@ -7778,10 +7778,12 @@ and phases `30-calibre,50-kiwix,60-portal,95-backup,90-verify`. A
 ### 61.4 What was not done, and what is still true
 
 `/srv/ark/REVISION` is hand-written: nothing in this repository writes or reads
-it, and it still said `dac7770` while the box ran later code. It is not part of
-any page, but the same walk that found five wrong sentences found one stale
-operator file, and the honest repair is a writer in the deploy path rather than
-another hand edit. Left as an observation, not fixed.
+it, and it still said `dac7770` while the box ran `e9ac678`'s code. It is not part
+of any page, but the same walk that found five wrong sentences found one stale
+operator file. It was corrected by hand to `e9ac678` — the commit whose `pi/` tree
+the box now carries byte for byte (`documents only` commits after it do not move
+the code) — and the honest repair is a writer in the deploy path rather than
+another hand edit each time. Left as an observation, not fixed.
 
 Still true, and unchanged by this pass: search takes 4–8 s on this card, not the
 1500 ms it was written for (§56.8/§57.6); no phone has done the walk-through
