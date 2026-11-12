@@ -7790,3 +7790,56 @@ Still true, and unchanged by this pass: search takes 4–8 s on this card, not t
 (`docs/HUMAN-TEST-LIST.md`); films, maps and collections are still outside
 `ark-backup`; and the pile of owner decisions in the baseline table (history
 rewrite, password rotation, licence) is still the owner's to make.
+
+### 61.5 What an independent read of §61 found, and what it cost
+
+An independent reviewer read the diff above rather than the story about it, and
+found one defect that would have mattered at the worst possible moment plus three
+sentences that were true only if you did not check the other page. Each is fixed
+with a test that fails without it (`5e4f665`).
+
+**The verifier could abort before saying anything.** §61.1's watchdog line read
+its counter file with a plain `$(sed … | head -1)`. Under `set -Eeuo pipefail` a
+missing file makes that substitution non-zero, so the gate exited 1 with no
+output, *before* the receipt was written. And the file is absent in exactly the
+two states that matter: the first three minutes after a boot (the timer waits
+`OnBootSec`), and forever on a box where `70-network` could not enable the timer
+— the degraded box the gate exists to report on. Reproduced directly:
+`set -Eeuo pipefail; w="$(sed … /nonexistent | head -1)"; echo REACHED` prints
+nothing and exits 1. It is guarded now, and
+`test_network.py::test_the_watchdog_line_cannot_kill_the_gate_on_a_box_that_has_not_checked_yet`
+runs the **shipped paragraph** (cut out of `90-verify.sh` by counting `if`/`fi`,
+not retyped) under the same shell options in three states: no counters, counters
+only, both files.
+
+**The owner could not see what the owner's button fixes.** `ark_essentials.status()`
+grew `stale` for the public Household page and the console, but the owner's page on
+`:8443` asked without naming a shelf, so it got `None` — the one page carrying
+*Make a new copy now* was the one page that never said the copy had gone out of
+date. It now asks with the same vault and sheet `build()` uses, and says it while
+still offering the whole, old copy.
+
+**Two builders could write into one file.** Phase 8 now rebuilds the pack by
+itself, so a build can overlap one the owner pressed; both used one fixed
+`.partial` name, so their writes interleaved and the last rename published the
+mixture. The half-written name carries the process id: three concurrent builds
+leave one whole pack and no debris (`test_two_builds_at_once_do_not_write_into_one_file`).
+
+**The suite agreed with itself about a door that moved.** `/books/me` stayed in
+`MANAGEMENT_GET`, whose comment says every route there answers 404 — while the
+exact-match door added in §61.2 answers a GET with the shelf. The test only re-ran
+the regex, so it stayed green while its stated invariant was false. The route is
+off that list; the new door's own test is what holds it.
+
+And one more sentence, found by using the box rather than reading it: the Ask page
+promised *"this can take a minute"* and a real question took **122 s** (streamed,
+544 bytes, `code=200`). It says *"a minute or two"* now.
+
+### 61.6 Final state, measured
+
+Deployed `5e4f665`; the box's `pi/` tree diffs clean against that commit
+(`diff -rq`, excluding the carried `ai/llama-server` and the pre-existing
+`seed-books`). `90-verify`: **89 ✓, no ✗**, `ARK_INSTALL_COMPLETE`. `/api/ready`
+**12 / 12**, blocking `[]`. Every public door 200; `:8443` 303 to the sign-in,
+`:8445` and `:8446` 200 over TLS. Mac suite **1185 passed, 2 skipped**.
+`/srv/ark/REVISION` now reads `5e4f665`.
