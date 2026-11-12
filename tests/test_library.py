@@ -560,3 +560,127 @@ def test_a_missing_helper_keeps_the_file_and_says_so(tmp_path):
     assert "VERDICT=ok" in run.stdout, (run.stdout, run.stderr)
     assert "is missing" in log
     assert part.exists()
+
+
+# ---------------------------------------------------------------------------
+#  which bundle satisfies a row, and the owner's exceptions to the profile
+#
+#  Two Wikipedia rows share the catalogue name ``wikipedia_en_all`` — nopic
+#  (49 GiB) and maxi (119 GiB) — and a prefix of ``wikipedia_en_all_`` matched
+#  both, so the big bundle "proved" the small row was already on the card.  And
+#  a profile is a guess about a card size: it cannot know that this particular
+#  box has room for the photo edition, or that its owner would rather not spend
+#  52 GiB on the photo-less one beside it.  Both facts live in files that are
+#  read by ``ark-zim-resolve``, so they survive the queue being rebuilt.
+# ---------------------------------------------------------------------------
+RESOLVE = REPO / "pi" / "bin" / "ark-zim-resolve"
+
+
+def _resolver():
+    """The resolver as an importable module — it is a script, its logic is pure."""
+    from importlib.machinery import SourceFileLoader
+    import importlib.util
+    loader = SourceFileLoader("ark_zim_resolve_under_test", str(RESOLVE))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def test_a_row_is_only_satisfied_by_a_bundle_of_its_own_flavour():
+    resolve = _resolver()
+    photo = resolve.bundle_prefix("wikipedia_en_all", "maxi")
+    plain = resolve.bundle_prefix("wikipedia_en_all", "nopic")
+    assert photo != plain
+    assert resolve.bundle_prefix("ready.gov_en_all", "") == "ready.gov_en_all_"
+
+    only_photo = {"wikipedia_en_all_maxi_2026-08.zim": 127418087648}
+    assert not resolve.have_complete(only_photo, plain, 49.072), (
+        "the 119 GiB photo edition must never stand in for the 49 GiB photo-less one")
+    assert resolve.have_complete(only_photo, photo, 118.67)
+
+
+def test_the_owner_can_carry_a_bundle_the_profile_does_not_select(tmp_path):
+    queue = _resolve_world(tmp_path, files=["wikipedia_en_all_maxi_2026-08.zim"],
+                           prefs="+ wikipedia_en_all maxi\n- wikipedia_en_all nopic\n")
+    rows = _rows(queue)
+    assert ("have", "Wikipedia with photos") in rows, rows
+    assert "Wikipedia (no photos)" not in [label for _, label in rows], rows
+
+
+def test_a_core_box_with_no_prefs_does_not_reach_for_the_photo_edition(tmp_path):
+    queue = _resolve_world(tmp_path, files=["wikipedia_en_all_nopic_2026-06.zim"])
+    rows = _rows(queue)
+    assert ("have", "Wikipedia (no photos)") in rows, rows
+    assert "Wikipedia with photos" not in [label for _, label in rows], rows
+
+
+def test_the_owner_can_leave_out_a_collection_the_profile_selects(tmp_path):
+    queue = _resolve_world(tmp_path, files=["wikipedia_en_all_nopic_2026-06.zim"],
+                           prefs="- wikipedia_en_all nopic\n")
+    assert _rows(queue) == []
+
+
+def test_a_pref_naming_something_the_catalogue_does_not_list_is_ignored(tmp_path):
+    queue = _resolve_world(tmp_path, files=["wikipedia_en_all_nopic_2026-06.zim"],
+                           prefs="+ wikipedia_en_all imaginary\n")
+    rows = _rows(queue)
+    assert ("have", "Wikipedia (no photos)") in rows, rows
+    assert "imaginary" not in str(rows)
+
+
+def test_the_install_creates_the_prefs_file_and_passes_it_to_the_resolver():
+    phase = (REPO / "pi" / "steps" / "50-kiwix.sh").read_text(encoding="utf-8")
+    assert "zim-prefs" in phase, "the owner's file must have one documented home"
+    assert "--prefs" in phase, "the resolver must be told where that file is"
+
+
+# -- a whole resolve, offline: a two-row catalogue and a card with some files ---
+_FAKE_CATALOG = (
+    "# name\tflavour\tsize_gib\ttier\tlabel\tquery\ttopic\n"
+    "wikipedia_en_all\tnopic\t0.0010\tcore\tWikipedia (no photos)\twikipedia\tlearn\n"
+    "wikipedia_en_all\tmaxi\t0.0010\textra\tWikipedia with photos\twikipedia\tlearn\n"
+)
+
+
+def _resolve_world(tmp_path, files, prefs=""):
+    zim = tmp_path / "kiwix"
+    zim.mkdir()
+    catalog = tmp_path / "catalog.tsv"
+    catalog.write_text(_FAKE_CATALOG, encoding="utf-8")
+    for name in files:
+        (zim / name).write_bytes(b"x" * 1_200_000)      # bigger than 0.001 GiB * 0.99
+    pref_path = tmp_path / "zim-prefs"
+    if prefs:
+        pref_path.write_text(prefs, encoding="utf-8")
+    queue = tmp_path / "queue.tsv"
+    run = subprocess.run(
+        [sys.executable, str(RESOLVE), "--catalog", str(catalog),
+         "--queue", str(queue), "--zim-dir", str(zim), "--profile", "core",
+         "--prefs", str(pref_path), "--reserve", "0"],
+        capture_output=True, text=True, timeout=120)
+    assert queue.is_file(), (run.stdout, run.stderr)
+    return queue
+
+
+def _rows(queue: Path):
+    out = []
+    for line in queue.read_text(encoding="utf-8").splitlines():
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split("\t")
+        if len(parts) >= 6:
+            out.append((parts[0], parts[5]))
+    return out
+
+
+def test_a_dash_line_with_no_flavour_leaves_out_every_edition(tmp_path):
+    """`- wikipedia_en_all` plainly means the whole thing, not a silent no-op."""
+    queue = _resolve_world(
+        tmp_path,
+        files=["wikipedia_en_all_nopic_2026-06.zim", "wikipedia_en_all_maxi_2026-08.zim"],
+        prefs="- wikipedia_en_all\n+ wikipedia_en_all maxi\n")
+    rows = _rows(queue)
+    assert "Wikipedia (no photos)" not in [label for _, label in rows], rows
+    # the `+` rebinds the name, so the photo edition comes back deliberately
+    assert ("have", "Wikipedia with photos") in rows, rows

@@ -7,11 +7,17 @@ never has to be online to know what it is fetching, and re-running this after a
 new edition is published simply updates the queue.
 
   ark-zim-resolve [--profile mini|core|full] [--catalog F] [--queue F] [--zim-dir D]
+                  [--prefs F]
 
 Queue columns:  status  url  bytes  filename  tier  label
                 status = have | todo | unresolved
 Exit code is 0 even when some rows are unresolved — an offline Pi must not
 block the installer; the downloader retries resolution on its next cycle.
+
+``--prefs`` (default ``/etc/ark/zim-prefs``) is how one box says "this card also
+takes the photo edition" or "leave the 52 GiB one out" without changing what a
+smaller card gets.  It is applied to the profile's selection, and a reinstall
+re-reads it, so the choice survives the queue being rebuilt.
 """
 from __future__ import annotations
 
@@ -148,6 +154,20 @@ def installed_names(zim_dir):
         return {}
 
 
+def bundle_prefix(name: str, flavour: str) -> str:
+    """The file-name prefix a catalogue row's own bundle must carry.
+
+    The flavour belongs IN the prefix.  ``wikipedia_en_all`` is listed twice —
+    nopic (49 GiB) and maxi (119 GiB) — and both built the same ``wikipedia_en_all_``
+    prefix, so the big bundle satisfied the small row's size test and the photo
+    row satisfied nothing.  A row is only ever satisfied by a bundle of its own
+    flavour: ``wikipedia_en_all_nopic_``, never ``wikipedia_en_all_maxi_``.
+    """
+    if flavour:
+        return name + "_" + flavour + "_"
+    return name + "_"
+
+
 def have_complete(have: dict, prefix: str, expected_gib: float) -> bool:
     """True when a matching .zim is present AND (nearly) the catalogue size.
 
@@ -160,12 +180,61 @@ def have_complete(have: dict, prefix: str, expected_gib: float) -> bool:
                for name, size in have.items())
 
 
+def read_prefs(path: str):
+    """The owner's own exceptions to the profile: ``+`` adds, ``-`` leaves out.
+
+    A profile is a guess about a card size, and it is a good guess — but it
+    cannot know that *this* box has the room for the photo edition of Wikipedia
+    or that its owner would rather not spend 52 GiB on the photo-less one beside
+    it.  Keeping that in a file, rather than in somebody's memory of a queue
+    edited by hand, is what makes it survive ``ark-zim-resolve``: a reinstall
+    rebuilds the queue from the profile, and without this the owner's choice
+    would be silently overwritten.
+
+    One instruction per line, whitespace separated, ``#`` for comments::
+
+        + wikipedia_en_all  maxi      # carry this, even though it is 'extra'
+        - wikipedia_en_all  nopic     # and leave this one off
+
+    An add names a row that must already exist in the catalogue — the catalogue
+    stays the only definition of a bundle, so an add can never invent a size, a
+    shelf or a label.  A ``-`` line with no flavour leaves out **every** edition
+    of that name, which is what someone writing it plainly means.  Returns
+    ``(add, drop)``.
+    """
+    add, drop = [], set()
+    try:
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.readlines()
+    except OSError:
+        return add, drop                    # no file is the normal case
+    for raw in lines:
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        verb, rest = line[0], line[1:].split()
+        if verb not in ("+", "-") or not rest:
+            log(f"  ! ignoring unrecognised line in {path}: {raw.strip()[:60]}")
+            continue
+        name = rest[0]
+        flavour = rest[1] if len(rest) > 1 else ""
+        if flavour in ("-", "any"):
+            flavour = ""
+        if verb == "+":
+            add.append((name, flavour))
+        else:
+            drop.add((name, flavour))
+    return add, drop
+
+
 def main(argv) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--catalog", default="/usr/local/share/ark/catalog.tsv")
     ap.add_argument("--queue", default="/etc/ark/zim-queue.tsv")
     ap.add_argument("--zim-dir", default="/srv/ark/kiwix")
     ap.add_argument("--profile", default="")
+    ap.add_argument("--prefs", default="/etc/ark/zim-prefs",
+                    help="the owner's adds and omissions, on top of the profile")
     ap.add_argument("--reserve", type=float, default=RESERVE_GIB)
     args = ap.parse_args(argv)
 
@@ -181,10 +250,43 @@ def main(argv) -> int:
         profile = "core"
     tiers = PROFILES[profile]
 
-    rows = [r for r in read_catalog(args.catalog) if r["tier"] in tiers]
+    catalog_rows = read_catalog(args.catalog)
+    rows = [r for r in catalog_rows if r["tier"] in tiers]
+    # This is about the catalogue and the profile, not about the owner: a profile
+    # that selects nothing is a misconfiguration worth failing on.  The owner's
+    # ``-`` lines come after, because dropping every row is a legitimate answer
+    # (a box that wants none of this tier) and must still leave a queue behind.
     if not rows:
         log(f"  x no catalogue rows for profile '{profile}'")
         return 1
+    # The owner's exceptions are applied to the profile's selection, before the
+    # budget is spent, so a `-` line frees room and a `+` line competes fairly
+    # for what is left instead of being appended regardless of the card's size.
+    add, drop = read_prefs(args.prefs)
+    if drop:
+        every_edition = {name for name, flavour in drop if not flavour}
+        before = len(rows)
+        rows = [r for r in rows
+                if (r["name"], r["flavour"]) not in drop
+                and r["name"] not in every_edition]
+        if before != len(rows):
+            log(f"  - {before - len(rows)} collection(s) left out by {args.prefs}")
+    if add:
+        present = {(r["name"], r["flavour"]) for r in rows}
+        for name, flavour in add:
+            if (name, flavour) in present:
+                continue
+            match = next((r for r in catalog_rows
+                          if r["name"] == name and r["flavour"] == flavour), None)
+            if match is None:
+                log(f"  ! {args.prefs} asks for {name} ({flavour or 'any flavour'}), "
+                    f"which the catalogue does not list — ignored")
+                continue
+            rows.append(match)
+            present.add((name, flavour))
+            log(f"  + {match['label']} added by {args.prefs} (tier {match['tier']})")
+    if not rows:
+        log(f"  - every collection this profile selects is left out by {args.prefs}")
     rows.sort(key=lambda r: (TIERS.index(r["tier"]), r["size"]))
 
     have = installed_names(args.zim_dir)
@@ -195,7 +297,7 @@ def main(argv) -> int:
     cache = {}
     queue, todo_gib, failed = [], 0.0, 0
     for row in rows:
-        prefix = row["name"] + "_"
+        prefix = bundle_prefix(row["name"], row["flavour"])
         if have_complete(have, prefix, row["size"]):
             queue.append(("have", "-", 0, "-", row["tier"], row["label"]))
             continue

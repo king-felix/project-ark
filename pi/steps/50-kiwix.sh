@@ -46,10 +46,37 @@ fi
 PROFILE="$(tr -d '[:space:]' < "$PROFILE_FILE")"
 ark_info "library profile: $PROFILE (change: echo mini > $PROFILE_FILE)"
 
+# ---- the owner's exceptions to the profile -------------------------------
+# A profile is a guess about a card size.  It cannot know that this box has room
+# for the photo edition of Wikipedia, or that its owner would rather not spend
+# 52 GiB on the photo-less one beside it.  That is what this file is for: two
+# verbs, applied by the resolver every time it rebuilds the queue, so a reinstall
+# never quietly overwrites the owner's choice with the profile's guess.
+PREFS_FILE="$ARK_ETC/zim-prefs"
+if [[ ! -e "$PREFS_FILE" ]]; then
+  ark_write "$PREFS_FILE" 644 root:root <<'PREFS'
+# Project ARK — collections this box carries, or leaves out, on top of its profile.
+#
+#   + <name>  <flavour>    carry it even if the profile would not choose it
+#   - <name>  <flavour>    leave it out even if the profile would
+#
+# <name> and <flavour> must name a row in /usr/local/share/ark/catalog.tsv; the
+# catalogue stays the only definition of a collection's size, shelf and label.
+# Restart nothing: the downloader picks the queue up on its next cycle.
+#
+# The example below is the one this box needed on 12 Nov 2026 — the photo edition
+# of Wikipedia in place of the photo-less one, once the card could hold it:
+#
+#   + wikipedia_en_all  maxi
+#   - wikipedia_en_all  nopic
+PREFS
+fi
+ark_info "owner's collection preferences: $PREFS_FILE"
+
 # ---- pin the queue ----------------------------------------------------------
 ark_info "asking the catalogue for the newest edition of every bundle"
 if "$RESOLVE" --catalog "$CATALOG" --queue "$QUEUE" \
-              --zim-dir "$ZIM_DIR" --profile "$PROFILE"; then
+              --zim-dir "$ZIM_DIR" --profile "$PROFILE" --prefs "$PREFS_FILE"; then
   ark_ok "download queue pinned: $QUEUE"
 else
   # offline at install time is survivable — the downloader retries the lookup

@@ -2310,6 +2310,10 @@ edition of the exact `name`, and pins it to `/etc/ark/zim-queue.tsv`. Nothing in
 queue is a guess and nothing in it is a fixed URL you have to maintain by hand: a
 new edition is picked up by re-running the resolver.
 
+A row is satisfied only by a bundle of its **own flavour**: `wikipedia_en_all` is
+listed twice, and the 119 GiB photo edition is never allowed to stand in for the
+49 GiB photo-less one when the resolver decides what is already on the card.
+
 ```bash
 sudo ark-zim-resolve --profile core     # rewrite the queue from the catalogue
 sudo systemctl status ark-zim-downloader
@@ -2327,6 +2331,45 @@ it cannot corrupt the queue.
 `sudo /usr/local/bin/ark-kiwix-library && sudo systemctl restart ark-kiwix`. A
 collection that is still in the queue but missing from the card is fetched again;
 there is no "delete" button and nothing is ever deleted on its own.
+
+If the row you are deleting belongs to your **profile** rather than to the
+extra tier, deleting the `.zim` is only half of it: the next resolve rebuilds the
+queue from the catalogue and fetches it straight back. Add a `-` line to
+`/etc/ark/zim-prefs` (below) so the omission is deliberate and survives.
+
+### One box's exceptions to its profile
+
+`/etc/ark/zim-prefs` is how a single box says *something its profile would not*.
+A profile is a good guess about a card size — it cannot know that this box has
+room for the photo edition of Wikipedia, or that its owner would rather not spend
+52 GiB on the photo-less one beside it. Two verbs, one instruction per line:
+
+```
++ wikipedia_en_all  maxi     # carry it even though it is tier 'extra'
+- wikipedia_en_all  nopic    # and leave the smaller one out
+```
+
+`ark-zim-resolve` applies this file every time it rebuilds the queue, **after**
+the profile selects its rows and **before** the disk budget is spent — so a `-`
+line frees room and a `+` line competes for what is left instead of being
+appended to a full card. Phase `50-kiwix` creates the file with the format in its
+header and never overwrites it, so a reinstall cannot quietly undo the choice.
+
+A `+` line names a row that must already exist in `catalog.tsv`: the catalogue
+stays the only definition of a size, a shelf and a label, so a preference can
+never invent a collection. A name the catalogue does not list is reported and
+ignored — it does not corrupt the queue.
+
+```bash
+sudo ark-zim-resolve --profile core                # rewrite the queue, prefs applied
+sudo ark-zim-resolve --profile core --queue /tmp/q.tsv --zim-dir /tmp/x \
+     --prefs /etc/ark/zim-prefs                   # see what it would do first
+```
+
+**What it does not do:** change what a smaller card gets (the file is per box and
+absent by default), and remove anything. A `-` line stops a collection being
+fetched again; the bytes already on the card are removed by hand, by the two
+commands above.
 
 ### The shelves
 
