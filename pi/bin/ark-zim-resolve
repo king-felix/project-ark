@@ -168,16 +168,23 @@ def bundle_prefix(name: str, flavour: str) -> str:
     return name + "_"
 
 
-def have_complete(have: dict, prefix: str, expected_gib: float) -> bool:
-    """True when a matching .zim is present AND (nearly) the catalogue size.
+def present_bundle(have: dict, prefix: str, expected_gib: float):
+    """``(filename, bytes)`` of the bundle that satisfies this row, or ``None``.
 
     A truncated download keeps the final .zim name after an interrupted rename,
     so the mere presence of a filename is not proof of a usable bundle — such
     files must stay 'todo' and be fetched again (aria2 overwrites them).
     """
     limit = expected_gib * (2 ** 30) * 0.99
-    return any(name.startswith(prefix) and size >= limit
-               for name, size in have.items())
+    for name in sorted(have):
+        if name.startswith(prefix) and have[name] >= limit:
+            return name, have[name]
+    return None
+
+
+def have_complete(have: dict, prefix: str, expected_gib: float) -> bool:
+    """True when a matching .zim is present AND (nearly) the catalogue size."""
+    return present_bundle(have, prefix, expected_gib) is not None
 
 
 def read_prefs(path: str):
@@ -298,8 +305,15 @@ def main(argv) -> int:
     queue, todo_gib, failed = [], 0.0, 0
     for row in rows:
         prefix = bundle_prefix(row["name"], row["flavour"])
-        if have_complete(have, prefix, row["size"]):
-            queue.append(("have", "-", 0, "-", row["tier"], row["label"]))
+        found = present_bundle(have, prefix, row["size"])
+        if found:
+            #  A present row carries the file that satisfies it and that file's own
+            #  size, not a blank.  The downloader writes a real size here when it
+            #  fetches one, and the progress page adds this column up to say how big
+            #  the whole queue is — a resolver that wrote `-` and `0` made that total
+            #  count only the bundles the downloader had fetched itself, and the
+            #  library page and the monitor disagreed about the same card.
+            queue.append(("have", "-", found[1], found[0], row["tier"], row["label"]))
             continue
         if row["size"] > budget:
             log(f"  - skipping {row['label']}: listed {row['size']:.2f} GiB, "

@@ -110,7 +110,7 @@ if [[ -z "$lib_ok" ]]; then
 fi
 
 # ---- 6. configure the library ---------------------------------------------
-ark_info "writing library settings (anonymous browse + download + upload + reader)"
+ark_info "writing library settings (anonymous browse + download + reader)"
 CALIBRE_DIR="$LIB"
 
 sqlite3 "$APP_DB" <<SQL
@@ -136,17 +136,24 @@ UPDATE settings SET
     config_log_level                = 30
 WHERE id = 1;
 
--- Guest (anonymous) gets: download(2) + upload(4) + anonymous(32) + reader(256)
-UPDATE user SET role = role | 2 | 4 | 32 | 256 WHERE (role & 32) != 0;
+-- Guest (anonymous) gets: download(2) + anonymous(32) + reader(256).
+--
+-- Deliberately NOT upload(4).  The reading door refuses /books/upload with a 404
+-- before it reaches the library (pi/nginx/ark.conf), because a book is added by
+-- the owner's page or by the importer — so a Guest holding the upload bit drew an
+-- Upload button on the public shelf that could never do anything.  The bit is
+-- cleared as well as not set, so a box installed before this change stops showing
+-- the button on its next run of this phase.
+UPDATE user SET role = (role & ~4) | 2 | 32 | 256 WHERE (role & 32) != 0;
 SQL
 
 ROLE_AFTER="$(sqlite3 "$APP_DB" "SELECT role FROM user WHERE (role & 32) != 0 LIMIT 1;")"
 if [[ -z "$ROLE_AFTER" ]]; then
   ark_warn "no anonymous user row found — creating a Guest account"
-  sqlite3 "$APP_DB" "INSERT INTO user (name, email, role, password, locale, sidebar_view, default_language, denied_tags, allowed_tags, denied_column_value, allowed_column_value, kobo_only_shelves_sync) VALUES ('Guest','no@email',294,'','en',1,'all','','','','',0);"
+  sqlite3 "$APP_DB" "INSERT INTO user (name, email, role, password, locale, sidebar_view, default_language, denied_tags, allowed_tags, denied_column_value, allowed_column_value, kobo_only_shelves_sync) VALUES ('Guest','no@email',290,'','en',1,'all','','','','',0);"
   ROLE_AFTER="$(sqlite3 "$APP_DB" "SELECT role FROM user WHERE name='Guest' LIMIT 1;")"
 fi
-ark_ok "anonymous role bits = $ROLE_AFTER (expect 294 = download+upload+reader+anonymous)"
+ark_ok "anonymous role bits = $ROLE_AFTER (expect 290 = download+reader+anonymous, no upload)"
 
 # admin password for the local importer (Calibre-Web ships admin/admin123)
 if [[ ! -f "$ADMIN_CRED" ]]; then

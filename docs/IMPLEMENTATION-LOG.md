@@ -7663,3 +7663,128 @@ software changed — not one file under `pi/` — so no redeploy is implied.
 Left undone, deliberately: the newest `ark-backup` is **7 days old** (the
 readiness note says so); a fresh backup after this migration is the owner's call.
 `clone-card.sh` still carries the unreachable-elevation path described above.
+
+---
+
+## 61. The photo edition arrives, and the interface is read against the card — 12 Nov 2026
+
+`wikipedia_en_all_maxi_2026-08` (119 GiB) is on the card beside the photo-less
+edition it was meant to replace, the queue is rebuilt from `zim-prefs`, and every
+public door was then walked on the live box and checked against what is actually
+on the disk. Five things the interface said that were not true came out of that
+walk, and all five are fixed, tested and deployed.
+
+### 61.1 What was walked
+
+Instrument: `curl` from the workstation against `ark.local` (200 on the portal,
+`/api/ready` 200), then the same checks over SSH as `pi`. Every page that a
+person can reach was fetched and read as text, and every internal link on those
+pages was followed — **334 links, all 200** except the two deliberate
+cross-origin redirects (`/arcade/player` → `:8445`, `/maps` → `:8446`), each
+verified 200 over TLS with `ark_tls_code` semantics.
+
+What agrees with the card, measured rather than assumed:
+
+| The page says | The card says |
+|---|---|
+| 28 collections, 216.3 GB on `/library` and `/api/ready` | 28 `.zim` files, 232,200,022,848 bytes |
+| 1291 books | `SELECT COUNT(*) FROM metadata.db.books` = 1291 |
+| 41 films, all "Ready to play" | 41 `published` rows, 41 files in `media/play/` |
+| 67 games | 67 entries in `arcade/games/` |
+| 3 regions, 296.8 MB | 3 verified+published packs in `maps/catalog.json` |
+| 11 manual and guide pages | 11 `.html` in `/srv/ark/vault` |
+| The photo edition serves pictures | `A/Water` in `maxi` = **69 `<img>`**, in `nopic` = **3** |
+| ready 12 / 12, blocking `[]` | `api/ready` 200 |
+
+### 61.2 Five defects, and what each was
+
+**1. The photo-less Wikipedia wore the photo edition's label.** `catalog.tsv`
+lists `wikipedia_en_all` twice, once per flavour. `ark_library.read_catalogue()`
+keyed on the bare name, so the second row overwrote the first and the 49 GiB
+bundle with no pictures was drawn on `/library` as *"Wikipedia with photos"* —
+the one collection on the card that has none, wearing the other's name. A name
+listed once keeps its bare key (an older bundle can arrive without the size word);
+a name listed twice is filed under `name<TAB>flavour` and looked up by the file's
+own flavour. Unlisted means the file's own title, never a neighbour's label.
+
+**2. `/books` — the address a reader types — answered 404.** Calibre-Web builds
+its redirects with the `/books` prefix it is given via `X-Script-Name`, so it
+answered `308 → http://host/books/`; `proxy_redirect http://$host/ /books/`
+then turned that into `/books/books/`, which nothing serves. The proxy now
+answers `location = /books` itself with one 301 and nothing rewrites the
+library's own `Location` headers. Measured after: `/books` 301 → `/books/` 200,
+`/books/newest/new/` 200, `/books/page/2` 200.
+
+**3. A guest was offered an Upload button the door refuses.** The anonymous role
+carried `ROLE_UPLOAD` (bit 4), so Calibre-Web drew an upload control on the
+public shelf — while `pi/nginx/ark.conf` answers 404 for `/books/upload`, because
+books are added by the owner's page or by the importer. The bit is now *cleared*,
+not merely not set, so a box installed before this change stops showing it.
+Measured: role 294 → **290**, `form-upload` on `/books/` → 0 occurrences.
+
+**4. The guest's account glyph led to a 404.** The same shelf draws a person icon
+pointing at `/books/me`, which is in the 404 door. It now answers a GET with the
+shelf and refuses everything else — one visible control that could not work is
+gone, and no sign-in is offered.
+
+**5. The page pack to carry away was eight days behind the box.** The pack holds
+the recovery sheet, and the sheet is installed by phase 8; the pack is only built
+when somebody asks. On the live box `/recovery.txt` was the 3 November sheet while
+`/essentials.zip` still carried the 26 October one — and the *pack's* copy is the
+one read when the box will not start. Phase 8 now rebuilds the pack in the same
+run that replaces the sheet, and `ark_essentials.status()` grew `stale` (a page on
+the box newer than the pack) so the Household page and `ark-essentials --status`
+say so out loud instead of implying the bag matches the shelf.
+
+Two smaller untruths, both fixed:
+
+* **the downloader's byte total was a quarter of the card.** A `have` row written
+  by `ark-zim-resolve` carried `-` and `0` where `ark-zim-download` writes the
+  filename and size, so `bytes_total` counted only the bundles the downloader had
+  fetched itself — 127 GB for a queue whose bundles come to 216 GB. A present row
+  now names the file that satisfies it and that file's own size. Measured after:
+  the queue's rows come to **179,509,316,293 bytes**, the card holds
+  **232,200,022,848**, and the difference is **52,690,706,555 — exactly the
+  photo-less Wikipedia file, byte for byte**, which is on the disk and deselected
+  by `zim-prefs`. The two numbers now differ only by what is genuinely on the card
+  and not in the queue, which is the whole point of having both.
+* **`90-verify` said the network watchdog had never run.** It printed *"no
+  decision logged yet (first check 3 min after boot)"* on a box that had been
+  checking every minute for thirteen hours — the watchdog writes its log only
+  when it *acts*, and its counters are the only proof it is running. The verifier
+  reads the counters now: *"watching since 2026-11-12T16:25:27+00:00 and nothing
+  has needed a decision"*.
+
+### 61.3 Verified on the box after the deploy
+
+Deployed with `rsync` to `/srv/ark/src` (excluding the carried `ai/llama-server`)
+and phases `30-calibre,50-kiwix,60-portal,95-backup,90-verify`. A
+`sqlite3 .backup` of the live database was taken first
+(`ark.db.pre-deploy-20261112-161207.bak`).
+
+* `90-verify`: **89 ✓, no ✗**, `ARK_INSTALL_COMPLETE`. (The count moved from 91
+  because a backup was taken and two soft lines — `latest copy`, `copies kept` —
+  now read differently; `latest copy` is ✓ *"ark-backup-20261112-162602 — 0h
+  old"*.)
+* `/api/ready` **12 / 12**, blocking `[]`, `unavailable_features` `[]`.
+* Fresh backup taken with the box's own tool: 403.0 kB, `--verify` → *"is whole:
+  5 files, every fingerprint matches"*, layout 9. Retention kept the newest 2.
+* `essentials.zip` rebuilt: 42.0 kB, 16 files, made 2026-11-12 16:23;
+  its `RECOVERY-SHEET.txt` is byte-identical to `/recovery.txt` (diff, empty).
+* `/library` now reads *"Wikipedia with photos · 118.7 GB"* and *"Wikipedia (no
+  photos) · 49.1 GB"* as two collections with their own names.
+* Mac suite: **1182 passed, 2 skipped** (49 files); 20 new tests.
+
+### 61.4 What was not done, and what is still true
+
+`/srv/ark/REVISION` is hand-written: nothing in this repository writes or reads
+it, and it still said `dac7770` while the box ran later code. It is not part of
+any page, but the same walk that found five wrong sentences found one stale
+operator file, and the honest repair is a writer in the deploy path rather than
+another hand edit. Left as an observation, not fixed.
+
+Still true, and unchanged by this pass: search takes 4–8 s on this card, not the
+1500 ms it was written for (§56.8/§57.6); no phone has done the walk-through
+(`docs/HUMAN-TEST-LIST.md`); films, maps and collections are still outside
+`ark-backup`; and the pile of owner decisions in the baseline table (history
+rewrite, password rotation, licence) is still the owner's to make.

@@ -23,6 +23,7 @@ REPO = Path(__file__).resolve().parents[1]
 NGINX = (REPO / "pi" / "nginx" / "ark.conf").read_text(encoding="utf-8")
 KIWIX = (REPO / "pi" / "systemd" / "ark-kiwix.service").read_text(encoding="utf-8")
 PORTAL_PHASE = (REPO / "pi" / "steps" / "60-portal.sh").read_text(encoding="utf-8")
+CALIBRE_PHASE = (REPO / "pi" / "steps" / "30-calibre.sh").read_text(encoding="utf-8")
 MAIN_APP = (REPO / "pi" / "api" / "main.py").read_text(encoding="utf-8")
 EMULATOR = REPO / "pi" / "arcade" / "emulatorjs"
 
@@ -464,6 +465,49 @@ def test_the_installer_proves_the_book_door_on_the_box():
     assert "/books/" in PORTAL_PHASE
     for proof in ("/books/admin", "/books/upload", "/books/login"):
         assert proof in PORTAL_PHASE, proof
+
+
+def test_the_guest_account_is_not_offered_an_upload_the_door_refuses():
+    """The library draws an Upload button whenever the guest holds the upload bit.
+
+    The reading door refuses ``/books/upload`` with a 404 — books are added by the
+    owner's page or by the importer — so the button was a control that could never
+    do anything.  The bit is cleared, not merely left unset, so an older box stops
+    showing it on its next install.
+    """
+    assert "(role & ~4)" in CALIBRE_PHASE, "the upload bit must be cleared"
+    assert "role | 2 | 4 | 32 | 256" not in CALIBRE_PHASE, "the upload bit must not be set"
+    assert "290" in CALIBRE_PHASE, "a new Guest row must be created without it"
+
+
+def test_a_typed_books_address_is_redirected_once_by_the_proxy():
+    """``ark.local/books`` answered 404 on 12 Nov 2026.
+
+    Calibre-Web already builds its redirects with the /books prefix it is told to
+    use, so ``proxy_redirect http://$host/ /books/`` rewrote an already-correct
+    ``http://host/books/`` into ``/books/books/`` — a path nothing serves.  The
+    proxy answers the slash-less address itself now, and nothing rewrites the
+    library's own Location headers.
+    """
+    assert re.search(r"location = /books\s*\{\s*return 301 /books/;\s*\}", NGINX), \
+        "nginx must answer /books itself instead of handing it to the library"
+    door = _books_read_location()
+    assert "proxy_redirect off" in door, "a doubled /books prefix must stay impossible"
+    assert "proxy_redirect http://$host/ /books/" not in NGINX
+
+
+def test_a_reader_who_taps_the_account_glyph_is_sent_back_to_the_shelf():
+    """The library draws a person icon for a guest; its target is /books/me.
+
+    A guest has no account here and the sign-in behind it is refused, so that
+    address answered 404 — one visible control on the public shelf that could not
+    work.  It answers a GET with the shelf, and everything else stays a refusal.
+    """
+    block = next((body for kind, rule, body in _locations() if rule == "= /books/me"), None)
+    assert block is not None, "the guest's account address needs its own door"
+    assert "return 302 /books/;" in block
+    assert "$request_method = GET" in block, "only a GET may be answered"
+    assert "return 404;" in block, "everything else must stay refused"
 
 
 # ---------------------------------------------------------------------------

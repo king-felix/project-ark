@@ -858,6 +858,24 @@ def test_the_phase_installs_both_tools_and_proves_a_dry_run():
     assert "ark-backup-*" in text
 
 
+def test_the_phase_rebuilds_the_pack_that_carries_the_sheet_away():
+    """The sheet lives in two places, and the phase that writes one must write both.
+
+    Measured on the live box on 12 Nov 2026: ``/recovery.txt`` had been rewritten on
+    3 November while the pack still carried the 26 October sheet, because the pack is
+    only built when somebody asks.  The printed page and the page in the bag then
+    disagreed — and the bag's is the one read when the box will not start.
+    """
+    done = subprocess.run(["bash", "-n", str(PHASE)], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    text = PHASE.read_text(encoding="utf-8")
+    assert "ark-essentials --build" in text
+    # As the box's own user, like every other write to that folder.
+    assert 'sudo -u "$ARK_PI_USER" /usr/local/sbin/ark-essentials --build' in text
+    # A pack that cannot be rebuilt is a warning: the copy on the card still opens.
+    assert "ark_warn" in text.split("ark-essentials --build", 1)[1][:400]
+
+
 def test_the_verifier_asks_whether_the_pages_can_open_the_copy():
     """The deploy's own gate runs as root, so it could read a root:root bundle
     while "What is working" — which runs as pi — said no copy had ever been

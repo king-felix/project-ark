@@ -71,7 +71,19 @@ _BY_KEY = {key: (title, blurb) for key, title, blurb in TOPICS}
 #: ``wikipedia_en_all_nopic_2026-06`` → ``wikipedia_en_all`` (the catalogue keeps
 #: the size word in its ``flavour`` column, not in the name).
 _DATE = re.compile(r"_(?:\d{4}-\d{2})$")
-_FLAVOUR = re.compile(r"_(?:nopic|maxi|mini)$")
+_FLAVOUR = re.compile(r"_(nopic|maxi|mini)$")
+
+#: How a collection's name and its flavour sit side by side in the read map.  A
+#: tab, because the catalogue is tab-separated and no name can contain one.
+_FLAVOUR_KEY = "\t"
+
+
+def _stem_of(stem: str) -> str:
+    """A file stem with the extension and the build date taken off."""
+    stem = (stem or "").strip()
+    if stem.endswith(".zim"):
+        stem = stem[:-4]
+    return _DATE.sub("", stem)
 
 
 def catalogue_file() -> Path:
@@ -82,22 +94,37 @@ def catalogue_file() -> Path:
 
 def name_of(stem: str) -> str:
     """The catalogue id for a book's file stem, or the stem when it has none."""
-    stem = (stem or "").strip()
-    if stem.endswith(".zim"):
-        stem = stem[:-4]
-    stem = _DATE.sub("", stem)
-    return _FLAVOUR.sub("", stem)
+    return _FLAVOUR.sub("", _stem_of(stem))
+
+
+def flavour_of(stem: str) -> str:
+    """The size word the catalogue files one bundle under, or ``""``.
+
+    ``wikipedia_en_all_maxi_2026-08`` → ``maxi``.  It is the only thing that tells
+    two editions of one collection apart, and the catalogue lists them as separate
+    rows *because* they are different bundles with different labels — the photo
+    edition and the photo-less one are not one collection written twice.
+    """
+    match = _FLAVOUR.search(_stem_of(stem))
+    return match.group(1) if match else ""
 
 
 def read_catalogue(path: str | os.PathLike | None = None) -> dict:
-    """``{catalogue name: {"topic": key, "label": words}}`` from ``catalog.tsv``.
+    """``{key: {"topic": key, "label": words}}`` from ``catalog.tsv``.
+
+    A collection the catalogue lists once is filed under its bare name.  A
+    collection it lists in more than one edition — ``wikipedia_en_all`` appears as
+    both ``nopic`` and ``maxi`` — is filed only under ``name<TAB>flavour``, so each
+    edition keeps its own label.  Filing those under the bare name let the second
+    row overwrite the first, and the 49 GiB photo-less bundle went to the shelf
+    wearing the photo edition's name: a page that said "Wikipedia with photos"
+    about the one bundle on this card that has none.
 
     A malformed or absent catalogue is an empty map, not an error: the Library
     page must still list the card's books on a box where the phase that copies
     the catalogue has not run.
     """
     target = Path(path) if path else catalogue_file()
-    out: dict[str, dict] = {}
     try:
         text = target.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
@@ -105,7 +132,8 @@ def read_catalogue(path: str | os.PathLike | None = None) -> dict:
         # collection then appears under "Everything else" and the reader still sees
         # the library.  A stray Latin-1 byte in one label must not 500 the only door
         # to 97 GiB of books.
-        return out
+        return {}
+    rows: dict[str, list[tuple[str, dict]]] = {}
     for raw in text.splitlines():
         line = raw.rstrip("\n")
         if not line or line.startswith("#") or line.startswith("name\t"):
@@ -114,15 +142,38 @@ def read_catalogue(path: str | os.PathLike | None = None) -> dict:
         if len(parts) < 6:
             continue
         topic = parts[6].strip() if len(parts) > 6 else ""
-        out[parts[0].strip()] = {"topic": topic if topic in _BY_KEY else "",
-                                 "label": parts[4].strip()}
+        flavour = parts[1].strip()
+        rows.setdefault(parts[0].strip(), []).append(
+            ("" if flavour in ("", "-") else flavour,
+             {"topic": topic if topic in _BY_KEY else "",
+              "label": parts[4].strip()}))
+    out: dict[str, dict] = {}
+    for name, editions in rows.items():
+        for flavour, row in editions:
+            if len(editions) == 1:
+                # A collection listed once answers to its bare name even when the
+                # row names a flavour: an older file can arrive with no size word
+                # in its stem, and that is still this collection.
+                out[name] = row
+            if flavour:
+                out[name + _FLAVOUR_KEY + flavour] = row
     return out
+
+
+def _entry(stem: str, table: dict) -> dict:
+    """The catalogue row for one file, matched on its own flavour first."""
+    flavour = flavour_of(stem)
+    if flavour:
+        row = table.get(name_of(stem) + _FLAVOUR_KEY + flavour)
+        if row:
+            return row
+    return table.get(name_of(stem)) or {}
 
 
 def shelf_of(stem: str, catalogue: dict | None = None) -> str:
     """Which shelf one book belongs on (a topic key, or ``more``)."""
     table = read_catalogue() if catalogue is None else catalogue
-    return (table.get(name_of(stem)) or {}).get("topic") or OTHER[0]
+    return _entry(stem, table).get("topic") or OTHER[0]
 
 
 def title_of(stem: str, fallback: str, catalogue: dict | None = None) -> str:
@@ -132,9 +183,13 @@ def title_of(stem: str, fallback: str, catalogue: dict | None = None) -> str:
     carry the *same* publisher title — every Canadian Prepper playlist calls itself
     "Canadian prepper", so a shelf of them would read as one book listed twice.
     The box's own name for it is the only one that tells them apart.
+
+    The edition decides first: two rows of one collection are labelled differently
+    on purpose, and the label a reader sees has to be the one for the bundle that
+    is actually on the card.
     """
     table = read_catalogue() if catalogue is None else catalogue
-    return (table.get(name_of(stem)) or {}).get("label") or fallback
+    return _entry(stem, table).get("label") or fallback
 
 
 def shelves(books: list[dict], catalogue: dict | None = None) -> list[dict]:

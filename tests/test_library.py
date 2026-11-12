@@ -144,6 +144,54 @@ def test_a_file_name_becomes_the_catalogue_name_it_came_from():
     assert ark_library.name_of("gone.zim") == "gone"
 
 
+def test_the_size_word_is_kept_because_it_is_the_only_thing_that_tells_two_editions_apart():
+    import ark_library
+
+    assert ark_library.flavour_of("wikipedia_en_all_maxi_2026-08") == "maxi"
+    assert ark_library.flavour_of("wikipedia_en_all_nopic_2026-06") == "nopic"
+    assert ark_library.flavour_of("wikipedia_en_all.zim") == ""
+    assert ark_library.flavour_of("diy.stackexchange.com_en_all_2026-10") == ""
+
+
+def test_two_editions_of_one_collection_keep_their_own_label():
+    """The card can carry both Wikipedias, and they are not the same book.
+
+    ``catalog.tsv`` lists ``wikipedia_en_all`` twice — 49 GiB with no pictures and
+    119 GiB with them.  Filing both under the bare name let the second row win, so
+    the photo-less bundle was drawn on the shelf as "Wikipedia with photos":
+    the one bundle on the card that has no photos, wearing the other's label.
+    """
+    import ark_library
+
+    table = ark_library.read_catalogue(CATALOG)
+    maxi = ark_library.title_of("wikipedia_en_all_maxi_2026-08", "Wikipedia", table)
+    nopic = ark_library.title_of("wikipedia_en_all_nopic_2026-06", "Wikipedia", table)
+    assert maxi == "Wikipedia with photos"
+    assert nopic == "Wikipedia (no photos)"
+    assert maxi != nopic, "two editions of one collection must not share one label"
+    # Filing is unchanged: both belong on the encyclopedias shelf, and to the same one.
+    assert ark_library.shelf_of("wikipedia_en_all_maxi_2026-08", table) == "learn"
+    assert ark_library.shelf_of("wikipedia_en_all_nopic_2026-06", table) == "learn"
+
+
+def test_an_edition_the_catalogue_does_not_list_keeps_the_files_own_title():
+    """No row of its own means no label — never the label of a different edition."""
+    import ark_library
+
+    table = ark_library.read_catalogue(CATALOG)
+    assert ark_library.title_of("wikipedia_en_all_mini_2026-01", "Wikipedia mini", table) \
+        == "Wikipedia mini"
+
+
+def test_a_collection_listed_once_still_answers_to_a_stem_with_no_size_word():
+    """An older bundle can arrive without the flavour in its name."""
+    import ark_library
+
+    table = ark_library.read_catalogue(CATALOG)
+    assert ark_library.title_of("wiktionary_en_all_2026-08", "fallback", table) \
+        == "Dictionary and thesaurus"
+
+
 def test_every_book_lands_on_exactly_one_shelf(ark, monkeypatch):
     import ark_library
 
@@ -311,6 +359,22 @@ def test_an_empty_library_is_a_friendly_page_not_an_error(public, ark, monkeypat
     response = public.client.get("/library", headers={"x-real-ip": "192.0.2.50"})
     assert response.status_code == 200
     assert "still filling up" in response.text
+
+
+def test_the_shelf_never_calls_the_photo_less_edition_the_photo_one(public, ark, monkeypatch):
+    """Both editions on one card, as the live box had them on 12 Nov 2026.
+
+    The page is what a reader believes.  Two cards may be called Wikipedia; only
+    one of them may claim pictures, and it has to be the one that has them.
+    """
+    monkeypatch.setenv("ARK_CATALOG", str(CATALOG))
+    _library_xml(ark, [
+        ("wikipedia_en_all_maxi_2026-08", "Wikipedia", 118670000, "_pictures:yes"),
+        ("wikipedia_en_all_nopic_2026-06", "Wikipedia", 49072000, "_pictures:no"),
+    ])
+    body = public.client.get("/library", headers={"x-real-ip": "192.0.2.51"}).text
+    assert body.count("Wikipedia with photos") == 1, "only the photo edition may say so"
+    assert "Wikipedia (no photos)" in body
 
 
 # ---------------------------------------------------------------------------
@@ -672,6 +736,27 @@ def _rows(queue: Path):
         if len(parts) >= 6:
             out.append((parts[0], parts[5]))
     return out
+
+
+def test_a_present_row_names_the_file_that_satisfies_it_and_its_real_size(tmp_path):
+    """Two writers fill this queue, and the progress total adds the size column up.
+
+    ``ark-zim-download`` writes the real filename and byte count into a row once it
+    has fetched it; the resolver used to write ``-`` and ``0`` for a bundle that was
+    already on the card.  On the live box that made ``bytes_total`` 127 GB for a
+    queue whose bundles came to 216 GB — every collection the resolver had found
+    waiting counted as nothing at all.
+    """
+    queue = _resolve_world(tmp_path, files=["wikipedia_en_all_maxi_2026-08.zim"],
+                           prefs="+ wikipedia_en_all maxi\n- wikipedia_en_all nopic\n")
+    for line in queue.read_text(encoding="utf-8").splitlines():
+        if line.startswith("have") and "Wikipedia with photos" in line:
+            parts = line.split("\t")
+            assert parts[3] == "wikipedia_en_all_maxi_2026-08.zim", parts
+            assert int(parts[2]) > 0, f"a present bundle must carry its size: {parts}"
+            break
+    else:
+        raise AssertionError(queue.read_text(encoding="utf-8"))
 
 
 def test_a_dash_line_with_no_flavour_leaves_out_every_edition(tmp_path):

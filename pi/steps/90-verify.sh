@@ -381,12 +381,23 @@ if [[ -n "$held" ]]; then
   printf '   %s network choice: held on "%s" by the owner (ark-mode auto undoes it)\n' "→" "$held"
 fi
 # The watchdog's last word, so "it stopped broadcasting" arrives with a reason.
+#
+# A watchdog that decided *nothing* needs no decision log: it writes one only when it
+# acts, and its counters are the only proof it is running at all.  This line used to
+# read "no decision logged yet (first check 3 min after boot)" on a box that had been
+# checking every minute for thirteen hours — a true file and a false sentence.  The
+# counters are read instead, and their timestamp is what gets said.
 if [[ -s "$ARK_ROOT/logs/net-watch.log" ]]; then
   last_word="$(tail -n 1 "$ARK_ROOT/logs/net-watch.log")"
   last_word="${last_word#*  }"
   say_soft "network watchdog" "last: ${last_word:0:80}"
 else
-  say_soft "network watchdog" "no decision logged yet (first check 3 min after boot)"
+  watched="$(sed -n 's/^updated=//p' "$ARK_ROOT/logs/net-watch.state" 2>/dev/null | head -n 1)"
+  if [[ -n "$watched" ]]; then
+    say_soft "network watchdog" "watching since $watched and nothing has needed a decision"
+  else
+    say_soft "network watchdog" "no decision logged and no counters yet (first check 3 min after boot)"
+  fi
 fi
 
 # ---- the owner's Network page: a Wi-Fi saved from the page, one restart asked for

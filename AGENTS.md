@@ -195,13 +195,13 @@ The portal is for someone who has never heard the words *Kiwix*, *ZIM*, *Calibre
 | `docs/HUMAN-TEST-LIST.md` | **Outstanding human/thumb tests (§1–§23):** working in code, unproven by a person on a phone or hardware. |
 | `logs/ark_status.json` & `logs/install.done` | **The box's last measured receipt** from `90-verify`. |
 
-| Baseline Fact | State (5 Nov 2026) |
+| Baseline Fact | State (12 Nov 2026) |
 |---|---|
 | Released tag | `v1.0.5` = `dd3336c` (never move a tag, never force-push) |
 | Active branch | `main` (`feature/admin-hardening` ff-merged at `5adb1b7`; box runs `dac7770`, docs-only ahead — log §59.1) |
 | Schema version | `SCHEMA_VERSION = 9` (`pi/api/ark_db.py`) — 7 the film shelf and space ledger; 8 a reservation's pid + boot + kind; 9 a session's elapsed-time readings (`mono_created`/`mono_seen`, log §58) |
-| Test suite | `1162 passed, 2 skipped` (49 files) |
-| Live Pi state | Deployed `dac7770` (log §58); `90-verify` **91 ✓, no ✗**; ready 200, blocking []; Films 8, Games 67, Maps 3 — all **Ready**; reserve 34 GB (512 GB card, log §60). **Search misses its 1500 ms target: 4–8 s (log §56.8/§57.6)** |
+| Test suite | `1182 passed, 2 skipped` (49 files) |
+| Live Pi state | Deployed `ad2786d` + the fixes in §61; `90-verify` **89 ✓, no ✗**; ready **12 / 12**, blocking []; 28 collections / 216.3 GiB, 41 Films, 67 Games, 3 Maps — all **Ready**; reserve 34 GB; backup 12 Nov, proved whole (§60) |
 | Owner decisions pending | History rewrite + force-push (pre-`a926296`; home-LAN address in `1a3f41f`; log §37.6/§38.7/§44); rotate passwords; licence |
 
 ### 8.1 What exists, and what each piece owns

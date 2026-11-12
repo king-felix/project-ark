@@ -319,6 +319,46 @@ def test_a_pack_the_box_cannot_read_is_reported_not_crashed(tmp_path, vault):
     assert pack.names(pack.pack_path(tmp_path / "out")) == []
 
 
+def test_a_page_rewritten_after_the_pack_was_made_makes_it_stale(tmp_path, vault):
+    """The bag holds a photograph of the shelf, and a photograph does not update.
+
+    Measured on the live box on 12 Nov 2026: the recovery sheet on the card was
+    rewritten on 3 November while the pack still carried the 26 October one — so the
+    page printed off the box and the page in the pack disagreed, and only the second
+    one was meant to be read when the box would not start.
+    """
+    import os
+
+    build(tmp_path, vault, sheet=SHEET)
+    out = tmp_path / "out"
+    assert pack.status(out, vault=vault, sheet=SHEET)["stale"] is False
+
+    later = pack.pack_path(out).stat().st_mtime + 60
+    os.utime(vault / "manuals" / "water.html", (later, later))
+    state = pack.status(out, vault=vault, sheet=SHEET)
+    assert state["stale"] is True
+    assert state["newest_source"].endswith("water.html")
+
+    # A sheet that changed after the pack counts the same as a page that did.
+    sheet_copy = tmp_path / "RECOVERY-SHEET.txt"
+    shutil.copy2(SHEET, sheet_copy)
+    os.utime(sheet_copy, (later + 60, later + 60))
+    assert pack.status(out, vault=vault, sheet=sheet_copy)["stale"] is True
+
+    # And a fresh build of the same shelf is not stale any more.
+    os.utime(vault / "manuals" / "water.html", (later - 120, later - 120))
+    pack.build(out, vault=vault, sheet=SHEET, when=WHEN)
+    assert pack.status(out, vault=vault, sheet=SHEET)["stale"] is False
+
+
+def test_freshness_is_unknown_rather_than_fresh_when_no_shelf_is_named(tmp_path, vault):
+    """A caller with no vault cannot know, and 'unknown' must not read as 'fine'."""
+    build(tmp_path, vault)
+    state = pack.status(tmp_path / "out")
+    assert state["present"] is True
+    assert state["stale"] is None
+
+
 # ---------------------------------------------------------------------------
 #  the console tool
 # ---------------------------------------------------------------------------
@@ -346,6 +386,22 @@ def test_the_tool_builds_verifies_and_lists_a_pack(tmp_path, vault):
     assert state.returncode == 0
     assert "made 2026" in state.stdout or "made " in state.stdout
     assert "fingerprint" in state.stdout
+
+
+def test_the_tool_says_when_the_copy_is_older_than_the_pages(tmp_path, vault):
+    import os
+
+    out = tmp_path / "pack"
+    made = _run("--build", "--from", str(vault), "--sheet", str(SHEET), "--out", str(out))
+    assert made.returncode == 0, made.stderr + made.stdout
+    fresh = _run("--status", "--from", str(vault), "--sheet", str(SHEET), "--out", str(out))
+    assert "have changed since this copy was made" not in fresh.stdout, fresh.stdout
+
+    later = pack.pack_path(out).stat().st_mtime + 60
+    os.utime(vault / "manuals" / "water.html", (later, later))
+    old = _run("--status", "--from", str(vault), "--sheet", str(SHEET), "--out", str(out))
+    assert old.returncode == 0, old.stdout
+    assert "have changed since this copy was made" in old.stdout, old.stdout
 
 
 def test_the_tool_refuses_to_pretend_when_it_cannot_build(tmp_path):

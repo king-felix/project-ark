@@ -103,9 +103,12 @@ importer is unaffected because it talks to `127.0.0.1:8083` directly.
 |---|---|---|
 | Mutating Calibre-Web routes are not reachable | `pi/nginx/ark.conf` `limit_except GET { deny all; }` on `location /books` | `test_config.py::test_the_book_shelf_refuses_every_method_that_could_change_it` |
 | Admin/account routes answer 404 at the proxy | `pi/nginx/ark.conf`, the `location ~ ^/books/(?:admin\|…` door | `test_config.py::test_the_book_shelf_answers_404_for_every_management_route` |
+| A typed or redirected shelf address lands on the shelf: `/books` is answered by the proxy, and the library's own `Location` headers are not prefixed a second time | `location = /books`, `proxy_redirect off` | `test_config.py::test_a_typed_books_address_is_redirected_once_by_the_proxy` |
+| The guest's account glyph leads back to the shelf instead of an error page, and only a GET is answered | `location = /books/me` | `test_config.py::test_a_reader_who_taps_the_account_glyph_is_sent_back_to_the_shelf` |
 | Reading, search, download, OPDS, covers still work | same file — the door names only what must be refused | `test_config.py::test_every_reading_route_survives_the_door` |
 | The one POST that only reads keeps working | the `advsearch` door, its own location | `test_config.py::test_the_one_post_that_only_reads_has_its_own_door` |
 | Refusing `/upload` and `/login` cannot break the importer | `pi/bin/ark-import-books` talks to loopback, not the proxy | `test_config.py::test_the_block_cannot_break_the_importer_because_it_never_uses_the_proxy` |
+| The public shelf draws no Upload button, because the door refuses one: the guest account holds no upload bit | `pi/steps/30-calibre.sh` | `test_config.py::test_the_guest_account_is_not_offered_an_upload_the_door_refuses` |
 | The installer proves the door on the box | `pi/steps/60-portal.sh` `must_be 404/403 …` proofs | `test_config.py::test_the_installer_proves_the_book_door_on_the_box` |
 
 **How the two halves work.** A route a GET can reach (the whole `/admin` tree, `/login`,
@@ -758,6 +761,8 @@ search box is allowed to be vague about which is which.
 |---|---|---|
 | Every collection on the card appears on exactly one shelf, and none is lost | `ark_library.shelves()` | `test_library.py::test_every_book_lands_on_exactly_one_shelf` |
 | The filing comes from the catalogue, not from a second list in code | `catalog.tsv` column 7 → `ark_library.read_catalogue()` | `test_library.py::test_every_catalogue_row_is_complete_and_filed_on_a_real_shelf`; `::test_the_requested_collections_are_in_the_catalogue_on_the_right_shelves` |
+| Two editions of one collection keep their own label: the 49 GiB photo-less Wikipedia is never drawn as "Wikipedia with photos" | `ark_library.read_catalogue()` files a repeated name under `name<TAB>flavour`; `_entry()`/`flavour_of()` | `test_library.py::test_two_editions_of_one_collection_keep_their_own_label`; `::test_the_shelf_never_calls_the_photo_less_edition_the_photo_one`; `::test_an_edition_the_catalogue_does_not_list_keeps_the_files_own_title` |
+| A `have` row in the download queue carries the file that satisfies it and its real size, so the queue's own total is the card's total | `ark-zim-resolve` `present_bundle()` | `test_library.py::test_a_present_row_names_the_file_that_satisfies_it_and_its_real_size` |
 | A bundle with no catalogue row is shown, not hidden | `ark_library.OTHER` | `test_library.py::test_every_book_lands_on_exactly_one_shelf`; `::test_a_missing_catalogue_is_an_empty_map_not_a_crash` |
 | An empty box gets a friendly page, not an error | `main.library` | `test_library.py::test_an_empty_library_is_a_friendly_page_not_an_error` |
 | A film shelf is offered as something to watch | `main.FILM_SHELF_NOTE` | `test_library.py::test_the_shelf_page_shows_every_collection_and_links_to_it` |

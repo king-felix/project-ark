@@ -2368,8 +2368,12 @@ sudo ark-zim-resolve --profile core --queue /tmp/q.tsv --zim-dir /tmp/x \
 
 **What it does not do:** change what a smaller card gets (the file is per box and
 absent by default), and remove anything. A `-` line stops a collection being
-fetched again; the bytes already on the card are removed by hand, by the two
-commands above.
+fetched again; the bytes already on the card stay where they are, and come off by
+hand with the *Removing one* procedure above — the `.zim` deleted and
+`ark-kiwix-library` rebuilding the index — because nothing on this box deletes a
+collection on its own. (Measured 12 Nov 2026: after the card grew and
+`- wikipedia_en_all  nopic` was written, the 49 GiB photo-less bundle was still on
+the card *and still on the shelf* beside the 119 GiB photo edition.)
 
 ### The shelves
 

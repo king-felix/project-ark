@@ -75,6 +75,21 @@ ark_ensure_dir "$ARK_ROOT/portal" 755 "$ARK_PI_USER:$ARK_PI_GROUP"
 ark_copy "$ARK_SRC/RECOVERY-SHEET.txt" "$ARK_ROOT/portal/recovery.txt" 644 "$ARK_PI_USER:$ARK_PI_GROUP"
 ark_ok "recovery sheet installed at $ARK_ROOT/RECOVERY-SHEET.txt and on /recovery.txt"
 
+# ---- the copy that leaves the house ----------------------------------------
+# The pack to carry away holds this sheet, so a sheet installed beside an older pack
+# left the bag holding words the box no longer says — measured on the live box on
+# 12 Nov 2026, where the pack still carried the 26 October sheet and the card's own
+# was rewritten on 3 November.  Rebuilt here, in the phase that replaces the sheet, so
+# the two cannot drift; a failure is a warning, because the pack already on the card
+# still opens.
+if [[ -x /usr/local/sbin/ark-essentials ]]; then
+  if sudo -u "$ARK_PI_USER" /usr/local/sbin/ark-essentials --build --quiet >/dev/null 2>&1; then
+    ark_ok "page pack rebuilt — the copy to carry away holds this sheet"
+  else
+    ark_warn "page pack not rebuilt — the one on the card still opens; build one with: sudo -u $ARK_PI_USER /usr/local/sbin/ark-essentials --build"
+  fi
+fi
+
 # ---- prove it plans before it writes ---------------------------------------
 # A dry run reads the database and counts the shared files; it writes nothing.
 # If it cannot even plan, the owner needs to know now, not on the bad day.

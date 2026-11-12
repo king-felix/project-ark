@@ -1720,7 +1720,9 @@ def _emergency_written() -> str:
 
 def _pack_written() -> str:
     """The one file that carries the small pages away, if one has been made."""
-    pack = ark_essentials.status(ark_essentials.pack_dir())
+    pack = ark_essentials.status(ark_essentials.pack_dir(),
+                                 vault=ark_essentials.shelf_dir(),
+                                 sheet=ark_essentials.sheet_file())
     if not pack.get("present"):
         return ('<p class="note">There is no copy to carry yet. The owner can make one; '
                 'until then the pages are here on the box.</p>')
@@ -1729,10 +1731,16 @@ def _pack_written() -> str:
                 'offered. Ask the owner to make a new one.</p>')
     made = str(pack.get("built") or "").strip()
     made_line = f' · made {esc(made)}' if made else ""
+    #  A page on the box can be newer than the copy in the bag, and then the copy is a
+    #  photograph of an older shelf.  It is still whole and still opens, so it is still
+    #  offered — with the one sentence that keeps a reader from trusting it as current.
+    old = ('<p class="note">The pages on this box have changed since this copy was made. '
+           'It still opens, but ask the owner for a fresh one before you rely on it '
+           'off the box.</p>') if pack.get("stale") else ""
     return (f'<p><a class="go-link" href="/essentials.zip">Download the pages as one file</a></p>'
             f'<p class="note">{esc(human_size(pack.get("bytes")))} · '
             f'{int(pack.get("members") or 0)} pages{made_line}. It opens on any computer with '
-            f'no network: unpack it and open <b>START-HERE</b>.</p>')
+            f'no network: unpack it and open <b>START-HERE</b>.</p>{old}')
 
 
 

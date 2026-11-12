@@ -108,7 +108,8 @@ def main(argv=None) -> int:
         _say("Not whole: this pack should not be trusted or printed.")
         return 1
 
-    state = pack.status(out)
+    state = pack.status(out, vault=Path(args.vault) if args.vault else _root() / "vault",
+                        sheet=Path(args.sheet) if args.sheet else _root() / "RECOVERY-SHEET.txt")
     if args.list:
         if not state.get("present"):
             _say(f"No pack yet at {state['path']}. Run --build.")
@@ -128,6 +129,9 @@ def main(argv=None) -> int:
     _say(f"fingerprint {state['sha256']}")
     if state["missing"]:
         _say(f"not in this copy: {', '.join(state['missing'])}")
+    if state.get("stale"):
+        _say("the pages on the box have changed since this copy was made — "
+             "run --build to carry away what is on the box now")
     return 0
 
 

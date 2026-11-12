@@ -131,6 +131,39 @@ def pack_dir() -> Path:
     return Path(os.environ.get("ARK_ROOT", "/srv/ark")) / "essentials"
 
 
+def shelf_dir() -> Path:
+    """The folder of pages a pack is built from (``/srv/ark/vault``)."""
+    return Path(os.environ.get("ARK_ROOT", "/srv/ark")) / "vault"
+
+
+def sheet_file() -> Path:
+    """The recovery sheet that rides along (``/srv/ark/RECOVERY-SHEET.txt``)."""
+    return Path(os.environ.get("ARK_ROOT", "/srv/ark")) / "RECOVERY-SHEET.txt"
+
+
+def newest_source(vault=None, sheet=None) -> tuple:
+    """``(path, seconds)`` of the most recently changed page or sheet, or ``("", 0.0)``.
+
+    The pack is a photograph of the shelf, and a photograph does not update itself.
+    Someone reading a manual on the box can be reading words the copy in the bag does
+    not have — on this box that happened to the recovery sheet, which was rewritten
+    on 3 November while the pack still carried the 26 October one.
+    """
+    newest, when = "", 0.0
+    sources = [path for _name, path in collect(shelf_dir() if vault is None else vault)]
+    sheet_path = sheet_file() if sheet is None else Path(sheet)
+    if sheet_path.is_file():
+        sources.append(sheet_path)
+    for path in sources:
+        try:
+            stamp = path.stat().st_mtime
+        except OSError:
+            continue
+        if stamp > when:
+            newest, when = str(path), stamp
+    return newest, when
+
+
 def _title(text: str, fallback: str) -> str:
     found = _TITLE.search(text)
     if not found:
@@ -280,11 +313,17 @@ def names(path) -> list:
         return []
 
 
-def status(out_dir) -> dict:
-    """What is on the card right now: present, size, when, how many, what is missing."""
+def status(out_dir, *, vault=None, sheet=None) -> dict:
+    """What is on the card right now: present, size, when, how many, what is missing.
+
+    ``stale`` is about the box, not about the file: a pack whose pages have been
+    rewritten since it was made is still a whole pack, and it still opens — it is
+    simply no longer this box.  It is measured only when a shelf is named, because
+    a caller that has no vault cannot know, and "unknown" must not read as "fresh".
+    """
     path = pack_path(out_dir)
     if not path.is_file():
-        return {"present": False, "path": str(path)}
+        return {"present": False, "path": str(path), "stale": None}
     blob = path.read_bytes()
     built, missing, rows = "", [], []
     try:
@@ -294,10 +333,22 @@ def status(out_dir) -> dict:
     except (zipfile.BadZipFile, KeyError, OSError):
         return {"present": True, "path": str(path), "bytes": len(blob),
                 "sha256": _sha256(blob), "built": "", "members": 0,
-                "missing": [], "readable": False}
+                "missing": [], "readable": False, "stale": None}
+    stale = None
+    newest_name, newest_at = "", 0.0
+    if vault is not None or sheet is not None:
+        newest_name, newest_at = newest_source(vault, sheet)
+        try:
+            made_at = path.stat().st_mtime
+        except OSError:
+            made_at = 0.0
+        # A second of slack: the pack's own mtime and a page written in the same
+        # install can land within one clock tick of each other.
+        stale = bool(newest_at) and newest_at > made_at + 1.0
     return {"present": True, "path": str(path), "bytes": len(blob),
             "sha256": _sha256(blob), "built": built, "members": len(rows) + 1,
-            "missing": missing, "readable": True}
+            "missing": missing, "readable": True, "stale": stale,
+            "newest_source": newest_name}
 
 def build(out_dir, *, vault, sheet=None, when=None) -> dict:
 
